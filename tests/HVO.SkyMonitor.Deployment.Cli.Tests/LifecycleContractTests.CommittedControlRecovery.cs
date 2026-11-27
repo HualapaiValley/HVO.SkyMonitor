@@ -28,7 +28,7 @@ public sealed partial class LifecycleContractTests
             ordinary.RejectNextResume = true;
             await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
                 fixture.Request(LifecycleOperationKind.Upgrade) with
-                { ImageReference = candidate, NoDownload = true, MigrationBackwardCompatible = true }, fixture.Runner,
+                { ImageReference = candidate, NoDownload = true }, fixture.Runner,
                 _ => ordinary, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
             // Model a legacy transaction after its image commit and before resume, with matching durable records.
             var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);

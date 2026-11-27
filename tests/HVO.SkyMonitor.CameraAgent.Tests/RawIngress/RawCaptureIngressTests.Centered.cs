@@ -2483,7 +2483,7 @@ public sealed partial class RawCaptureIngressTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux)]
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    public async Task CenteredInstallerPreflightAcceptsFreshAndMigratedRootsAndRefusesDriftOrRollback()
+    public async Task CenteredInstallerPreflightAcceptsBaselineAndRefusesOlderSchemasOrDrift()
     {
         var root = CreateRoot();
         var token = CancellationToken.None;
@@ -2493,8 +2493,7 @@ public sealed partial class RawCaptureIngressTests
             var instance = Guid.NewGuid();
             var paths = Installer.InstallationPaths.Create(root, instance, "hyg-v42-production");
             var files = new Installer.CameraAgentStateDatabaseView(Path.Combine(root, "identity.db"), path);
-            var requirements = new Installer.CameraAgentStateRequirements(null, null, null, 17, null,
-                Installer.RawIngressV13Schema.CenteredExposureMigrationContract);
+            var requirements = new Installer.CameraAgentStateRequirements(Installer.CameraAgentStateContract.Current, null, 17, null);
             Assert.HasCount(0, Evaluate(requirements));
 
             RawCaptureReceipt original;
@@ -2506,8 +2505,7 @@ public sealed partial class RawCaptureIngressTests
             }
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
                 await ExecuteTestSqlAsync(connection, DropCenteredSchemaSql + "PRAGMA user_version=16;").ConfigureAwait(false);
-            Assert.HasCount(0, Evaluate(requirements));
-            Assert.HasCount(1, Evaluate(requirements with { RawIngressMigration = null }));
+            Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
 
             using (var setup = new CenteredFixture(root))
                 await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -2519,8 +2517,7 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(original.CommittedManifestSha256, await manifest.ExecuteScalarAsync(token).ConfigureAwait(false));
             }
             Assert.HasCount(0, Evaluate(requirements));
-            var rollback = Evaluate(requirements with { RawIngressSchema = 16, RawIngressMigration = null },
-                Installer.CameraAgentStateContractPolicy.AllowLegacy).Single();
+            var rollback = Evaluate(requirements with { RawIngressSchema = 16 }).Single();
             Assert.AreEqual("17", rollback.Observed);
             Assert.AreEqual("16", rollback.Expected);
 
@@ -2529,11 +2526,9 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
 
             Installer.CameraAgentStatePreflightFinding[] Evaluate(
-                Installer.CameraAgentStateRequirements target,
-                Installer.CameraAgentStateContractPolicy policy =
-                    Installer.CameraAgentStateContractPolicy.RequireCurrent)
-                => Installer.CameraAgentStatePreflight.Evaluate(paths, instance, null, null, target, null,
-                    1000, 1000, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, policy, files)
+                Installer.CameraAgentStateRequirements target)
+                => Installer.CameraAgentStatePreflight.Evaluate(paths, instance, null, null, target, Installer.CameraAgentStateContract.Current,
+                    1000, 1000, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, files)
                     .Findings.Where(finding => finding.Boundary == "raw-ingress" && finding.Blocking).ToArray();
         }
         finally { DeleteRoot(root); }

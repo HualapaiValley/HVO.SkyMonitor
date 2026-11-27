@@ -18,7 +18,7 @@ public sealed partial class LifecycleContractTests
         var host = new HostPrerequisiteReport(1, "refused", false, hostile,
             [new("finding", "boundary", true, hostile, hostile, hostile, remedy)], DateTimeOffset.UtcNow);
         var state = new CameraAgentStatePreflightReport(1, "refused", Guid.NewGuid(), hostile, hostile, hostile, hostile, hostile,
-            hostile, false, [new("finding", "boundary", true, hostile, hostile, hostile, remedy)], DateTimeOffset.UtcNow);
+            false, [new("finding", "boundary", true, hostile, hostile, hostile, remedy)], DateTimeOffset.UtcNow);
         var report = json
             ? kind == "host" ? JsonSerializer.Serialize(HostPrerequisites.ForOutput(host)) : JsonSerializer.Serialize(CameraAgentStatePreflight.ForOutput(state))
             : kind == "host"

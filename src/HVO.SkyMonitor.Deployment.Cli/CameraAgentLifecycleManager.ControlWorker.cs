@@ -89,8 +89,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 { Status: not InstallationStatus.Completed, Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback })
                 throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
             // Already admissible local settlement must not depend on an unnecessary process probe.
-            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation) ||
-                IsAdmissionPreserved(operation) || IsSettledBackupForControl(operation))
+            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) ||
+                IsSettledBackupForControl(operation))
                 return deploymentLock;
             var committedRecovery = settleCommittedRecovery && operation is
             {
@@ -187,8 +187,8 @@ internal sealed partial class CameraAgentLifecycleManager
     private static async Task<(InstanceManifest Manifest, InstallationResult Result)> ReadWorkerIdentityAsync(
         InstallationPaths paths, Guid instanceId, CancellationToken cancellationToken, bool allowPartialRollback = false)
     {
-        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
+        var result = await ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
         try { EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift: false); }
         catch (InstallerException)
         {

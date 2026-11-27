@@ -1,5 +1,10 @@
 # CameraAgent Silo Storage and Cutover Contract
 
+> The Nov 27 release decision in [#1964](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964)
+> supersedes earlier cutover planning. Sites move to 0.10.0-beta.1 with a fresh
+> install and empty storage. The [install contract baseline](../hvo-install-contract.md#cameraagent-state-contract-baseline)
+> governs supported image transitions and recovery from this release onward.
+
 Status: contract for [#1965](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1965), the first deliverable of
 epic [#1964](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964). It defines what the downstream issues build
 and how they are accepted. It changes no code, deployment or LogicHost contract.
@@ -32,7 +37,7 @@ revision. *Spool* is the local durable staging area for admitted and produced by
 | D6 | Holds name logical identities and point only from consumers to inputs, so they cannot cycle. They resolve to exact versions at deletion time and carry across writer generations and recovery. Evicting a local copy because a colder copy survives requires a non-expiring hold on that exact survivor until each local delete is conclusively resolved; otherwise only role-scoped last-copy authorization permits the delete. | [7](#7-holds-writer-generations-retention-and-recovery) |
 | D7 | Physical proof of a version reads its exact bytes and computes length and SHA-256 independently. Expiry is complete only when space is physically recovered. Delete success and metadata HEAD prove neither. Expiry receipts are scoped to their exact copy and intent, and a role is `policy-expired` only after every authoritative copy is confirmed absent under its role-scoped authorization. | [6.2](#62-availability-states), [7.4](#74-physical-reclamation) |
 | D8 | First boot has no central dependency. Capture admission is persisted as paused before the first start, and the camera device reaches the candidate only after the former owner releases it. | [8.1](#81-clean-target-and-first-boot) |
-| D9 | Legacy `cameraagent reinstall` cannot hold control authority or camera exclusivity across its own restart and automatic resume. An early abort therefore stops and fences the candidate, proves zero admissions, and leaves the former instance and the camera fenced until an authority-preserving restore route exists. | [8.3](#83-early-abort-ordering) |
+| D9 | An early abort stops and fences the candidate, then proves whether any new work was admitted. The obsolete instance stays fenced while the site repairs the fresh installation. | [8.3](#83-early-abort-ordering) |
 | D10 | A resume is accepted only when its own pause is still the latest accepted command, so newer operator pauses win, including no-op pauses. A pressure pause is a separate fence. Provider acquisition stays off on the candidate through the abort window, and non-rewindable provider floors and halts are never reset. | [8.4](#84-pause-precedence), [8.5](#85-request-floors-and-identity-floors) |
 | D11 | Settled by Roy: the first Silo release uses the centered profile. Its launch is held until accepted #1922 and #1923 contracts and the relevant #1928 qualification are reachable at the exact integration source #1968 consumes and #1974 verifies. #1965, #1966 and #1967 proceed now. | [9](#9-branch-and-release-strategy) |
 | D12 | Budgets in this contract are proposed targets. They are kept separate from measured values and attributed to their sources. | [10](#10-budgets) |
@@ -46,16 +51,13 @@ revision. *Spool* is the local durable staging area for admitted and produced by
 - **Former instance.** Existing sites keep their installed filesystem release and data in their existing roots until
   the site adopts the Silo layout by clean install. Its history is not read by the new instance. Its disposition
   belongs to [#1976](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1976).
-- **Preflight refusal.** A release or operation that would change an existing instance's storage layout in place is
-  refused before mutation. The installer already evaluates the state contract and refuses an incompatible one before
-  startup (`DCLI/CameraAgentStatePreflight.cs:197`, `:278`). The Silo state contract is a new contract, not a
-  migration target of raw schema 17.
-- **Supported operations in the first Silo release.** These are clean install, start and stop, pause and resume,
-  uninstall and purge of the new instance, and new-layout backup and recovery
-  ([#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972)). Stock Silo image replacement on a retained
-  volume is supported after [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) qualifies it. In-place
-  upgrade from a filesystem release, downgrade, legacy readers and live migration are excluded. A later release must
-  qualify its own upgrade path on the new format before offering that operation.
+- **Preflight refusal.** The installer requires the new state contract in the instance records and image.
+  It directs the operator to a fresh installation when the contract is missing or different.
+- **Supported operations.** This release establishes the baseline for clean install, verify, start and stop,
+  pause and resume, uninstall, reinstall, purge, and checkpoint recovery. Upgrade and rollback apply to builds on
+  the same contract. New-layout backup and disaster recovery are tracked in
+  [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972). Stock Silo image replacement is
+  qualified separately under [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966).
 - **Supported topology.** Each instance runs one CameraAgent container and one stock Silo container on the same Linux
   host and Docker daemon, on amd64 or ARM64 (the POC's Raspberry Pi 5 class). Each has its own instance-owned root on
   local ext4 NVMe: the CameraAgent state root holds SQLite, the spool and the cache, and the Silo data root holds the
@@ -824,54 +826,14 @@ Recovery moves through these states, and each claims only what its evidence supp
 
 ### 8.3 Early-abort ordering
 
-The legacy reinstall route at `87b238c` cannot hold control authority or camera exclusivity across its own restart and
-automatic resume:
+Stop the candidate and release its camera mapping. Keep the obsolete instance fenced. Read the
+candidate's durable admission journal, spool and publication records to determine whether the
+candidate admitted work. If there were no admissions, repair or retry the fresh install before
+resuming capture. If the candidate admitted work, or zero admissions cannot be proved, preserve
+its data and use new-layout recovery under [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972).
 
-- It starts the former container and exposes its controls before resuming
-  (`DCLI/CameraAgentLifecycleManager.cs:1522-1527`, `:1548`).
-- Its resume carries no expected version and no owned-pause check (F8). A newer operator pause accepted in that window,
-  including a no-op that leaves the version unchanged (F12), would be overwritten.
-- An interrupted reinstall later resumes through `--resume` with the same unconditioned resume
-  (`DCLI/CameraAgentLifecycleManager.cs:1486`, `:1504`).
-- The camera is mapped to the former container from its start, so a device check made before the call cannot hold
-  exclusivity across it.
-
-A one-time check of the stopped former instance therefore cannot authorize its later resume. The abort procedure never
-invokes legacy reinstall.
-
-| Step | Action | Pass condition |
-| --- | --- | --- |
-| E1 | Stop the candidate with no restart policy and remove its camera mapping | Container exited; no candidate process holds the camera; admission persisted `Paused`, or the container is absent |
-| E2 | Read the stopped candidate's admission ledger and provider stores read-only, including WAL: copy each database with its `-wal` and `-shm` files and open the copy | `raw_captures` has 0 rows; no reserved `raw_capture_sequences`; spool empty; no `publish` record in its journal; authoritative provider state at its initial values, or its newer facts reconciled ([8.5](#85-request-floors-and-identity-floors)). Record the results, each file's SHA-256 and the UTC time. |
-| E3 | Fence | Candidate stopped and paused; former instance left uninstalled; camera unmapped from both. Record the fence and escalate. |
-| E4 | Restore the former owner only through an authority-preserving route, with positive authority recorded | See below |
-| E5 | Verify | Former instance `Running` with one owner; candidate stopped, its data preserved for closeout |
-
-An **authority-preserving route** must meet all of these:
-
-1. The former instance starts with admission held by a pause the restore operation owns.
-2. Its resume is accepted only atomically, when that pause is still the latest accepted command at its version (F12).
-3. The camera stays allocated to the restore operation from E1 through that resume, including across interruption and
-   any resumed operation.
-4. Provider facts are reconciled first ([8.5](#85-request-floors-and-identity-floors)).
-5. The accountable operator or site has recorded positive authority to restore the former instance as the active
-   capture owner: who, when and why.
-
-No such route exists for the filesystem release at `87b238c`. Providing one is a remaining decision
-([14](#14-remaining-decisions)). Until then an early abort ends at E3.
-
-- **E2 failure.** If E2 finds an admission, or cannot prove zero, the candidate owns new data. Recover forward with
-  new-layout recovery (#1972) and escalate.
-- **Acceptance test (#1975 rehearsal and any automation).** Assert:
-  1. The abort procedure never invokes legacy reinstall, and E3 leaves admission and the camera fenced.
-  2. E2 fails on any admission and routes to forward recovery, including a fault right after the first durable
-     admission.
-  3. With an authority-preserving route, an operator pause accepted between the former start and its resume refuses
-     the resume, including a no-op pause with an unchanged version.
-  4. With such a route, an interruption between the former start and its resume leaves admission paused and the camera
-     with the restore operation.
-  5. A candidate provider fact during the window, including a retained halt behind an empty or pruned attempt table,
-     keeps the former provider acquisition fenced until reconciled.
+The #1975 rehearsal must show that the first durable admission routes a failure to recovery and that
+capture remains fenced until the authorized new instance is ready.
 
 ### 8.4 Pause precedence
 
@@ -930,8 +892,7 @@ immediately. Imported groups then follow ordinary retention, backup and restore.
 ## 9. Branch and release strategy
 
 - **Branch.** Implementation targets `development/v1` with no long-lived branch. New-layout code is selected only by
-  the new state contract at clean install. Filesystem installs keep today's behavior, and preflight refuses in-place
-  change.
+  the new state contract at clean install. The installer refuses earlier installation records.
 - **First release profile: centered.** This was settled by Roy on 2026-11-22 ("Hold the first release for centered").
   No non-centered Silo profile is offered for the first release. Because the installer defaults set no
   `CenteredExposure` at `87b238c`, the clean-install path sets the centered configuration explicitly as site
@@ -1099,7 +1060,7 @@ source that meets the launch hold ([9](#9-branch-and-release-strategy)):
 | Resume before payload verification completes | Capture resumes at `resume-ready`; unverified roles are reported as such and never claimed available | #1971, #1972 |
 | Satellite capture with a qualifying archive reference and no support product | Raw stays held until the last qualifying archive reference settles | #1970 |
 | Video or nightly input expiry while the job is interrupted, after a terminal failure, and during a retry | Held while interrupted; released at the terminal state; the retry revalidates and ends `Unavailable` naming any expired input | #1970 |
-| Early abort with zero admissions | Legacy reinstall not invoked; candidate, former instance and camera stay fenced | #1975 |
+| Early abort with zero admissions | Candidate, former instance and camera stay fenced until a fresh installation is ready | #1975 |
 | Early abort after a durable admission | Forward recovery | #1975 |
 | Operator pause, including a same-version no-op, between the former start and its resume on an authority-preserving route | Resume refused | Route owner, #1975 |
 | Operator no-op pause before the Silo first resume | First resume refused | #1966 |

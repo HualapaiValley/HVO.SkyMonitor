@@ -183,12 +183,6 @@ leaves capture paused. No recovery deletes accepted work.
 
 ## Receipts and failure recovery
 
-After a signed upgrade settles with capture admission preserved, use the
-compatible successor installer's `lifecycle-worker` for Drain and scheduled
-Restart. This applies to automatic recovery and RC2 leave-paused recovery.
-Stock RC2 cannot read either successor journal format. The owner's ordinary
-capture controls remain available on the verified predecessor.
-
 The installer writes its authoritative, atomically published and synchronized
 journal to `<product-root>/operations/control-worker-<uuid>.json`, outside the
 CameraAgent state mounts. It retains up to 100 receipts and never discards
@@ -226,10 +220,11 @@ endpoint now. Any current HTTP reply, including an error response, means reachab
 and keeps ordinary settlement gating. Only an explicit connection failure or a
 bounded no-response timeout admits the offline exception. Starting/missing health,
 probe execution errors and Docker inspection errors do not authorize recovery.
-For an offline instance, use preserve-by-default uninstall, restore if needed,
-then reinstall. Reinstall requires a preserved uninstalled instance. Restore
-requires an eligible target and a verified archive. A fresh manual rollback is
-refused. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
+For an offline instance, use preserve-by-default uninstall, restore if supported
+and needed, then reinstall. Reinstall requires a preserved uninstalled instance.
+Restore requires an eligible target and a verified archive. On an installed
+instance, `cameraagent rollback` can start a retained earlier build that shares
+the baseline state contract. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
 
 A retained nonterminal control projection can refuse recovery's final resume with
 409 even after the recovered image and paused boundary have committed. In that

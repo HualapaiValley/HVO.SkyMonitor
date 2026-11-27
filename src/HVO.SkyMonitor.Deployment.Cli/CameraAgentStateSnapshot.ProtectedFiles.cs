@@ -54,18 +54,10 @@ internal static partial class CameraAgentStateSnapshot
     }
 
     private static async Task VerifyProtectedFilesAsync(
-        InstallationPaths paths, string root, IReadOnlyList<StateSnapshotFile>? files, CancellationToken cancellationToken)
+        string root, IReadOnlyList<StateSnapshotFile>? files, CancellationToken cancellationToken)
     {
         if (files is null)
-        {
-            // Historical database-only snapshots remain readable for legacy state.
-            // They cannot reconstruct a sealed location/ledger pair.
-            if (IntegrityPathExists(StorePath(paths.StateRoot, RetainedIntegrityStore), directory: false) ||
-                IntegrityPathExists(StorePath(paths.StateRoot, ProtectedLocations[^1]), directory: false))
-                throw new InstallerException("This database-only snapshot predates paired retained-integrity state; restore a complete paired backup.");
-            await VerifyCurrentLegacyHistoryAsync(paths, cancellationToken).ConfigureAwait(false);
-            return;
-        }
+            throw new InstallerException("The checkpoint lacks its protected-state inventory.");
         if (files.Count != ProtectedLocations.Length || files.Any(static file => file is null) || files.Select(static file => file.RelativePath).Distinct(StringComparer.Ordinal).Count() != files.Count ||
             files.Any(file => !ProtectedLocations.Contains(file.RelativePath, StringComparer.Ordinal)))
             throw new InstallerException("The paired protected-state snapshot has an incomplete inventory.");
@@ -89,7 +81,7 @@ internal static partial class CameraAgentStateSnapshot
     private static async Task RestoreProtectedFilesAsync(
         InstallationPaths paths, string root, IReadOnlyList<StateSnapshotFile>? files, uint uid, uint gid, CancellationToken cancellationToken)
     {
-        if (files is null) return; // VerifyProtectedFilesAsync already checked legacy eligibility.
+        ArgumentNullException.ThrowIfNull(files);
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();

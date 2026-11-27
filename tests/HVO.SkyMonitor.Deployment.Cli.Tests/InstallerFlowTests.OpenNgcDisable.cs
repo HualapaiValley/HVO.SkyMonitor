@@ -73,7 +73,7 @@ public sealed partial class InstallerFlowTests
             result = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, CancellationToken.None);
             CameraAgentLifecycleManager.EnsureCorrelated(paths, installed.InstanceId, manifest, result, false);
             runner = OpenNgcLifecycleRunner(paths, manifest);
-            var upgrade = command with { Operation = LifecycleOperationKind.Upgrade, ImageReference = OpenNgcUpgradeReference, MigrationBackwardCompatible = true };
+            var upgrade = command with { Operation = LifecycleOperationKind.Upgrade, ImageReference = OpenNgcUpgradeReference };
             Assert.AreEqual("status", (await CameraAgentLifecycleManager.ExecuteAsync(command with { Operation = null }, runner, null, null,
                 RuntimeUid, RuntimeGid, CancellationToken.None)).Outcome);
             Assert.AreEqual("planned", (await CameraAgentLifecycleManager.ExecuteAsync(upgrade with { DryRun = true }, runner, null, null,

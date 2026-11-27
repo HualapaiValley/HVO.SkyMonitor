@@ -56,7 +56,7 @@ The same barrier covers every other deletion a restored database row could depen
 
 A first initialization reads the durable admission state from the journal, because admission initialization waits for
 it; a later one takes a lease without initializing admission. See
-[Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
+[Checkpoint and image recovery](deployment-installer.md#checkpoint-and-image-recovery).
 
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires

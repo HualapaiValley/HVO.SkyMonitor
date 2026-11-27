@@ -19,7 +19,7 @@ public sealed class IlluminationModeTests
     ];
 
     [TestMethod]
-    public void OmittedMode_PreservesLegacyIlluminationAndRequestIdentity()
+    public void OmittedMode_PreservesDefaultIlluminationAndBaselineRequestIdentity()
     {
         var request = Request(null);
         var generated = CameraConfiguration.Generate(request, ApplicationIdentity);
@@ -27,11 +27,12 @@ public sealed class IlluminationModeTests
 
         Assert.IsFalse(document.RootElement.GetProperty("module").GetProperty("options").TryGetProperty("illuminationMode", out _));
         // The installer's default-configuration hash is the newest configuration-default generation's (Refs #1779): it
-        // moves only with a new named generation. Omitted lighting retains the legacy request identity.
+        // moves only with a new named generation. The request identity includes the baseline's default Silo layout.
         Assert.AreEqual(CameraConfigurationDefaultsTests.CurrentFrozenSha256, generated.Sha256, CameraConfigurationDefaultsTests.AddAGeneration);
         Assert.AreEqual("4b668bf691defcf0a5ce57f9e68adb9851d82110dae42e2e3b9812b9acd661a1", CameraConfigurationDefaultsTests.CurrentFrozenSha256);
         Assert.AreEqual(CameraConfigurationDefaults.Current.Generate(request, ApplicationIdentity).Sha256, generated.Sha256);
-        Assert.AreEqual("df46995abab4cdee5f33813d3076c512b9a279b9a53178a3f39be852fb132be5",
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, request.StorageLayout);
+        Assert.AreEqual("8bf1972014afe42e5d514063ca5315711d5080f82aab2cb957c0e14a2051626b",
             CameraAgentInstaller.ComputeRequestSha256(request, InstanceId));
     }
 
@@ -85,18 +86,6 @@ public sealed class IlluminationModeTests
 
         Assert.AreNotEqual(legacy, night);
         Assert.AreNotEqual(solar, night);
-    }
-
-    [TestMethod]
-    [DataRow(null, true)]
-    [DataRow("LegacyScalarSolar", false)]
-    [DataRow("SolarDriven", false)]
-    [DataRow("ControlledNight", false)]
-    public void LegacyResumeIdentity_MatchesOnlyOmittedIllumination(string? mode, bool expected)
-    {
-        var legacy = CameraAgentInstaller.ComputeLegacyRequestSha256(Request(null), InstanceId);
-
-        Assert.AreEqual(expected, CameraAgentInstaller.RequestIdentityMatches(legacy, Request(mode), InstanceId));
     }
 
     [TestMethod]

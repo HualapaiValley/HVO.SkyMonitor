@@ -9,9 +9,7 @@ using HVO.SkyMonitor.Deployment.Contracts;
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
-/// The storage layout a CameraAgent instance is installed with. <see cref="Filesystem"/> is every installation made
-/// before #1966 and stays the default; <see cref="Silo"/> is the clean-install layout of the CameraAgent Silo cutover
-/// contract, selected only for a new instance and never by conversion.
+/// The storage layout a CameraAgent instance is installed with. Silo is the clean-install default.
 /// </summary>
 internal enum CameraAgentStorageLayout
 {

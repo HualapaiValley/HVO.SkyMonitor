@@ -4,7 +4,7 @@ using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
-// Separate from schema-1 install.json: released installers disallow unmapped JSON members.
+// The program sidecar is an independent projection of the per-instance publication records.
 internal sealed record InstallProgramInstance(Guid InstanceId, IReadOnlyList<PathProgramRecord>? Programs);
 internal sealed record InstallProgramRecord(int SchemaVersion, string Product, string ProductRoot, IReadOnlyList<InstallProgramInstance> Instances);
 

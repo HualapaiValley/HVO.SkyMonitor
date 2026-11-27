@@ -9,38 +9,6 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task Review1460_PureSwapAtOldSafeBudget()
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(
-            InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
-        var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
-        ExecuteSql(identity,
-            "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT);" +
-            "INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity');");
-        var availableBefore = LinuxHostEnvironment.AvailableBytes(fixture.Paths.ProductRoot);
-        // Only length is needed by admission. No large allocation or disk filling is involved.
-        using (var stream = new FileStream(identity, FileMode.Open, FileAccess.Write))
-            stream.SetLength(availableBefore / 3 / 4096 * 4096);
-        var bytes = new FileInfo(identity).Length;
-        var available = LinuxHostEnvironment.AvailableBytes(fixture.Paths.ProductRoot);
-        var oldRequired = 2 * bytes + 256L * 1024 * 1024;
-        var newRequired = 4 * bytes + CameraAgentStateCounters.JournalRecordBytes(bytes) + 256L * 1024 * 1024;
-        Console.WriteLine($"D={bytes}; free={available}; oldRequired={oldRequired}; newRequired={newRequired}");
-        Assert.IsTrue(oldRequired < available);
-        Assert.IsTrue(newRequired > available);
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", result.Outcome);
-        var operation = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.IsFalse(operation!.StateSnapshotRequired);
-        Assert.IsNull(operation.StateSnapshot);
-    }
-    [TestMethod]
-    [DoNotParallelize]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
     public async Task Review1460_ReasonContainingKeyIsTerminalSafe(bool json)
@@ -83,7 +51,7 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task Review1460_StatefulUpgradeShortOfJournal_IsRefusedBeforeMutation()
+    public async Task UpgradeShortOfCheckpointSpace_IsRefusedBeforeMutation()
     {
         using var fixture = await MigratingFixtureAsync();
         var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
@@ -100,8 +68,9 @@ public sealed partial class LifecycleContractTests
         try
         {
             var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
+                UpgradeRequest(fixture), fixture.Runner, _ => lifecycle,
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+            Assert.IsTrue(refused.IsRefusal);
             StringAssert.Contains(refused.Message, "Insufficient free space", StringComparison.Ordinal);
         }
         finally
@@ -111,8 +80,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(0, lifecycle.PauseCount);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         var operation = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.IsFalse(operation!.MutationStarted);
-        Assert.IsNull(operation.StateSnapshot);
+        Assert.IsNull(operation);
     }
 
 }

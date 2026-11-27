@@ -191,10 +191,6 @@ public sealed class ContainerResourceLimitsTests
         Assert.AreNotEqual(
             CameraAgentInstaller.ComputeRequestSha256(request with { Cpus = 3m }, instanceId),
             CameraAgentInstaller.ComputeRequestSha256(request with { Cpus = 4m }, instanceId));
-        Assert.IsTrue(CameraAgentInstaller.RequestIdentityMatches(
-            CameraAgentInstaller.ComputeLegacyRequestSha256(request, instanceId), request, instanceId));
-        Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(
-            CameraAgentInstaller.ComputeLegacyRequestSha256(request, instanceId), request with { Cpus = 3m }, instanceId));
     }
 
     [TestMethod]

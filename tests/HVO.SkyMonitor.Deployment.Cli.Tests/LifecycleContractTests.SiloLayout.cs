@@ -5,26 +5,99 @@ using HVO.SkyMonitor.Deployment.Contracts;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// The Silo-layout fence of #1966 through the real lifecycle manager: every operation the first Silo release does not
-/// support refuses a Silo-layout instance before mutation, and uninstall and purge are admitted.
+/// Admission and lifecycle operations on a Silo instance through the real lifecycle manager.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, false, false)]
-    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, true, false)]
-    [DataRow(LifecycleOperationKind.Rollback, InstanceLifecycleCondition.Installed, false, true)]
-    [DataRow(LifecycleOperationKind.Reinstall, InstanceLifecycleCondition.Uninstalled, false, false)]
-    [DataRow(LifecycleOperationKind.Upgrade, InstanceLifecycleCondition.Installed, false, false)]
-    [DataRow(LifecycleOperationKind.CatalogRollback, InstanceLifecycleCondition.Installed, false, false)]
+    public async Task SiloLayout_TwoBaselineBuildsUpgradeReinstallAndRollBackWithoutRewindingStore()
+    {
+        using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var originalCompose = await File.ReadAllTextAsync(composePath);
+        var model = originalCompose + SiloRuntimeProfile.ComposeService + "\n";
+        await File.WriteAllTextAsync(composePath, model);
+        var manifest = fixture.Manifest with { ComposeModelSha256 = ComposeDeployment.ComputeSha256(model) };
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath, manifest,
+            DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+        var install = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None, allowSiloLayout: true);
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ResultPath, install with { ComposeModelSha256 = manifest.ComposeModelSha256 },
+            DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
+        Directory.CreateDirectory(manifest.Silo!.DataRoot);
+        var payload = Path.Combine(manifest.Silo.DataRoot, "sample");
+        await File.WriteAllTextAsync(payload, "initial");
+        var lifecycle = new FakeLifecycleClient();
+
+        var upgraded = await RunAsync(UpgradeRequest(fixture));
+        Assert.AreEqual(CandidateImageId, upgraded.Image!.ImageId);
+        await File.AppendAllTextAsync(payload, "-after-upgrade");
+        Assert.AreEqual(InstanceLifecycleCondition.Uninstalled, (await RunAsync(fixture.Request(LifecycleOperationKind.Uninstall))).LifecycleCondition);
+        Assert.AreEqual(CandidateImageId, (await RunAsync(fixture.Request(LifecycleOperationKind.Reinstall))).Image!.ImageId);
+        var rollback = await RunAsync(fixture.Request(LifecycleOperationKind.Rollback));
+
+        Assert.AreEqual("completed", rollback.Outcome);
+        Assert.AreEqual(manifest.Image, rollback.Image);
+        Assert.AreEqual("initial-after-upgrade", await File.ReadAllTextAsync(payload));
+        var settled = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None, allowSiloLayout: true);
+        Assert.AreEqual(manifest.Silo, settled.Silo);
+        StringAssert.Contains(await File.ReadAllTextAsync(composePath), SiloRuntimeProfile.ComposeService, StringComparison.Ordinal);
+
+        Task<LifecycleResult> RunAsync(LifecycleRequest request) => CameraAgentLifecycleManager.ExecuteAsync(
+            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("cameraagent-state-v2", false)]
+    [DataRow("foreign-state-v9", false)]
+    [DataRow(null, false)]
+    [DataRow(SiloRuntimeProfile.StateContract, true)]
+    public async Task PreflightAndLifecycleRefuseOtherContractsAndPreBaselineSiloBeforeMutation(string? contract, bool preBaselineSilo)
+    {
+        using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Uninstalled);
+        var document = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(fixture.Paths.ManifestPath))!;
+        document["stateContract"] = contract;
+        if (preBaselineSilo)
+        {
+            // The old Silo manifest already names the store binding. Only the baseline
+            // manifest and image identity identify a new-contract lifecycle installation.
+            document["schemaVersion"] = 1;
+            document["image"]!.AsObject().Remove("stateContract");
+        }
+        await File.WriteAllTextAsync(fixture.Paths.ManifestPath, document.ToJsonString());
+        var before = FileSystemActivity.Snapshot(fixture.Root);
+        var preflight = new CameraAgentStatePreflightRequest(fixture.InstanceId, fixture.Root, null, Json: true)
+        {
+            AllowTestProductRoot = true
+        };
+
+        await RefusedAsync(() => CameraAgentStatePreflightManager.ExecuteAsync(preflight, fixture.Runner, CancellationToken.None));
+        await RefusedAsync(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Reinstall), fixture.Runner, null, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        Assert.AreEqual(0, fixture.Runner.InvocationCount);
+        FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "refused lifecycle changed the product root");
+
+        static async Task RefusedAsync(Func<Task> execute)
+        {
+            var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(execute);
+            Assert.IsTrue(refusal.IsRefusal);
+            StringAssert.Contains(refusal.Message, "fresh install of 0.10.0-beta.1 or later", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(LifecycleOperationKind.Backup, InstanceLifecycleCondition.Installed, false, false)]
     public async Task SiloLayout_UnsupportedOperation_RefusesBeforeMutation(
         LifecycleOperationKind kind, InstanceLifecycleCondition condition, bool plan, bool resume)
     {
         using var fixture = await SiloFixtureAsync(condition);
         var request = fixture.Request(kind) with { DryRun = plan, Resume = resume };
-        if (kind == LifecycleOperationKind.Upgrade)
-            request = request with { ImageReference = $"sha256:{new string('5', 64)}", NoDownload = true };
         var before = FileSystemActivity.Snapshot(fixture.Root);
         var lifecycle = new FakeLifecycleClient();
 
@@ -137,9 +210,11 @@ public sealed partial class LifecycleContractTests
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned fixture shares the created fixture's root and runner and is disposed by the caller.")]
-    private static async Task<LifecycleFixture> SiloFixtureAsync(InstanceLifecycleCondition condition)
+    private static async Task<LifecycleFixture> SiloFixtureAsync(
+        InstanceLifecycleCondition condition, string catalogId = HygV42.CatalogId, bool seedCatalogSelection = true)
     {
-        var fixture = await LifecycleFixture.CreateAsync(condition);
+        var fixture = await LifecycleFixture.CreateAsync(
+            condition, seedCatalogSelection: seedCatalogSelection, catalogId: catalogId);
         var manifest = fixture.Manifest;
         var instanceId = manifest.InstanceId;
         var storeId = SiloRuntimeProfile.StoreIdFor(instanceId);
@@ -169,6 +244,7 @@ public sealed partial class LifecycleContractTests
         var converted = manifest with
         {
             ComponentSchemaVersion = SiloRuntimeProfile.ComponentSchemaVersion,
+            Image = manifest.Image with { FirstBootContract = SiloInstallation.FirstBootContract },
             ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion,
             PreviousImage = null,
             PreviousComposeModelSha256 = null,
@@ -178,7 +254,7 @@ public sealed partial class LifecycleContractTests
             JsonSerializer.Serialize(converted, DeploymentJsonContext.Default.InstanceManifest));
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
         await File.WriteAllTextAsync(fixture.Paths.ResultPath, JsonSerializer.Serialize(
-            result with { ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion },
+            result with { ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion, Image = converted.Image },
             DeploymentJsonContext.Default.InstallationResult));
         return fixture.WithManifest(converted);
     }

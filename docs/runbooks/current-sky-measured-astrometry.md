@@ -122,43 +122,18 @@ predicted paths during the exposure. **Deep-sky associations** requires a
 separate measured product. In a rejected **15 s** trial, the catalog and track
 layers still drew while measured residuals were unavailable.
 
-## Later home-docker in-place update and rollback plan
+## Site validation after a fresh install
 
-This is preparation only. No home-docker access or runtime change is part of
-#1901's coding candidate. Roy must separately authorize the actual update after
-Kepler's review/CI lifecycle and artifact qualification.
+Use the installer and site handoff in the
+[CameraAgent cutover plan](../planning/cameraagent-silo-cutover.md) to reach a verified
+0.10.0-beta.1 instance. Validate measured astrometry against captures from that instance.
 
-1. On that later authorized operation, inventory the existing instance ID,
-   managed installation root, exact image digest, installer version, current
-   listener address/port, mounts, limits, configuration/profile revision, active
-   graph, catalog identity, Identity/Data Protection/provisioning paths, and
-   capture sequence. Retain the inventory and current homepage evidence. Do not
-   infer the deployed address or port from development defaults.
-2. Preserve existing operator configuration and all durable state. Retain the
-   exact previous image, configuration and catalog selection. On startup,
-   #1901 migrates processing schema 9 to 10 in one transaction and adds the
-   partial index `ix_processing_outputs_astrometry_lookup` for retained measured
-   solutions. Raw ingress remains at schema 16 during this migration. The
-   candidate advances `minimum-compatible-revision`, so the installer takes a
-   paired pre-upgrade checkpoint before candidate startup when crossing that
-   boundary. The supplementary fit contract creates a new graph revision for
-   fresh work and preserves previously recorded plans and SQLite rows with
-   their original identities. Run the supported installer's **upgrade plan/preflight** on the
-   existing instance. Account for other reader and schema changes between the
-   installed and qualified images. Confirm the checkpoint and recovery plan
-   before proceeding. If preflight cannot establish the upgrade and recovery
-   route, stop for Roy.
-   [Installer snapshot procedure](deployment-installer.md#swap-upgrade-and-database-snapshots)
-3. Use the existing installation's supported in-place upgrade workflow with the
-   exact qualified artifact, retaining the same instance, root, address, port,
-   credentials and mounts. No install/reset/uninstall operation, new instance,
-   fleet action or release promotion is authorized by this plan.
-4. Validate/apply a new local profile revision with the explicit optional graph
+1. Validate or apply a new local profile revision with the explicit optional graph
    above and the pinned complete catalog. Keep the previous profile revision for
    rollback. Preserve custom operator steps; do not replace the profile with a
    development fixture. Confirm durable raw admission continues through cadence
    skips and analysis failures, then wait for an actual accepted retained solve.
-5. At the unchanged endpoint, authenticate and compare all four summary fields,
+2. At the new instance's endpoint, authenticate and compare all four summary fields,
    timestamp, artifact and solution identity with retained evidence. Observe
    multiple capture refreshes between solves; the timestamp must remain the
    solution's, with previous-capture labeling and current-image calculators and
@@ -172,23 +147,10 @@ Kepler's review/CI lifecycle and artifact qualification.
    Verify the configured image geometry, constellation lines, and visible
    solar-system annotations against the canonical scene before and after a
    refresh. Verify that the existing trailing stack, materialized preview,
-   and local/archive storage paths continue to produce their normal outputs.
+   and Silo storage paths continue to produce their normal outputs.
    Record directly related regressions and list unrelated gaps separately.
    Check raw sequences, backlog,
-   retention holds, health, errors and resource consumption. Failure leaves the
-   rollout incomplete even if the container is running.
-6. If the protected upgrade fails before commit, the installer restores the
-   paired pre-upgrade checkpoint before restarting the exact previous image
-   with its matching configuration and catalog selection. If acceptance fails
-   after commit, stop for Roy before restoring anything. For an approved
-   recovery, preserve newer captures separately and use the installer's
-   supported recovery procedure to verify and restore the paired checkpoint
-   before starting the previous image. Restore the prior graph revision through
-   the existing profile lifecycle if needed. Verify the original listener,
-   identity, provisioning, retained captures, raw sequence continuity and
-   homepage again. Record any recovery-point loss explicitly. If recovery
-   fails, keep the instance fenced and stop for Roy.
-   [Upgrade-time checkpoint recovery](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
+   retention holds, health, errors and resource consumption. Record the result with the instance and release identity.
 
 ## Reproducing development qualification
 

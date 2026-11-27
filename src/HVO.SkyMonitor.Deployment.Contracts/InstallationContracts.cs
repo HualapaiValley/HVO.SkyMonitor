@@ -4,10 +4,10 @@ namespace HVO.SkyMonitor.Deployment.Contracts;
 
 public static class DeploymentSchemaVersions
 {
-    public const int InstanceManifest = 1;
-    public const int InstallationState = 1;
-    public const int InstallationResult = 1;
-    public const int LifecycleOperation = 1;
+    public const int InstanceManifest = 2;
+    public const int InstallationState = 2;
+    public const int InstallationResult = 2;
+    public const int LifecycleOperation = 4;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
     public const int LifecycleEvent = 1;
@@ -95,6 +95,8 @@ public enum LifecycleOperationKind
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1027:Mark enums with FlagsAttribute",
+    Justification = "Lifecycle phases are exclusive. The retired numeric value stays reserved for persisted journals.")]
 public enum LifecycleOperationPhase
 {
     Planned,
@@ -108,13 +110,8 @@ public enum LifecycleOperationPhase
     Committed,
     Restoring,
     Completed,
-    Restored,
     /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
-    StateSnapshotRecorded,
-    /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
-    RetainedStateApplied,
-    /// <summary>The verified predecessor is running and the installer left capture admission to the owner.</summary>
-    RecoveryAdmissionPreserved
+    StateSnapshotRecorded = 12
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -141,17 +138,16 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    string? UpgradeCompatibility = null,
+    string? StateContract = null,
     string? SourceRevision = null,
     string? Component = null,
     string? ConfigurationContract = null,
     string? CatalogContract = null,
     string? ReplayRunnerContract = null,
-    string? MinimumCompatibleRevision = null,
     string? IdentityMigration = null,
     string? RawIngressSchema = null,
     string? CatalogManifestVersion = null,
-    string? RawIngressMigration = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FirstBootContract = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,
@@ -208,7 +204,7 @@ public sealed record InstanceManifest(
     ImageInstallationIdentity Image,
     ImageInstallationIdentity? PreviousImage,
     DockerDaemonIdentity DockerDaemon,
-    string UpgradeCompatibility,
+    string StateContract,
     DateTimeOffset CreatedUtc,
     CatalogInstallationIdentity? PreviousCatalog = null,
     InstanceLifecycleCondition LifecycleCondition = InstanceLifecycleCondition.Installed,
@@ -291,34 +287,15 @@ public sealed record LifecycleOperationState(
     LifecycleContinuityBoundary? PostMutationContinuity = null,
     [property: JsonPropertyName("originalOwnerBootstrapState")]
     string? ExpectedOwnerBootstrapState = null,
-    Guid? RestoreResumeCommandId = null,
-    LifecycleResumeReceipt? RestoreResumeReceipt = null,
     bool StateSnapshotRequired = false,
-    string? StateMigration = null,
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
-    LifecycleStateSnapshot? RetainedStateSnapshot = null,
     IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
     StateRestorePlan? StateRestorePlan = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
     bool DeepSkyTransition = false,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifecycleStateSnapshot? LeavePausedOriginalSnapshot = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null)
-{
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? SignedRetryAdmissionOutcome { get; init; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public Guid? AuthorizedSignedRestoreSnapshotId { get; init; }
-}
-
-public sealed record LifecycleAdmissionObservation(
-    string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,
-    long LatestCommandOrder, string LatestCommandKeySha256, string LatestTarget, string LatestActor, bool LatestChanged,
-    long LatestResultVersion, DateTimeOffset LatestCompletedUtc);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null);
 
 /// <summary>
 /// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
@@ -484,9 +461,6 @@ public sealed record LifecycleResult(
     /// <summary>What a completed <c>cameraagent restore</c> put back. Omitted by every other command.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleRestore? Restore { get; init; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public LifecycleAdmissionObservation? PreservedAdmission { get; init; }
 }
 
 /// <summary>
