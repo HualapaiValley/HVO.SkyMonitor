@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Diagnostics;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Diagnostics")]
 [DoNotParallelize]
 public sealed class ProductionProfilingTests
 {
