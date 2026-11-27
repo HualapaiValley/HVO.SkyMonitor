@@ -238,35 +238,46 @@ internal sealed partial class SqliteCenteredViews
         ArgumentNullException.ThrowIfNull(enabledLayerIds);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(enabledLayerIds.Count, LayeredPresentationJson.MaximumLayerCount);
 
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginWrite(connection);
-        var view = await ReadExactAsync(connection, transaction, baseId, revisionId, cancellationToken).ConfigureAwait(false);
-        if (view is null || !await IsSiloViewVisibleAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false))
-            return null;
-        var requested = enabledLayerIds.ToHashSet(StringComparer.Ordinal);
-        var ordered = Array.AsReadOnly(view.Revision.Manifest.Layers.Select(layer => layer.LayerIdentitySha256)
-            .Where(requested.Contains).ToArray());
-        if (requested.Count != enabledLayerIds.Count || requested.Count != ordered.Count)
-            throw new ArgumentException("Every enabled layer must appear once in the exact revision.", nameof(enabledLayerIds));
-
-        var existing = await ReadSavedAsync(connection, transaction, owner, selectionId, cancellationToken).ConfigureAwait(false);
-        if (existing is not null)
+        var lifecycle = silo?.RawLifecycle;
+        if (lifecycle is not null) await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            if (existing.BaseId != baseId || existing.RevisionId != revisionId || !existing.EnabledLayerIds.SequenceEqual(ordered))
-                throw new InvalidOperationException("The selection ID already identifies a different saved view.");
-            return existing;
+            if (silo is not null && !await silo.Index.CanPinViewAsync(baseId, revisionId,
+                silo.Retention.ReadUnsettledTarget(), cancellationToken).ConfigureAwait(false)) return null;
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginWrite(connection);
+            var view = await ReadExactAsync(connection, transaction, baseId, revisionId, cancellationToken).ConfigureAwait(false);
+            if (view is null || !await IsSiloViewVisibleAsync(baseId, revisionId, cancellationToken).ConfigureAwait(false))
+                return null;
+            var requested = enabledLayerIds.ToHashSet(StringComparer.Ordinal);
+            var ordered = Array.AsReadOnly(view.Revision.Manifest.Layers.Select(layer => layer.LayerIdentitySha256)
+                .Where(requested.Contains).ToArray());
+            if (requested.Count != enabledLayerIds.Count || requested.Count != ordered.Count)
+                throw new ArgumentException("Every enabled layer must appear once in the exact revision.", nameof(enabledLayerIds));
+
+            var existing = await ReadSavedAsync(connection, transaction, owner, selectionId, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (existing.BaseId != baseId || existing.RevisionId != revisionId || !existing.EnabledLayerIds.SequenceEqual(ordered))
+                    throw new InvalidOperationException("The selection ID already identifies a different saved view.");
+                return existing;
+            }
+
+            var time = clock.GetUtcNow();
+            await ExecuteAsync(connection, transaction, """
+                INSERT INTO processing_centered_view_selections (owner, selection_id, base_id, revision_id, saved_utc, enabled_layers)
+                VALUES ($owner, $id, $base, $revision, $utc, $enabled);
+                """, cancellationToken, ("$owner", owner), ("$id", selectionId), ("$base", baseId), ("$revision", revisionId),
+                ("$utc", ToTicks(time)), ("$enabled", Serialize(ordered))).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new(selectionId, baseId, revisionId, ordered, time);
         }
-
-        var time = clock.GetUtcNow();
-        await ExecuteAsync(connection, transaction, """
-            INSERT INTO processing_centered_view_selections (owner, selection_id, base_id, revision_id, saved_utc, enabled_layers)
-            VALUES ($owner, $id, $base, $revision, $utc, $enabled);
-            """, cancellationToken, ("$owner", owner), ("$id", selectionId), ("$base", baseId), ("$revision", revisionId),
-            ("$utc", ToTicks(time)), ("$enabled", Serialize(ordered))).ConfigureAwait(false);
-
-        cancellationToken.ThrowIfCancellationRequested();
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return new(selectionId, baseId, revisionId, ordered, time);
+        finally
+        {
+            lifecycle?.Release();
+        }
     }
 
     private static async ValueTask RequireDistinctBaseAsync(SqliteConnection connection, SqliteTransaction transaction,

@@ -506,6 +506,7 @@ internal sealed partial class RawCaptureIngress :
             {
                 throw new InvalidDataException("Raw ingress requires reconciliation before accepting another capture.");
             }
+            using var siloSpace = existingCapture.Exists ? null : ReserveSiloCaptureSpace(frame.PixelData.Length);
             if (!existingCapture.Exists)
             {
                 EnsureSiloBinding();

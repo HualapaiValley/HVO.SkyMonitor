@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Publishes a final release's or release candidate's tested draft (install contract section 3, #1310), as the release
+# Publishes a final release's or pre-release's tested draft (install contract section 3, #1310), as the release
 # workflow's publish job does once the owner has approved it. It needs gh, signed in or with GH_TOKEN (contents write),
 # and jq.
 #
 #   scripts/release:publish <tag>
 #
 # Publishing moves latest only for the newest final release: a final vX.Y.Z higher than every published final release
-# becomes the latest release; a release candidate, or a fix to an older version, leaves the latest release where it is.
+# becomes the latest release. Betas, release candidates and fixes to older versions leave the latest release where it is.
 # The newest is decided from the versions of the published final releases, not from the release GitHub marks latest,
 # which GitHub would otherwise move to any release published without --latest=false. The release must be the one draft
-# with the tag, marked a pre-release exactly when it is a release candidate.
+# with the tag, marked a pre-release exactly when it is a beta or release candidate.
 #
 # Every read is strict (scripts/lib/github-api.sh). The release workflow publishes in one release-wide concurrency
 # group, release-promotion, so no other release is promoted meanwhile; even so, the releases are read again immediately
@@ -100,7 +100,7 @@ if [[ "$move" == true ]]; then
     printf 'Published %s; it is the newest final release (the newest before was %s), so it is the latest release.\n' \
         "$tag" "${newest:-none}" >&2
 elif [[ "$prerelease" == true ]]; then
-    printf 'Published %s as a release candidate; the latest release is still %s.\n' "$tag" "$after" >&2
+    printf 'Published %s as a pre-release. The latest release is still %s.\n' "$tag" "$after" >&2
 else
     printf 'Published %s; it is not the newest final release (%s is), so the latest release is still %s.\n' \
         "$tag" "$newest" "$after" >&2

@@ -199,6 +199,54 @@ public sealed class SiloArchiveTests
     }
 
     [TestMethod]
+    public async Task ManifestAndRequiredExpiryStillExposeDirectOptionalCopyOnAReplacement()
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var fixture = await SiloArchiveFixture.StartAsync(silo.Binding.BindingId, token).ConfigureAwait(false);
+        await using var lease = fixture.ConfigureAwait(false);
+        var (_, _, dependency) = await PublishAndReplicateAsync(silo, fixture, SiloDrafts.Capture(silo.Payloads, 1), token).ConfigureAwait(false);
+        var parent = dependency.Members[0];
+        var draft = SiloDrafts.Capture(silo.Payloads, 2, rawRequired: false) with
+        {
+            Dependencies = [new(parent.ArtifactId, parent.ArtifactRevision, parent.Sha256, SiloDependencyKind.Compute, true)]
+        };
+        var (reference, source, publish) = await PublishAndReplicateAsync(silo, fixture, draft, token).ConfigureAwait(false);
+        var required = publish.Members.Single(static member => member.Required);
+        var removed = new[]
+        {
+            (new SiloObjectIdentity(SiloIdentityKind.Manifest, publish.GroupId, publish.RevisionId, publish.Manifest.Sha256,
+                publish.Manifest.Length), publish.Manifest.Locator),
+            (new SiloObjectIdentity(SiloIdentityKind.Member, required.ArtifactId, required.ArtifactRevision,
+                required.Sha256, required.Length), required.Locator)
+        };
+        var now = silo.Clock.GetUtcNow();
+        var records = new List<SiloJournalRecord>();
+        foreach (var (identity, locator) in removed)
+        {
+            var id = Guid.NewGuid().ToString("N");
+            fixture.Delete(locator);
+            silo.Local.Delete(locator);
+            records.Add(new SiloExpiryIntentRecord(id, SiloExpiryScope.Role, identity, "test-policy", [new(locator, "local")],
+                "age", LastCopy: true));
+            records.Add(new SiloExpiryDispositionRecord(id, locator, SiloExpiryOutcome.Deleted, now, "no-such-version"));
+            records.Add(new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
+                now, "no-such-version", IntentId: id));
+        }
+        var through = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
+        var verification = new SiloArchiveVerification(archive, silo.Clock);
+        var partial = await verification.VerifyPublicationAsync(reference, source, silo.Index, through.Position.Sequence, token).ConfigureAwait(false);
+        Assert.AreEqual("policy-expired", ((SiloArchiveReceiptRecord)partial.Records[0]).ManifestState);
+        var receipt = await silo.AppendAsync([.. partial.Records]).ConfigureAwait(false);
+        fixture.Replicate(silo.Local, receipt);
+        var replacement = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
+        Assert.AreEqual(publish.Members.Single(static member => !member.Required).ArtifactId, replacement.Copies.Single().Identity.Id);
+        Assert.AreEqual("policy-expired", replacement.Unverified.Single().Value);
+        Assert.IsFalse(replacement.Copies.Any(copy => copy.Identity.Id == parent.ArtifactId));
+    }
+
+    [TestMethod]
     public async Task UnreachableComputeInputIsRecordedSeparatelyFromVerifiedReopen()
     {
         var token = TestContext.CancellationToken;

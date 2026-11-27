@@ -39,9 +39,11 @@ internal sealed class SiloInstalledSettings
             SecretKey.Length is < 16 or > 128 || !SecretKey.All(static c => char.IsAsciiLetterOrDigit(c) || c is '+' or '/' or '='))
             throw new InvalidOperationException("The installed Silo writer credential is invalid.");
 
+        DataRoot = section["DataRoot"] is { Length: > 0 } path ? Path.GetFullPath(path) : null;
         MaximumStagedBytes = section.GetValue("MaximumStagedBytes", 2L * 1024 * 1024 * 1024);
         MaximumStagedFiles = section.GetValue("MaximumStagedFiles", 4096);
-        if (MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
+        ReclaimCaptureHourBytes = section.GetValue("ReclaimCaptureHourBytes", MaximumStagedBytes / 2);
+        if (ReclaimCaptureHourBytes <= 0 || MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
             throw new InvalidOperationException("The installed Silo spool requires a positive byte limit and room for an admission pair.");
 
         DisplayRetentionDays = ReadRetentionDays(section["Retention:DisplayDays"]);
@@ -55,6 +57,10 @@ internal sealed class SiloInstalledSettings
     public string AccessKey { get; }
 
     public string SecretKey { get; }
+
+    public string? DataRoot { get; }
+
+    public long ReclaimCaptureHourBytes { get; }
 
     public long MaximumStagedBytes { get; }
 

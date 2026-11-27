@@ -18,7 +18,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
 
     internal void RegisterRetentionHold(string? relativeManifestPath)
     {
-        if (silo is null && !string.IsNullOrWhiteSpace(relativeManifestPath))
+        if (!string.IsNullOrWhiteSpace(relativeManifestPath))
         {
             _ = ResolveSafePath(relativeManifestPath);
             _configuredManifests.TryAdd(relativeManifestPath, 0);
@@ -29,7 +29,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (silo is not null || !PathsEqual(_storageRoot, storageRoot))
+        if (!PathsEqual(_storageRoot, storageRoot))
         {
             return [];
         }
@@ -38,6 +38,14 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         {
             cancellationToken.ThrowIfCancellationRequested();
             var manifestPath = ResolveSafePath(relativeManifestPath);
+            if (silo is not null)
+            {
+                if (calibration is not null &&
+                    await calibration.FindArtifactByManifestPathUnderLifecycleLockAsync(relativeManifestPath, cancellationToken)
+                        .ConfigureAwait(false) is { } id)
+                    holds.Add(new(id, relativeManifestPath, relativeManifestPath));
+                continue;
+            }
             byte[] manifestBytes;
             try
             {

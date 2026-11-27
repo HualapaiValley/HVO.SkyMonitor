@@ -6,6 +6,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -420,6 +422,27 @@ public sealed partial class ProcessingGraphOperationsTests
             // Today every bundle holds its own artifacts. Clear that, so only a family or a frozen plan can hold the masters.
             await ClearBundleRetentionHoldsAsync(root).ConfigureAwait(false);
 
+            using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+            var probe = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+            var masterId = masters[0].ToString("D");
+            probe = probe with { Members = [probe.Members[0] with { ArtifactId = masterId, Role = "calibration-frame" }, probe.Members[1]] };
+            await silo.PublishAsync(probe).ConfigureAwait(false);
+            var retention = SiloRetentionTests.OpenForFixture(silo);
+            await retention.SetPolicyAsync(new(false, [new("calibration-frame", TimeSpan.Zero, false, true)]), CancellationToken.None)
+                .ConfigureAwait(false);
+            var target = silo.MemberLocator(probe.GroupId, masterId);
+            silo.Clock.Advance(TimeSpan.FromDays(2));
+
+            async Task<string> SiloDecisionAsync()
+            {
+                var ids = await provider.GetRequiredService<CaptureProcessingPersistence>()
+                    .GetNormalizationPlanMasterArtifactIdsAsync(root, CancellationToken.None).ConfigureAwait(false);
+                var candidates = await retention.DryRunAsync(silo.Clock.GetUtcNow(), false,
+                    ids.Select(static id => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))).ToArray(),
+                    CancellationToken.None).ConfigureAwait(false);
+                return candidates.Single(candidate => candidate.Locator == target).Decision;
+            }
+
             async Task<Guid[]> HeldMastersAsync()
             {
                 var held = (await holds.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false))
@@ -458,6 +481,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 new CalibrationFamilyDeactivationRequest("plan-deactivate", family.AgentId, family.RigId, "operator", null),
                 CancellationToken.None).ConfigureAwait(false)).IsAccepted);
             CollectionAssert.AreEqual(masters, await HeldMastersAsync().ConfigureAwait(false), "a running plan holds them");
+            Assert.AreEqual("held-reference", await SiloDecisionAsync().ConfigureAwait(false));
 
             // The execution waits for a retry; its plan still holds them.
             _ = await fixture.Store.CompleteReplayAsync(
@@ -470,6 +494,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.IsEmpty(await fixture.Store.ReadNormalizationPlanMasterArtifactIdsAsync(CancellationToken.None)
                 .ConfigureAwait(false));
             Assert.IsEmpty(await HeldMastersAsync().ConfigureAwait(false));
+            Assert.AreEqual("expire-role", await SiloDecisionAsync().ConfigureAwait(false));
         }
         finally
         {

@@ -595,7 +595,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         }
     }
 
-    private Task? StoragePressureRelease => (_rawCaptureIngress as RawCaptureIngress)?.SiloPressureRelease;
+    private Task? StoragePressureRelease => (_rawCaptureIngress as RawCaptureIngress)?.SiloAdmissionPressureRelease;
 
     private bool CanEnter() => Volatile.Read(ref _gateState) == GateRunning &&
         _lifecycleControls?.AdmissionHeld != true && StoragePressureRelease is null;

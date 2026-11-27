@@ -26,6 +26,7 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapGet("/silo/archive", ReadArchiveStatus);
         group.MapGet("/silo/archive/publication", FindArchivePublicationAsync);
         group.MapPost("/silo/archive/read", ReadArchiveAsync);
+        group.MapSiloRetentionEndpoints(IsAuthorized);
         return endpoints;
     }
 

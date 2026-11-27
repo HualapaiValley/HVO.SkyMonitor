@@ -755,6 +755,11 @@ Contract:
   were never allocated. A charge never predicts physical bytes; only the filesystem and trash observations above show
   actual reclamation.
 - If sweeps make no physical progress, further expiry stops and the pressure pause holds admission.
+- When CameraAgent can read the Silo data filesystem, set `CameraAgent:Silo:DataRoot` to its visible path. Retention
+  samples that filesystem and the Silo trash directory independently of the CameraAgent State filesystem. Exact
+  allocation that cannot be attributed to an individual Silo version carries a count and zero estimated bytes.
+  Set `CameraAgent:Silo:ReclaimCaptureHourBytes` from the installed capture cadence and allocation budget. Its
+  default is half the configured spool byte bound, based on the two-hour spool sizing target.
 - Restart is a valid reclamation trigger. It is never the routine mechanism.
 
 ### 7.5 Recovery

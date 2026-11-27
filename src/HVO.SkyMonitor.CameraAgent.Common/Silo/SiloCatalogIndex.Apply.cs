@@ -119,6 +119,7 @@ internal sealed partial class SiloCatalogIndex
             SiloPinRecord pin => await ApplyPinAsync(connection, transaction, pin, at, cancellationToken).ConfigureAwait(false),
             SiloPolicyRecord policy => await ApplyPolicyAsync(connection, transaction, policy, at, cancellationToken).ConfigureAwait(false),
             SiloExpiryIntentRecord intent => await ApplyIntentAsync(connection, transaction, intent, at, cancellationToken).ConfigureAwait(false),
+            SiloExpiryAttemptRecord => null,
             SiloExpiryDispositionRecord disposition => await ApplyDispositionAsync(connection, transaction, disposition, at, cancellationToken).ConfigureAwait(false),
             SiloAvailabilityRecord availability => await ApplyAvailabilityAsync(connection, transaction, availability, at, cancellationToken).ConfigureAwait(false),
             SiloAnchorRecord anchor => await ApplyAnchorAsync(connection, transaction, anchor, at, cancellationToken).ConfigureAwait(false),
@@ -735,12 +736,13 @@ internal sealed partial class SiloCatalogIndex
     /// </summary>
     private async ValueTask<string> RecomputeRoleAsync(
         SqliteConnection connection, SqliteTransaction? transaction, SiloRoleKey role, bool unknownInterval, CancellationToken cancellationToken,
-        SiloStoreSet? stores = null)
+        SiloStoreSet? stores = null, bool reportConfiguredStoresOnly = false)
     {
         var journaled = await ScalarStringAsync(connection, transaction,
             "SELECT journaled FROM roles WHERE kind = $kind AND id = $id AND revision = $revision;",
             cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision)).ConfigureAwait(false);
         var probes = new List<(SiloExactLocator Locator, string? Status, long? ProbedUnixMs)>();
+        var hasUnconfiguredActive = false;
         using (var command = CreateCommand(connection, transaction, """
             SELECT store_id, bucket, key, version_id, probe_status, probe_unix_ms FROM locators
             WHERE kind = $kind AND id = $id AND revision = $revision AND eligible = 1 AND copy_state = 'active'
@@ -754,13 +756,15 @@ internal sealed partial class SiloCatalogIndex
                 // An archive copy stays in custody history even when this reader has no route to it.
                 if (stores is null || stores.TryResolve(locator.StoreId, locator.Bucket, out _))
                     probes.Add((locator, NullableString(reader, 4), NullableLong(reader, 5)));
+                else
+                    hasUnconfiguredActive = true;
             }
         }
         // Settled authority first, then present physical evidence. A journaled or earlier `missing` observation is only
         // evidence of absence: it never outranks a source that could not be checked, an unprobed source, or an
         // authority-unknown interval in which a later copy may exist.
         var verified = probes.FirstOrDefault(static probe => probe.Status == "verified");
-        var disposition = journaled switch
+        var configuredDisposition = journaled switch
         {
             "policy-expired" => SiloDisposition.PolicyExpired,
             "conflict" => SiloDisposition.Conflict,
@@ -769,6 +773,9 @@ internal sealed partial class SiloCatalogIndex
             _ when probes.Any(static probe => probe.Status is null) => SiloDisposition.Unverified,
             _ => unknownInterval ? SiloDisposition.Unverified : SiloDisposition.Missing
         };
+        // Installed history verification reports its own physical routes while the catalog tracks all eligible copies.
+        var disposition = hasUnconfiguredActive && configuredDisposition is (SiloDisposition.Missing or SiloDisposition.Unverified)
+            ? SiloDisposition.TemporarilyUnavailable : configuredDisposition;
         var available = disposition == SiloDisposition.Available ? verified.Locator : null;
         await ExecuteAsync(connection, transaction, """
             UPDATE roles SET disposition = $disposition, available_store = $store, available_bucket = $bucket, available_key = $key,
@@ -777,6 +784,6 @@ internal sealed partial class SiloCatalogIndex
             """, cancellationToken, ("$disposition", disposition), ("$store", available?.StoreId), ("$bucket", available?.Bucket),
             ("$key", available?.Key), ("$version", available?.VersionId), ("$verified", available is null ? null : verified.ProbedUnixMs),
             ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision)).ConfigureAwait(false);
-        return disposition;
+        return reportConfiguredStoresOnly ? configuredDisposition : disposition;
     }
 }

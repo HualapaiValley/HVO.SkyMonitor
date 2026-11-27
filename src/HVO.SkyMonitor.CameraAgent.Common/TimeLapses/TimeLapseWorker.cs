@@ -48,9 +48,10 @@ internal sealed partial class TimeLapseWorker(IOptions<CameraAgentHostOptions> o
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
-            var reason = exception is TimeLapseEncodingException media ? media.ReasonCode
+            var reason = exception is TimeLapseInputUnavailableException input ? $"timelapse.input-unavailable:{input.ArtifactId:N}"
+                : exception is TimeLapseEncodingException media ? media.ReasonCode
                 : exception is OperationCanceledException ? "timelapse.timeout" : "timelapse.generation-failed";
-            var unavailable = reason.StartsWith("timelapse.encoder-", StringComparison.Ordinal);
+            var unavailable = exception is TimeLapseInputUnavailableException || reason.StartsWith("timelapse.encoder-", StringComparison.Ordinal);
             await store.CompleteAsync(job.JobId, unavailable ? CameraAgentTimeLapseState.Unavailable : CameraAgentTimeLapseState.Failed,
                 reason, null, token).ConfigureAwait(false);
             JobFailed(logger, job.JobId, reason, exception);
@@ -62,4 +63,12 @@ internal sealed partial class TimeLapseWorker(IOptions<CameraAgentHostOptions> o
 
     [LoggerMessage(11301, LogLevel.Warning, "Time-lapse job {JobId} failed with {ReasonCode}; acquisition continues.")]
     private static partial void JobFailed(ILogger logger, Guid jobId, string reasonCode, Exception exception);
+}
+
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "The job records the exact unavailable artifact from every instance.")]
+internal sealed class TimeLapseInputUnavailableException(Guid artifactId)
+    : IOException("A frozen time-lapse input is unavailable.")
+{
+    public Guid ArtifactId { get; } = artifactId;
 }
