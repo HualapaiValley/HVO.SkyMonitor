@@ -501,6 +501,17 @@ internal static class SiloJson
                 SiloText.RequireText(receipt.PublicationVersionId, nameof(receipt.PublicationVersionId), 1024);
                 SiloHash.Require(receipt.PublicationSha256, nameof(receipt.PublicationSha256));
                 RequireUtc(receipt.VerifiedUtc, nameof(receipt.VerifiedUtc));
+                if (receipt.UnverifiedMembers is { } unavailable)
+                {
+                    RequireElements(unavailable, nameof(receipt.UnverifiedMembers));
+                    foreach (var member in unavailable)
+                    {
+                        SiloText.RequireText(member.ArtifactId, nameof(member.ArtifactId), 256);
+                        SiloText.RequireText(member.ArtifactRevision, nameof(member.ArtifactRevision), 256);
+                        if (member.State is not ("blocked" or "failed" or "policy-expired"))
+                            throw new ArgumentException("The receipt has invalid member availability.");
+                    }
+                }
                 break;
             case SiloRemapRecord remap:
                 remap.Identity.Validate();

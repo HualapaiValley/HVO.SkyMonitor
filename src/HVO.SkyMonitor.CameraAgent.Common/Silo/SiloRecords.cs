@@ -262,7 +262,13 @@ internal sealed record SiloArchiveReceiptRecord(
     int PublicationIndex,
     string PublicationVersionId,
     string PublicationSha256,
-    DateTimeOffset VerifiedUtc) : SiloJournalRecord;
+    DateTimeOffset VerifiedUtc,
+    IReadOnlyList<SiloArchiveMemberAvailability>? UnverifiedMembers = null) : SiloJournalRecord;
+
+internal sealed record SiloArchiveMemberAvailability(string ArtifactId, string ArtifactRevision, string State)
+{
+    internal SiloRoleKey Role => new(SiloIdentityKind.Member, ArtifactId, ArtifactRevision);
+}
 
 internal sealed record SiloReserveSurvivorRecord(
     string ReservationId,

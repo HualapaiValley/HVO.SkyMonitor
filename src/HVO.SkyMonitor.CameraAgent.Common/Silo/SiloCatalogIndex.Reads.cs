@@ -286,6 +286,17 @@ internal sealed partial class SiloCatalogIndex
         return result;
     }
 
+    internal async ValueTask<byte[]?> ReadProjectedManifestAsync(SiloPublicationRef publication, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var json = await ScalarStringAsync(connection, null, """
+            SELECT manifest_json FROM publications WHERE generation = $generation AND sequence = $sequence
+                AND record_index = $index AND group_id = $group AND revision_id = $revision;
+            """, cancellationToken, ("$generation", publication.Position.Generation), ("$sequence", publication.Position.Sequence),
+            ("$index", publication.Index), ("$group", publication.GroupId), ("$revision", publication.RevisionId)).ConfigureAwait(false);
+        return json is null ? null : System.Text.Encoding.UTF8.GetBytes(json);
+    }
+
     public async ValueTask<SiloRoleStatus?> ReadRoleAsync(SiloRoleKey role, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);

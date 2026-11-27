@@ -256,11 +256,13 @@ CameraAgent publishes and opens local captures independently of the archive. The
 publication journal entry, manifest, payloads and dependencies by exact version, computes lengths and SHA-256
 from returned bytes, then appends copy receipts to the instance journal. Stock Silo preserves the source
 version ID on this qualified pairing. A current object, ETag, replication status, or replica arriving ahead of
-one of its required reopen dependencies cannot prove a copy. The verifier records compute and optional
-dependencies when their copies verify. Their expiry leaves the publication reachable. The verifier confirms
-the receipt segment and rechecks the required closure at the archive before reporting the publication reachable. Local SQLite projects the durable journal and
-keeps the retry and receipt index. The archive prefix check includes journal segments and any referenced
-checkpoints.
+one of its required reopen dependencies cannot prove a copy. A receipt requires the manifest, required
+members and required reopen dependencies. Optional members and compute inputs have their own availability.
+When a late copy verifies, the publication lookup adopts a new receipt after its journal version joins the
+verified prefix. Previously issued receipt identities remain valid for the evidence they record. The verifier
+confirms the receipt segment and rechecks the required closure at the archive before reporting the publication
+reachable. Local SQLite keeps the retry and receipt index. The archive prefix check includes journal segments
+and any referenced checkpoints.
 
 ### Inspect, disable and restore
 
@@ -277,10 +279,11 @@ Use the instance lifecycle token in `X-HVO-Installation-Token` for these routes 
 `reachable` means the archive answered and the discovered backlog verified. `blocked` covers failed
 authentication, outages, and copies that remain pending through bounded retries, including a capped target.
 `failed` means the evidence or configuration was refused. Backlog bytes include known referenced logical bytes
-and can count shared data more than once. The cutoff records the verified archive prefix and advances across a completed policy expiry.
-It waits at any unsettled gap. Each receipt reports its verification time. An archive publication with a completed expiry shows
-`policy-expired` and keeps its historical receipt. Retain exact receipt identities and digests with recovery
-records for selected restores.
+and can count shared data more than once. The cutoff advances across expiry only after the manifest and
+each required member and reopen dependency have either verified or been authoritatively settled. It waits
+at any unsettled gap. A settled publication with an expiry shows `policy-expired` and keeps any historical
+receipt. Each receipt reports its verification time. Retain exact receipt identities and digests with
+recovery records for selected restores.
 
 The worker uses at most four publication attempts per pass, a 45-second deadline per attempt, and exponential
 retry from two seconds to about four minutes per publication. A verified publication becomes due for a repeat

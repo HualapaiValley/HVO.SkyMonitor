@@ -35,19 +35,27 @@ public sealed class SiloArchiveTests
     [DataRow("expired")]
     [DataRow("wrong-host")]
     [DataRow("no-eku")]
-    public async Task StoreClassifiesTlsFailuresInVerificationAndRetention(string profile)
+    public async Task StoreClassifiesTlsFailuresInProfileExactProbeJournalAndRetention(string profile)
     {
         var token = TestContext.CancellationToken;
         var fixture = await SiloArchiveFixture.StartAsync(new string('a', 64), token, profile).ConfigureAwait(false);
         await using var lease = fixture.ConfigureAwait(false);
         using var store = SiloArchiveStore.Create(fixture.Settings, TimeProvider.System);
+        var locator = new SiloExactLocator(store.Marker.StoreId, store.Marker.Bucket, "p/payload", "version-1");
+        var identity = new SiloObjectIdentity(SiloIdentityKind.Member, "artifact", "1", new string('b', 64), 1);
+        var commit = new SiloCommittedSegment(new(1, 1), new string('c', 64), "journal-version");
         var verify = await Assert.ThrowsExactlyAsync<SiloArchiveException>(() => store.VerifyAsync(token).AsTask()).ConfigureAwait(false);
         var retain = await Assert.ThrowsExactlyAsync<SiloArchiveException>(() =>
-            store.ReadRetentionAsync(new(store.Marker.StoreId, store.Marker.Bucket, "p/payload", "version-1"), token).AsTask()).ConfigureAwait(false);
-        foreach (var failure in new[] { verify, retain })
+            store.ReadRetentionAsync(locator, token).AsTask()).ConfigureAwait(false);
+        var probe = await Assert.ThrowsExactlyAsync<SiloArchiveException>(() =>
+            store.ProbeAsync(identity, locator, captureBytes: false, token).AsTask()).ConfigureAwait(false);
+        var journal = await Assert.ThrowsExactlyAsync<SiloArchiveException>(() => store.ReadSegmentAsync(commit, token).AsTask()).ConfigureAwait(false);
+        foreach (var failure in new[] { verify, retain, probe, journal })
         {
             Assert.AreEqual("failed", failure.State);
             Assert.AreEqual("archive-tls-failed", failure.Reason);
+            Assert.AreEqual(failure.Reason, failure.Message);
+            Assert.IsNull(failure.InnerException);
         }
     }
 
@@ -151,7 +159,7 @@ public sealed class SiloArchiveTests
         var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
         fixture.Replicate(silo.Local, receipt);
         var copies = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
-        Assert.HasCount(published.Members.Count + 1, copies);
+        Assert.HasCount(published.Members.Count + 1, copies.Copies);
 
         var locator = corrupt switch
         {
@@ -166,6 +174,61 @@ public sealed class SiloArchiveTests
             verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).AsTask()).ConfigureAwait(false);
         Assert.AreEqual("failed", invalid.State);
         Assert.AreEqual(reason, invalid.Reason);
+    }
+
+    [TestMethod]
+    public async Task MissingOptionalPublicationMemberDoesNotPreventAValidReceipt()
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var fixture = await SiloArchiveFixture.StartAsync(silo.Binding.BindingId, token).ConfigureAwait(false);
+        await using var lease = fixture.ConfigureAwait(false);
+        var (reference, source, publish) = await PublishAndReplicateAsync(silo, fixture, SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false),
+            token, requiredOnly: true).ConfigureAwait(false);
+        using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
+        var verification = new SiloArchiveVerification(archive, silo.Clock);
+
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
+        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        fixture.Replicate(silo.Local, receipt);
+        var evidence = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
+
+        Assert.HasCount(2, evidence.Copies);
+        Assert.IsTrue(evidence.Copies.Any(copy => copy.Identity.Id == publish.Members.Single(member => member.Required).ArtifactId));
+        Assert.IsFalse(evidence.Copies.Any(copy => copy.Identity.Id == publish.Members.Single(member => !member.Required).ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task UnreachableComputeInputIsRecordedSeparatelyFromVerifiedReopen()
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var fixture = await SiloArchiveFixture.StartAsync(silo.Binding.BindingId, token).ConfigureAwait(false);
+        await using var lease = fixture.ConfigureAwait(false);
+        var (_, _, input) = await PublishAndReplicateAsync(silo, fixture, SiloDrafts.Capture(silo.Payloads, 1), token).ConfigureAwait(false);
+        var member = input.Members[0];
+        var draft = SiloDrafts.Capture(silo.Payloads, 2) with
+        {
+            Dependencies = [new(member.ArtifactId, member.ArtifactRevision, member.Sha256, SiloDependencyKind.Compute, Required: true)]
+        };
+        var (reference, source, _) = await PublishAndReplicateAsync(silo, fixture, draft, token).ConfigureAwait(false);
+        using var archive = SiloArchiveStore.Create(fixture.Settings, silo.Clock);
+        var verification = new SiloArchiveVerification(archive, silo.Clock);
+        var initial = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
+        var firstReceipt = await silo.AppendAsync([.. initial]).ConfigureAwait(false);
+        fixture.Replicate(silo.Local, firstReceipt);
+        fixture.UnavailableKey = member.Locator.Key;
+
+        var previous = await verification.ReadReceiptAsync(firstReceipt, reference, verifyCopies: true, token).ConfigureAwait(false);
+        var role = new SiloRoleKey(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision);
+        Assert.IsTrue(previous.Copies.Any(copy => copy.Identity.Role == role));
+        var records = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
+        var receipt = await silo.AppendAsync([.. records]).ConfigureAwait(false);
+        fixture.Replicate(silo.Local, receipt);
+        var evidence = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
+
+        Assert.HasCount(draft.Members.Count + 1, evidence.Copies);
+        Assert.AreEqual("blocked", evidence.Unverified[role]);
     }
 
     [TestMethod]
@@ -204,18 +267,18 @@ public sealed class SiloArchiveTests
         else
         {
             var historic = await verification.ReadReceiptAsync(receipt, reference, verifyCopies: true, token).ConfigureAwait(false);
-            Assert.IsTrue(historic.Any(copy => copy.Identity.Id == dependency.ArtifactId));
+            Assert.IsTrue(historic.Copies.Any(copy => copy.Identity.Id == dependency.ArtifactId));
             var current = await verification.VerifyPublicationAsync(reference, source, silo.Index, token).ConfigureAwait(false);
             Assert.IsFalse(current.OfType<SiloCopyRecord>().Any(copy => copy.Identity.Id == dependency.ArtifactId));
             var laterReceipt = await silo.AppendAsync([.. current]).ConfigureAwait(false);
             fixture.Replicate(silo.Local, laterReceipt);
-            Assert.HasCount(draft.Members.Count + 1, await verification.ReadReceiptAsync(laterReceipt, reference, verifyCopies: true, token)
-                .ConfigureAwait(false));
+            Assert.HasCount(draft.Members.Count + 1, (await verification.ReadReceiptAsync(laterReceipt, reference, verifyCopies: true, token)
+                .ConfigureAwait(false)).Copies);
         }
     }
 
     internal static async Task<(SiloPublicationRef Reference, SiloCommittedSegment Commit, SiloPublishRecord Record)>
-        PublishAndReplicateAsync(SiloHarness silo, SiloArchiveFixture fixture, SiloGroupDraft draft, CancellationToken token)
+        PublishAndReplicateAsync(SiloHarness silo, SiloArchiveFixture fixture, SiloGroupDraft draft, CancellationToken token, bool requiredOnly = false)
     {
         var published = await silo.PublishAsync(draft).ConfigureAwait(false);
         Assert.AreEqual(SiloStagedState.Visible, published.State);
@@ -225,7 +288,7 @@ public sealed class SiloArchiveTests
         var publish = silo.PublishRecord(draft.GroupId, draft.RevisionId);
         fixture.Replicate(silo.Local, commit);
         fixture.Replicate(silo.Local, publish.Manifest.Locator);
-        foreach (var member in publish.Members)
+        foreach (var member in publish.Members.Where(member => member.Required || !requiredOnly))
             fixture.Replicate(silo.Local, member.Locator);
         return (new(publish.GroupId, publish.RevisionId, position, 0), commit, publish);
     }

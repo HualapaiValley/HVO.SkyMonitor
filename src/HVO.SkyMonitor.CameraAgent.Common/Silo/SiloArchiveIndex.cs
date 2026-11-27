@@ -4,7 +4,7 @@ using static HVO.SkyMonitor.CameraAgent.Common.Silo.SiloSqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
-internal sealed record SiloArchiveWork(SiloPublicationRef Publication, int Attempts);
+internal sealed record SiloArchiveWork(SiloPublicationRef Publication, int Attempts, SiloCommittedSegment? Receipt);
 internal sealed record SiloArchiveBacklog(long Count, long Bytes, DateTimeOffset? Oldest,
     CameraAgentSiloArchiveReceipt? Cutoff, CameraAgentSiloArchiveReceipt? Latest, long Blocked, long Failed);
 
@@ -56,6 +56,11 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
             await InspectAsync(path, Format, metadata, Path.GetDirectoryName(path)!, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
         await EnsureSchemaAsync(connection, Format, metadata, cancellationToken).ConfigureAwait(false);
+        // Earlier workers marked the whole publication expired after the first expired copy.
+        await ExecuteAsync(connection, null, """
+            UPDATE archive_work SET state = 'pending', reason = NULL, next_ticks = 0, attempts = 0
+            WHERE state = 'policy-expired' AND reason = 'archive-copy-policy-expired';
+            """, cancellationToken).ConfigureAwait(false);
     }
 
     internal bool Matches(SiloArchiveMarker archive) => marker == archive;
@@ -104,15 +109,21 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
     {
         using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
         using var command = CreateCommand(connection, null, """
-            SELECT group_id, revision_id, generation, sequence, record_index, attempts FROM archive_work
+            SELECT group_id, revision_id, generation, sequence, record_index, attempts,
+                receipt_generation, receipt_sequence, receipt_sha256, receipt_version FROM archive_work
             WHERE state <> 'policy-expired' AND next_ticks <= $now
             ORDER BY next_ticks, generation, sequence, record_index LIMIT $limit;
             """, ("$now", Ticks(now)), ("$limit", limit));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<SiloArchiveWork>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var receipt = NullableLong(reader, 6) is { } generation
+                ? new SiloCommittedSegment(new(generation, reader.GetInt64(7)), reader.GetString(8), reader.GetString(9))
+                : null;
             result.Add(new(new(reader.GetString(0), reader.GetString(1), new(reader.GetInt64(2), reader.GetInt64(3)), reader.GetInt32(4)),
-                reader.GetInt32(5)));
+                reader.GetInt32(5), receipt));
+        }
         return result;
     }
 

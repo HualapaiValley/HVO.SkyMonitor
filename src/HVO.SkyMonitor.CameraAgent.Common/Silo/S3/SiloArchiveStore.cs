@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Security;
-using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -84,14 +83,7 @@ internal sealed partial class SiloArchiveStore(IAmazonS3 client, SiloArchiveMark
     [GeneratedRegex(@"\A[\x21-\x7e]{8,128}\z", RegexOptions.CultureInvariant)]
     private static partial Regex SecretPattern();
 
-    private static bool IsTlsFailure(Exception? exception)
-    {
-        for (; exception is not null; exception = exception.InnerException)
-        {
-            if (exception is AuthenticationException) return true;
-        }
-        return false;
-    }
+    internal static SiloArchiveException TlsFailure() => new("failed", "archive-tls-failed");
 
     internal async ValueTask VerifyAsync(CancellationToken cancellationToken)
     {
@@ -121,10 +113,10 @@ internal sealed partial class SiloArchiveStore(IAmazonS3 client, SiloArchiveMark
         {
             throw new SiloArchiveException("blocked", "archive-bucket-or-lock-missing");
         }
-        catch (Exception exception) when (IsTlsFailure(exception))
+        catch (Exception exception) when (SiloS3ObjectStore.IsTlsFailure(exception))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new SiloArchiveException("failed", "archive-tls-failed");
+            throw TlsFailure();
         }
         catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
             IOException or OperationCanceledException)
@@ -211,10 +203,10 @@ internal sealed partial class SiloArchiveStore(IAmazonS3 client, SiloArchiveMark
         {
             throw new SiloArchiveException("pending", "archive-retention-version-pending");
         }
-        catch (Exception exception) when (IsTlsFailure(exception))
+        catch (Exception exception) when (SiloS3ObjectStore.IsTlsFailure(exception))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new SiloArchiveException("failed", "archive-tls-failed");
+            throw TlsFailure();
         }
         catch (Exception exception) when (exception is AmazonServiceException or AmazonClientException or HttpRequestException or
             IOException or OperationCanceledException)
