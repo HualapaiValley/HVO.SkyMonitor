@@ -383,45 +383,72 @@ public sealed class ReleaseAcquirerTests
     {
         Assert.IsTrue(
             TryParseLinuxProcessStat(
-                "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n",
+                BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL),
                 out var sleeping));
         Assert.AreEqual(new LinuxProcessStat(12345, 'S', 987654321UL), sleeping);
 
         Assert.IsTrue(
             TryParseLinuxProcessStat(
-                "23456 (sleep) Z 1 23456 23456 0 -1 4194308 89 0 0 0 0 0 0 0 20 0 1 0 42000 0 0\n",
+                BuildSyntheticLinuxProcessStat(23456, "sleep", 'Z', 42000UL),
                 out var zombie));
         Assert.AreEqual(new LinuxProcessStat(23456, 'Z', 42000UL), zombie);
 
         Assert.IsTrue(
             TryParseLinuxProcessStat(
-                "34567 (my (weird) proc)) ) Z 1 34567 34567 0 -1 4194308 89 0 0 0 0 0 0 0 20 0 1 0 18446744073709551615 0 0\n",
+                BuildSyntheticLinuxProcessStat(34567, "my (weird) proc)) ", 'Z', ulong.MaxValue),
                 out var complexComm));
         Assert.AreEqual(new LinuxProcessStat(34567, 'Z', ulong.MaxValue), complexComm);
 
-        Assert.IsTrue(
-            TryParseLinuxProcessStat(
-                "45678 (line1\nline2) R 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 20 0 1 0 555 0 0\n",
-                out var multilineComm));
-        Assert.AreEqual(new LinuxProcessStat(45678, 'R', 555UL), multilineComm);
+        // Minimum Linux 2.6.24+ stat format (44 total fields = 42 fields after "(comm) "), with negative signed fields.
+        const string linux26Stat = "45678 (worker 1) I 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 -100 -20 1 0 555 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n";
+        Assert.IsTrue(TryParseLinuxProcessStat(linux26Stat, out var minimalLinux26));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'I', 555UL), minimalLinux26);
+
+        var validFullStat = BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL);
+        var validWithoutNewline = validFullStat[..^1];
+        const string truncatedInsideStartTime = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432";
+        const string truncatedAfterStartTimeWithNewline = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n";
+        const string only43Fields = "45678 (worker) R 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 20 0 1 0 555 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0\n";
+        var nonNumericPpid = validFullStat.Replace(") S 1 ", ") S badppid ", StringComparison.Ordinal);
+        var negativePpid = validFullStat.Replace(") S 1 ", ") S -1 ", StringComparison.Ordinal);
+        var trailingGarbage = $"{validWithoutNewline} garbage\n";
+        var trailingSpace = $"{validWithoutNewline} \n";
+        var invalidStateLetter = validFullStat.Replace(") S ", ") Q ", StringComparison.Ordinal);
+        var crlfStat = $"{validWithoutNewline}\r\n";
+        var embeddedNewlineInComm = BuildSyntheticLinuxProcessStat(45678, "line1\nline2", 'R', 555UL);
+        var twoConcatenatedLines = $"{validFullStat}{validFullStat}";
 
         Assert.IsFalse(TryParseLinuxProcessStat(null, out _));
         Assert.IsFalse(TryParseLinuxProcessStat(string.Empty, out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 sleep S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("(sleep) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 )sleep( S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep)S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("0 (swapper) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 1 0 0", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) ZZ 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) 9 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19", out _));
-        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 not-ticks", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validWithoutNewline, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(truncatedInsideStartTime, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(truncatedAfterStartTimeWithNewline, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(only43Fields, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nonNumericPpid, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(negativePpid, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(trailingGarbage, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(trailingSpace, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(invalidStateLetter, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(crlfStat, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(embeddedNewlineInComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(twoConcatenatedLines, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($" {validFullStat}", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("(sleep)", "sleep", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("12345 (sleep)", "(sleep)", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("(sleep)", ")sleep(", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ")S ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(BuildSyntheticLinuxProcessStat(0, "swapper", 'S', 0UL), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3\n", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ") ZZ ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ") 9 ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("987654321", "not-ticks", StringComparison.Ordinal), out _));
     }
 
     [TestMethod]
     public void TryParseFixtureProcessIdentity_ParsesAtomicIdentityAndRejectsTruncatedOrMismatchedContent()
     {
-        const string validStat = "12345 (hang (fixture) sh) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n";
+        var validStat = BuildSyntheticLinuxProcessStat(12345, "hang (fixture) sh", 'S', 987654321UL);
+        var initStat = BuildSyntheticLinuxProcessStat(1, "init", 'S', 1UL);
 
         Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{validStat}", out var identity));
         Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), identity);
@@ -434,9 +461,10 @@ public sealed class ReleaseAcquirerTests
         Assert.IsFalse(TryParseFixtureProcessIdentity("   \n", out _));
         Assert.IsFalse(TryParseFixtureProcessIdentity("12345", out _));
         Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n", out _));
-        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n12345 (sleep) S 1 2 3", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"12345\n{validStat[..^1]}", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n12345 (sleep) S 1 2 3\n", out _));
         Assert.IsFalse(TryParseFixtureProcessIdentity($"not-a-pid\n{validStat}", out _));
-        Assert.IsFalse(TryParseFixtureProcessIdentity("1\n1 (init) S 0 1 1 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 1 4096 128\n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"1\n{initStat}", out _));
         Assert.IsFalse(TryParseFixtureProcessIdentity($"99999\n{validStat}", out _));
     }
 
@@ -461,7 +489,7 @@ public sealed class ReleaseAcquirerTests
             var tempFile = pidFile + ".tmp";
             await File.WriteAllTextAsync(
                 tempFile,
-                "12345\n12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n");
+                $"12345\n{BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL)}");
             File.Move(tempFile, pidFile, overwrite: true);
 
             Assert.AreEqual(
@@ -481,7 +509,8 @@ public sealed class ReleaseAcquirerTests
     public void ReadLinuxProcessStat_ClassifiesPresentNotFoundAndUnreadableOrMalformed()
     {
         const int fixturePid = 12345;
-        const string validStat = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n";
+        var validStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654321UL);
+        var validComplexCommStat = BuildSyntheticLinuxProcessStat(fixturePid, "my (complex) sleep", 'S', 987654321UL);
 
         var present = ReadLinuxProcessStat(fixturePid, path =>
         {
@@ -491,6 +520,11 @@ public sealed class ReleaseAcquirerTests
         Assert.AreEqual(
             new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', 987654321UL)),
             present);
+
+        var presentComplexComm = ReadLinuxProcessStat(fixturePid, _ => validComplexCommStat);
+        Assert.AreEqual(
+            new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', 987654321UL)),
+            presentComplexComm);
 
         var fileNotFound = ReadLinuxProcessStat(fixturePid, static _ => throw new FileNotFoundException("gone"));
         Assert.AreSame(LinuxProcessStatReadResult.NotFound.Instance, fileNotFound);
@@ -513,9 +547,33 @@ public sealed class ReleaseAcquirerTests
         StringAssert.Contains(malformedResult.Diagnostic, "malformed", StringComparison.Ordinal);
         StringAssert.Contains(malformedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
 
+        var truncatedInsideStartTime = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432");
+        var truncatedInsideResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(truncatedInsideStartTime);
+        StringAssert.Contains(truncatedInsideResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var truncatedAfterStartTime = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n");
+        var truncatedAfterResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(truncatedAfterStartTime);
+        StringAssert.Contains(truncatedAfterResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var nonNumericPpid = ReadLinuxProcessStat(
+            fixturePid,
+            _ => validStat.Replace(") S 1 ", ") S badppid ", StringComparison.Ordinal));
+        var nonNumericPpidResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(nonNumericPpid);
+        StringAssert.Contains(nonNumericPpidResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var trailingGarbage = ReadLinuxProcessStat(
+            fixturePid,
+            _ => $"{validStat[..^1]} trailing-garbage\n");
+        var trailingGarbageResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(trailingGarbage);
+        StringAssert.Contains(trailingGarbageResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
         var mismatchedPid = ReadLinuxProcessStat(
             fixturePid,
-            static _ => "54321 (sleep) S 1 54321 54321 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 987654321 4096 128\n");
+            static _ => BuildSyntheticLinuxProcessStat(54321, "sleep", 'S', 987654321UL));
         var mismatchedPidResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(mismatchedPid);
         StringAssert.Contains(mismatchedPidResult.Diagnostic, "mismatched PID 54321", StringComparison.Ordinal);
         StringAssert.Contains(mismatchedPidResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
@@ -1374,6 +1432,77 @@ public sealed class ReleaseAcquirerTests
         Assert.IsFalse(Directory.Exists(root.FullName));
     }
 
+    [TestMethod]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, true)]
+    [DataRow(false, true, true)]
+    [DataRow(true, true, true)]
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(true, true, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatTruncatedInsideOrAfterStartTime_DoesNotTreatAsPidReuseAndFails(
+        bool allowZombieAsTerminated,
+        bool includeNewlineAfterStartTime,
+        bool failOnInitialRead)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-truncated-starttime-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var truncatedStatContent = includeNewlineAfterStartTime
+            ? "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n"
+            : "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432";
+        var parsedTruncated = ReadLinuxProcessStat(fixturePid, _ => truncatedStatContent);
+        _ = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(parsedTruncated);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (!failOnInitialRead && statReadCount <= 2)
+                {
+                    return ReadLinuxProcessStat(
+                        pid,
+                        static _ => BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(pid, _ => truncatedStatContent);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "malformed", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnInitialRead ? ExpectedUnreadableInitialStatSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
     private static LinuxProcessStatReadResult ReadSimulatedFaultyStat(int pid, string statFault)
         => statFault switch
         {
@@ -1675,11 +1804,23 @@ public sealed class ReleaseAcquirerTests
         internal static extern int CloseFileDescriptor(int fd);
     }
 
-    private static Task WriteFixturePidFileAsync(string pidFile, int pid, ulong startTimeTicks)
+    private static string BuildSyntheticLinuxProcessStat(
+        int pid,
+        string comm = "sleep",
+        char state = 'S',
+        ulong startTimeTicks = 987654321UL)
     {
         var pidText = pid.ToString(CultureInfo.InvariantCulture);
         var ticksText = startTimeTicks.ToString(CultureInfo.InvariantCulture);
-        var statLine = $"{pidText} (sleep) S 1 {pidText} {pidText} 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 {ticksText} 4096 128\n";
+        // 52-field Linux /proc/{pid}/stat format (Linux 3.5+), including negative tpgid (-1)
+        // and 64-bit unsigned rsslim (RLIM_INFINITY = 18446744073709551615).
+        return $"{pidText} ({comm}) {state} 1 {pidText} {pidText} 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 {ticksText} 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
+    }
+
+    private static Task WriteFixturePidFileAsync(string pidFile, int pid, ulong startTimeTicks)
+    {
+        var pidText = pid.ToString(CultureInfo.InvariantCulture);
+        var statLine = BuildSyntheticLinuxProcessStat(pid, "sleep", 'S', startTimeTicks);
         return File.WriteAllTextAsync(pidFile, $"{pidText}\n{statLine}");
     }
 
@@ -1752,49 +1893,110 @@ public sealed class ReleaseAcquirerTests
     private static bool TryParseLinuxProcessStat(string? statContent, out LinuxProcessStat stat)
     {
         stat = default;
-        if (string.IsNullOrWhiteSpace(statContent))
+        if (string.IsNullOrEmpty(statContent) || statContent[^1] != '\n')
         {
             return false;
         }
 
-        var openParen = statContent.IndexOf('(', StringComparison.Ordinal);
-        var closeParen = statContent.LastIndexOf(')');
-        if (openParen <= 0 || closeParen <= openParen || closeParen + 1 >= statContent.Length || statContent[closeParen + 1] != ' ')
+        var line = statContent.AsSpan(0, statContent.Length - 1);
+        if (line.ContainsAny('\n', '\r'))
         {
             return false;
         }
 
-        var pidSpan = statContent.AsSpan(0, openParen).Trim();
+        var openParen = line.IndexOf('(');
+        var closeParen = line.LastIndexOf(')');
+        if (openParen < 2
+            || line[openParen - 1] != ' '
+            || closeParen <= openParen
+            || closeParen + 2 >= line.Length
+            || line[closeParen + 1] != ' ')
+        {
+            return false;
+        }
+
+        var pidSpan = line[..(openParen - 1)];
         if (!int.TryParse(pidSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) || pid <= 0)
         {
             return false;
         }
 
-        var remainder = statContent[(closeParen + 1)..];
-        var fields = remainder.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        // After "(comm)", /proc/{pid}/stat starts at field 3 (state) at index 0;
-        // field 22 (starttime in clock ticks since boot) is at index 19.
+        var fields = statContent[(closeParen + 2)..^1].Split(' ', StringSplitOptions.None);
+        // After "(comm) ", /proc/{pid}/stat starts at field 3 (state) at index 0;
+        // field 22 (starttime in clock ticks since boot) is at index 19;
+        // Linux 2.6.24+ emits at least 44 total fields (42 after "(comm) "), and Linux 3.5+ emits 52 (50 after "(comm) ").
         const int StateFieldIndex = 0;
         const int StartTimeFieldIndex = 19;
-        if (fields.Length <= StartTimeFieldIndex || fields[StateFieldIndex].Length != 1)
+        const int MinimumFieldsAfterComm = 42;
+        if (fields.Length < MinimumFieldsAfterComm || fields[StateFieldIndex].Length != 1)
         {
             return false;
         }
 
         var state = fields[StateFieldIndex][0];
-        if (!char.IsAsciiLetter(state))
+        if (!IsValidLinuxProcessState(state))
         {
             return false;
         }
 
-        if (!ulong.TryParse(fields[StartTimeFieldIndex], NumberStyles.None, CultureInfo.InvariantCulture, out var startTimeTicks))
+        ulong startTimeTicks = 0;
+        for (var index = 1; index < fields.Length; index++)
         {
-            return false;
+            var field = fields[index];
+            var fieldNumber = index + 3;
+            if (index == StartTimeFieldIndex)
+            {
+                if (!ulong.TryParse(field, NumberStyles.None, CultureInfo.InvariantCulture, out startTimeTicks))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!IsValidLinuxStatNumericField(fieldNumber, field))
+            {
+                return false;
+            }
         }
 
         stat = new LinuxProcessStat(pid, state, startTimeTicks);
         return true;
     }
+
+    private static bool IsValidLinuxProcessState(char state)
+        => state is 'R' or 'S' or 'D' or 'Z' or 'T' or 't' or 'W' or 'X' or 'x' or 'K' or 'P' or 'I';
+
+    private static bool IsValidLinuxStatNumericField(int fieldNumber, ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        return fieldNumber switch
+        {
+            // Field 4 (ppid): non-negative PID (%d).
+            4 => int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out _),
+            // Signed fields in Linux fs/proc/array.c do_task_stat (%d / %ld).
+            5 or 6 or 7 or 8 or 16 or 17 or 18 or 19 or 20 or 21 or 24 or 38 or 39 or 44 or 52 =>
+                IsStrictSignedInteger(token),
+            // Unsigned fields in Linux fs/proc/array.c do_task_stat (%u / %lu / %llu).
+            9 or 10 or 11 or 12 or 13 or 14 or 15 or 22 or 23 or (>= 25 and <= 37) or (>= 40 and <= 43) or (>= 45 and <= 51) =>
+                IsStrictUnsignedInteger(token),
+            // Future kernel fields beyond field 52: accept strict signed or unsigned 64-bit integer tokens only.
+            _ => IsStrictUnsignedInteger(token) || IsStrictSignedInteger(token)
+        };
+    }
+
+    private static bool IsStrictSignedInteger(ReadOnlySpan<char> token)
+        => !token.IsEmpty
+            && token[0] != '+'
+            && long.TryParse(token, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+
+    private static bool IsStrictUnsignedInteger(ReadOnlySpan<char> token)
+        => !token.IsEmpty
+            && ulong.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out _);
 
     private static bool IsSameFixtureProcess(FixtureProcessIdentity expected, LinuxProcessStat actual)
         => actual.Pid == expected.Pid && actual.StartTimeTicks == expected.StartTimeTicks;
