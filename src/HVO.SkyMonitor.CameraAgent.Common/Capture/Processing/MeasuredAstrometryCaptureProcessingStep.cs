@@ -40,7 +40,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
             new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { AssociationRecipe },
-            new HashSet<string> { MeasuredStellarAssociationsV1.CurrentSchemaVersion })
+            new HashSet<string>(MeasuredStellarAssociationsV1.SupportedSchemaVersions, StringComparer.Ordinal))
     ];
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
@@ -78,7 +78,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
         var dependencies = context.GetDependencyProducts();
         var scene = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => ProjectedSceneV1.IsSupportedSchemaVersion(p.SchemaVersion)));
-        var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => p.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion));
+        var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(p.SchemaVersion)));
         await ValidateMeasuredInputAsync(context, raw, measured, scene, cancellationToken).ConfigureAwait(false);
         if (context.IsReplayExecution)
         {

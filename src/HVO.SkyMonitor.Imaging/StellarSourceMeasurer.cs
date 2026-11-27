@@ -1,3 +1,5 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -90,6 +92,11 @@ public sealed record StellarMeasurementExclusion(PixelPoint Peak, double PeakAbo
     /// <summary>Inclusive sample bounds of the segmented component. An extended or blended component, such as a transient
     /// streak crossing a star, can cover a location far from its peak; null only for exclusions created outside the measurer.</summary>
     public StellarFootprintBounds? Footprint { get; init; }
+
+    /// <summary>Bounded occupied-cell bitmap over <see cref="Footprint"/> for non-solid excluded components; null when
+    /// every sample in <see cref="Footprint"/> is occupied or for legacy/external exclusions without occupancy data.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StellarFootprintOccupancy? Occupancy { get; init; }
 }
 
 /// <summary>Inclusive integer sample bounds of a segmented component.</summary>
@@ -101,12 +108,731 @@ public readonly record struct StellarFootprintBounds(int MinX, int MinY, int Max
         point.Y >= MinY - marginPixels && point.Y <= MaxY + 1 + marginPixels;
 }
 
+/// <summary>
+/// Fine sub-cell occupancy bitmask refining only the occupied coarse cells of a <see cref="StellarFootprintOccupancy"/>
+/// in row-major coarse-cell order. Keeps sparse large-box exclusions (such as a long diagonal streak across a megapixel
+/// frame) at near-pixel precision within a bounded byte budget.
+/// </summary>
+public sealed record StellarFootprintSubgridOccupancy(
+    int CellWidth,
+    int CellHeight,
+    string BitsBase64);
+
+/// <summary>
+/// Deterministic whole-product coarse-cell and fine-subgrid bit budgets shared across all non-solid exclusions in a
+/// measurement product so the complete canonical JSON payload always fits within the 4 MiB product envelope even under
+/// worst-case JSON escaping of Base64 payloads.
+/// </summary>
+public readonly record struct StellarFootprintOccupancyBudget(
+    int CoarseCellBudget,
+    int SubgridBitBudget);
+
+/// <summary>
+/// Bounded row-major LSB-first bitmask recording which cells of a <see cref="StellarFootprintBounds"/> contain at
+/// least one segmented sample of the excluded component. Each coarse cell covers <see cref="CellWidth"/> by
+/// <see cref="CellHeight"/> integer samples starting at <c>(Footprint.MinX, Footprint.MinY)</c>. When coarse cells are
+/// larger than a single pixel, <see cref="Subgrid"/> refines only the occupied coarse cells to finer sub-cells.
+/// </summary>
+public sealed record StellarFootprintOccupancy(
+    int Columns,
+    int Rows,
+    int CellWidth,
+    int CellHeight,
+    string BitsBase64)
+{
+    public const int MaximumCells = 2048;
+    public const int MaximumBytes = (MaximumCells + 7) / 8;
+    public const int MaximumSubgridBits = 65536;
+    public const int MaximumSubgridBytes = (MaximumSubgridBits + 7) / 8;
+
+    /// <summary>
+    /// Whole-product subgrid bit budget ceiling (512 KiB total raw subgrid bytes), further bounded by the whole-product
+    /// serialized UTF-8 payload envelope in <see cref="ComputeProductBudgets"/>.
+    /// </summary>
+    public const int MaximumTotalSubgridBits = 4_194_304;
+    public const int MaximumTotalSubgridBytes = (MaximumTotalSubgridBits + 7) / 8;
+
+    /// <summary>Structured measurement product UTF-8 payload envelope ceiling (4 MiB).</summary>
+    public const int MaximumProductPayloadBytes = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Default UTF-8 byte reserve for non-source envelope fields (input descriptor, brightness, clipping, HFD samples,
+    /// and top-level JSON framing) when <see cref="StellarSourceMeasurer.Measure"/> is called without an explicit
+    /// envelope size.
+    /// </summary>
+    public const int DefaultReservedEnvelopeBytes = 131_072;
+
+    public const int WorstCaseBytesPerDetection = 768;
+    public const int WorstCaseBytesPerExclusionFixed = 256;
+    public const int WorstCaseCoarseOccupancyWrapperBytes = 100;
+    public const int WorstCaseSubgridWrapperBytes = 72;
+    internal const int WorstCaseBase64PaddingOverheadBytes = 13;
+
+    /// <summary>
+    /// Returns the deterministic per-exclusion subgrid bit budget ceiling shared across
+    /// <paramref name="refinableExclusionCount"/> non-solid coarse-grid exclusions in one measurement product.
+    /// </summary>
+    public static int SubgridBitBudgetPerExclusion(int refinableExclusionCount) =>
+        refinableExclusionCount <= 0
+            ? 0
+            : Math.Min(MaximumSubgridBits, MaximumTotalSubgridBits / refinableExclusionCount);
+
+    /// <summary>
+    /// Returns the worst-case canonical UTF-8 JSON byte length of an RFC 4648 Base64 string encoding
+    /// <paramref name="bitCount"/> bits when every non-padding Base64 character is <c>'+'</c> escaped as 6-byte
+    /// <c>\u002B</c> by <see cref="System.Text.Encodings.Web.JavaScriptEncoder.Default"/>.
+    /// </summary>
+    public static long WorstCaseSerializedBase64Utf8ByteCount(int bitCount)
+    {
+        if (bitCount <= 0)
+            return 0;
+        var rawBytes = ((long)bitCount + 7) / 8;
+        var fullTriples = rawBytes / 3;
+        return fullTriples * 24 + (rawBytes % 3) switch
+        {
+            1 => 14,
+            2 => 19,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// Returns whether a non-solid footprint of <paramref name="width"/> by <paramref name="height"/> samples requires
+    /// a coarse (&gt; 1x1) occupancy grid eligible for fine subgrid refinement under the single-exclusion cell limit.
+    /// </summary>
+    public static bool UsesCoarseGrid(int width, int height) =>
+        UsesCoarseGrid(width, height, MaximumCells);
+
+    /// <summary>
+    /// Returns whether a non-solid footprint of <paramref name="width"/> by <paramref name="height"/> samples requires
+    /// a coarse (&gt; 1x1) occupancy grid eligible for fine subgrid refinement under <paramref name="maximumCells"/>.
+    /// </summary>
+    public static bool UsesCoarseGrid(int width, int height, int maximumCells) =>
+        width > 0 && height > 0 && maximumCells > 0 && (long)width * height > Math.Min(maximumCells, MaximumCells);
+
+    /// <summary>
+    /// Computes deterministic whole-product coarse-cell and fine-subgrid bit budgets from the non-occupancy product
+    /// composition so the complete canonical JSON payload stays within <see cref="MaximumProductPayloadBytes"/> even
+    /// when every coarse and subgrid Base64 payload triggers worst-case <c>\u002B</c> JSON escaping.
+    /// </summary>
+    /// <returns>
+    /// Budgets shared across all non-solid exclusions. A <see cref="StellarFootprintOccupancyBudget.CoarseCellBudget"/>
+    /// of <c>0</c> indicates that occupancy masks must be omitted so the product falls back cleanly to bounding-box
+    /// exclusions within the envelope.
+    /// </returns>
+    public static StellarFootprintOccupancyBudget ComputeProductBudgets(
+        int detectionCount,
+        int totalExclusionCount,
+        ReadOnlySpan<StellarFootprintBounds> nonSolidFootprints,
+        int reservedEnvelopeBytes = DefaultReservedEnvelopeBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(detectionCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(totalExclusionCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(reservedEnvelopeBytes);
+        for (var i = 0; i < nonSolidFootprints.Length; i++)
+        {
+            var fp = nonSolidFootprints[i];
+            var fpWidth = (long)fp.MaxX - fp.MinX + 1;
+            var fpHeight = (long)fp.MaxY - fp.MinY + 1;
+            if (fpWidth <= 0 || fpHeight <= 0 || fpWidth > int.MaxValue || fpHeight > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(nonSolidFootprints));
+        }
+
+        if (nonSolidFootprints.IsEmpty)
+            return new(MaximumCells, 0);
+
+        var effectiveReserved = Math.Max(DefaultReservedEnvelopeBytes, reservedEnvelopeBytes);
+        var nonOccupancyBytes = (long)effectiveReserved
+            + (long)detectionCount * WorstCaseBytesPerDetection
+            + (long)totalExclusionCount * WorstCaseBytesPerExclusionFixed;
+        var availableOccupancyBytes = MaximumProductPayloadBytes - nonOccupancyBytes;
+        if (availableOccupancyBytes <= 0)
+            return new(0, 0);
+
+        var minCoarseBytes = TotalWorstCaseCoarseBytes(nonSolidFootprints, maximumCells: 1);
+        if (minCoarseBytes > availableOccupancyBytes)
+            return new(0, 0);
+
+        var coarseCapBytes = (availableOccupancyBytes * 2) / 3;
+        if (coarseCapBytes < minCoarseBytes)
+            coarseCapBytes = availableOccupancyBytes;
+
+        int coarseCellBudget;
+        var fullCoarseBytes = TotalWorstCaseCoarseBytes(nonSolidFootprints, MaximumCells);
+        if (fullCoarseBytes <= coarseCapBytes)
+        {
+            coarseCellBudget = MaximumCells;
+        }
+        else
+        {
+            var anyCoarseAtFull = false;
+            for (var i = 0; i < nonSolidFootprints.Length; i++)
+            {
+                var fp = nonSolidFootprints[i];
+                if (UsesCoarseGrid(fp.MaxX - fp.MinX + 1, fp.MaxY - fp.MinY + 1, MaximumCells))
+                {
+                    anyCoarseAtFull = true;
+                    break;
+                }
+            }
+            if (!anyCoarseAtFull && fullCoarseBytes <= availableOccupancyBytes)
+            {
+                coarseCellBudget = MaximumCells;
+            }
+            else
+            {
+                var low = 1;
+                var high = MaximumCells - 1;
+                while (low < high)
+                {
+                    var mid = low + ((high - low + 1) >> 1);
+                    if (TotalWorstCaseCoarseBytes(nonSolidFootprints, mid) <= coarseCapBytes)
+                        low = mid;
+                    else
+                        high = mid - 1;
+                }
+                coarseCellBudget = low;
+            }
+        }
+
+        var actualWorstCoarseBytes = TotalWorstCaseCoarseBytes(nonSolidFootprints, coarseCellBudget);
+        var remainingForSubgrids = availableOccupancyBytes - actualWorstCoarseBytes;
+        var refinableCount = 0;
+        for (var i = 0; i < nonSolidFootprints.Length; i++)
+        {
+            var fp = nonSolidFootprints[i];
+            if (UsesCoarseGrid(fp.MaxX - fp.MinX + 1, fp.MaxY - fp.MinY + 1, coarseCellBudget))
+                refinableCount++;
+        }
+        if (refinableCount == 0 || remainingForSubgrids <= 0)
+            return new(coarseCellBudget, 0);
+
+        var perRefinableFixed = WorstCaseSubgridWrapperBytes + WorstCaseBase64PaddingOverheadBytes;
+        var subgridBitPool = remainingForSubgrids - (long)refinableCount * perRefinableFixed;
+        if (subgridBitPool <= 0)
+            return new(coarseCellBudget, 0);
+
+        var cappedTotalBits = Math.Min((long)MaximumTotalSubgridBits, subgridBitPool);
+        var subgridBitBudget = (int)Math.Min(MaximumSubgridBits, cappedTotalBits / refinableCount);
+        return new(coarseCellBudget, subgridBitBudget);
+    }
+
+    private static long TotalWorstCaseCoarseBytes(ReadOnlySpan<StellarFootprintBounds> footprints, int maximumCells)
+    {
+        long total = 0;
+        for (var i = 0; i < footprints.Length; i++)
+        {
+            var fp = footprints[i];
+            var (columns, rows, _, _) = ChooseGrid(fp.MaxX - fp.MinX + 1, fp.MaxY - fp.MinY + 1, maximumCells);
+            total += WorstCaseCoarseOccupancyWrapperBytes + WorstCaseSerializedBase64Utf8ByteCount(columns * rows);
+        }
+        return total;
+    }
+
+    /// <summary>Optional fine sub-cell occupancy over the occupied coarse cells; omitted for 1x1 coarse grids.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StellarFootprintSubgridOccupancy? Subgrid { get; init; }
+
+    /// <summary>Creates a bounded occupancy bitmap over <paramref name="footprint"/> from an exact pixel predicate.</summary>
+    public static StellarFootprintOccupancy Create(StellarFootprintBounds footprint, Func<int, int, bool> isOccupied) =>
+        Create(footprint, isOccupied, MaximumCells, MaximumSubgridBits);
+
+    /// <summary>
+    /// Creates a bounded occupancy bitmap over <paramref name="footprint"/> under explicit whole-product
+    /// <paramref name="coarseCellBudget"/> and <paramref name="subgridBitBudget"/> limits.
+    /// </summary>
+    public static StellarFootprintOccupancy Create(
+        StellarFootprintBounds footprint,
+        Func<int, int, bool> isOccupied,
+        int coarseCellBudget,
+        int subgridBitBudget = MaximumSubgridBits)
+    {
+        ArgumentNullException.ThrowIfNull(isOccupied);
+        if (coarseCellBudget is <= 0 or > MaximumCells)
+            throw new ArgumentOutOfRangeException(nameof(coarseCellBudget));
+        ArgumentOutOfRangeException.ThrowIfNegative(subgridBitBudget);
+        var width = footprint.MaxX - footprint.MinX + 1;
+        var height = footprint.MaxY - footprint.MinY + 1;
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(footprint));
+        var (columns, rows, cellWidth, cellHeight) = ChooseGrid(width, height, coarseCellBudget);
+        var bits = new byte[(columns * rows + 7) / 8];
+        for (var y = footprint.MinY; y <= footprint.MaxY; y++)
+        {
+            var rowOffset = ((y - footprint.MinY) / cellHeight) * columns;
+            for (var x = footprint.MinX; x <= footprint.MaxX; x++)
+            {
+                if (!isOccupied(x, y)) continue;
+                var bit = rowOffset + (x - footprint.MinX) / cellWidth;
+                bits[bit >> 3] |= (byte)(1 << (bit & 7));
+            }
+        }
+
+        StellarFootprintSubgridOccupancy? subgrid = null;
+        var occupiedCoarse = CountSetBits(bits);
+        if (ChooseSubgrid(cellWidth, cellHeight, occupiedCoarse, subgridBitBudget) is { } subSpec)
+        {
+            var coarseToOrdinal = BuildCoarseToOrdinal(bits, columns * rows);
+            var bitsPerCoarseCell = subSpec.SubColumns * subSpec.SubRows;
+            var subBits = new byte[(occupiedCoarse * bitsPerCoarseCell + 7) / 8];
+            for (var y = footprint.MinY; y <= footprint.MaxY; y++)
+            {
+                var relY = y - footprint.MinY;
+                var row = relY / cellHeight;
+                var subRow = (relY - row * cellHeight) / subSpec.SubCellHeight;
+                var rowOffset = row * columns;
+                for (var x = footprint.MinX; x <= footprint.MaxX; x++)
+                {
+                    if (!isOccupied(x, y)) continue;
+                    var relX = x - footprint.MinX;
+                    var col = relX / cellWidth;
+                    var ordinal = coarseToOrdinal[rowOffset + col];
+                    var subCol = (relX - col * cellWidth) / subSpec.SubCellWidth;
+                    var subBit = ordinal * bitsPerCoarseCell + subRow * subSpec.SubColumns + subCol;
+                    subBits[subBit >> 3] |= (byte)(1 << (subBit & 7));
+                }
+            }
+            subgrid = new(subSpec.SubCellWidth, subSpec.SubCellHeight, Convert.ToBase64String(subBits));
+        }
+
+        return new(columns, rows, cellWidth, cellHeight, Convert.ToBase64String(bits))
+        {
+            Subgrid = subgrid
+        };
+    }
+
+    internal static (int Columns, int Rows, int CellWidth, int CellHeight) ChooseGrid(
+        int width, int height, int maximumCells = MaximumCells)
+    {
+        var effectiveMax = Math.Clamp(maximumCells, 1, MaximumCells);
+        if ((long)width * height <= effectiveMax)
+            return (width, height, 1, 1);
+        long w = width;
+        long h = height;
+        var step = Math.Max(2L, (long)Math.Ceiling(Math.Sqrt((double)w * h / effectiveMax)));
+        var minSingleAxis = (long)Math.Ceiling((double)Math.Max(w, h) / effectiveMax);
+        if (step < minSingleAxis)
+            step = minSingleAxis;
+        while (true)
+        {
+            var columns = (w + step - 1) / step;
+            var rows = (h + step - 1) / step;
+            if (columns * rows <= effectiveMax)
+                return ((int)columns, (int)rows, (int)Math.Min(step, w), (int)Math.Min(step, h));
+            step++;
+        }
+    }
+
+    internal static (int SubCellWidth, int SubCellHeight, int SubColumns, int SubRows)? ChooseSubgrid(
+        int coarseCellWidth, int coarseCellHeight, int occupiedCoarseCount,
+        int maximumSubgridBits = MaximumSubgridBits)
+    {
+        if (occupiedCoarseCount <= 0 || maximumSubgridBits <= 0 || (coarseCellWidth <= 1 && coarseCellHeight <= 1))
+            return null;
+        var effectiveBudget = Math.Min(maximumSubgridBits, MaximumSubgridBits);
+        var maxBitsPerCell = effectiveBudget / occupiedCoarseCount;
+        if (maxBitsPerCell < 2)
+            return null;
+        long cw = coarseCellWidth;
+        long ch = coarseCellHeight;
+        var step = Math.Max(1L, (long)Math.Ceiling(Math.Sqrt((double)cw * ch / maxBitsPerCell)));
+        var minSingleAxis = (long)Math.Ceiling((double)Math.Max(cw, ch) / maxBitsPerCell);
+        if (step < minSingleAxis)
+            step = minSingleAxis;
+        while (true)
+        {
+            var subCols = (cw + step - 1) / step;
+            var subRows = (ch + step - 1) / step;
+            if (subCols * subRows <= maxBitsPerCell)
+            {
+                if (subCols == 1 && subRows == 1)
+                    return null;
+                return ((int)Math.Min(step, cw), (int)Math.Min(step, ch), (int)subCols, (int)subRows);
+            }
+            step++;
+        }
+    }
+
+    internal static int CountSetBits(ReadOnlySpan<byte> bits)
+    {
+        var count = 0;
+        for (var i = 0; i < bits.Length; i++)
+            count += BitOperations.PopCount(bits[i]);
+        return count;
+    }
+
+    internal static int[] BuildCoarseToOrdinal(ReadOnlySpan<byte> bits, int cellCount)
+    {
+        var map = new int[cellCount];
+        Array.Fill(map, -1);
+        var ordinal = 0;
+        for (var bit = 0; bit < cellCount; bit++)
+        {
+            if ((bits[bit >> 3] & (1 << (bit & 7))) != 0)
+                map[bit] = ordinal++;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Validates dimensions, valid budgeted grid partition covering <paramref name="footprint"/> within
+    /// <c>1..</c><see cref="MaximumCells"/>, canonical Base64 encoding, zero trailing padding bits, subgrid integrity
+    /// when present, and non-emptiness.
+    /// </summary>
+    public bool IsValid(StellarFootprintBounds footprint) =>
+        ValidateCore(footprint, peak: null, sampleCount: null, coarseCellBudget: null, subgridBitBudget: null);
+
+    /// <summary>
+    /// Validates budgeted occupancy geometry, encoding, and subgrid integrity when present, together with physical
+    /// consistency against the recorded exclusion <paramref name="peak"/> and segmented <paramref name="sampleCount"/>.
+    /// </summary>
+    public bool IsValid(StellarFootprintBounds footprint, PixelPoint peak, int sampleCount) =>
+        ValidateCore(footprint, peak, sampleCount, coarseCellBudget: null, subgridBitBudget: null);
+
+    /// <summary>
+    /// Validates occupancy geometry, encoding, physical consistency, and exact deterministic coarse/subgrid refinement
+    /// compliance against the single-exclusion coarse limit and whole-product <paramref name="subgridBitBudget"/>.
+    /// </summary>
+    public bool IsValid(StellarFootprintBounds footprint, PixelPoint peak, int sampleCount, int subgridBitBudget) =>
+        subgridBitBudget >= 0 && ValidateCore(footprint, peak, sampleCount, MaximumCells, subgridBitBudget);
+
+    /// <summary>
+    /// Validates occupancy geometry, encoding, physical consistency, and exact deterministic coarse/subgrid refinement
+    /// compliance against the whole-product <paramref name="coarseCellBudget"/> and <paramref name="subgridBitBudget"/>.
+    /// </summary>
+    public bool IsValid(
+        StellarFootprintBounds footprint, PixelPoint peak, int sampleCount, int coarseCellBudget, int subgridBitBudget) =>
+        coarseCellBudget is > 0 and <= MaximumCells && subgridBitBudget >= 0 &&
+        ValidateCore(footprint, peak, sampleCount, coarseCellBudget, subgridBitBudget);
+
+    private bool ValidateCore(
+        StellarFootprintBounds footprint, PixelPoint? peak, int? sampleCount, int? coarseCellBudget, int? subgridBitBudget)
+    {
+        var fpWidth = (long)footprint.MaxX - footprint.MinX + 1;
+        var fpHeight = (long)footprint.MaxY - footprint.MinY + 1;
+        if (fpWidth <= 0 || fpHeight <= 0 || fpWidth > int.MaxValue || fpHeight > int.MaxValue ||
+            Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
+            CellWidth > fpWidth || CellHeight > fpHeight)
+            return false;
+        var cellCount = (long)Columns * Rows;
+        if (cellCount > MaximumCells || string.IsNullOrEmpty(BitsBase64))
+            return false;
+        if (coarseCellBudget is { } coarseBudget)
+        {
+            if (coarseBudget is <= 0 or > MaximumCells)
+                return false;
+            var (expectedCols, expectedRows, expectedCellW, expectedCellH) = ChooseGrid((int)fpWidth, (int)fpHeight, coarseBudget);
+            if (Columns != expectedCols || Rows != expectedRows ||
+                CellWidth != expectedCellW || CellHeight != expectedCellH)
+                return false;
+        }
+        else
+        {
+            var expectedCols = (fpWidth + CellWidth - 1) / CellWidth;
+            var expectedRows = (fpHeight + CellHeight - 1) / CellHeight;
+            if (Columns != expectedCols || Rows != expectedRows)
+                return false;
+        }
+        var expectedBytes = (int)((cellCount + 7) / 8);
+        Span<byte> decoded = stackalloc byte[MaximumBytes];
+        if (!Convert.TryFromBase64String(BitsBase64, decoded, out var written) || written != expectedBytes)
+            return false;
+        var payload = decoded[..written];
+        if (!string.Equals(Convert.ToBase64String(payload), BitsBase64, StringComparison.Ordinal))
+            return false;
+        var remainderBits = (int)(cellCount & 7);
+        if (remainderBits != 0 && (payload[^1] >> remainderBits) != 0)
+            return false;
+        var occupiedCoarse = CountSetBits(payload);
+        if (occupiedCoarse == 0)
+            return false;
+
+        var peakX = 0;
+        var peakY = 0;
+        var peakCoarseCol = -1;
+        var peakCoarseRow = -1;
+        if (peak is { } peakPoint)
+        {
+            if (!double.IsFinite(peakPoint.X) || !double.IsFinite(peakPoint.Y))
+                return false;
+            var floorX = Math.Floor(peakPoint.X);
+            var floorY = Math.Floor(peakPoint.Y);
+            if (floorX < footprint.MinX || floorX > footprint.MaxX || floorY < footprint.MinY || floorY > footprint.MaxY)
+                return false;
+            peakX = (int)floorX;
+            peakY = (int)floorY;
+            peakCoarseCol = (peakX - footprint.MinX) / CellWidth;
+            peakCoarseRow = (peakY - footprint.MinY) / CellHeight;
+            var peakBit = peakCoarseRow * Columns + peakCoarseCol;
+            if ((payload[peakBit >> 3] & (1 << (peakBit & 7))) == 0)
+                return false;
+        }
+
+        if (sampleCount is { } samples)
+        {
+            if (samples <= 0 || samples > fpWidth * fpHeight || occupiedCoarse > samples)
+                return false;
+        }
+
+        if (subgridBitBudget is { } budget)
+        {
+            var expectedSub = ChooseSubgrid(CellWidth, CellHeight, occupiedCoarse, budget);
+            if (expectedSub is null)
+            {
+                if (Subgrid is not null)
+                    return false;
+            }
+            else if (Subgrid is not { } actualSub ||
+                     actualSub.CellWidth != expectedSub.Value.SubCellWidth ||
+                     actualSub.CellHeight != expectedSub.Value.SubCellHeight)
+            {
+                return false;
+            }
+        }
+
+        if (Subgrid is null)
+        {
+            if (sampleCount is { } coarseSamples)
+            {
+                long capacity = 0;
+                for (var row = 0; row < Rows; row++)
+                {
+                    var ch = Math.Min(CellHeight, fpHeight - (long)row * CellHeight);
+                    var rowBase = row * Columns;
+                    for (var col = 0; col < Columns; col++)
+                    {
+                        var bit = rowBase + col;
+                        if ((payload[bit >> 3] & (1 << (bit & 7))) == 0)
+                            continue;
+                        var cw = Math.Min(CellWidth, fpWidth - (long)col * CellWidth);
+                        capacity += cw * ch;
+                        if (capacity >= coarseSamples)
+                            return true;
+                    }
+                }
+                return capacity >= coarseSamples;
+            }
+            return true;
+        }
+
+        var sub = Subgrid;
+        if ((CellWidth <= 1 && CellHeight <= 1) ||
+            sub.CellWidth <= 0 || sub.CellHeight <= 0 ||
+            sub.CellWidth > CellWidth || sub.CellHeight > CellHeight ||
+            (sub.CellWidth == CellWidth && sub.CellHeight == CellHeight) ||
+            string.IsNullOrEmpty(sub.BitsBase64))
+            return false;
+        var subCols = (CellWidth + sub.CellWidth - 1) / sub.CellWidth;
+        var subRows = (CellHeight + sub.CellHeight - 1) / sub.CellHeight;
+        var bitsPerCoarseCell = (long)subCols * subRows;
+        var totalSubBits = (long)occupiedCoarse * bitsPerCoarseCell;
+        if (totalSubBits <= 0 || totalSubBits > MaximumSubgridBits)
+            return false;
+        var expectedSubBytes = (int)((totalSubBits + 7) / 8);
+        var subPayload = new byte[expectedSubBytes];
+        if (!Convert.TryFromBase64String(sub.BitsBase64, subPayload, out var subWritten) || subWritten != expectedSubBytes)
+            return false;
+        if (!string.Equals(Convert.ToBase64String(subPayload), sub.BitsBase64, StringComparison.Ordinal))
+            return false;
+        var subRemainderBits = (int)(totalSubBits & 7);
+        if (subRemainderBits != 0 && (subPayload[^1] >> subRemainderBits) != 0)
+            return false;
+
+        var ordinal = 0;
+        long occupiedLeaf = 0;
+        long leafCapacity = 0;
+        for (var row = 0; row < Rows; row++)
+        {
+            var ch = (int)Math.Min(CellHeight, fpHeight - (long)row * CellHeight);
+            var validSubRows = (ch + sub.CellHeight - 1) / sub.CellHeight;
+            var rowBase = row * Columns;
+            for (var col = 0; col < Columns; col++)
+            {
+                var bit = rowBase + col;
+                if ((payload[bit >> 3] & (1 << (bit & 7))) == 0)
+                    continue;
+                var cw = (int)Math.Min(CellWidth, fpWidth - (long)col * CellWidth);
+                var validSubCols = (cw + sub.CellWidth - 1) / sub.CellWidth;
+                var cellSubBase = (long)ordinal * bitsPerCoarseCell;
+                var cellOccupiedSub = 0;
+                for (var sr = 0; sr < subRows; sr++)
+                {
+                    var sh = sr < validSubRows ? Math.Min(sub.CellHeight, ch - sr * sub.CellHeight) : 0;
+                    var srBase = cellSubBase + (long)sr * subCols;
+                    for (var sc = 0; sc < subCols; sc++)
+                    {
+                        var subBit = (int)(srBase + sc);
+                        if ((subPayload[subBit >> 3] & (1 << (subBit & 7))) == 0)
+                            continue;
+                        if (sc >= validSubCols || sr >= validSubRows)
+                            return false;
+                        cellOccupiedSub++;
+                        occupiedLeaf++;
+                        if (sampleCount.HasValue)
+                        {
+                            var sw = Math.Min(sub.CellWidth, cw - sc * sub.CellWidth);
+                            leafCapacity += (long)sw * sh;
+                        }
+                    }
+                }
+                if (cellOccupiedSub == 0)
+                    return false;
+                if (peak.HasValue && row == peakCoarseRow && col == peakCoarseCol)
+                {
+                    var peakSubCol = ((peakX - footprint.MinX) - col * CellWidth) / sub.CellWidth;
+                    var peakSubRow = ((peakY - footprint.MinY) - row * CellHeight) / sub.CellHeight;
+                    var peakSubBit = (int)(cellSubBase + (long)peakSubRow * subCols + peakSubCol);
+                    if ((subPayload[peakSubBit >> 3] & (1 << (peakSubBit & 7))) == 0)
+                        return false;
+                }
+                ordinal++;
+            }
+        }
+
+        if (sampleCount is { } leafSamples && (occupiedLeaf > leafSamples || leafSamples > leafCapacity))
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns the minimum squared Euclidean distance from continuous pixel-edge <paramref name="point"/> to any
+    /// occupied cell within <paramref name="maxRadiusPixels"/>, or <see cref="double.PositiveInfinity"/> if none lies
+    /// within that radius.
+    /// </summary>
+    public double DistanceSquaredToOccupied(StellarFootprintBounds footprint, PixelPoint point, double maxRadiusPixels)
+    {
+        if (!double.IsFinite(point.X) || !double.IsFinite(point.Y) ||
+            !double.IsFinite(maxRadiusPixels) || maxRadiusPixels < 0 ||
+            Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
+            !footprint.Contains(point, maxRadiusPixels))
+            return double.PositiveInfinity;
+        var cellCount = (long)Columns * Rows;
+        if (cellCount > MaximumCells || string.IsNullOrEmpty(BitsBase64))
+            return double.PositiveInfinity;
+        var expectedBytes = (int)((cellCount + 7) / 8);
+        Span<byte> bits = stackalloc byte[MaximumBytes];
+        if (!Convert.TryFromBase64String(BitsBase64, bits, out var written) || written != expectedBytes)
+            return double.PositiveInfinity;
+
+        var startCol = (int)Math.Max(0, Math.Ceiling((point.X - maxRadiusPixels - footprint.MinX) / CellWidth) - 1);
+        var endCol = (int)Math.Min(Columns - 1, Math.Floor((point.X + maxRadiusPixels - footprint.MinX) / CellWidth));
+        var startRow = (int)Math.Max(0, Math.Ceiling((point.Y - maxRadiusPixels - footprint.MinY) / CellHeight) - 1);
+        var endRow = (int)Math.Min(Rows - 1, Math.Floor((point.Y + maxRadiusPixels - footprint.MinY) / CellHeight));
+        if (endCol < startCol || endRow < startRow)
+            return double.PositiveInfinity;
+
+        byte[]? subPayload = null;
+        var subCols = 0;
+        var subRows = 0;
+        var bitsPerCoarseCell = 0;
+        var subCellW = 0;
+        var subCellH = 0;
+        Span<int> coarsePrefixPop = stackalloc int[MaximumBytes];
+        if (Subgrid is { } sub)
+        {
+            if (sub.CellWidth <= 0 || sub.CellHeight <= 0 ||
+                sub.CellWidth > CellWidth || sub.CellHeight > CellHeight ||
+                string.IsNullOrEmpty(sub.BitsBase64))
+                return double.PositiveInfinity;
+            var occupiedCoarse = 0;
+            for (var i = 0; i < written; i++)
+            {
+                coarsePrefixPop[i] = occupiedCoarse;
+                occupiedCoarse += BitOperations.PopCount(bits[i]);
+            }
+            subCellW = sub.CellWidth;
+            subCellH = sub.CellHeight;
+            subCols = (CellWidth + subCellW - 1) / subCellW;
+            subRows = (CellHeight + subCellH - 1) / subCellH;
+            bitsPerCoarseCell = subCols * subRows;
+            var totalSubBits = (long)occupiedCoarse * bitsPerCoarseCell;
+            if (totalSubBits <= 0 || totalSubBits > MaximumSubgridBits)
+                return double.PositiveInfinity;
+            var expectedSubBytes = (int)((totalSubBits + 7) / 8);
+            subPayload = new byte[expectedSubBytes];
+            if (!Convert.TryFromBase64String(sub.BitsBase64, subPayload, out var subWritten) || subWritten != expectedSubBytes)
+                return double.PositiveInfinity;
+        }
+
+        var maxFootprintX = (long)footprint.MaxX + 1;
+        var maxFootprintY = (long)footprint.MaxY + 1;
+        var maxRadiusSquared = maxRadiusPixels * maxRadiusPixels;
+        var best = double.PositiveInfinity;
+        for (var row = startRow; row <= endRow; row++)
+        {
+            var minY = (long)footprint.MinY + (long)row * CellHeight;
+            var maxY = Math.Min(maxFootprintY, minY + CellHeight);
+            var dy = point.Y < minY ? minY - point.Y : point.Y > maxY ? point.Y - maxY : 0.0;
+            var dy2 = dy * dy;
+            if (dy2 >= best || dy2 > maxRadiusSquared) continue;
+            var rowBase = row * Columns;
+            for (var col = startCol; col <= endCol; col++)
+            {
+                var bit = rowBase + col;
+                if ((bits[bit >> 3] & (1 << (bit & 7))) == 0)
+                    continue;
+                var minX = (long)footprint.MinX + (long)col * CellWidth;
+                var maxX = Math.Min(maxFootprintX, minX + CellWidth);
+                var dx = point.X < minX ? minX - point.X : point.X > maxX ? point.X - maxX : 0.0;
+                var d2 = dx * dx + dy2;
+                if (d2 >= best || d2 > maxRadiusSquared)
+                    continue;
+                if (subPayload is null)
+                {
+                    best = d2;
+                    if (best == 0.0)
+                        return 0.0;
+                    continue;
+                }
+
+                var byteIndex = bit >> 3;
+                var lowerMask = (1 << (bit & 7)) - 1;
+                var ordinal = coarsePrefixPop[byteIndex] + BitOperations.PopCount((uint)(bits[byteIndex] & lowerMask));
+                var cellSubBase = ordinal * bitsPerCoarseCell;
+                var validSubCols = (int)((maxX - minX + subCellW - 1) / subCellW);
+                var validSubRows = (int)((maxY - minY + subCellH - 1) / subCellH);
+                var sStartCol = (int)Math.Max(0, Math.Ceiling((point.X - maxRadiusPixels - minX) / subCellW) - 1);
+                var sEndCol = (int)Math.Min(validSubCols - 1, Math.Floor((point.X + maxRadiusPixels - minX) / subCellW));
+                var sStartRow = (int)Math.Max(0, Math.Ceiling((point.Y - maxRadiusPixels - minY) / subCellH) - 1);
+                var sEndRow = (int)Math.Min(validSubRows - 1, Math.Floor((point.Y + maxRadiusPixels - minY) / subCellH));
+                for (var sr = sStartRow; sr <= sEndRow; sr++)
+                {
+                    var sMinY = minY + (long)sr * subCellH;
+                    var sMaxY = Math.Min(maxY, sMinY + subCellH);
+                    var sdy = point.Y < sMinY ? sMinY - point.Y : point.Y > sMaxY ? point.Y - sMaxY : 0.0;
+                    var sdy2 = sdy * sdy;
+                    if (sdy2 >= best || sdy2 > maxRadiusSquared) continue;
+                    var srBase = cellSubBase + sr * subCols;
+                    for (var sc = sStartCol; sc <= sEndCol; sc++)
+                    {
+                        var subBit = srBase + sc;
+                        if ((subPayload[subBit >> 3] & (1 << (subBit & 7))) == 0)
+                            continue;
+                        var sMinX = minX + (long)sc * subCellW;
+                        var sMaxX = Math.Min(maxX, sMinX + subCellW);
+                        var sdx = point.X < sMinX ? sMinX - point.X : point.X > sMaxX ? point.X - sMaxX : 0.0;
+                        var sd2 = sdx * sdx + sdy2;
+                        if (sd2 < best)
+                        {
+                            best = sd2;
+                            if (best == 0.0)
+                                return 0.0;
+                        }
+                    }
+                }
+            }
+        }
+        return best <= maxRadiusSquared ? best : double.PositiveInfinity;
+    }
+}
+
 /// <summary>Owned, immutable measurement output. A budget failure carries no partial detections or exclusions.</summary>
 public sealed class StellarMeasurementResult
 {
     internal StellarMeasurementResult(StellarMeasurementStatus status, List<StellarDetection> detections,
         List<StellarMeasurementExclusion> exclusions, int candidateCount, int tiles, int availableTiles, int filledTiles,
-        double? medianBackground, double? medianNoiseSigma, string settingsIdentitySha256)
+        double? medianBackground, double? medianNoiseSigma, string settingsIdentitySha256,
+        string algorithmVersion = StellarSourceMeasurer.AlgorithmVersion)
     {
         Status = status;
         Detections = detections.AsReadOnly();
@@ -122,6 +848,7 @@ public sealed class StellarMeasurementResult
         FilledBackgroundTileCount = filledTiles;
         MedianBackground = medianBackground;
         MedianNoiseSigma = medianNoiseSigma;
+        AlgorithmVersion = algorithmVersion;
         SettingsIdentitySha256 = settingsIdentitySha256;
     }
 
@@ -147,7 +874,7 @@ public sealed class StellarMeasurementResult
     /// <summary>Median of independently estimated tiles, or null when no tile had enough usable samples.</summary>
     public double? MedianBackground { get; }
     public double? MedianNoiseSigma { get; }
-    public string AlgorithmVersion { get; } = StellarSourceMeasurer.AlgorithmVersion;
+    public string AlgorithmVersion { get; }
     public string SettingsIdentitySha256 { get; }
 }
 
@@ -172,7 +899,11 @@ public sealed class StellarMeasurementResult
 /// </remarks>
 public static class StellarSourceMeasurer
 {
-    public const string AlgorithmVersion = "linear-stellar-local-v2";
+    /// <summary>Historical v2 measurement algorithm identifier (omits exclusion occupancy bitmaps).</summary>
+    public const string V2AlgorithmVersion = "linear-stellar-local-v2";
+
+    /// <summary>Current measurement algorithm identifier (emits two-level exclusion occupancy bitmaps).</summary>
+    public const string AlgorithmVersion = "linear-stellar-local-v3";
 
     private const int MinimumDimension = 16;
     private const int MaximumCentroidIterations = 100;
@@ -188,6 +919,59 @@ public static class StellarSourceMeasurer
         int height,
         StellarMeasurementOptions? options = null,
         CancellationToken cancellationToken = default)
+        => MeasureCore(pixels, validMask, saturatedMask, width, height, options,
+            includeExclusionOccupancy: true, AlgorithmVersion,
+            StellarFootprintOccupancy.DefaultReservedEnvelopeBytes, cancellationToken);
+
+    /// <summary>
+    /// Measures stellar sources while budgeting exclusion occupancy bitmaps against a caller-specified non-source
+    /// envelope byte reserve so the resulting structured product remains within the 4 MiB payload envelope.
+    /// </summary>
+    /// <exception cref="ArgumentException">The layout, options, masks, or samples are invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="reservedEnvelopeBytes"/> is negative.</exception>
+    /// <exception cref="OperationCanceledException">Cancellation was requested.</exception>
+    public static StellarMeasurementResult Measure(
+        ReadOnlySpan<double> pixels,
+        ReadOnlySpan<bool> validMask,
+        ReadOnlySpan<bool> saturatedMask,
+        int width,
+        int height,
+        StellarMeasurementOptions? options,
+        int reservedEnvelopeBytes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(reservedEnvelopeBytes);
+        return MeasureCore(pixels, validMask, saturatedMask, width, height, options,
+            includeExclusionOccupancy: true, AlgorithmVersion, reservedEnvelopeBytes, cancellationToken);
+    }
+
+    /// <summary>
+    /// Replays the legacy <see cref="V2AlgorithmVersion"/> measurement contract (omitting exclusion occupancy bitmaps
+    /// and using the v2 settings identity) so archived outputs reproduce bit-for-bit.
+    /// </summary>
+    public static StellarMeasurementResult MeasureLegacyV2(
+        ReadOnlySpan<double> pixels,
+        ReadOnlySpan<bool> validMask,
+        ReadOnlySpan<bool> saturatedMask,
+        int width,
+        int height,
+        StellarMeasurementOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => MeasureCore(pixels, validMask, saturatedMask, width, height, options,
+            includeExclusionOccupancy: false, V2AlgorithmVersion,
+            StellarFootprintOccupancy.DefaultReservedEnvelopeBytes, cancellationToken);
+
+    private static StellarMeasurementResult MeasureCore(
+        ReadOnlySpan<double> pixels,
+        ReadOnlySpan<bool> validMask,
+        ReadOnlySpan<bool> saturatedMask,
+        int width,
+        int height,
+        StellarMeasurementOptions? options,
+        bool includeExclusionOccupancy,
+        string algorithmVersion,
+        int reservedEnvelopeBytes,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         options ??= new();
@@ -198,7 +982,7 @@ public static class StellarSourceMeasurer
             throw new ArgumentException("The saturation mask must be empty or match the image.", nameof(saturatedMask));
         }
 
-        var identity = SettingsIdentity(options);
+        var identity = SettingsIdentity(options, algorithmVersion);
         var saturated = Dilate(saturatedMask, width, height, options.SaturationDilationPixels, cancellationToken);
         var mesh = BackgroundMesh.Create(pixels, validMask, saturated, width, height, options, cancellationToken);
         var labels = new int[pixels.Length];
@@ -207,7 +991,8 @@ public static class StellarSourceMeasurer
         if (candidates.Count > options.MaximumCandidateCount)
         {
             return new(StellarMeasurementStatus.CandidateBudgetExceeded, [], [], candidates.Count,
-                mesh.TileCount, mesh.AvailableCount, mesh.FilledCount, mesh.MedianBackground, mesh.MedianNoise, identity);
+                mesh.TileCount, mesh.AvailableCount, mesh.FilledCount, mesh.MedianBackground, mesh.MedianNoise,
+                identity, algorithmVersion);
         }
 
         var outcomes = new Dictionary<int, Outcome>(candidates.Count);
@@ -220,7 +1005,7 @@ public static class StellarSourceMeasurer
         // Crowding is resolved after every candidate is classified: a neighbor that is itself a noise artifact cannot
         // contaminate the window, because its samples are already withheld from the measurement.
         var accepted = new List<(StellarDetection Detection, int PeakIndex)>();
-        var exclusions = new List<StellarMeasurementExclusion>();
+        var excludedComponents = new List<(Component Component, string Reason)>();
         foreach (var component in candidates)
         {
             var outcome = outcomes[component.Label];
@@ -235,13 +1020,11 @@ public static class StellarSourceMeasurer
             }
             else
             {
-                exclusions.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
-                    component.PeakExcess, component.Count, outcome.Reason!)
-                {
-                    Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY)
-                });
+                excludedComponents.Add((component, outcome.Reason!));
             }
         }
+        var exclusions = BuildExclusions(excludedComponents, accepted.Count, components.Count, labels, width, height,
+            includeExclusionOccupancy, reservedEnvelopeBytes, cancellationToken);
         var ordered = accepted
             .OrderByDescending(entry => entry.Detection.Flux)
             .ThenBy(entry => entry.PeakIndex)
@@ -249,17 +1032,275 @@ public static class StellarSourceMeasurer
             .ToList();
         cancellationToken.ThrowIfCancellationRequested();
         return new(StellarMeasurementStatus.Completed, ordered, exclusions, candidates.Count,
-            mesh.TileCount, mesh.AvailableCount, mesh.FilledCount, mesh.MedianBackground, mesh.MedianNoise, identity);
+            mesh.TileCount, mesh.AvailableCount, mesh.FilledCount, mesh.MedianBackground, mesh.MedianNoise,
+            identity, algorithmVersion);
     }
 
-    /// <summary>Content identity of the algorithm version and every declared threshold.</summary>
+    private sealed class PendingSubgrid(
+        Component component, int columns, int cellWidth, int cellHeight,
+        int subCellWidth, int subCellHeight, int subColumns, int subRows,
+        int[] coarseToOrdinal, byte[] subBits)
+    {
+        public Component Component { get; } = component;
+        public int Columns { get; } = columns;
+        public int CellWidth { get; } = cellWidth;
+        public int CellHeight { get; } = cellHeight;
+        public int SubCellWidth { get; } = subCellWidth;
+        public int SubCellHeight { get; } = subCellHeight;
+        public int SubColumns { get; } = subColumns;
+        public int BitsPerCoarseCell { get; } = subColumns * subRows;
+        public int[] CoarseToOrdinal { get; } = coarseToOrdinal;
+        public byte[] SubBits { get; } = subBits;
+    }
+
+    private static List<StellarMeasurementExclusion> BuildExclusions(
+        List<(Component Component, string Reason)> excludedComponents,
+        int detectionCount,
+        int componentCount,
+        int[] labels,
+        int width,
+        int height,
+        bool includeExclusionOccupancy,
+        int reservedEnvelopeBytes,
+        CancellationToken cancellationToken)
+    {
+        if (!includeExclusionOccupancy)
+        {
+            return BuildBoundingBoxExclusions(excludedComponents, width);
+        }
+
+        var nonSolidFootprints = new List<StellarFootprintBounds>();
+        for (var i = 0; i < excludedComponents.Count; i++)
+        {
+            var component = excludedComponents[i].Component;
+            var fpWidth = component.MaxX - component.MinX + 1;
+            var fpHeight = component.MaxY - component.MinY + 1;
+            var boxArea = (long)fpWidth * fpHeight;
+            if (fpWidth > 0 && fpHeight > 0 && component.Count < boxArea)
+                nonSolidFootprints.Add(new(component.MinX, component.MinY, component.MaxX, component.MaxY));
+        }
+
+        var budget = StellarFootprintOccupancy.ComputeProductBudgets(
+            detectionCount,
+            excludedComponents.Count,
+            CollectionsMarshal.AsSpan(nonSolidFootprints),
+            reservedEnvelopeBytes);
+        if (budget.CoarseCellBudget <= 0)
+        {
+            return BuildBoundingBoxExclusions(excludedComponents, width);
+        }
+
+        var pending = new List<(int ExclusionIndex, Component Component, int Columns, int Rows, int CellWidth, int CellHeight, byte[] Bits)>(nonSolidFootprints.Count);
+        var pendingIndexByExclusion = new int[excludedComponents.Count];
+        Array.Fill(pendingIndexByExclusion, -1);
+        long totalBoxArea = 0;
+
+        for (var i = 0; i < excludedComponents.Count; i++)
+        {
+            var component = excludedComponents[i].Component;
+            var fpWidth = component.MaxX - component.MinX + 1;
+            var fpHeight = component.MaxY - component.MinY + 1;
+            var boxArea = (long)fpWidth * fpHeight;
+            if (fpWidth <= 0 || fpHeight <= 0 || component.Count >= boxArea)
+                continue;
+            var (columns, rows, cellWidth, cellHeight) = StellarFootprintOccupancy.ChooseGrid(
+                fpWidth, fpHeight, budget.CoarseCellBudget);
+            var bits = new byte[(columns * rows + 7) / 8];
+            pendingIndexByExclusion[i] = pending.Count;
+            pending.Add((i, component, columns, rows, cellWidth, cellHeight, bits));
+            totalBoxArea += boxArea;
+        }
+
+        var subgridByPending = new PendingSubgrid?[pending.Count];
+        if (pending.Count > 0)
+        {
+            if (totalBoxArea <= labels.Length)
+            {
+                foreach (var (_, component, columns, _, cellWidth, cellHeight, bits) in pending)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var label = component.Label;
+                    for (var y = component.MinY; y <= component.MaxY; y++)
+                    {
+                        var rowOffset = ((y - component.MinY) / cellHeight) * columns;
+                        var pixelRow = y * width;
+                        for (var x = component.MinX; x <= component.MaxX; x++)
+                        {
+                            if (labels[pixelRow + x] != label) continue;
+                            var bit = rowOffset + (x - component.MinX) / cellWidth;
+                            bits[bit >> 3] |= (byte)(1 << (bit & 7));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Bounded worst-case O(width * height) single pass when many large exclusion boxes overlap.
+                var labelToPending = new int[componentCount];
+                Array.Fill(labelToPending, -1);
+                for (var p = 0; p < pending.Count; p++)
+                    labelToPending[pending[p].Component.Label] = p;
+                for (var y = 0; y < height; y++)
+                {
+                    if ((y & 63) == 0)
+                        cancellationToken.ThrowIfCancellationRequested();
+                    var pixelRow = y * width;
+                    for (var x = 0; x < width; x++)
+                    {
+                        var label = labels[pixelRow + x];
+                        if (label <= 0) continue;
+                        var p = labelToPending[label];
+                        if (p < 0) continue;
+                        var item = pending[p];
+                        var bit = ((y - item.Component.MinY) / item.CellHeight) * item.Columns +
+                                  (x - item.Component.MinX) / item.CellWidth;
+                        item.Bits[bit >> 3] |= (byte)(1 << (bit & 7));
+                    }
+                }
+            }
+
+            // Refine coarse (> 1x1) occupied cells with the whole-product bounded sparse fine subgrid in one bounded pass.
+            var subgridBitBudget = budget.SubgridBitBudget;
+            var pendingSubgrids = new List<PendingSubgrid>();
+            long totalSubBoxArea = 0;
+            if (subgridBitBudget > 0)
+            {
+                for (var p = 0; p < pending.Count; p++)
+                {
+                    var item = pending[p];
+                    if (item.CellWidth <= 1 && item.CellHeight <= 1)
+                        continue;
+                    var occupiedCoarse = StellarFootprintOccupancy.CountSetBits(item.Bits);
+                    if (StellarFootprintOccupancy.ChooseSubgrid(item.CellWidth, item.CellHeight, occupiedCoarse, subgridBitBudget) is not { } subSpec)
+                        continue;
+                    var coarseToOrdinal = StellarFootprintOccupancy.BuildCoarseToOrdinal(item.Bits, item.Columns * item.Rows);
+                    var subBits = new byte[(occupiedCoarse * subSpec.SubColumns * subSpec.SubRows + 7) / 8];
+                    var sub = new PendingSubgrid(item.Component, item.Columns, item.CellWidth, item.CellHeight,
+                        subSpec.SubCellWidth, subSpec.SubCellHeight, subSpec.SubColumns, subSpec.SubRows,
+                        coarseToOrdinal, subBits);
+                    subgridByPending[p] = sub;
+                    pendingSubgrids.Add(sub);
+                    var fpW = item.Component.MaxX - item.Component.MinX + 1;
+                    var fpH = item.Component.MaxY - item.Component.MinY + 1;
+                    totalSubBoxArea += (long)fpW * fpH;
+                }
+            }
+
+            if (pendingSubgrids.Count > 0)
+            {
+                if (totalSubBoxArea <= labels.Length)
+                {
+                    foreach (var sub in pendingSubgrids)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var component = sub.Component;
+                        var label = component.Label;
+                        for (var y = component.MinY; y <= component.MaxY; y++)
+                        {
+                            var relY = y - component.MinY;
+                            var row = relY / sub.CellHeight;
+                            var subRow = (relY - row * sub.CellHeight) / sub.SubCellHeight;
+                            var rowOffset = row * sub.Columns;
+                            var pixelRow = y * width;
+                            for (var x = component.MinX; x <= component.MaxX; x++)
+                            {
+                                if (labels[pixelRow + x] != label) continue;
+                                var relX = x - component.MinX;
+                                var col = relX / sub.CellWidth;
+                                var ordinal = sub.CoarseToOrdinal[rowOffset + col];
+                                var subCol = (relX - col * sub.CellWidth) / sub.SubCellWidth;
+                                var subBit = ordinal * sub.BitsPerCoarseCell + subRow * sub.SubColumns + subCol;
+                                sub.SubBits[subBit >> 3] |= (byte)(1 << (subBit & 7));
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    var labelToSub = new int[componentCount];
+                    Array.Fill(labelToSub, -1);
+                    for (var s = 0; s < pendingSubgrids.Count; s++)
+                        labelToSub[pendingSubgrids[s].Component.Label] = s;
+                    for (var y = 0; y < height; y++)
+                    {
+                        if ((y & 63) == 0)
+                            cancellationToken.ThrowIfCancellationRequested();
+                        var pixelRow = y * width;
+                        for (var x = 0; x < width; x++)
+                        {
+                            var label = labels[pixelRow + x];
+                            if (label <= 0) continue;
+                            var s = labelToSub[label];
+                            if (s < 0) continue;
+                            var sub = pendingSubgrids[s];
+                            var relY = y - sub.Component.MinY;
+                            var relX = x - sub.Component.MinX;
+                            var row = relY / sub.CellHeight;
+                            var col = relX / sub.CellWidth;
+                            var ordinal = sub.CoarseToOrdinal[row * sub.Columns + col];
+                            var subRow = (relY - row * sub.CellHeight) / sub.SubCellHeight;
+                            var subCol = (relX - col * sub.CellWidth) / sub.SubCellWidth;
+                            var subBit = ordinal * sub.BitsPerCoarseCell + subRow * sub.SubColumns + subCol;
+                            sub.SubBits[subBit >> 3] |= (byte)(1 << (subBit & 7));
+                        }
+                    }
+                }
+            }
+        }
+
+        var exclusions = new List<StellarMeasurementExclusion>(excludedComponents.Count);
+        for (var i = 0; i < excludedComponents.Count; i++)
+        {
+            var (component, reason) = excludedComponents[i];
+            StellarFootprintOccupancy? occupancy = null;
+            if (pendingIndexByExclusion[i] is var p and >= 0)
+            {
+                var item = pending[p];
+                var sub = subgridByPending[p];
+                occupancy = new(item.Columns, item.Rows, item.CellWidth, item.CellHeight, Convert.ToBase64String(item.Bits))
+                {
+                    Subgrid = sub is null ? null : new(sub.SubCellWidth, sub.SubCellHeight, Convert.ToBase64String(sub.SubBits))
+                };
+            }
+            exclusions.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
+                component.PeakExcess, component.Count, reason)
+            {
+                Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY),
+                Occupancy = occupancy
+            });
+        }
+        return exclusions;
+    }
+
+    private static List<StellarMeasurementExclusion> BuildBoundingBoxExclusions(
+        List<(Component Component, string Reason)> excludedComponents,
+        int width)
+    {
+        var result = new List<StellarMeasurementExclusion>(excludedComponents.Count);
+        foreach (var (component, reason) in excludedComponents)
+        {
+            result.Add(new(new(component.PeakIndex % width + 0.5, component.PeakIndex / width + 0.5),
+                component.PeakExcess, component.Count, reason)
+            {
+                Footprint = new(component.MinX, component.MinY, component.MaxX, component.MaxY)
+            });
+        }
+        return result;
+    }
+
+    /// <summary>Content identity of the current algorithm version and every declared threshold.</summary>
     public static string SettingsIdentity(StellarMeasurementOptions options)
+        => SettingsIdentity(options, AlgorithmVersion);
+
+    /// <summary>Content identity of a specified algorithm version and every declared threshold.</summary>
+    public static string SettingsIdentity(StellarMeasurementOptions options, string algorithmVersion)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(algorithmVersion);
         return Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         {
             schema = "stellar-measurement-settings-v1",
-            algorithm = AlgorithmVersion,
+            algorithm = algorithmVersion,
             options
         })));
     }

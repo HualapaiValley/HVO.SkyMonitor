@@ -56,7 +56,7 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
     {
         if (measuredArtifact.ProductKind != ProcessingProductKind.Metadata || measuredArtifact.Role != FrameArtifactRole.Metadata ||
             measuredArtifact.MediaType != StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType ||
-            measuredArtifact.SchemaVersion != MeasuredStellarAssociationsV1.CurrentSchemaVersion ||
+            !MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(measuredArtifact.SchemaVersion) ||
             measuredArtifact.ContentIdentitySha256 is null || measuredArtifact.RecipeDescriptor is not { } descriptor ||
             !MeasuredAstrometryJson.Same(ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
                 measuredArtifact.RecipeIdentitySha256))
@@ -67,11 +67,11 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         return
             measuredArtifact.SourceArtifactIds is { Count: 1 } &&
             measuredArtifact.SourceArtifactIds[0] == raw.ArtifactId &&
-            descriptor is
-            {
-                Name: BuiltInProcessingRecipes.MeasuredStellarAssociations,
-                SemanticVersion: "1.0.0", ImplementationVersion: "measured-stellar-associations-v1"
-            };
+            descriptor is { Name: BuiltInProcessingRecipes.MeasuredStellarAssociations, SemanticVersion: "1.0.0" } &&
+            ((measuredArtifact.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
+              descriptor.ImplementationVersion == MeasuredStellarAssociationRecipe.CurrentImplementationVersion) ||
+             (measuredArtifact.SchemaVersion == MeasuredStellarAssociationsV1.V1SchemaVersion &&
+              descriptor.ImplementationVersion == MeasuredStellarAssociationRecipe.V1ImplementationVersion));
     }
 
     internal static IReadOnlyList<ProcessingArtifact> Sources(ProcessingExecutionRequest request, ProcessingArtifact raw)
@@ -248,8 +248,19 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
         MeasuredStellarAssociationsV1 measured, ProjectedSceneV1 scene, MeasuredAstrometryContextV1 context,
         AstrometricCalibration calibration, AstrometricCatalogData catalog)
     {
-        if (measured.Measurement.AlgorithmVersion != StellarSourceMeasurer.AlgorithmVersion ||
-            measured.Method.AlgorithmVersion != MeasuredStellarAssociator.AlgorithmVersion || measured.Method.LabelPolicyVersion != StellarLabelPolicy.Version)
+        var supportedMethod = measured.SchemaVersion switch
+        {
+            MeasuredStellarAssociationsV1.CurrentSchemaVersion =>
+                measured.Method.AlgorithmVersion == MeasuredStellarAssociator.AlgorithmVersion &&
+                measured.Method.LabelPolicyVersion == StellarLabelPolicy.Version,
+            MeasuredStellarAssociationsV1.V1SchemaVersion =>
+                measured.Method.AlgorithmVersion == MeasuredStellarAssociator.V1AlgorithmVersion &&
+                measured.Method.LabelPolicyVersion == StellarLabelPolicy.V1Version,
+            _ => false
+        };
+        var supportedMeasurer = measured.Measurement.AlgorithmVersion is
+            StellarSourceMeasurer.AlgorithmVersion or StellarSourceMeasurer.V2AlgorithmVersion;
+        if (!supportedMeasurer || !supportedMethod)
             return "astrometry.unsupported-measurement";
         var frame = context.Frame;
         var source = measured.Source;

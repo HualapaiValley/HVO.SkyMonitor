@@ -70,10 +70,10 @@ public sealed class UpgradeNoteProducerVersionTests
     }
 
     [TestMethod]
-    [DataRow("scene-overlay producer changes from v10 to v13", "scene-overlay producer changes from v10 to v12", "scene-overlay producer")]
+    [DataRow("scene-overlay producer changes from v10 to v15", "scene-overlay producer changes from v10 to v14", "scene-overlay producer")]
     [DataRow("cloud producer from v4 to v5", "cloud producer from v4 to v6", "cloud producer")]
     [DataRow("environment producer from v5 to v6", "environment producer from v5 to v7", "environment producer")]
-    [DataRow("also move to v13", "also move to v12", "early pre-release scene producers")]
+    [DataRow("also move to v15", "also move to v14", "early pre-release scene producers")]
     public void ANoteThatStatesAnotherVersionIsReported(string stated, string changed, string name)
     {
         var note = Normalize(ReadNote());
@@ -86,7 +86,7 @@ public sealed class UpgradeNoteProducerVersionTests
 
     [TestMethod]
     [DataRow("the cloud producer from v4 to v5, and ", "cloud producer")]
-    [DataRow("Early 0.9.1-dev.1 through dev.5 scene producers v11/v12 also move to v13.", "early pre-release scene producers")]
+    [DataRow("Early 0.9.1-dev.1 through dev.5 scene producers v11/v12 also move to v15.", "early pre-release scene producers")]
     public void ANoteThatNoLongerStatesAVersionIsReportedRatherThanPassed(string removed, string name)
     {
         var note = Normalize(ReadNote());

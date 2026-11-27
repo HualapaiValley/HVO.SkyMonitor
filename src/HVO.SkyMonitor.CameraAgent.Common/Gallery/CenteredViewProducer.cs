@@ -94,7 +94,7 @@ internal sealed partial class CenteredViewProducer(
         if (configured is null)
             return [];
 
-        var present = configured.Values.ToHashSet();
+        var present = configured.Values.SelectMany(static list => list).ToHashSet();
         var reference = definition.Reference.Capture.CaptureId;
         var layers = new List<CenteredViewLayer>();
         foreach (var binding in CenteredViewLayerBindings.Known)

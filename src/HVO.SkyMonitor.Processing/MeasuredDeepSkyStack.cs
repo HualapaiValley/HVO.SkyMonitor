@@ -334,7 +334,7 @@ public sealed class MeasuredDeepSkyStackRecipe(IDeepSkyCatalog? catalog) : IProc
                 status, reason, extraction, catalogCenters, supportedCatalogCenters, matches ?? []);
     }
 
-    private static ExtendedStackExtraction ApplyStellarProfile(ExtendedStackExtraction extraction,
+    internal static ExtendedStackExtraction ApplyStellarProfile(ExtendedStackExtraction extraction,
         MeasuredStellarAssociationsV1 stellar, MeasuredAstrometrySolutionV1 solution, ReadOnlySpan<float> luminance,
         StellarStackProfileQuery query)
     {
@@ -343,7 +343,10 @@ public sealed class MeasuredDeepSkyStackRecipe(IDeepSkyCatalog? catalog) : IProc
             return extraction;
         }
         var stars = stellar.Associations.Select(star => new PixelPoint(star.MeasuredX, star.MeasuredY)).ToArray();
-        var measuredSources = stars.Concat(stellar.UnassociatedDetections.Select(source => new PixelPoint(source.X, source.Y))).ToArray();
+        var planets = (stellar.PointSourcePlanets?.Associations ?? [])
+            .Select(planet => new PixelPoint(planet.MeasuredX, planet.MeasuredY)).ToArray();
+        var pointSources = planets.Length == 0 ? stars : [.. stars, .. planets];
+        var measuredSources = pointSources.Concat(stellar.UnassociatedDetections.Select(source => new PixelPoint(source.X, source.Y))).ToArray();
         var verified = solution.Residuals.NativeAssociations.Select(pair => pair.DetectionIndex).ToHashSet();
         var profiles = new List<ExtendedStackDetection>();
         foreach (var star in stellar.Associations)
@@ -373,7 +376,7 @@ public sealed class MeasuredDeepSkyStackRecipe(IDeepSkyCatalog? catalog) : IProc
 
         ExtendedStackDetection Classify(ExtendedStackDetection detection)
         {
-            if (stars.Any(star => Separation(detection.Centroid, star) <= StellarVetoRadius))
+            if (pointSources.Any(source => Separation(detection.Centroid, source) <= StellarVetoRadius))
             {
                 return detection with { Rejection = ExtendedStackRejection.StellarStructure };
             }

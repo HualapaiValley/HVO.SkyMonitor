@@ -1304,6 +1304,13 @@ public sealed partial class CurrentSkyPage
             "centered.segments-outside-registration" => "segments outside registered domain",
             "centered.rich-text-preview-too-small" => "preview too small for corner text",
             "centered.trail-geometry-unavailable" => "trail geometry unavailable",
+            MeasuredAssociationPresentation.EmptyMeasuredReason => "no measured sources on this reference exposure",
+            MeasuredAssociationPresentation.EmptyExpectedAllMatchedReason => "all expected catalog predictions matched",
+            MeasuredAssociationPresentation.EmptyExpectedFilteredReason => "unmatched predictions excluded by display filter or aperture",
+            MeasuredAssociationPresentation.EmptyExpectedNoPredictionsReason => "no expected catalog predictions in scene",
+            MeasuredAssociationPresentation.EmptyExpectedPlanetsUnassessedReason => "stars matched; point-source planets not assessed by retained v1 evidence",
+            "centered.association-parent-invalid" => "measured association parent verification failed",
+            MeasuredStellarAssociationReasonCodes.MeasurementIncomplete => "exposure measurement incomplete",
             _ => reason.StartsWith("centered.", StringComparison.Ordinal)
                 ? OperationsPage.SplitWords(reason["centered.".Length..].Replace('-', ' '))
                 : reason
@@ -1312,7 +1319,7 @@ public sealed partial class CurrentSkyPage
 
     private static string CenteredLayerGroup(string kind) => kind switch
     {
-        "measured-deep-sky" or "MeasuredTransientTrails" or "measured-source-markers" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
+        "measured-deep-sky" or "MeasuredTransientTrails" or "measured-source-markers" or MeasuredAssociationPresentation.MeasuredLayerKind or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };

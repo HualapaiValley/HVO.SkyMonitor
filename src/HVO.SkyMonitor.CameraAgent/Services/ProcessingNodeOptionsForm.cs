@@ -110,7 +110,7 @@ public sealed class ProcessingNodeOptionsForm
             "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,
             "CAPTURESATELLITELAYER" => CaptureSatelliteOptionDescriptors.Layer.StepVersion,
             "STORAGE" => StorageOptionDescriptors.Descriptor.StepVersion,
-            "ANNOTATION" => "projected-annotation-v4",
+            "ANNOTATION" => AnnotationOptionDescriptors.Descriptor.StepVersion,
             "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,
             "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,
@@ -258,7 +258,7 @@ public sealed class ProcessingNodeOptionsForm
         if (string.Equals(Descriptor.DescriptorId, OverlayManifestOptionDescriptors.Layer.DescriptorId, StringComparison.Ordinal) &&
             string.Equals(option.Key, "enabled", StringComparison.Ordinal) &&
             _inputs.TryGetValue("kind", out var kind) &&
-            string.Equals(PresentationLayerKindSelection.Canonicalize(kind), OrbitalTrackPresentation.LayerKind, StringComparison.Ordinal))
+            PresentationLayerKindSelection.Canonicalize(kind) is OrbitalTrackPresentation.LayerKind or MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind)
         {
             return ProcessingOptionValue.FromToggle(false);
         }

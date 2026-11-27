@@ -1112,7 +1112,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private static string LayerGroup(string kind) => kind switch
     {
-        "measured-deep-sky" or "MeasuredTransientTrails" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
+        "measured-deep-sky" or "MeasuredTransientTrails" or MeasuredAssociationPresentation.MeasuredLayerKind or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
         "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
@@ -1141,6 +1141,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private static string LayerDescription(string kind) => kind switch
     {
         AstrometricDiagnosticPresentation.AssociationsLayer => "measured centroids associated by the accepted fit / green fitting, amber held-out",
+        MeasuredAssociationPresentation.MeasuredLayerKind => "measured star and point-source planet associations plus unclaimed centroids; published before astrometry",
+        MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind => "diagnostic expected catalog positions not matched to qualified measured sources; never a detection claim",
         "measured-source-markers" => "measured linear detections on the exact reference exposure",
         AstrometricDiagnosticPresentation.ResidualsLayer => "measured minus fitted prediction / actual 1× pixel vectors; rings locate fitted positions; no uncertainty band",
         "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
@@ -1417,6 +1419,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private static string LayerLabel(string kind) => kind switch
     {
         AstrometricDiagnosticPresentation.AssociationsLayer => "Measured stellar associations",
+        MeasuredAssociationPresentation.MeasuredLayerKind => "Measured catalog associations",
+        MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind => "Expected, not detected",
         "measured-source-markers" => "Measured source markers",
         AstrometricDiagnosticPresentation.ResidualsLayer => "Astrometric residuals",
         "MeasuredTransientTrails" => "Measured transient trails",

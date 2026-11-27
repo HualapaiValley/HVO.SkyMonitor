@@ -51,12 +51,19 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         BuiltInProcessingRecipes.ExposureMeasurement, "1.0.0", ExposureMeasurementProducts.SchemaVersion,
         ProcessingOperationKind.Analyzer);
 
-    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(ExposureMeasurementInputV1 input)
+    internal static string StellarAlgorithmVersion(ExposureFocusSamplingPolicy policy)
+        => policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? StellarSourceMeasurer.AlgorithmVersion
+            : StellarSourceMeasurer.V2AlgorithmVersion;
+
+    internal static IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms(
+        ExposureMeasurementInputV1 input,
+        ExposureFocusSamplingPolicy policy = ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy)
     {
         List<ProcessingAlgorithmIdentity> algorithms =
         [
             new("image-statistics", ImageStatisticsCalculator.StoredCodeAlgorithmVersion),
-            new("stellar-source-measurer", StellarSourceMeasurer.AlgorithmVersion),
+            new("stellar-source-measurer", StellarAlgorithmVersion(policy)),
             new("focus-star-measurer", FocusStarMeasurer.AlgorithmVersion)
         ];
         if (input.Linear?.Layout.PixelFormat == CameraPixelFormat.BayerRggb16)
@@ -70,13 +77,35 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         return ExposureMeasurementProducts.SerializeParameters(input, policy);
     }
 
+    internal static JsonElement NormalizeOptions(ProcessingExecutionRequest request)
+    {
+        var (input, policy) = ExposureMeasurementProducts.ReadParameters(request.Options);
+        if (!ExposureMeasurementProducts.HasRetainedReplayCandidate(request, input))
+        {
+            ExposureMeasurementProducts.ValidateFreshAdmissionEnvelopeBudget(input);
+        }
+        else if (ExposureMeasurementProducts.RawMetadataCharCount(input) >
+            StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+        {
+            throw new InvalidDataException("Invalid exposure measurement input envelope budget.");
+        }
+        return ExposureMeasurementProducts.SerializeParameters(input, policy);
+    }
+
     internal static ExposureMeasurementInputV1 Input(ProcessingRecipeIdentity recipe)
-        => ExposureMeasurementProducts.ReadParameters(recipe.Descriptor.Options.GetProperty("parameters")).Input;
+        => Parameters(recipe).Input;
+
+    internal static (ExposureMeasurementInputV1 Input, ExposureFocusSamplingPolicy Policy) Parameters(ProcessingRecipeIdentity recipe)
+        => ExposureMeasurementProducts.ReadParameters(recipe.Descriptor.Options.GetProperty("parameters"));
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity, CancellationToken cancellationToken)
     {
         var (input, policy) = ExposureMeasurementProducts.ReadParameters(identity.Descriptor.Options.GetProperty("parameters"));
+        if (!ExposureMeasurementProducts.IsVerifiedRetainedReplay(request, identity, input) &&
+            !ExposureMeasurementProducts.FitsFreshAdmissionEnvelopeBudget(input))
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidOptions, nameof(request.Options)));
         var sources = request.Inputs;
         if (request.OutputVariant != ExposureMeasurementProducts.Variant || request.Annotation is not null ||
             request.AuxiliaryInputs is { Count: > 0 } ||
@@ -91,14 +120,19 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
         var rawBrightness = Brightness(raw, cancellationToken);
         var linearClipping = linear is null ? null : Brightness(linear, cancellationToken).SensorClipping;
+        var reservedEnvelopeBytes = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? ExposureMeasurementProducts.ReservedEnvelopeBytes(input, rawBrightness, null, linearClipping)
+            : StellarFootprintOccupancy.DefaultReservedEnvelopeBytes;
         var (stars, hfd) = Measure(raw, linear, rawBrightness.SensorClipping, linearClipping,
-            input.ApertureProjection, policy, cancellationToken);
+            input.ApertureProjection, policy, reservedEnvelopeBytes, cancellationToken);
         var result = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
             input, rawBrightness, null, linearClipping, stars, hfd);
         var payload = ExposureMeasurementProducts.Serialize(result);
+        if (payload.Length > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure("measurement.payload-budget-exceeded"));
         var product = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,
             ExposureMeasurementProducts.Variant, ExposureMeasurementProducts.MediaType, null, payload,
-            identity, Algorithms(input), sources, raw.Integration, raw.Compatibility,
+            identity, Algorithms(input, policy), sources, raw.Integration, raw.Compatibility,
             ProcessingProductKind.Metadata, ExposureMeasurementProducts.SchemaVersion,
             ProcessingIdentity.ComputePayloadSha256(payload));
         cancellationToken.ThrowIfCancellationRequested();
@@ -171,7 +205,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     private static (ExposureSourcesV1, ExposureHfdV1) Measure(ProcessingArtifact raw,
         ProcessingArtifact? linear, ExposureClippingV1 sensorClipping, ExposureClippingV1? outputClipping,
-        ProjectionContext? aperture, ExposureFocusSamplingPolicy policy,
+        ProjectionContext? aperture, ExposureFocusSamplingPolicy policy, int reservedEnvelopeBytes,
         CancellationToken cancellationToken)
     {
         if (sensorClipping.StoredWhite is not { } sensorWhite)
@@ -193,8 +227,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
         var (samples, clipped, valid) = Prepare(raw, linear, sensorWhite, outputWhite, pattern, aperture, cancellationToken);
         var options = MeasuredStellarAssociationRecipe.MeasurementOptions(layout.PixelFormat);
-        var measured = StellarSourceMeasurer.Measure(samples.Span, valid.Span, clipped,
-            layout.Width, layout.Height, options, cancellationToken);
+        var measured = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy
+            ? StellarSourceMeasurer.Measure(samples.Span, valid.Span, clipped,
+                layout.Width, layout.Height, options, reservedEnvelopeBytes, cancellationToken)
+            : StellarSourceMeasurer.MeasureLegacyV2(samples.Span, valid.Span, clipped,
+                layout.Width, layout.Height, options, cancellationToken);
         var (status, reason) = measured switch
         {
             { Status: StellarMeasurementStatus.CandidateBudgetExceeded } =>
@@ -255,7 +292,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         if (stars.Detections.Count == 0)
             return new(stars.Status, stars.Reason, 0, null, null, 0, null, []);
 
-        var eligibleFirst = policy == ExposureFocusSamplingPolicy.EligibleFirst;
+        var eligibleFirst = policy is ExposureFocusSamplingPolicy.EligibleFirst or ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
         var cfa = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
         var bayerCoreTrail = cfa && policy != ExposureFocusSamplingPolicy.Brightest;
         var count = Math.Min(stars.Detections.Count, ExposureMeasurementProducts.MaximumHfdSamples);

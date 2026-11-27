@@ -20,10 +20,13 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
     internal const string SceneAuxiliaryInputName = BuiltInProcessingRecipes.MeasuredStellarAssociationsSceneInputName;
     internal const string MonoReconstruction = "mono-linear-v1";
 
+    internal const string V1ImplementationVersion = "measured-stellar-associations-v1";
+    internal const string CurrentImplementationVersion = "measured-stellar-associations-v2";
+
     public ProcessingRecipeDefinition Definition { get; } = new(
         BuiltInProcessingRecipes.MeasuredStellarAssociations,
         "1.0.0",
-        "measured-stellar-associations-v1",
+        CurrentImplementationVersion,
         ProcessingOperationKind.Analyzer);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -145,13 +148,16 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
                 layout.Width, layout.Height),
             new MeasuredStellarAssociationSceneV1(scene.SceneIdentitySha256.ToUpperInvariant(), scene.Kind,
                 scene.Catalog.Name, scene.Catalog.Version, scene.Catalog.ChecksumSha256.ToUpperInvariant(),
-                scene.Projection.CalibrationVersion, scene.Projection.AlgorithmVersion, scene.AstronomyAlgorithmVersion),
+                scene.Projection.CalibrationVersion, scene.Projection.AlgorithmVersion, scene.AstronomyAlgorithmVersion,
+                MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene),
+                scene.EffectiveUtc),
             measurement,
             new MeasuredStellarAssociationMethodV1(MeasuredStellarAssociator.AlgorithmVersion, settings,
                 StellarLabelPolicy.Version, policy),
             entries.Associations,
             entries.UnmatchedPredictions,
-            entries.UnassociatedDetections);
+            entries.UnassociatedDetections,
+            entries.PointSourcePlanets);
 
     internal static List<ProcessingAlgorithmIdentity> Algorithms(bool cfa)
     {

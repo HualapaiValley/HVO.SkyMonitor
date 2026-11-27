@@ -28,10 +28,13 @@ internal sealed class CenteredViewLayerProgressReader(SqliteCaptureProcessingSto
             var source = contributor.Exposure;
             var captureId = source.Capture.CaptureId;
             var isReference = source.Input.Key == definition.Reference.Input.Key;
-            var relevant = bindings.Where(binding =>
-                (binding.Value.Scope == CenteredViewLayerScope.Contributor ||
-                    (isReference && binding.Value.Scope == CenteredViewLayerScope.Reference)) &&
-                !settled.Contains(binding.Value.Key(captureId))).ToArray();
+            var relevant = bindings
+                .SelectMany(pair => pair.Value.Select(binding => (Port: pair.Key, Binding: binding)))
+                .Where(entry =>
+                    (entry.Binding.Scope == CenteredViewLayerScope.Contributor ||
+                        (isReference && entry.Binding.Scope == CenteredViewLayerScope.Reference)) &&
+                    !settled.Contains(entry.Binding.Key(captureId)))
+                .ToArray();
             if (relevant.Length == 0)
                 continue;
 

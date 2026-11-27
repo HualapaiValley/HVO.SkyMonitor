@@ -209,8 +209,12 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$content", (object?)settlement.ContentIdentitySha256 ?? DBNull.Value);
         command.Parameters.AddWithValue("$disposition", settlement.Availability.ToString());
         command.Parameters.AddWithValue("$reason", (object?)settlement.Reason ?? DBNull.Value);
-        command.Parameters.AddWithValue("$provenance",
-            settlement.Linear is null ? DBNull.Value : JsonSerializer.SerializeToUtf8Bytes(settlement.Linear));
+        object provenanceValue = settlement.Linear is not null
+            ? JsonSerializer.SerializeToUtf8Bytes(settlement.Linear)
+            : settlement.Semantics is not null
+                ? settlement.Semantics.Serialize()
+                : DBNull.Value;
+        command.Parameters.AddWithValue("$provenance", provenanceValue);
         if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long revision)
         {
             await TrackCenteredProductClockAsync(command, revision, cancellationToken).ConfigureAwait(false);

@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Single-use expected test values are clearer inline.")]
 public sealed partial class ProcessingNodeOptionsTests
 {
-    private const string SceneVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+    private const string SceneVersion = "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels";
     private const string Color = "constellationLineColor";
     private const string Thickness = "constellationLineThickness";
     private static readonly ProcessingNodeOptionsDescriptor Scene = ProcessingNodeOptionsDescriptors.ScenePresentationLayer;
@@ -61,10 +61,17 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual("px", thickness.Unit);
         var sceneVersions = ProcessingNodeOptionsCatalog.BuiltIn.Descriptors.Where(descriptor => descriptor.StepAlias == Scene.StepAlias)
             .Select(static descriptor => descriptor.StepVersion).ToArray();
-        CollectionAssert.AreEquivalent(new[] { "projected-scene-presentation-v12-plain-circle-markers", SceneVersion }, sceneVersions);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "projected-scene-presentation-v12-plain-circle-markers",
+                "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
+                SceneVersion
+            },
+            sceneVersions);
         Assert.AreSame(CaptureAnalysisOptionDescriptors.Prediction,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve("AstrometryPrediction", "canonical-projected-scene-v1").Descriptor);
-        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.HasCount(3, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]
@@ -96,7 +103,7 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.AreEqual(saved.Nodes[index].EffectiveOptions.GetRawText(),
                 roundTripped.Nodes[index].EffectiveOptions.GetRawText());
         }
-        Assert.HasCount(2, catalog.Upgrades, "Upgrades are offered but never applied by reading or validation.");
+        Assert.HasCount(3, catalog.Upgrades, "Upgrades are offered but never applied by reading or validation.");
     }
 
     [TestMethod]
