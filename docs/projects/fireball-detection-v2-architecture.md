@@ -462,7 +462,8 @@ both producer records carry `(SchemaVersion, Kind, Name, Version)` and **omit**
     extensions for which the deployment intentionally accepts host-process
     trust.
   - **Mandatory OS-isolated worker process boundary:** Any third-party
-    provider, proprietary GPU/NPU execution runtime, or detector subject to
+    provider outside the preceding trusted-extension exception, proprietary
+    GPU/NPU execution runtime, or detector subject to
     **filesystem, credential, or network isolation requirements** **MUST** run
     outside the CameraAgent process in an **OS-isolated worker process or
     container** (via `#140`'s certified external processing bridge) using a
