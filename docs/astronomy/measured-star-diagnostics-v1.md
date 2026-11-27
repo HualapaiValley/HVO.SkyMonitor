@@ -242,8 +242,8 @@ Three changes came out of tuning, all before the tolerances were declared:
   original held-out run at `927be360`, which predated the R1–R4 corrections.
 - Runtime: .NET 10.0.12, 12 logical processors, `DOTNET_TieredCompilation=0`.
 - Partitions: Jan 15, May 15 and Sep 15 (seeds 110201, 110205 and 110209), all at 08:00Z.
-- Catalog: the retired database `B51D18B7…0B9E2`. Catalog identity `e29a02ef…5b60b`; selection identity
-  `ce81fa2e…74cb8`.
+- This historical run used the retired catalog database `B51D18B7…0B9E2`, catalog identity `e29a02ef…5b60b`
+  and selection identity `ce81fa2e…74cb8`.
 - Report: `virtual-measured-stars.json`, SHA-256 `648bc8eccfe6be2500603daf3080654f4e078143dfcdfb8fc54d40f6c3477508`.
 
 **Result.** All 21 cases and the window-pressure case met every declared gate, with an empty failure list:

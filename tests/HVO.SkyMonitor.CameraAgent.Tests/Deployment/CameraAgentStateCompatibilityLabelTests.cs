@@ -73,7 +73,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
             ApprovedCatalogSpecifications.Get("openngc-production").ManifestVersion,
             declared);
         Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion <= declared);
-        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion <= declared);
+        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-openngc-production").ManifestVersion <= declared);
     }
 
     internal static Dictionary<string, string> ReadImageLabels()

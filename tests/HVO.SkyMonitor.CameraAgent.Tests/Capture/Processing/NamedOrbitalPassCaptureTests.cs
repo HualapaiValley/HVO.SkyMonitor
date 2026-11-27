@@ -69,7 +69,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var input = await PreparePackageAsync(root, fixture, config, ct).ConfigureAwait(false);
             config = ConfigureGraph(config, input, Path.Combine(root, "ingress"), omitGraphPin: true);
             await WriteAsync(Path.Combine(root, "camera.json"), config, ct).ConfigureAwait(false);
-            var catalogRoot = Environment.GetEnvironmentVariable("HVO_NAMED_PASS_HYG42_ROOT");
+            var catalogRoot = Environment.GetEnvironmentVariable("HVO_NAMED_PASS_HYG44_ROOT");
             ICelestialCatalog catalog = catalogRoot is null
                 ? new InMemoryCelestialCatalog([])
                 : CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production")

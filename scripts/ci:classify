@@ -103,9 +103,8 @@ is_release_scripts_path() {
 
 is_catalog_recipe_path() {
   # The Catalog Reproducibility job (Refs #1774) rebuilds the approved HYG 4.4 and OpenNGC bytes, and the committed catalog
-  # test fixtures, under both SQLite connection defaults. It runs when a build recipe, a pin or a fixture changes,
-  # which is everything under these two directories and nothing else: scripts/catalog:* (the operator entry points)
-  # and the job's own wiring do not select it on a pull request. Non-pull-request events always run it.
+  # test fixtures, under both SQLite connection defaults. Pull requests select it through changes under the two
+  # recipe directories below. Non-pull-request events always run it.
   case "$1" in
     scripts/catalog/* | tests/fixtures/catalog/*)
       return 0
@@ -143,7 +142,7 @@ is_reduced_path() {
     tools/asi-capture/README.md)
       return 0
       ;;
-    tests/fixtures/catalog/SOURCE.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
+    tests/fixtures/catalog/SOURCE-v44.md | tests/fixtures/catalog/SOURCE-v44-openngc.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
       return 0
       ;;
     scripts/test:devcontainer)

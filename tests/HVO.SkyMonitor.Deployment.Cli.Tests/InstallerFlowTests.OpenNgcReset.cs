@@ -72,7 +72,9 @@ public sealed partial class InstallerFlowTests
             Assert.IsTrue(planned.IsRefusal);
             Assert.IsTrue(applied.IsRefusal);
             Assert.AreEqual(planned.Message, applied.Message);
-            StringAssert.Contains(planned.Message, unsupportedImage ? "cannot resolve the selected catalog" : "retained deep-sky catalog snapshot", StringComparison.Ordinal);
+            StringAssert.Contains(planned.Message,
+                unsupportedImage ? "does not declare support for the standalone deep-sky manifest" : "retained deep-sky catalog snapshot",
+                StringComparison.Ordinal);
             FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(root), "Admission refusal must precede writes in plan and run.");
             Assert.AreEqual(0, runner.ComposeUpCount);
         }

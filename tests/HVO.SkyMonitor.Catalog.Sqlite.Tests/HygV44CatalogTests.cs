@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 /// <summary>
 /// Schema 3 (HYG 4.4, issue #521) reader and resolver contracts over the checked-in subset fixture, plus guards that
-/// schema 2 (HYG 4.4) keeps exactly its prior meaning.
+/// schema 2 (legacy fixed-J2000) keeps exactly its prior meaning.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]

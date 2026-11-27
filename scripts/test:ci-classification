@@ -680,7 +680,8 @@ allowlisted_paths=(
   ".github/prompts/example.md"
   "src/Example/README.md"
   "tests/Example.Tests/README.md"
-  "tests/fixtures/catalog/SOURCE.md"
+  "tests/fixtures/catalog/SOURCE-v44.md"
+  "tests/fixtures/catalog/SOURCE-v44-openngc.md"
   "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md"
   "tools/asi-capture/README.md"
   "scripts/test:devcontainer"
@@ -2347,12 +2348,15 @@ run_work_catalog_recipe() {
   output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
   assert_catalog_recipe_output "$output" true
 
-  recipe_base="$recipe_head"
-  update_file_in "$repo" "tests/fixtures/catalog/SOURCE.md"
-  recipe_head="$(git -C "$repo" rev-parse HEAD)"
-  output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
-  assert_plan_output "$output" reduced false
-  assert_catalog_recipe_output "$output" true
+  local source_note
+  for source_note in SOURCE-v44.md SOURCE-v44-openngc.md; do
+    recipe_base="$recipe_head"
+    update_file_in "$repo" "tests/fixtures/catalog/$source_note"
+    recipe_head="$(git -C "$repo" rev-parse HEAD)"
+    output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
+    assert_plan_output "$output" reduced false
+    assert_catalog_recipe_output "$output" true
+  done
 
   recipe_base="$recipe_head"
   update_file_in "$repo" "docs/runbooks/example.md"

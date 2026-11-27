@@ -124,7 +124,7 @@ the fixed J2000 catalog positions. Astrometric uncertainty continues to report
 `none-fixed-position-catalog-baseline`. A caller that needs motion reads it
 explicitly through `ICelestialCatalogDetailsSource`, which returns
 `CelestialCatalogObjectDetails`. It then applies the explicit
-`ProperMotionPropagation` helper in `HVO.SkyMonitor.Astronomy`. Selecting
+`ProperMotionPropagation` helper in `HVO.SkyMonitor.Astronomy`.
 The default projection uses the fixed positions.
 
 ## Select and roll back revisions

@@ -519,13 +519,12 @@ The two offline steps come first, so an upstream outage cannot hide a fixture re
 
 The job runs when the plan is full mode and the classifier's `catalog_recipe` output is `true`. On a pull request that
 output is `true` when the change adds, modifies, deletes or renames a path under `scripts/catalog/` or
-`tests/fixtures/catalog/`, at any depth. Nothing else selects it on a pull request: not the `scripts/catalog:*` entry
-points, not the catalog adapter's sources, and not the job's own wiring in `ci.yml`, `scripts/ci:classify` or
-`scripts/ci:require`. Pushes to `main` and `release/**`, manual dispatches and the release workflow's qualification
-call always select it, and so do missing commits, empty ranges, failed or malformed diffs and missing or non-regular
-tree entries. A reduced-mode plan never runs it, including one that names the allowlisted
-`tests/fixtures/catalog/SOURCE.md`. `Required CI` requires the job to be `success` exactly when a full-mode plan
-selects it and `skipped` otherwise, and rejects a non-pull-request plan that does not select it.
+`tests/fixtures/catalog/`, at any depth. Pushes to `main` and `release/**`, manual dispatches and the release
+workflow's qualification call always select it, and so do missing commits, empty ranges, failed or malformed
+diffs and missing or non-regular tree entries. A change limited to allowlisted documentation, including
+`tests/fixtures/catalog/SOURCE-v44.md` or `tests/fixtures/catalog/SOURCE-v44-openngc.md`, stays in reduced mode.
+`Required CI` requires `success` when a full-mode plan selects the job and `skipped` for other pull request plans.
+It rejects a non-pull-request plan that omits the job.
 
 ### SQLite identity line
 
@@ -1266,7 +1265,8 @@ changed path is an added or modified member of this allowlist:
 - `.github/copilot-instructions.md` and `.github/pull_request_template.md`
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
-- `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
+- `tests/fixtures/catalog/SOURCE-v44.md`, `tests/fixtures/catalog/SOURCE-v44-openngc.md` and
+  `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
 - `scripts/test:devcontainer`
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
 resolves the devcontainer definition after unsetting GitHub-token and Git-identity
