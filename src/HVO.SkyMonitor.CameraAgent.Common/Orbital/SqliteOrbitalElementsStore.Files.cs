@@ -341,8 +341,13 @@ public sealed partial class SqliteOrbitalElementsStore
 
     private void DeleteAndSyncQuarantineFile(string source, string quarantineDirectory)
     {
+        // Defer legacy quarantine migration if an established retained-integrity ledger cannot record the intent.
         // Keep the ledger delete intent pending until the directory entry removal is durable.
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginDelete(source);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.TryBeginDelete(source);
+        if (integrity is null)
+        {
+            return;
+        }
         var synced = false;
         try
         {
@@ -362,8 +367,13 @@ public sealed partial class SqliteOrbitalElementsStore
 
     private void MoveAndSyncQuarantineFile(string source, string destination, string quarantineDirectory)
     {
+        // Defer legacy quarantine migration if an established retained-integrity ledger cannot record the intent.
         // Keep the ledger publication intent pending until the renamed file and directory entry are durable.
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginPublication(source, destination);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.TryBeginPublication(source, destination);
+        if (integrity is null)
+        {
+            return;
+        }
         var synced = false;
         try
         {

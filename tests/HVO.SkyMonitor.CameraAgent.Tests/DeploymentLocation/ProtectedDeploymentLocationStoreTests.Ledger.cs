@@ -138,6 +138,94 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhileLedgerIsUnavailable(
+        bool matchingDuplicateRawExists)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file permissions are required to make the retained-integrity database temporarily unreadable.");
+            return;
+        }
+
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var ledgerPath = Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4));
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+            await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+            RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+            }
+        }
+
+        // Make the retained-integrity database temporarily unreadable during recovery startup.
+        var originalMode = File.GetUnixFileMode(ledgerPath);
+        File.SetUnixFileMode(ledgerPath, UnixFileMode.None);
+        try
+        {
+            using var unavailableLocations = CreateStore();
+            Assert.AreEqual(active, await unavailableLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                await unavailableLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await unavailableLocations.FullVerifyAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+
+            using (var unavailableOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                await unavailableOrbital.InitializeAsync(token).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath),
+                "Legacy quarantine .json must be preserved untouched while the retained-integrity ledger is unavailable.");
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(legacyJsonPath, token).ConfigureAwait(false));
+            Assert.AreEqual(matchingDuplicateRawExists, File.Exists(migratedRawPath));
+            if (matchingDuplicateRawExists)
+            {
+                CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(ledgerPath, originalMode);
+        }
+
+        // Restoring permissions on the same ledger lets restart migration complete and qualify cleanly.
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
     [DataRow(false, true)]
     [DataRow(false, false)]
     [DataRow(true, true)]
@@ -558,6 +646,62 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             CollectionAssert.Contains(syncedDirectories, Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)),
                 "When the pending intent's parent directory no longer exists, reconciliation must sync its nearest existing ancestor.");
             Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, expectedKey, token).ConfigureAwait(false));
+        }
+        finally
+        {
+            RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = null;
+        }
+    }
+
+    [TestMethod]
+    public async Task ScrubPendingIntentReconciliationSyncsSiblingDirectoriesDeepestFirstBeforeRoot()
+    {
+        var token = CancellationToken.None;
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_options.Value.RawIngressRoot));
+        var alpha = Path.Combine(root, "alpha");
+        var alphaNested = Path.Combine(alpha, "nested");
+        var beta = Path.Combine(root, "beta");
+        var firstPath = Path.Combine(alphaNested, "first.json");
+        var secondPath = Path.Combine(beta, "second.json");
+        var firstKey = RetainedIntegrityLedger.FileKey(root, firstPath);
+        var secondKey = RetainedIntegrityLedger.FileKey(root, secondPath);
+        var ledgerPath = Path.Combine(root, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            Directory.CreateDirectory(alphaNested);
+            Directory.CreateDirectory(beta);
+            await RetainedFileMutations.WriteAllBytesAsync(firstPath, "{}"u8.ToArray(), token).ConfigureAwait(false);
+            await RetainedFileMutations.WriteAllBytesAsync(secondPath, "{}"u8.ToArray(), token).ConfigureAwait(false);
+            using (RetainedIntegrityLedger.BeginDelete(firstPath))
+            {
+                File.Delete(firstPath);
+                RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+            using (RetainedIntegrityLedger.BeginDelete(secondPath))
+            {
+                File.Delete(secondPath);
+                RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+        }
+
+        Assert.AreEqual(1L, await QueryPendingCountAsync(ledgerPath, firstKey, token).ConfigureAwait(false));
+        Assert.AreEqual(1L, await QueryPendingCountAsync(ledgerPath, secondKey, token).ConfigureAwait(false));
+
+        var syncedDirectories = new List<string>();
+        RetainedIntegrityLedger.BeforePendingDirectorySyncForTest = syncedDirectories.Add;
+        try
+        {
+            using var restarted = CreateStore();
+            Assert.AreEqual(active, await restarted.FullVerifyAsync(seed, token).ConfigureAwait(false));
+            Assert.AreEqual(active, await restarted.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+            CollectionAssert.AreEqual(new[] { alphaNested, alpha, beta, root }, syncedDirectories,
+                "Pending-intent directory sync must order directories globally deepest-first (with ordinal tie-breaking) so all sibling directories sync before root.");
+            Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, firstKey, token).ConfigureAwait(false));
+            Assert.AreEqual(0L, await QueryPendingCountAsync(ledgerPath, secondKey, token).ConfigureAwait(false));
         }
         finally
         {

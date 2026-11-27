@@ -358,9 +358,24 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null));
         return plans.Count == 0 ? Empty.Instance : Begin(plans);
     }
+
+    internal static IDisposable? TryBeginPublication(string source, string destination)
+        => TryBeginPublication(source, destination, Tracked(destination) ? File.ReadAllBytes(source) : []);
+
+    internal static IDisposable? TryBeginPublication(string source, string destination, ReadOnlyMemory<byte> bytes)
+    {
+        var plans = new List<(string Path, bool Tree, string? Planned, string? Source)>();
+        if (Tracked(source)) plans.Add((source, false, null, null));
+        if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null));
+        return plans.Count == 0 ? Empty.Instance : TryBegin(plans);
+    }
+
     internal static IDisposable BeginWrite(string path, ReadOnlyMemory<byte> bytes)
         => Tracked(path) ? Begin([(path, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null)]) : Empty.Instance;
     internal static IDisposable BeginDelete(string path) => Tracked(path) ? Begin([(path, false, null, null)]) : Empty.Instance;
+
+    internal static IDisposable? TryBeginDelete(string path)
+        => Tracked(path) ? TryBegin([(path, false, null, null)]) : Empty.Instance;
     internal static IDisposable BeginSiloStagingDelete(string sidecarPath, string manifestSha256) =>
         Begin([(sidecarPath, false, null, null)], reclaimedStagingSha256: manifestSha256);
     internal static IDisposable BeginTrees(params string[] paths) => Begin(paths.Select(path => (path, true, (string?)null, (string?)null)));
@@ -386,6 +401,17 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
 
     private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
         string? reclaimedStagingSha256 = null)
+        => TryBeginCore(plans, requireAvailableLedger: false, reclaimedStagingSha256)!;
+
+    private static Multiple? TryBegin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        string? reclaimedStagingSha256 = null)
+        => TryBeginCore(plans, requireAvailableLedger: true, reclaimedStagingSha256);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned composite owns the registration lease and root scopes and disposes them in reverse order.")]
+    private static Multiple? TryBeginCore(
+        IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        bool requireAvailableLedger,
+        string? reclaimedStagingSha256 = null)
     {
         if (Current.Value is { Active: true }) BeforeNestedMutationForTest?.Invoke();
         var registration = RegistrationLease.Enter();
@@ -397,7 +423,15 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                 var full = Path.GetFullPath(plan.Path);
                 var current = full;
                 while (current is not null && !Roots.ContainsKey(current)) current = Path.GetDirectoryName(current);
-                if (current is null || !Roots.TryGetValue(current, out var owner)) continue;
+                if (current is null || !Roots.TryGetValue(current, out var owner))
+                {
+                    if (requireAvailableLedger && (plan.Tree || Tracked(full)) && HasEstablishedLedgerOnDisk(full))
+                    {
+                        registration.Dispose();
+                        return null;
+                    }
+                    continue;
+                }
                 var relative = Path.GetRelativePath(owner._root, full);
                 if (relative == "." && plan.Tree) throw new InvalidOperationException("A running retained integrity root cannot be removed.");
                 if (!plan.Tree && !Tracked(relative)) continue;
@@ -415,7 +449,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             }
         }
         catch { registration.Dispose(); throw; }
-        if (grouped.Count == 0) return new Multiple([registration]);
+        if (grouped.Count == 0)
+        {
+            return new Multiple([registration]);
+        }
         // Retain the ambient registration lease until every root scope completes.
         // Releasing it while holding a root barrier lets another writer own the
         // global gate while waiting for that root, deadlocking a nested write.
@@ -425,11 +462,49 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             foreach (var (owner, intents) in grouped.OrderBy(pair => pair.Key._root, StringComparer.Ordinal)) scopes.Add(owner.Enter(intents));
             return new Multiple(scopes);
         }
+        catch (Exception exception) when (requireAvailableLedger && OptionalIo(exception))
+        {
+            new Multiple(scopes).Dispose();
+            return null;
+        }
         catch
         {
             new Multiple(scopes).Dispose();
             throw;
         }
+    }
+
+    private static bool HasEstablishedLedgerOnDisk(string fullPath)
+    {
+        var current = Path.GetDirectoryName(fullPath);
+        while (!string.IsNullOrEmpty(current))
+        {
+            var locationDirectory = Path.Combine(current, ".location");
+            if (Directory.Exists(locationDirectory))
+            {
+                if (Path.Exists(Path.Combine(locationDirectory, DatabaseName)) ||
+                    Path.Exists(Path.Combine(locationDirectory, CheckpointName)) ||
+                    Path.Exists(Path.Combine(locationDirectory, "deployment-location.v1.protected")))
+                {
+                    return true;
+                }
+                try
+                {
+                    _ = Directory.EnumerateFileSystemEntries(locationDirectory).Any();
+                }
+                catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+                {
+                    return true;
+                }
+            }
+            var parent = Path.GetDirectoryName(current);
+            if (string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+            current = parent;
+        }
+        return false;
     }
 
     private IDisposable Enter(IEnumerable<Intent> intents)
@@ -634,12 +709,32 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         {
             CollectPendingSyncTargets(intent, syncedFiles, directories, seenDirectories);
         }
+        directories.Sort((left, right) =>
+        {
+            var depthComparison = RelativeDirectoryDepth(right).CompareTo(RelativeDirectoryDepth(left));
+            return depthComparison != 0 ? depthComparison : StringComparer.Ordinal.Compare(left, right);
+        });
         foreach (var directory in directories)
         {
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, directory);
             BeforePendingDirectorySyncForTest?.Invoke(directory);
             DurableSync.Directory(directory);
         }
+    }
+
+    private int RelativeDirectoryDepth(string normalizedPath)
+    {
+        if (IsRootDirectory(normalizedPath)) return 0;
+        var depth = 0;
+        for (var index = _root.Length; index < normalizedPath.Length; index++)
+        {
+            var ch = normalizedPath[index];
+            if (ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar)
+            {
+                depth++;
+            }
+        }
+        return depth;
     }
 
     private void CollectPendingSyncTargets(
