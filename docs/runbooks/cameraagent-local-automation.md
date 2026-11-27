@@ -45,11 +45,12 @@ On a runnable product definition, expand **Backfill** and enter the
 starting-sunrise report date. Preview the eligible windows and select the exact
 hour by offset and UTC time when applicable. Give a reason before queuing. If a
 site change moves the previewed window, preview the new window before queuing. A
-failed or interrupted source-window run can be retried from **Run history** with its
-original inputs. The store checks the version, retention, current registry,
-finality and queue bounds again at admission. Disabling withdraws queued
-attempts. An already running predefined task finishes under its existing worker
-policy. Time-data refresh supports **Run now**. Orbital and space-weather
+failed or interrupted source-window run offers **Retry** in **Run history** when
+the definition is enabled and the registry still accepts the run's recorded
+revision. A retry uses the original inputs. The store checks the version,
+retention, current registry, finality and queue bounds again at admission.
+Disabling withdraws queued attempts. An already running predefined task finishes
+under its existing worker policy. Time-data refresh supports **Run now**. Orbital and space-weather
 refreshes link to their provider-specific controls.
 
 Changing a producer preset or its validation rules can make a definition

@@ -184,9 +184,6 @@ else
 
         case AutomationView.Runs:
             var runs = DisplayRuns;
-            var latestAttempts = runs.Where(static run => run.Occurrence is not null)
-                .GroupBy(static run => run.Occurrence!.IdentitySha256)
-                .ToDictionary(static group => group.Key, static group => group.Max(run => run.Attempt), StringComparer.Ordinal);
             <div class="automation-view" id="automation-runs">
                 <section class="ops-panel" aria-labelledby="automation-runs-heading">
                     <header class="ops-panel-heading">
@@ -242,7 +239,7 @@ else
                                                             <AutomationRunProducts Occurrence="occurrence" />
                                                         }
                                                     </details>
-                                                    @if (latestAttempts[occurrence.IdentitySha256] == run.Attempt && RetryDefinition(run) is { } live)
+                                                    @if (RetryDefinition(run) is { } live)
                                                     {
                                                         <PredefinedAutomationRunControls @key="live.Version" Definition="live" Run="run" Changed="LoadAsync" />
                                                     }

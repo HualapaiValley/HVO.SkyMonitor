@@ -1009,15 +1009,12 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private LocalAutomationDefinitionState? RetryDefinition(LocalAutomationRun run)
     {
-        if (run.Attempt >= SqliteLocalAutomationStore.MaximumOccurrenceAttempts ||
-            run.Outcome is not (LocalAutomationRunOutcome.Failed or LocalAutomationRunOutcome.Interrupted))
+        if (_automation is not { } state || !state.RetryableSourceWindowRunKeys.Contains(run.RunKey, StringComparer.Ordinal))
         {
             return null;
         }
-        return _automation?.Definitions.FirstOrDefault(item =>
-            item.Definition.DefinitionId == run.DefinitionId && IsDefinitionRunnable(item));
+        return state.Definitions.FirstOrDefault(item => item.Definition.DefinitionId == run.DefinitionId);
     }
-
 
     /// <summary>The reason exactly as the store will hash it, so the retained key stays payload-accurate.</summary>
     private string? TrimmedReason()
