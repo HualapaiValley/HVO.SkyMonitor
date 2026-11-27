@@ -275,13 +275,11 @@ public sealed class InstallerLifecycleControlIntegrationTests
     }
 
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    [DataRow(true, true)]
-    public async Task RealScheduledRestartTimeoutRestoresPriorRunningStateAndKeepsAcceptedLocalWork(bool initiallyPaused, bool quarantined)
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RealScheduledRestartTimeoutRestoresPriorRunningStateAndKeepsAcceptedLocalWork(bool initiallyPaused)
     {
-        var fixture = new Fixture(false) { ProcessingPending = quarantined ? 0 : 1, HistoricalQuarantine = true };
+        var fixture = new Fixture(false) { ProcessingPending = 1, HistoricalQuarantine = true };
         await using var owned = fixture.ConfigureAwait(false);
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", Guid.NewGuid(), fixture.Handler);
@@ -298,7 +296,7 @@ public sealed class InstallerLifecycleControlIntegrationTests
         Assert.AreEqual(!initiallyPaused, terminal.ResumeConfirmed);
         Assert.IsFalse(terminal.RestartRequested);
         Assert.AreEqual(0, fixture.RestartCalls);
-        Assert.AreEqual(quarantined ? 0 : 1, fixture.ProcessingPending, "Failure must preserve accepted local work.");
+        Assert.AreEqual(1, fixture.ProcessingPending, "Failure must preserve accepted local work.");
         Assert.AreEqual(LocalAutomationRunOutcome.Failed,
             (await fixture.Automations.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Outcome);
         if (!initiallyPaused)

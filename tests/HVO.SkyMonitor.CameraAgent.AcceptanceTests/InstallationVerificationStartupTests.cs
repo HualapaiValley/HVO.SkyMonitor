@@ -83,7 +83,12 @@ public sealed partial class InstallationVerificationStartupTests
         request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
         using var response = await owner.SendAsync(request).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.AreEqual(json, await File.ReadAllTextAsync(Path.Combine(host.Root, relative)).ConfigureAwait(false));
+        var originalPath = Path.Combine(host.Root, relative);
+        var retainedPath = File.Exists(originalPath)
+            ? originalPath
+            : Directory.EnumerateFiles(Path.Combine(host.Root, "quarantine"), Path.GetFileName(relative),
+                SearchOption.AllDirectories).Single();
+        Assert.AreEqual(json, await File.ReadAllTextAsync(retainedPath).ConfigureAwait(false));
         await host.RestartAsync().ConfigureAwait(false);
         Assert.IsTrue(host.Services.GetRequiredService<ConfigurationStartupProbe>().Loaded);
     }

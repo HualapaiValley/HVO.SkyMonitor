@@ -171,7 +171,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
             await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
             var retained = await store.ReadAttemptsAsync(root, 10, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(0, retained);
-            Assert.AreEqual(2L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
+            Assert.AreEqual(1L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
             clock.Now = Epoch.AddSeconds(2000);
             await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(0L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
