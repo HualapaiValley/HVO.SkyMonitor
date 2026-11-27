@@ -338,7 +338,10 @@ public sealed class ReleaseAcquirerTests
             StringAssert.Contains(failure.Message, "timed out", StringComparison.Ordinal);
             Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded timeout, took {stopwatch.Elapsed}.");
             var fixtureProcess = await ReadFixtureProcessIdentityAsync(pidFile);
-            Assert.IsFalse(Directory.Exists($"/proc/{fixtureProcess.Pid}"), $"Timed-out command PID {fixtureProcess.Pid} was not reaped.");
+            var currentStat = ReadLinuxProcessStat(fixtureProcess.Pid);
+            Assert.IsTrue(
+                IsFixtureProcessTerminated(fixtureProcess, currentStat, allowZombieAsTerminated: false),
+                $"Timed-out command PID {fixtureProcess.Pid} (start time {fixtureProcess.StartTimeTicks}) was not reaped (stat: {currentStat}).");
         }
         finally
         {
@@ -356,9 +359,7 @@ public sealed class ReleaseAcquirerTests
         var script = Path.Combine(root.FullName, "hold-pipes.sh");
         try
         {
-            await File.WriteAllTextAsync(
-                script,
-                "#!/bin/sh\nset -e\nsleep 30 &\nchild_pid=$!\nIFS= read -r stat_line < \"/proc/$child_pid/stat\"\nprintf '%s\\n%s\\n' \"$child_pid\" \"$stat_line\" > \"$1.pid.tmp\"\nmv -f \"$1.pid.tmp\" \"$1.pid\"\nexit 0\n");
+            await File.WriteAllTextAsync(script, HoldPipesFixtureScript);
             File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
             var stopwatch = Stopwatch.StartNew();
@@ -375,6 +376,78 @@ public sealed class ReleaseAcquirerTests
             // The command has exited, so the fixture owns cleanup of its reparented descendant.
             // Minimal containers whose PID 1 does not reap adopted orphans may leave the killed sleep in state 'Z'.
             await CleanUpFifoFixtureAsync(root, pidFile, script, allowZombieAsTerminated: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenPipeHolderPidFilePublicationFails_DoesNotLeakSleepChild()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-mvfail-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
+        var holdPipesScript = Path.Combine(root.FullName, "hold-pipes.sh");
+        var runnerScript = Path.Combine(root.FullName, "run-with-failing-mv.sh");
+        var fakeBin = Path.Combine(root.FullName, "bin");
+        var mvStub = Path.Combine(fakeBin, "mv");
+        var sleepStub = Path.Combine(fakeBin, "sleep");
+        var mvMarker = Path.Combine(root.FullName, "mv-parent.pid");
+        var sleepMarker = Path.Combine(root.FullName, "sleep-invoked.pid");
+        try
+        {
+            Directory.CreateDirectory(fakeBin);
+            await File.WriteAllTextAsync(holdPipesScript, HoldPipesFixtureScript);
+            File.SetUnixFileMode(holdPipesScript, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedMvMarker = EscapeSingleQuotedShellArgument(mvMarker);
+            await File.WriteAllTextAsync(
+                mvStub,
+                $"#!/bin/sh\nIFS= read -r parent_stat < \"/proc/$PPID/stat\"\nprintf '%s\\n%s\\n' \"$PPID\" \"$parent_stat\" > {escapedMvMarker}\nexit 1\n");
+            File.SetUnixFileMode(mvStub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedSleepMarker = EscapeSingleQuotedShellArgument(sleepMarker);
+            await File.WriteAllTextAsync(
+                sleepStub,
+                $"#!/bin/sh\nprintf '%s\\n' \"$$\" > {escapedSleepMarker}\nexit 0\n");
+            File.SetUnixFileMode(sleepStub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedFakeBin = EscapeSingleQuotedShellArgument(fakeBin);
+            var escapedHoldPipesScript = EscapeSingleQuotedShellArgument(holdPipesScript);
+            await File.WriteAllTextAsync(
+                runnerScript,
+                $"#!/bin/sh\nPATH={escapedFakeBin}:\"$PATH\"\nexport PATH\nexec {escapedHoldPipesScript} \"$1\"\n");
+            File.SetUnixFileMode(runnerScript, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, runnerScript, TimeSpan.FromMilliseconds(500)));
+
+            StringAssert.Contains(failure.Message, "failed unexpectedly (exit 1)", StringComparison.Ordinal);
+            Assert.IsFalse(
+                failure.Message.Contains("remained open", StringComparison.Ordinal),
+                $"A leaked child process held redirected pipes open after mv failure: {failure.Message}");
+            Assert.IsFalse(
+                failure.Message.Contains("timed out", StringComparison.Ordinal),
+                $"Expected prompt failure after mv error, got timeout: {failure.Message}");
+            Assert.IsFalse(File.Exists(pidFile), "PID file must not be published when mv fails.");
+            Assert.IsFalse(File.Exists(sleepMarker), "Background pipe-holder must never exec sleep when PID-file publication fails.");
+
+            var backgroundChild = await ReadFixtureProcessIdentityAsync(mvMarker);
+            var waitStopwatch = Stopwatch.StartNew();
+            var childStat = ReadLinuxProcessStat(backgroundChild.Pid);
+            while (!IsFixtureProcessTerminated(backgroundChild, childStat, allowZombieAsTerminated: true)
+                && waitStopwatch.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
+                childStat = ReadLinuxProcessStat(backgroundChild.Pid);
+            }
+
+            Assert.IsTrue(
+                IsFixtureProcessTerminated(backgroundChild, childStat, allowZombieAsTerminated: true),
+                $"Background pipe-holder PID {backgroundChild.Pid} (start time {backgroundChild.StartTimeTicks}) remained alive after mv failure (stat: {childStat}).");
+        }
+        finally
+        {
+            await CleanUpFifoFixtureAsync(root, pidFile, holdPipesScript, allowZombieAsTerminated: true);
         }
     }
 
@@ -404,6 +477,25 @@ public sealed class ReleaseAcquirerTests
         Assert.IsTrue(TryParseLinuxProcessStat(linux26Stat, out var minimalLinux26));
         Assert.AreEqual(new LinuxProcessStat(45678, 'I', 555UL), minimalLinux26);
 
+        // Linux permits CR and LF inside parenthesized comm in /proc/{pid}/stat.
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "line1\nline2", 'R', 555UL),
+                out var lfInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'R', 555UL), lfInComm);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "line1\rline2", 'S', 666UL),
+                out var crInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'S', 666UL), crInComm);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "a)\r\n(b", 'D', 777UL),
+                out var crlfParensInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'D', 777UL), crlfParensInComm);
+
         var validFullStat = BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL);
         var validWithoutNewline = validFullStat[..^1];
         const string truncatedInsideStartTime = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432";
@@ -415,7 +507,10 @@ public sealed class ReleaseAcquirerTests
         var trailingSpace = $"{validWithoutNewline} \n";
         var invalidStateLetter = validFullStat.Replace(") S ", ") Q ", StringComparison.Ordinal);
         var crlfStat = $"{validWithoutNewline}\r\n";
-        var embeddedNewlineInComm = BuildSyntheticLinuxProcessStat(45678, "line1\nline2", 'R', 555UL);
+        var embeddedNewlineAfterComm = validFullStat.Replace(") S 1 ", ") S 1\n", StringComparison.Ordinal);
+        var embeddedCrAfterComm = validFullStat.Replace(") S 1 ", ") S 1\r", StringComparison.Ordinal);
+        var nulWithNewlineInComm = BuildSyntheticLinuxProcessStat(45678, "line1\n\0line2", 'R', 555UL);
+        var nulWithCrInComm = BuildSyntheticLinuxProcessStat(45678, "line1\r\0line2", 'R', 555UL);
         var twoConcatenatedLines = $"{validFullStat}{validFullStat}";
 
         Assert.IsFalse(TryParseLinuxProcessStat(null, out _));
@@ -430,8 +525,14 @@ public sealed class ReleaseAcquirerTests
         Assert.IsFalse(TryParseLinuxProcessStat(trailingSpace, out _));
         Assert.IsFalse(TryParseLinuxProcessStat(invalidStateLetter, out _));
         Assert.IsFalse(TryParseLinuxProcessStat(crlfStat, out _));
-        Assert.IsFalse(TryParseLinuxProcessStat(embeddedNewlineInComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(embeddedNewlineAfterComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(embeddedCrAfterComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nulWithNewlineInComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nulWithCrInComm, out _));
         Assert.IsFalse(TryParseLinuxProcessStat(twoConcatenatedLines, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"{validFullStat}extra\n", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"\n{validFullStat}", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"\r{validFullStat}", out _));
         Assert.IsFalse(TryParseLinuxProcessStat($" {validFullStat}", out _));
         Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("(sleep)", "sleep", StringComparison.Ordinal), out _));
         Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("12345 (sleep)", "(sleep)", StringComparison.Ordinal), out _));
@@ -448,6 +549,7 @@ public sealed class ReleaseAcquirerTests
     public void TryParseFixtureProcessIdentity_ParsesAtomicIdentityAndRejectsTruncatedOrMismatchedContent()
     {
         var validStat = BuildSyntheticLinuxProcessStat(12345, "hang (fixture) sh", 'S', 987654321UL);
+        var crlfCommStat = BuildSyntheticLinuxProcessStat(12345, "line1\r\nline2", 'S', 987654321UL);
         var initStat = BuildSyntheticLinuxProcessStat(1, "init", 'S', 1UL);
 
         Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{validStat}", out var identity));
@@ -455,6 +557,9 @@ public sealed class ReleaseAcquirerTests
 
         Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\r\n{validStat}", out var crlfIdentity));
         Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), crlfIdentity);
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{crlfCommStat}", out var crlfCommIdentity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), crlfCommIdentity);
 
         Assert.IsFalse(TryParseFixtureProcessIdentity(null, out _));
         Assert.IsFalse(TryParseFixtureProcessIdentity(string.Empty, out _));
@@ -1719,6 +1824,30 @@ public sealed class ReleaseAcquirerTests
     private const nint LinuxSysPidfdOpen = 434;
     private static readonly TimeSpan DefaultFifoCommandTimeout = TimeSpan.FromSeconds(10);
 
+    // Publish the background child's own (PID, /proc/$$/stat) identity atomically BEFORE exec'ing sleep 30,
+    // and synchronize via a command-substitution pipe so the parent exits 0 only after publication succeeds
+    // and no sleep child is ever spawned if mv or any preceding step fails.
+    private const string HoldPipesFixtureScript =
+        "#!/bin/sh\n"
+        + "set -e\n"
+        + "exec 3>&1\n"
+        + "ready=$(\n"
+        + "  sh -c '\n"
+        + "    set -e\n"
+        + "    IFS= read -r stat_line < \"/proc/$$/stat\"\n"
+        + "    printf \"%s\\n%s\\n\" \"$$\" \"$stat_line\" > \"$1.pid.tmp\"\n"
+        + "    mv -f \"$1.pid.tmp\" \"$1.pid\"\n"
+        + "    printf \"ok\\n\"\n"
+        + "    exec 1>&3 3>&-\n"
+        + "    exec sleep 30\n"
+        + "  ' \"$0\" \"$1\" &\n"
+        + ")\n"
+        + "[ \"$ready\" = \"ok\" ]\n"
+        + "exit 0\n";
+
+    private static string EscapeSingleQuotedShellArgument(string value)
+        => $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
+
     private static async Task CreateFifoOrInconclusiveAsync(
         string path,
         string command = "mkfifo",
@@ -2047,16 +2176,15 @@ public sealed class ReleaseAcquirerTests
         }
 
         var line = statContent.AsSpan(0, statContent.Length - 1);
-        if (line.ContainsAny('\n', '\r'))
-        {
-            return false;
-        }
-
         var openParen = line.IndexOf('(');
         var closeParen = line.LastIndexOf(')');
+        // Linux fs/proc/array.c formats comm into a 64-byte buffer (max 63 bytes before NUL; 15 bytes for user tasks)
+        // and allows CR/LF inside comm. Bounding comm prevents two concatenated full stat records from being swallowed.
+        const int MaxLinuxTaskCommLength = 63;
         if (openParen < 2
             || line[openParen - 1] != ' '
             || closeParen <= openParen
+            || closeParen - openParen - 1 > MaxLinuxTaskCommLength
             || closeParen + 2 >= line.Length
             || line[closeParen + 1] != ' ')
         {
@@ -2065,6 +2193,12 @@ public sealed class ReleaseAcquirerTests
 
         var pidSpan = line[..(openParen - 1)];
         if (!TryParseStrictUnsignedInt32(pidSpan, out var pid) || pid <= 0)
+        {
+            return false;
+        }
+
+        var afterComm = line[(closeParen + 2)..];
+        if (afterComm.ContainsAny('\n', '\r'))
         {
             return false;
         }
