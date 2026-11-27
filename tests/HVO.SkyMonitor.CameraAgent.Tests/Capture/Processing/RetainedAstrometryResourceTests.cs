@@ -64,6 +64,8 @@ public sealed partial class DurableCaptureProcessingTests
             var afterMap = Sample();
             Assert.IsTrue(track.All(point => point is not null && point.CoordinateEpochUtc == calculator.Frame.MidpointUtc));
             var compactBytes = MeasuredAstrometryJson.Serialize(view.Solution).Length;
+            var peakWorkingSetDeltaBytes = Math.Max(afterFit.WorkingSet, Math.Max(afterRead.WorkingSet, afterMap.WorkingSet))
+                - before.WorkingSet;
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 size,
@@ -74,6 +76,7 @@ public sealed partial class DurableCaptureProcessingTests
                 view.Solution.Residuals.VerificationRmsPixels,
                 solutionIdentity = view.SolutionIdentitySha256,
                 fitNodeMilliseconds = node.Duration?.TotalMilliseconds,
+                peakWorkingSetDeltaBytes,
                 produce = Delta(before, afterFit),
                 reconstruct = Delta(beforeRead, afterRead),
                 calculate = Delta(beforeMap, afterMap)
@@ -83,7 +86,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsLessThan(TimeSpan.FromSeconds(1), Stopwatch.GetElapsedTime(beforeMap.Ticks, afterMap.Ticks));
             Assert.IsLessThan(1L << 30, afterFit.Allocations - before.Allocations);
             Assert.IsLessThan(128L << 20, afterRead.Allocations - beforeRead.Allocations);
-            Assert.IsLessThan(2L << 30, afterMap.WorkingSet);
+            Assert.IsLessThan(1L << 30, peakWorkingSetDeltaBytes);
             Assert.IsLessThan(12L << 20, addedBytes);
             Assert.IsLessThanOrEqualTo(MeasuredAstrometryJson.MaximumSolutionBytes, compactBytes);
 
@@ -135,6 +138,7 @@ public sealed partial class DurableCaptureProcessingTests
 
             long RetainedBytes() => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);
 
+            // This class runs serially. Process allocation deltas include work across async continuations.
             (long Ticks, double Cpu, long Allocations, long WorkingSet) Sample()
             {
                 process.Refresh();
@@ -147,7 +151,8 @@ public sealed partial class DurableCaptureProcessingTests
                     elapsedMilliseconds = Stopwatch.GetElapsedTime(first.Ticks, last.Ticks).TotalMilliseconds,
                     cpuMilliseconds = last.Cpu - first.Cpu,
                     allocatedBytes = last.Allocations - first.Allocations,
-                    workingSetBytes = last.WorkingSet
+                    workingSetBytes = last.WorkingSet,
+                    workingSetDeltaBytes = last.WorkingSet - first.WorkingSet
                 };
         }
         finally { Directory.Delete(root, recursive: true); }
