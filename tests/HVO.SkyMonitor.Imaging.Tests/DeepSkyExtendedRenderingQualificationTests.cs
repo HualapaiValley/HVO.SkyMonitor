@@ -1849,45 +1849,419 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             }
         }
 
-        // Narrow rotated outline (20' x 0.4' rectangle at PA = 45 deg): inscribed width (~0.163 px) must also route
-        // to source-local fine quadrature rather than falling between pixel centers on a resolved grid.
+        // F28 regression: narrow rotated rectangular outline (20' x 0.4') across rotations (0, 17, 45, 73, 90, 137 deg)
+        // and caps (32, 64, 225, 65,536) MUST integrate over its exact projected polygon area (~1.32679 px^2) and
+        // NEVER exceed the physical maximum absorption bg * projectedArea * (1 - exp(-tau_max)) (~105.891 e-/s).
         var cosDec = Math.Max(0.2, Math.Cos(centerJ2000.DecDegrees * Math.PI / 180d));
         var raDeg0 = centerJ2000.RaHours * 15d;
         var halfMajorDeg = 10.0 / 60.0;
         var halfMinorDeg = 0.2 / 60.0;
-        var angleRad = 45.0 * Math.PI / 180.0;
-        var c = Math.Cos(angleRad);
-        var s = Math.Sin(angleRad);
-        DeepSkyOutlinePoint RotatedCorner(double localMajor, double localMinor)
+        var outlineProjector = ProjectorFactory.Create(projection);
+
+        double ProjectedPolygonAreaPixels(IReadOnlyList<DeepSkyOutlinePoint> closedRing)
         {
-            var dNorth = localMajor * c - localMinor * s;
-            var dEast = localMajor * s + localMinor * c;
-            var ra = (((raDeg0 + dEast / cosDec) % 360d) + 360d) % 360d;
-            return new DeepSkyOutlinePoint(ra, centerJ2000.DecDegrees + dNorth);
+            var pts = new List<PixelPoint>(closedRing.Count);
+            for (var i = 0; i < closedRing.Count - 1; i++)
+            {
+                var p = closedRing[i];
+                var horiz = CoordinateTransforms.EquatorialToHorizontal(
+                    EquatorialPrecession.PrecessJ2000(new EquatorialPoint(p.RightAscensionDegrees / 15d, p.DeclinationDegrees), Utc),
+                    Utc, HvoObserver.LatitudeDegrees, HvoObserver.LongitudeDegrees);
+                var px = outlineProjector.Project(horiz);
+                Assert.IsNotNull(px, "Outline test vertex must project inside the test camera.");
+                pts.Add(px.Value);
+            }
+            var area2 = 0d;
+            for (var i = 0; i < pts.Count; i++)
+            {
+                var a = pts[i];
+                var b = pts[(i + 1) % pts.Count];
+                area2 += a.X * b.Y - b.X * a.Y;
+            }
+            return 0.5 * Math.Abs(area2);
         }
-        var o0 = RotatedCorner(-halfMajorDeg, -halfMinorDeg);
-        var narrowOutline = new DeepSkyOutline("LDN-NARROW-OUTLINE", DeepSkyOutline.WidestLevel,
-        [
-            new DeepSkyOutlineRing(
+
+        foreach (var paDeg in new[] { 0.0, 17.0, 45.0, 73.0, 90.0, 137.0 })
+        {
+            var angleRad = paDeg * Math.PI / 180.0;
+            var c = Math.Cos(angleRad);
+            var s = Math.Sin(angleRad);
+            DeepSkyOutlinePoint RotatedCorner(double localMajor, double localMinor)
+            {
+                var dNorth = localMajor * c - localMinor * s;
+                var dEast = localMajor * s + localMinor * c;
+                var ra = (((raDeg0 + dEast / cosDec) % 360d) + 360d) % 360d;
+                return new DeepSkyOutlinePoint(ra, centerJ2000.DecDegrees + dNorth);
+            }
+
+            var o0 = RotatedCorner(-halfMajorDeg, -halfMinorDeg);
+            DeepSkyOutlinePoint[] ringPoints =
             [
                 o0,
                 RotatedCorner(halfMajorDeg, -halfMinorDeg),
                 RotatedCorner(halfMajorDeg, halfMinorDeg),
                 RotatedCorner(-halfMajorDeg, halfMinorDeg),
                 o0
-            ])
-        ]);
-        var outlineDark = CreateDso("LDN-NARROW-OUTLINE", "Narrow 20'x0.4' Outline", "DrkN",
-            centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, 45.0, null, null, null, null, null);
-        var outlinePlan = DeepSkyRenderPlan.Prepare(req, null, [outlineDark], null, opts,
-            CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg,
-                syntheticScenario: new DeepSkySyntheticScenario("f27-narrow-outline-v1", AdditionalOutlines: [narrowOutline])) with
+            ];
+            var projectedAreaPx2 = ProjectedPolygonAreaPixels(ringPoints);
+            var physicalUpperBound = bg * projectedAreaPx2 * (1d - Math.Exp(-1.6));
+            Assert.IsTrue(projectedAreaPx2 is > 1.30 and < 1.36,
+                $"Expected 20'x0.4' projected area ~1.3268 px^2 at PA={paDeg} deg; got {projectedAreaPx2:F6}.");
+
+            var objectId = $"LDN-NARROW-OUTLINE-PA{paDeg:F0}";
+            var narrowOutline = new DeepSkyOutline(objectId, DeepSkyOutline.WidestLevel, [new DeepSkyOutlineRing(ringPoints)]);
+            var outlineDark = CreateDso(objectId, $"Narrow 20'x0.4' Outline PA={paDeg:F0}", "DrkN",
+                centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, paDeg, null, null, null, null, null);
+
+            foreach (var cap in new[] { 32, 64, 225, 65_536 })
             {
-                MaximumSamplePointsPerSource = 65_536
-            });
-        Assert.IsTrue(outlinePlan.Diagnostics.Single().Admitted,
-            $"Rotated 20' x 0.4' dark outline must be admitted; got reason='{outlinePlan.Diagnostics.Single().Reason}'.");
-        Assert.IsTrue(outlinePlan.Diagnostics.Single().AttenuatedDiffuseElectronRate > 20.0);
+                var outlinePlan = DeepSkyRenderPlan.Prepare(req, null, [outlineDark], null, opts,
+                    CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg,
+                        syntheticScenario: new DeepSkySyntheticScenario($"f28-outline-{paDeg:F0}-{cap}", AdditionalOutlines: [narrowOutline])) with
+                    {
+                        MaximumSamplePointsPerSource = cap
+                    });
+                var diag = outlinePlan.Diagnostics.Single();
+                Assert.IsTrue(diag.Admitted,
+                    $"Rotated 20'x0.4' dark outline (PA={paDeg} deg, cap={cap}) must be admitted; got reason='{diag.Reason}'.");
+                Assert.AreEqual("admitted-dark-attenuation", diag.Reason);
+                Assert.IsTrue(diag.SampledPoints > 0 && diag.SampledPoints <= cap,
+                    $"Expected 0 < SampledPoints <= {cap} for outline PA={paDeg} deg; got {diag.SampledPoints}.");
+
+                var pixelDeficit = 0d;
+                for (var y = 0; y < projection.HeightPixels; y++)
+                {
+                    for (var x = 0; x < projection.WidthPixels; x++)
+                    {
+                        pixelDeficit += bg - outlinePlan.ElectronRate(x, y);
+                    }
+                }
+                Assert.AreEqual(pixelDeficit, diag.AttenuatedDiffuseElectronRate, 1e-8,
+                    $"Diagnostic deficit must match delivered pixel deficit for PA={paDeg} deg, cap={cap}.");
+                Assert.IsTrue(pixelDeficit <= physicalUpperBound * (1d + 1e-4),
+                    $"20'x0.4' dark outline (PA={paDeg} deg, cap={cap}) absorbed {pixelDeficit:F6} e-/s, exceeding physical bound " +
+                    $"{physicalUpperBound:F6} e-/s (projectedArea={projectedAreaPx2:F6} px^2).");
+                Assert.IsTrue(pixelDeficit > 70.0,
+                    $"20'x0.4' dark outline (PA={paDeg} deg, cap={cap}) must remain accurately attenuated (~93 e-/s); got {pixelDeficit:F6} e-/s.");
+            }
+        }
+
+        // Non-rectangular rotated thin diamond (50% of its oriented bounding box) MUST also obey exact polygon-cell area clipping.
+        {
+            var angleRad = 45.0 * Math.PI / 180.0;
+            var c = Math.Cos(angleRad);
+            var s = Math.Sin(angleRad);
+            DeepSkyOutlinePoint RotatedPoint(double localMajor, double localMinor)
+            {
+                var dNorth = localMajor * c - localMinor * s;
+                var dEast = localMajor * s + localMinor * c;
+                var ra = (((raDeg0 + dEast / cosDec) % 360d) + 360d) % 360d;
+                return new DeepSkyOutlinePoint(ra, centerJ2000.DecDegrees + dNorth);
+            }
+            var d0 = RotatedPoint(-halfMajorDeg, 0d);
+            DeepSkyOutlinePoint[] diamondRing =
+            [
+                d0,
+                RotatedPoint(0d, -halfMinorDeg),
+                RotatedPoint(halfMajorDeg, 0d),
+                RotatedPoint(0d, halfMinorDeg),
+                d0
+            ];
+            var diamondAreaPx2 = ProjectedPolygonAreaPixels(diamondRing);
+            var diamondUpperBound = bg * diamondAreaPx2 * (1d - Math.Exp(-1.6));
+            var diamondOutline = new DeepSkyOutline("LDN-DIAMOND-45", DeepSkyOutline.WidestLevel, [new DeepSkyOutlineRing(diamondRing)]);
+            var diamondDark = CreateDso("LDN-DIAMOND-45", "Thin 45-deg Diamond Outline", "DrkN",
+                centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, 45.0, null, null, null, null, null);
+            foreach (var cap in new[] { 32, 64, 225, 65_536 })
+            {
+                var diamondPlan = DeepSkyRenderPlan.Prepare(req, null, [diamondDark], null, opts,
+                    CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg,
+                        syntheticScenario: new DeepSkySyntheticScenario($"f28-diamond-{cap}", AdditionalOutlines: [diamondOutline])) with
+                    {
+                        MaximumSamplePointsPerSource = cap
+                    });
+                var diag = diamondPlan.Diagnostics.Single();
+                Assert.IsTrue(diag.Admitted);
+                Assert.IsTrue(diag.SampledPoints > 0 && diag.SampledPoints <= cap);
+                var pixelDeficit = 0d;
+                for (var y = 0; y < projection.HeightPixels; y++)
+                {
+                    for (var x = 0; x < projection.WidthPixels; x++)
+                    {
+                        pixelDeficit += bg - diamondPlan.ElectronRate(x, y);
+                    }
+                }
+                Assert.IsTrue(pixelDeficit > 25.0 && pixelDeficit <= diamondUpperBound * (1d + 1e-4),
+                    $"45-deg thin diamond outline (cap={cap}) must absorb within (25, {diamondUpperBound:F4}] e-/s; got {pixelDeficit:F6} e-/s.");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void CenteredCirclePlusNarrowRotatedDarkEllipseNeverBrightensAnyPixelAndReconcilesDiagnostics()
+    {
+        // Exact F5 delta6 regression: centered 10' circular cloud + centered 20' x 0.4' PA 45 deg ellipse at f = 1400,
+        // bg = 100 e-/px/s, S/N gating off. Adding the ellipse at tau = 0.001 or tau = 1.6 (in either admission order,
+        // across tight cap = 64, 32, 225 and full cap = 65,536) MUST NEVER brighten ANY pixel (including (80, 79)),
+        // MUST strictly increase total attenuation, and MUST keep diagnostics exactly reconciled with delivered pixel deficit.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+
+        var circle = CreateDso("LDN-C10", "10' Circle", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 10.0, 10.0, 0, null, null, null, null, 1);
+        var ellipse = CreateDso("LDN-E20X04", "20'x0.4' PA45 Ellipse", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, 45.0, null, null, null, null, 2);
+        var fineCircle = CreateDso("LDN-C1P5", "1.5' Fine Circle", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 1.5, 1.5, 0, null, null, null, null, 1);
+
+        const double bg = 100.0;
+
+        double SumDeficit(DeepSkyRenderPlan plan)
+        {
+            var sum = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    sum += bg - plan.ElectronRate(x, y);
+                }
+            }
+            return sum;
+        }
+
+        void AssertNoBrightenedPixel(DeepSkyRenderPlan baseline, DeepSkyRenderPlan withAdded, string context)
+        {
+            var maxBrightening = 0d;
+            var worstX = -1;
+            var worstY = -1;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    var diff = withAdded.ElectronRate(x, y) - baseline.ElectronRate(x, y);
+                    if (diff > maxBrightening)
+                    {
+                        maxBrightening = diff;
+                        worstX = x;
+                        worstY = y;
+                    }
+                }
+            }
+            Assert.IsTrue(maxBrightening <= 1e-12,
+                $"{context}: adding a positive-depth absorber brightened pixel ({worstX},{worstY}) by +{maxBrightening:E6} e-/px/s " +
+                $"(baseline={baseline.ElectronRate(worstX, worstY):F6}, combined={withAdded.ElectronRate(worstX, worstY):F6}).");
+        }
+
+        foreach (var cap in new[] { 32, 64, 225, 65_536 })
+        {
+            var baseSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+            {
+                MaximumSamplePointsPerSource = cap
+            };
+            var circleAlone = DeepSkyRenderPlan.Prepare(req, null, [circle], null, opts, baseSettings);
+            var circleDeficit = SumDeficit(circleAlone);
+            Assert.AreEqual(circleDeficit, circleAlone.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), 1e-8);
+
+            // Transparent, budget-skipped, and S/N-rejected ellipse neighbors must change ZERO pixels.
+            var withZeroEllipse = DeepSkyRenderPlan.Prepare(req, null, [circle, ellipse], null, opts,
+                baseSettings with
+                {
+                    SyntheticScenario = new DeepSkySyntheticScenario($"f5-c10-zero-{cap}",
+                        Overrides: [new DeepSkySyntheticSourceOverride(ellipse.Id, PeakOpticalDepth: 0.0)])
+                });
+            Assert.AreEqual(1, withZeroEllipse.Statistics.AdmittedCount);
+            Assert.AreEqual(circleDeficit, SumDeficit(withZeroEllipse), 1e-12);
+
+            var withBudgetSkipped = DeepSkyRenderPlan.Prepare(req, null, [circle, ellipse], null, opts,
+                baseSettings with { MaximumRenderedSources = 1 });
+            Assert.AreEqual(circleDeficit, SumDeficit(withBudgetSkipped), 1e-12);
+
+            foreach (var ellipseTau in new[] { 0.001, 1.6 })
+            {
+                var scenario = new DeepSkySyntheticScenario($"f5-c10-e-{cap}-{ellipseTau}",
+                    Overrides: [new DeepSkySyntheticSourceOverride(ellipse.Id, PeakOpticalDepth: ellipseTau)]);
+                var settings = baseSettings with { SyntheticScenario = scenario };
+
+                var ellipseAlone = DeepSkyRenderPlan.Prepare(req, null, [ellipse], null, opts, settings);
+                var circleFirst = DeepSkyRenderPlan.Prepare(req, null, [circle, ellipse], null, opts, settings);
+                var ellipseFirst = DeepSkyRenderPlan.Prepare(req, null,
+                    [ellipse with { MessierNumber = 1 }, circle with { MessierNumber = 2 }], null, opts, settings);
+
+                Assert.AreEqual(2, circleFirst.Statistics.AdmittedCount);
+                Assert.AreEqual(2, circleFirst.Statistics.DarkAttenuationCount);
+                Assert.AreEqual(2, ellipseFirst.Statistics.AdmittedCount);
+                Assert.IsTrue(circleFirst.Diagnostics.All(d => d.SampledPoints <= cap),
+                    $"Per-source SampledPoints must stay <= {cap} (circleFirst).");
+                Assert.IsTrue(ellipseFirst.Diagnostics.All(d => d.SampledPoints <= cap),
+                    $"Per-source SampledPoints must stay <= {cap} (ellipseFirst).");
+
+                AssertNoBrightenedPixel(circleAlone, circleFirst, $"10' circle + ellipse(tau={ellipseTau}, cap={cap})");
+                AssertNoBrightenedPixel(ellipseAlone, ellipseFirst, $"ellipse(tau={ellipseTau}) + 10' circle (cap={cap})");
+                Assert.IsTrue(circleFirst.ElectronRate(80, 79) <= circleAlone.ElectronRate(80, 79) + 1e-12,
+                    $"Pixel (80,79) must not brighten at cap={cap}, tau={ellipseTau}.");
+
+                var combinedDeficit = SumDeficit(circleFirst);
+                var combinedRevDeficit = SumDeficit(ellipseFirst);
+                Assert.IsTrue(combinedDeficit > circleDeficit,
+                    $"Adding ellipse (tau={ellipseTau}, cap={cap}) must strictly increase total attenuation " +
+                    $"({combinedDeficit:F6} vs {circleDeficit:F6}).");
+                Assert.AreEqual(combinedDeficit, circleFirst.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), 1e-8,
+                    $"Diagnostics sum must exactly match delivered pixel deficit (circleFirst, cap={cap}, tau={ellipseTau}).");
+                Assert.AreEqual(combinedRevDeficit, ellipseFirst.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), 1e-8,
+                    $"Diagnostics sum must exactly match delivered pixel deficit (ellipseFirst, cap={cap}, tau={ellipseTau}).");
+                Assert.AreEqual(combinedDeficit, combinedRevDeficit, 1e-9,
+                    $"Circle-first and ellipse-first orders must produce identical total deficit (cap={cap}, tau={ellipseTau}).");
+            }
+        }
+
+        // Fine-on-fine cross-cloud case at default cap = 65,536 (1.5' fine circle + 20'x0.4' PA45 fine ellipse):
+        // broad-before-narrow canonical ordering + monotonic composition guarantees zero brightened pixels in both orders.
+        var fullSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg);
+        var fineCircleAlone = DeepSkyRenderPlan.Prepare(req, null, [fineCircle], null, opts, fullSettings);
+        foreach (var ellipseTau in new[] { 0.001, 1.6 })
+        {
+            var scenario = new DeepSkySyntheticScenario($"f5-fine1p5-{ellipseTau}",
+                Overrides: [new DeepSkySyntheticSourceOverride(ellipse.Id, PeakOpticalDepth: ellipseTau)]);
+            var settings = fullSettings with { SyntheticScenario = scenario };
+            var ellipseAlone = DeepSkyRenderPlan.Prepare(req, null, [ellipse], null, opts, settings);
+            var bothA = DeepSkyRenderPlan.Prepare(req, null, [fineCircle, ellipse], null, opts, settings);
+            var bothB = DeepSkyRenderPlan.Prepare(req, null,
+                [ellipse with { MessierNumber = 1 }, fineCircle with { MessierNumber = 2 }], null, opts, settings);
+
+            AssertNoBrightenedPixel(fineCircleAlone, bothA, $"1.5' fine circle + ellipse(tau={ellipseTau}, cap=65536)");
+            AssertNoBrightenedPixel(ellipseAlone, bothB, $"ellipse(tau={ellipseTau}) + 1.5' fine circle (cap=65536)");
+            Assert.AreEqual(SumDeficit(bothA), bothA.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), 1e-8);
+            Assert.AreEqual(SumDeficit(bothA), SumDeficit(bothB), 1e-9);
+        }
+    }
+
+    [TestMethod]
+    public void OverlappingDarkCloudsStrictlyEnforceMaximumSamplePointsPerSourceAndTotalBudget()
+    {
+        // Exact F29 regression: three 0.6' dark circles spaced 0.0001 deg in altitude at peak depths 1, 1.5, 2
+        // with MaximumSamplePointsPerSource = 64 MUST strictly enforce SampledPoints <= 64 for EVERY source
+        // (both reported diagnostics and actual radial evaluations), strictly enforce MaximumTotalSamplePoints,
+        // maintain order invariance and strict per-pixel monotonicity, and keep diagnostics reconciled with pixels.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+
+        var p1 = AltAzToJ2000(new AltAzPoint(60.0000, 180.0));
+        var p2 = AltAzToJ2000(new AltAzPoint(60.0001, 180.0));
+        var p3 = AltAzToJ2000(new AltAzPoint(60.0002, 180.0));
+
+        var c1 = CreateDso("LDN-F29-1", "F29 Circle 1", "DrkN", p1.RaHours, p1.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 1);
+        var c2 = CreateDso("LDN-F29-2", "F29 Circle 2", "DrkN", p2.RaHours, p2.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 2);
+        var c3 = CreateDso("LDN-F29-3", "F29 Circle 3", "DrkN", p3.RaHours, p3.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 3);
+
+        const double bg = 100.0;
+        var scenario = new DeepSkySyntheticScenario("f29-depths-v1",
+            Overrides:
+            [
+                new DeepSkySyntheticSourceOverride(c1.Id, PeakOpticalDepth: 1.0),
+                new DeepSkySyntheticSourceOverride(c2.Id, PeakOpticalDepth: 1.5),
+                new DeepSkySyntheticSourceOverride(c3.Id, PeakOpticalDepth: 2.0)
+            ]);
+
+        double SumDeficit(DeepSkyRenderPlan plan)
+        {
+            var sum = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    sum += bg - plan.ElectronRate(x, y);
+                }
+            }
+            return sum;
+        }
+
+        // Test exact cap = 64 repro, minimum cap = 16, intermediate mixed cap = 700, and default cap = 65,536.
+        foreach (var perSourceCap in new[] { 16, 64, 700, 65_536 })
+        {
+            var settings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg, syntheticScenario: scenario) with
+            {
+                MaximumSamplePointsPerSource = perSourceCap
+            };
+
+            var plan1 = DeepSkyRenderPlan.Prepare(req, null, [c1], null, opts, settings);
+            var plan2 = DeepSkyRenderPlan.Prepare(req, null, [c1, c2], null, opts, settings);
+            var plan3 = DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, settings);
+
+            Assert.AreEqual(3, plan3.Statistics.AdmittedCount);
+            Assert.AreEqual(3, plan3.Statistics.DarkAttenuationCount);
+            foreach (var diag in plan3.Diagnostics)
+            {
+                Assert.IsTrue(diag.SampledPoints > 0 && diag.SampledPoints <= perSourceCap,
+                    $"Source '{diag.ObjectId}' reported {diag.SampledPoints} sampled points, exceeding MaximumSamplePointsPerSource={perSourceCap}.");
+            }
+
+            var reportedSum = plan3.Diagnostics.Sum(static d => d.SampledPoints);
+            Assert.AreEqual((long)reportedSum, plan3.Statistics.TotalSampledPoints);
+            Assert.IsTrue(plan3.Statistics.TotalSampledPoints <= 3L * perSourceCap,
+                $"Scene TotalSampledPoints={plan3.Statistics.TotalSampledPoints} exceeded 3 * {perSourceCap}.");
+
+            // Exact scene-total budget enforcement: TotalSampledPoints succeeds, TotalSampledPoints - 1 throws.
+            var exactTotal = checked((int)plan3.Statistics.TotalSampledPoints);
+            var exactTotalPlan = DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts,
+                settings with { MaximumTotalSamplePoints = exactTotal });
+            Assert.AreEqual(plan3.Statistics.TotalSampledPoints, exactTotalPlan.Statistics.TotalSampledPoints);
+            Assert.ThrowsExactly<InvalidOperationException>(() =>
+                DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts,
+                    settings with { MaximumTotalSamplePoints = exactTotal - 1 }));
+
+            // Strict per-pixel monotonicity across 1 -> 2 -> 3 clouds and exact diagnostic reconciliation.
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    Assert.IsTrue(plan2.ElectronRate(x, y) <= plan1.ElectronRate(x, y) + 1e-12,
+                        $"Adding c2 brightened pixel ({x},{y}) at cap={perSourceCap}.");
+                    Assert.IsTrue(plan3.ElectronRate(x, y) <= plan2.ElectronRate(x, y) + 1e-12,
+                        $"Adding c3 brightened pixel ({x},{y}) at cap={perSourceCap}.");
+                }
+            }
+            Assert.AreEqual(SumDeficit(plan3), plan3.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), 1e-8);
+
+            // Reversed priority order also strictly obeys MaximumSamplePointsPerSource.
+            var revPlan = DeepSkyRenderPlan.Prepare(req, null,
+                [c3 with { MessierNumber = 1 }, c2 with { MessierNumber = 2 }, c1 with { MessierNumber = 3 }],
+                null, opts, settings);
+            Assert.AreEqual(3, revPlan.Statistics.AdmittedCount);
+            Assert.IsTrue(revPlan.Diagnostics.All(d => d.SampledPoints > 0 && d.SampledPoints <= perSourceCap),
+                $"Reversed order exceeded MaximumSamplePointsPerSource={perSourceCap}.");
+            if (perSourceCap != 700)
+            {
+                Assert.AreEqual(SumDeficit(plan3), SumDeficit(revPlan), 1e-9,
+                    $"Forward and reverse orders must produce identical deficits at cap={perSourceCap}.");
+            }
+        }
+
+        // Temporal unresolved-diffuse overlap must also obey MaximumSamplePointsPerSource (own + temporal <= cap).
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+        var tinyEmitter = CreateDso("EMN-F29-TEMP", "Tiny Emitter", "EmN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, 3.0, null, null, 1);
+        var tinyDark = CreateDso("LDN-F29-TEMP", "Tiny Dark", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, null, null, null, 2);
+        foreach (var cap in new[] { 16, 64 })
+        {
+            var tempSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: 0) with
+            {
+                MaximumSamplePointsPerSource = cap,
+                MinimumTemporalSamples = 16
+            };
+            var tempPlan = DeepSkyRenderPlan.Prepare(req, null, [tinyEmitter, tinyDark], null, opts, tempSettings);
+            var darkDiag = tempPlan.Diagnostics.Single(d => d.ObjectId == tinyDark.Id);
+            Assert.IsTrue(darkDiag.Admitted);
+            Assert.IsTrue(darkDiag.SampledPoints > 0 && darkDiag.SampledPoints <= cap,
+                $"Dark cloud + unresolved temporal samples must stay <= {cap}; got {darkDiag.SampledPoints}.");
+        }
     }
 
     [TestMethod]

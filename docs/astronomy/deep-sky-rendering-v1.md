@@ -202,23 +202,27 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    background, RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
    vignetting, and source-caused saturation bound to the exact normalized `LinearSceneRenderOptions`
    validated by `DeepSkyRenderPlan.ValidateFor`.
-6. **Order-independent dark-nebula overlap composition, grid invariance, exact work charging & post-attenuation PSF:**
+6. **Order-independent dark-nebula overlap composition, area-weighted outlines, strict per-source/scene work caps & post-attenuation PSF:**
    Each dark cloud selects resolved vs fine quadrature strictly from its own projected minor and
-   major dimensions (including outline inscribed thickness) against the fixed scene-wide resolved
-   subpixel grid (`resolvedSub = clamp(2 * SamplesPerProjectedPixel, 2, 8)`), requiring both
-   projected dimensions to be well-resolved (`minSpanPixels >= 1.0`, `minSpanPixels * resolvedSub >= 8.0`)
-   and the padded box to fit `MaximumSamplePointsPerSource` — guaranteeing that narrow high-aspect
-   ellipses/outlines never slip between subpixel centers and that transparent (`PeakOpticalDepth == 0`),
-   skipped, S/N-rejected, or positive-depth neighbors never mutate another cloud's sampling grid.
-   Resolved clouds share per-pixel cached unprojected subpixel directions, while fine clouds cache
-   interior samples in canonical geometric order, reuse exact cached optical depths across coincident
-   fine clouds, strictly pre-charge every non-reused cross-cloud and temporal optical-depth evaluation
-   against `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and commit
-   exact canonical transmission `T(x,y) = exp(-sum_k tau_k(x,y))` without retaining stale earlier
-   estimates — guaranteeing strict monotonicity (`T_all <= T_subset`), zero-depth neighbor invariance,
-   exact optical-depth additivity (`tau1 + tau2 == tau_combined`), order invariance across arbitrary
-   `N >= 2` overlapping resolved and fine clouds, and honest sample-budget accounting. Before committing
-   transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes
+   major dimensions (including oriented minimum-area bounding box and inscribed thickness for
+   sourced outlines) against the fixed scene-wide resolved subpixel grid
+   (`resolvedSub = clamp(2 * SamplesPerProjectedPixel, 2, 8)`), requiring both projected dimensions
+   to be well-resolved (`minSpanPixels >= 1.0`, `minSpanPixels * resolvedSub >= 8.0`) and the padded
+   box to fit `MaximumSamplePointsPerSource` — guaranteeing that narrow high-aspect ellipses/outlines
+   never slip between subpixel centers and that transparent (`PeakOpticalDepth == 0`), skipped,
+   S/N-rejected, or positive-depth neighbors never mutate another cloud's sampling grid. Fine dark
+   outlines integrate exact even-odd polygon-cell covered area in the outline's minimum-area oriented
+   frame so rotated thin contours never absorb more light than physically reaches their projected
+   footprint (`bg * projectedArea * (1 - exp(-tau_max))`). Resolved clouds share per-pixel cached
+   unprojected subpixel directions, while fine clouds merge coincident geometries in place with zero
+   extra cross-cloud evaluations, order non-coincident groups broad-before-narrow, strictly enforce
+   `MaximumSamplePointsPerSource` across own, cross-cloud, and temporal dark-cloud evaluations on
+   both caller and target profiles (falling back to multiplicative pixel transmission when a pair
+   cannot fit within `MaximumSamplePointsPerSource`), pre-charge every non-reused evaluation against
+   `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
+   per-pixel transmission monotonicity (`T_after <= T_before` everywhere) with exact reconciliation
+   between published diagnostics and delivered pixel deficits. Before committing transmission or
+   consuming a `MaximumRenderedSources` slot, each dark nebula computes
    diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
    (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and exposure-integrated
    HYG star shot noise strictly charged against `MaximumTotalSamplePoints`,
@@ -241,7 +245,7 @@ cleanly without throwing, while rejecting invalid merged synthetic geometry/outl
 - `MaximumCandidates`: default `128` (range `1..2048`)
 - `MaximumRenderedSources`: default `64` (range `1..512`, charged across both admitted luminous and dark sources)
 - `MaximumSparsePixels`: default/max `524,288` (enforced across the combined union of pre-cloud and temporal sparse pixel maps as well as pre-PSF diffuse/transmission maps)
-- `MaximumSamplePointsPerSource`: default `65,536` (range `16..262,144`, enforced across extended rasterization and resolved open-cluster / `Cl+N` member generation)
+- `MaximumSamplePointsPerSource`: default `65,536` (range `16..262,144`, enforced across extended rasterization, resolved open-cluster / `Cl+N` member generation, and own + cross-cloud + temporal dark-cloud optical-depth evaluations)
 - `MaximumTotalSamplePoints`: default `2,000,000` (range `16..8,000,000`, charged across all paths including unresolved sources)
 - `MaximumKernelCellVisits`: default/max `67,108,864`
 - `MaximumOutlineEdgeVisits`: default/max `16,777,216` (checked before outline rasterization loops, cluster-member outline containment queries, and dark-cloud outline optical-depth evaluations)
