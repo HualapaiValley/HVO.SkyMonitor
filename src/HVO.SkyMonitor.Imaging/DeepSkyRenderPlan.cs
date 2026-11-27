@@ -914,10 +914,12 @@ public sealed class DeepSkyRenderPlan
 
         // Pass 2: Dark nebulae attenuate ONLY compatible celestial diffuse background (overlapping diffuse nebulae,
         // overlapping unresolved diffuse emitters, or explicitly declared celestial diffuse background), never foreground
-        // terrestrial skyglow or foreground non-diffuse sources. Connected overlapping dark-cloud components fix their
-        // sampling grid and canonical layer order from the unordered component set, cache per-cloud subpixel/interior
-        // samples so work is never rebuilt or under-charged, and evaluate dark-cloud S/N variance using exposure-
-        // integrated foreground stellar flux strictly within configured work budgets.
+        // terrestrial skyglow or foreground non-diffuse sources. Each dark cloud selects resolved vs fine quadrature
+        // strictly from its own projected minor/major dimensions and the fixed scene-wide resolved subpixel density
+        // (never mutating a neighbor's sampling grid), caches per-pixel subpixel directions and fine interior samples
+        // in canonical geometric order, reuses cached optical depths across coincident fine clouds, strictly pre-charges
+        // every non-reused optical-depth evaluation against MaximumTotalSamplePoints, and evaluates dark-cloud S/N
+        // variance using exposure-integrated foreground stellar flux within configured work budgets.
         var cumulativeAttenuatedConvolved = new Dictionary<int, DeepSkyPixelRate>();
         var cumulativeTemporalAttenuated = new Dictionary<int, DeepSkyPixelRate>();
         var unresolvedDarkCumulativeTau = new Dictionary<(int SourceIndex, int SampleIndex), double>();
@@ -926,7 +928,9 @@ public sealed class DeepSkyRenderPlan
 
         var hasCompatibleDiffuseBackground =
             declaredDiffuseBg > 0 || diffusePrePsf.Count > 0 || admittedUnresolvedDiffuse.Count > 0;
-        var preparedDarkCandidates = new List<PreparedDarkCandidate>(darkCandidates.Count);
+        var darkResolvedSub = Math.Clamp(settings.SamplesPerProjectedPixel * 2, 2, 8);
+        var darkLayerState = new DarkAttenuationLayerState(darkResolvedSub);
+
         foreach (var dark in darkCandidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -949,10 +953,18 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
+            eligibleCount++;
             if (admittedCount >= settings.MaximumRenderedSources)
             {
-                eligibleCount++;
                 diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula, "budget-skipped",
+                    DeepSkyPhotometryBasis.None, geometryInfo.Basis, profile));
+                continue;
+            }
+
+            if (profile.PeakOpticalDepth <= 0d)
+            {
+                diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula,
+                    "annotation-only-dark-no-compatible-background",
                     DeepSkyPhotometryBasis.None, geometryInfo.Basis, profile));
                 continue;
             }
@@ -963,52 +975,44 @@ public sealed class DeepSkyRenderPlan
             var isCircle = majorArcmin is { } majA && minorArcmin is { } minA && Math.Abs(majA - minA) <= 1e-9;
             var paddedBounds = ComputeDarkCloudPaddedBounds(
                 geometryInfo, projector, basis, projection, settings, padding, ref totalOutlineEdgeVisits);
-            preparedDarkCandidates.Add(new PreparedDarkCandidate(
-                dark,
-                syntheticOverride,
-                profile,
-                geometryInfo,
-                paJ2000,
-                isCircle,
-                Math.Max(geometryInfo.MajorAxisPixels, geometryInfo.MinorAxisPixels),
-                paddedBounds));
-        }
-
-        var darkComponentsById = preparedDarkCandidates.Count > 0
-            ? PlanDarkOverlapComponents(preparedDarkCandidates, settings)
-            : null;
-
-        foreach (var preparedDark in preparedDarkCandidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var dark = preparedDark.Item;
-            var profile = preparedDark.Profile;
-            var geometryInfo = preparedDark.Geometry;
-
-            eligibleCount++;
-            if (admittedCount >= settings.MaximumRenderedSources)
-            {
-                diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula, "budget-skipped",
-                    DeepSkyPhotometryBasis.None, geometryInfo.Basis, profile));
-                continue;
-            }
-
             var maxOutlineDist = ComputeMaxOutlineDistance(
                 geometryInfo, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits, cancellationToken);
+            var maxSpanPixels = Math.Max(geometryInfo.MajorAxisPixels, geometryInfo.MinorAxisPixels);
+            var minSpanPixels = Math.Min(geometryInfo.MajorAxisPixels, geometryInfo.MinorAxisPixels);
+            if (geometryInfo.TangentRings is { Count: > 0 })
+            {
+                var outlineMaxSpanTangent = Math.Max(
+                    geometryInfo.OutlineMaxU - geometryInfo.OutlineMinU,
+                    geometryInfo.OutlineMaxV - geometryInfo.OutlineMinV);
+                if (outlineMaxSpanTangent > 0d)
+                {
+                    var outlineScale = maxSpanPixels / outlineMaxSpanTangent;
+                    minSpanPixels = Math.Min(minSpanPixels, 2d * maxOutlineDist * outlineScale);
+                }
+            }
+
+            // Require BOTH projected dimensions to be well-resolved at the fixed scene-wide subpixel spacing so
+            // narrow high-aspect ellipses/outlines never fall between subpixel samples and neighbors never alter
+            // each other's quadrature grid.
+            var isResolved = minSpanPixels >= 1.0 &&
+                minSpanPixels * darkResolvedSub >= 8.0 &&
+                paddedBounds is { } resolvedBounds &&
+                PaddedBoxArea(resolvedBounds) * darkResolvedSub * darkResolvedSub <= settings.MaximumSamplePointsPerSource;
+
             var currentDarkCloud = new AdmittedDarkCloud(
                 dark,
-                preparedDark.PaJ2000Degrees,
-                preparedDark.IsCircle,
+                paJ2000,
+                isCircle,
                 profile,
                 geometryInfo,
                 maxOutlineDist,
-                preparedDark.MaxSpanPixels,
-                preparedDark.PaddedBounds);
+                maxSpanPixels,
+                paddedBounds);
 
-            var component = darkComponentsById![dark.Id];
             var incrementalEval = EvaluateIncrementalDarkCloud(
-                component,
+                darkLayerState,
                 currentDarkCloud,
+                isResolved,
                 projector,
                 basis,
                 projection,
@@ -1024,7 +1028,7 @@ public sealed class DeepSkyRenderPlan
             var attenuatedPrePsf = 0d;
             foreach (var (paddedKey, nextT) in incrementalEval.ProvisionalTransmission)
             {
-                var prevT = component.CurrentTransmission.GetValueOrDefault(paddedKey, 1d);
+                var prevT = darkLayerState.CurrentTransmission.GetValueOrDefault(paddedKey, 1d);
                 if (prevT <= 0) continue;
                 var actualDrop = prevT - nextT;
                 if (actualDrop <= 1e-15) continue;
@@ -1062,6 +1066,8 @@ public sealed class DeepSkyRenderPlan
                 for (var sampIdx = 0; sampIdx < uSrc.Samples.Count; sampIdx++)
                 {
                     var sample = uSrc.Samples[sampIdx];
+                    ChargeSamplePoints(1, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                    darkSamples++;
                     var tau = EvaluateDarkCloudOpticalDepthAtTime(
                         currentDarkCloud, uSrc.EmitterJ2000, uSrc.MidpointGeometricDirection,
                         sample.SampleUtc, sceneRequest, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
@@ -1244,9 +1250,9 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
-            // Commit exact canonical transmission and component cache state only for admitted dark nebulae.
+            // Commit exact canonical transmission and layer cache state only for admitted dark nebulae.
             CommitIncrementalDarkCloud(
-                component,
+                darkLayerState,
                 incrementalEval,
                 cumulativeTransmission,
                 prePsfSparsePixels,
@@ -2424,95 +2430,67 @@ public sealed class DeepSkyRenderPlan
     private static bool DarkCloudsMayOverlap(AdmittedDarkCloud left, AdmittedDarkCloud right)
         => DarkCloudsMayOverlap(left.PaddedBounds, left.Geometry, right.PaddedBounds, right.Geometry);
 
-    /// <summary>
-    /// Partitions eligible dark-cloud candidates into symmetric overlap connected components and fixes each
-    /// component's resolved subpixel density and resolved-vs-fine classification purely from the unordered
-    /// component set so sampling grids never shift with candidate priority or arrival order.
-    /// </summary>
-    private static Dictionary<string, DarkOverlapComponentState> PlanDarkOverlapComponents(
-        List<PreparedDarkCandidate> candidates,
-        DeepSkyRenderSettings settings)
+    private static void ChargeSamplePoints(long additional, long limit, ref long totalSampledPoints)
     {
-        var byId = new Dictionary<string, DarkOverlapComponentState>(candidates.Count, StringComparer.Ordinal);
-        var visited = new bool[candidates.Count];
-        var defaultSub = Math.Clamp(settings.SamplesPerProjectedPixel * 2, 2, 8);
-        var queue = new Queue<int>();
-
-        for (var start = 0; start < candidates.Count; start++)
+        if (additional == 0) return;
+        if (additional < 0 || additional > limit - totalSampledPoints)
         {
-            if (visited[start]) continue;
-            visited[start] = true;
-            queue.Enqueue(start);
-            var members = new List<PreparedDarkCandidate>();
-            while (queue.Count > 0)
-            {
-                var idx = queue.Dequeue();
-                var current = candidates[idx];
-                members.Add(current);
-                for (var otherIdx = 0; otherIdx < candidates.Count; otherIdx++)
-                {
-                    if (visited[otherIdx]) continue;
-                    var other = candidates[otherIdx];
-                    if (!DarkCloudsMayOverlap(current.PaddedBounds, current.Geometry, other.PaddedBounds, other.Geometry))
-                    {
-                        continue;
-                    }
-                    visited[otherIdx] = true;
-                    queue.Enqueue(otherIdx);
-                }
-            }
+            throw new InvalidOperationException("Deep-sky sampling point budget exceeded.");
+        }
+        totalSampledPoints += additional;
+    }
 
-            var resolved = new List<PreparedDarkCandidate>();
-            foreach (var member in members)
-            {
-                if (member.MaxSpanPixels >= 1.0 &&
-                    member.PaddedBounds is { } bounds &&
-                    PaddedBoxArea(bounds) <= settings.MaximumSamplePointsPerSource)
-                {
-                    resolved.Add(member);
-                }
-            }
-
-            var commonSub = defaultSub;
-            while (true)
-            {
-                commonSub = defaultSub;
-                foreach (var member in resolved)
-                {
-                    var area = PaddedBoxArea(member.PaddedBounds!.Value);
-                    while (commonSub > 1 && area * commonSub * commonSub > settings.MaximumSamplePointsPerSource)
-                    {
-                        commonSub--;
-                    }
-                }
-
-                // Any cloud whose span is under-resolved at the component's common subpixel spacing moves to
-                // the source-local fine quadrature so it can never slip between pixel centers.
-                var demotedAny = false;
-                for (var i = resolved.Count - 1; i >= 0; i--)
-                {
-                    if (resolved[i].MaxSpanPixels * commonSub < 2.0)
-                    {
-                        resolved.RemoveAt(i);
-                        demotedAny = true;
-                    }
-                }
-                if (!demotedAny) break;
-            }
-
-            var resolvedIds = new HashSet<string>(resolved.Count, StringComparer.Ordinal);
-            foreach (var member in resolved)
-            {
-                resolvedIds.Add(member.Item.Id);
-            }
-            var state = new DarkOverlapComponentState(commonSub, resolvedIds);
-            foreach (var member in members)
-            {
-                byId[member.Item.Id] = state;
-            }
+    private static bool HaveIdenticalFineSamplingGeometry(AdmittedDarkCloud left, AdmittedDarkCloud right)
+    {
+        var lg = left.Geometry;
+        var rg = right.Geometry;
+        if (lg.Frame.Center != rg.Frame.Center ||
+            lg.Frame.CelestialNorth != rg.Frame.CelestialNorth ||
+            lg.Frame.CelestialEast != rg.Frame.CelestialEast ||
+            lg.GeometricCenter != rg.GeometricCenter ||
+            lg.SemiMajorRadians != rg.SemiMajorRadians ||
+            lg.SemiMinorRadians != rg.SemiMinorRadians)
+        {
+            return false;
         }
 
-        return byId;
+        var leftRings = lg.TangentRings;
+        var rightRings = rg.TangentRings;
+        if (leftRings is { Count: > 0 } || rightRings is { Count: > 0 })
+        {
+            if (leftRings is null || rightRings is null ||
+                leftRings.Count != rightRings.Count ||
+                lg.OutlineMinU != rg.OutlineMinU || lg.OutlineMaxU != rg.OutlineMaxU ||
+                lg.OutlineMinV != rg.OutlineMinV || lg.OutlineMaxV != rg.OutlineMaxV ||
+                left.MaxOutlineDist != right.MaxOutlineDist ||
+                left.Profile.SoftEdgeFraction != right.Profile.SoftEdgeFraction)
+            {
+                return false;
+            }
+            for (var r = 0; r < leftRings.Count; r++)
+            {
+                var lr = leftRings[r];
+                var rr = rightRings[r];
+                if (lr.Length != rr.Length) return false;
+                for (var p = 0; p < lr.Length; p++)
+                {
+                    if (lr[p] != rr[p]) return false;
+                }
+            }
+            return true;
+        }
+
+        return lg.MajorAxis == rg.MajorAxis && lg.MinorAxis == rg.MinorAxis;
+    }
+
+    private static bool HaveMatchingSampleDirections(FineDarkCloudSample[] left, FineDarkCloudSample[] right)
+    {
+        if (left.Length != right.Length) return false;
+        for (var i = 0; i < left.Length; i++)
+        {
+            if (left[i].Direction != right[i].Direction) return false;
+        }
+        return true;
     }
 
     private static int CompareFineCloudCanonicalOrder(AdmittedDarkCloud left, AdmittedDarkCloud right)
@@ -2531,8 +2509,9 @@ public sealed class DeepSkyRenderPlan
     }
 
     private static ProvisionalDarkCloudEvaluation EvaluateIncrementalDarkCloud(
-        DarkOverlapComponentState component,
+        DarkAttenuationLayerState layerState,
         AdmittedDarkCloud candidateCloud,
+        bool isResolved,
         ResolvedSourceProjector projector,
         CameraBasis basis,
         ProjectionContext projection,
@@ -2543,21 +2522,17 @@ public sealed class DeepSkyRenderPlan
         ref long totalOutlineEdgeVisits,
         CancellationToken cancellationToken)
     {
-        if (component.ResolvedIds.Contains(candidateCloud.Item.Id) && candidateCloud.PaddedBounds is { } bounds)
+        if (isResolved && candidateCloud.PaddedBounds is { } bounds)
         {
-            var commonSub = component.CommonSub;
-            var subCount = commonSub * commonSub;
-            var invSub = 1d / commonSub;
+            var resolvedSub = layerState.ResolvedSub;
+            var subCount = resolvedSub * resolvedSub;
+            var invSub = 1d / resolvedSub;
             var invSubSq = invSub * invSub;
             var boxArea = PaddedBoxArea(bounds);
             var candidateSamples = checked((int)(boxArea * subCount));
 
             // Charge all subpixel sample evaluations BEFORE executing the sampling loop.
-            if (candidateSamples > settings.MaximumTotalSamplePoints - totalSampledPoints)
-            {
-                throw new InvalidOperationException("Deep-sky sampling point budget exceeded.");
-            }
-            totalSampledPoints += candidateSamples;
+            ChargeSamplePoints(candidateSamples, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
 
             var resolvedUpdates = new Dictionary<long, ProvisionalResolvedPixelUpdate>();
             var affectedKeys = new HashSet<long>();
@@ -2568,17 +2543,17 @@ public sealed class DeepSkyRenderPlan
                 for (var sx = bounds.MinX; sx <= bounds.MaxX; sx++)
                 {
                     var paddedKey = rowBase + sx;
-                    var existingPixel = component.ResolvedPixels.GetValueOrDefault(paddedKey);
+                    var existingPixel = layerState.ResolvedPixels.GetValueOrDefault(paddedKey);
                     var pixelObj = existingPixel ?? new CachedResolvedPixel(subCount);
                     var nextTau = new double[subCount];
                     var anyAdded = false;
                     var absorbSum = 0d;
 
                     var subIdx = 0;
-                    for (var iy = 0; iy < commonSub; iy++)
+                    for (var iy = 0; iy < resolvedSub; iy++)
                     {
                         var py = sy + (iy + 0.5) * invSub;
-                        for (var ix = 0; ix < commonSub; ix++, subIdx++)
+                        for (var ix = 0; ix < resolvedSub; ix++, subIdx++)
                         {
                             EnuVector? dir;
                             if (existingPixel is not null)
@@ -2612,24 +2587,62 @@ public sealed class DeepSkyRenderPlan
                 }
             }
 
-            // Re-weight any already-admitted overlapping fine clouds using ONLY their cached interior samples
-            // (zero re-gridding or re-projection).
+            // Re-weight any already-admitted overlapping fine clouds using their cached interior directions,
+            // reusing evaluated optical depths across coincident fine clouds and strictly pre-charging every
+            // non-reused optical-depth evaluation against MaximumTotalSamplePoints.
             Dictionary<int, (double[] UpdatedPriorTau, Dictionary<long, (double AreaSum, double AbsorbAreaSum)> UpdatedDeposits)>? updatedFineByIndex = null;
-            for (var fIdx = 0; fIdx < component.AdmittedFineClouds.Count; fIdx++)
+            List<(AdmittedDarkCloud Cloud, FineDarkCloudSample[] Samples, double[] AddedTau)>? evaluatedFineTauCache = null;
+            for (var fIdx = 0; fIdx < layerState.AdmittedFineClouds.Count; fIdx++)
             {
-                var fine = component.AdmittedFineClouds[fIdx];
+                var fine = layerState.AdmittedFineClouds[fIdx];
                 if (!DarkCloudsMayOverlap(fine.Cloud, candidateCloud)) continue;
                 var samples = fine.Samples;
+                if (samples.Length == 0) continue;
+
+                double[]? reusedAddTau = null;
+                if (evaluatedFineTauCache is not null)
+                {
+                    for (var c = 0; c < evaluatedFineTauCache.Count; c++)
+                    {
+                        var cached = evaluatedFineTauCache[c];
+                        if (HaveIdenticalFineSamplingGeometry(cached.Cloud, fine.Cloud) &&
+                            HaveMatchingSampleDirections(cached.Samples, samples))
+                        {
+                            reusedAddTau = cached.AddedTau;
+                            break;
+                        }
+                    }
+                }
+
                 var nextPriorTau = new double[samples.Length];
                 var changed = false;
-                for (var m = 0; m < samples.Length; m++)
+                if (reusedAddTau is not null)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var addTau = EvaluateDarkCloudOpticalDepth(
-                        candidateCloud, samples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
-                    if (addTau > 0d) changed = true;
-                    nextPriorTau[m] = fine.PriorTau[m] + addTau;
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        var addTau = reusedAddTau[m];
+                        if (addTau > 0d) changed = true;
+                        nextPriorTau[m] = fine.PriorTau[m] + addTau;
+                    }
                 }
+                else
+                {
+                    ChargeSamplePoints(samples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                    candidateSamples = checked(candidateSamples + samples.Length);
+                    var evaluatedAddTau = new double[samples.Length];
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var addTau = EvaluateDarkCloudOpticalDepth(
+                            candidateCloud, samples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                        evaluatedAddTau[m] = addTau;
+                        if (addTau > 0d) changed = true;
+                        nextPriorTau[m] = fine.PriorTau[m] + addTau;
+                    }
+                    evaluatedFineTauCache ??= [];
+                    evaluatedFineTauCache.Add((fine.Cloud, samples, evaluatedAddTau));
+                }
+
                 if (!changed) continue;
                 var nextDeposits = BuildFineCellDeposits(samples, nextPriorTau, settings.MaximumSparsePixels);
                 updatedFineByIndex ??= [];
@@ -2638,8 +2651,8 @@ public sealed class DeepSkyRenderPlan
                 foreach (var k in nextDeposits.Keys) affectedKeys.Add(k);
             }
 
-            var provisionalTransmission = CombineComponentTransmission(
-                component,
+            var provisionalTransmission = CombineLayerTransmission(
+                layerState,
                 affectedKeys,
                 resolvedUpdates,
                 insertedFineIndex: -1,
@@ -2659,7 +2672,8 @@ public sealed class DeepSkyRenderPlan
         }
 
         // Fine cloud path: sample this cloud's interior points ONCE (charging each point BEFORE evaluation)
-        // and layer it into its canonical geometric position without rebuilding any prior fine cloud rasters.
+        // and layer it into its canonical geometric position, reusing exact cached optical depths across
+        // coincident fine clouds and strictly pre-charging every non-reused cross-cloud evaluation.
         var fineSamples = SampleFineDarkCloudOnce(
             candidateCloud,
             projector,
@@ -2669,58 +2683,168 @@ public sealed class DeepSkyRenderPlan
             paddedWidth,
             ref totalSampledPoints,
             ref totalOutlineEdgeVisits,
-            out var interiorSampleCount,
+            out var chargedFineSamples,
             cancellationToken);
 
         var insertIdx = 0;
-        while (insertIdx < component.AdmittedFineClouds.Count &&
-               CompareFineCloudCanonicalOrder(component.AdmittedFineClouds[insertIdx].Cloud, candidateCloud) <= 0)
+        while (insertIdx < layerState.AdmittedFineClouds.Count &&
+               CompareFineCloudCanonicalOrder(layerState.AdmittedFineClouds[insertIdx].Cloud, candidateCloud) <= 0)
         {
             insertIdx++;
         }
 
         var candidatePriorTau = new double[fineSamples.Length];
-        for (var m = 0; m < fineSamples.Length; m++)
+        if (fineSamples.Length > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var dir = fineSamples[m].Direction;
-            var priorTau = 0d;
-            for (var r = 0; r < component.AdmittedResolvedClouds.Count; r++)
+            if (insertIdx < layerState.AdmittedFineClouds.Count &&
+                HaveIdenticalFineSamplingGeometry(layerState.AdmittedFineClouds[insertIdx].Cloud, candidateCloud) &&
+                HaveMatchingSampleDirections(layerState.AdmittedFineClouds[insertIdx].Samples, fineSamples))
             {
-                var rc = component.AdmittedResolvedClouds[r];
-                if (!DarkCloudsMayOverlap(rc, candidateCloud)) continue;
-                priorTau += EvaluateDarkCloudOpticalDepth(rc, dir, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                // The fine cloud currently at insertIdx shares the exact same directions and prior-layer set
+                // (all admitted resolved clouds + admitted fine clouds [0..insertIdx-1]).
+                Array.Copy(layerState.AdmittedFineClouds[insertIdx].PriorTau, candidatePriorTau, fineSamples.Length);
             }
-            for (var j = 0; j < insertIdx; j++)
+            else
             {
-                var fc = component.AdmittedFineClouds[j].Cloud;
-                if (!DarkCloudsMayOverlap(fc, candidateCloud)) continue;
-                priorTau += EvaluateDarkCloudOpticalDepth(fc, dir, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                var matchedPriorIdx = -1;
+                for (var j = insertIdx - 1; j >= 0; j--)
+                {
+                    var priorFine = layerState.AdmittedFineClouds[j];
+                    if (HaveIdenticalFineSamplingGeometry(priorFine.Cloud, candidateCloud) &&
+                        HaveMatchingSampleDirections(priorFine.Samples, fineSamples))
+                    {
+                        matchedPriorIdx = j;
+                        break;
+                    }
+                }
+
+                if (matchedPriorIdx >= 0)
+                {
+                    // Reuse priorFine.PriorTau[m] + priorFine.Samples[m].Tau, which already covers every admitted
+                    // resolved cloud and every admitted fine cloud in [0..matchedPriorIdx].
+                    var matchedFine = layerState.AdmittedFineClouds[matchedPriorIdx];
+                    for (var m = 0; m < fineSamples.Length; m++)
+                    {
+                        candidatePriorTau[m] = matchedFine.PriorTau[m] + matchedFine.Samples[m].Tau;
+                    }
+
+                    for (var j = matchedPriorIdx + 1; j < insertIdx; j++)
+                    {
+                        var fc = layerState.AdmittedFineClouds[j].Cloud;
+                        if (!DarkCloudsMayOverlap(fc, candidateCloud)) continue;
+                        ChargeSamplePoints(fineSamples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                        chargedFineSamples = checked(chargedFineSamples + fineSamples.Length);
+                        for (var m = 0; m < fineSamples.Length; m++)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            candidatePriorTau[m] += EvaluateDarkCloudOpticalDepth(
+                                fc, fineSamples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                        }
+                    }
+                }
+                else
+                {
+                    for (var r = 0; r < layerState.AdmittedResolvedClouds.Count; r++)
+                    {
+                        var rc = layerState.AdmittedResolvedClouds[r];
+                        if (!DarkCloudsMayOverlap(rc, candidateCloud)) continue;
+                        ChargeSamplePoints(fineSamples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                        chargedFineSamples = checked(chargedFineSamples + fineSamples.Length);
+                        for (var m = 0; m < fineSamples.Length; m++)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            candidatePriorTau[m] += EvaluateDarkCloudOpticalDepth(
+                                rc, fineSamples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                        }
+                    }
+                    for (var j = 0; j < insertIdx; j++)
+                    {
+                        var fc = layerState.AdmittedFineClouds[j].Cloud;
+                        if (!DarkCloudsMayOverlap(fc, candidateCloud)) continue;
+                        ChargeSamplePoints(fineSamples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                        chargedFineSamples = checked(chargedFineSamples + fineSamples.Length);
+                        for (var m = 0; m < fineSamples.Length; m++)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            candidatePriorTau[m] += EvaluateDarkCloudOpticalDepth(
+                                fc, fineSamples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                        }
+                    }
+                }
             }
-            candidatePriorTau[m] = priorTau;
         }
 
         var candidateDeposits = BuildFineCellDeposits(fineSamples, candidatePriorTau, settings.MaximumSparsePixels);
         var fineAffectedKeys = new HashSet<long>(candidateDeposits.Keys);
 
         // Update any already-admitted overlapping fine clouds that sort AFTER candidateCloud in canonical geometric
-        // order, reusing their cached sample directions (zero re-gridding or extra interior sample visits).
+        // order, reusing exact optical depths for coincident clouds and strictly pre-charging every non-reused call.
         Dictionary<int, (double[] UpdatedPriorTau, Dictionary<long, (double AreaSum, double AbsorbAreaSum)> UpdatedDeposits)>? shiftedFineUpdates = null;
-        for (var j = insertIdx; j < component.AdmittedFineClouds.Count; j++)
+        List<(AdmittedDarkCloud Cloud, FineDarkCloudSample[] Samples, double[] AddedTau)>? evaluatedLaterTauCache = null;
+        for (var j = insertIdx; j < layerState.AdmittedFineClouds.Count; j++)
         {
-            var later = component.AdmittedFineClouds[j];
+            var later = layerState.AdmittedFineClouds[j];
             if (!DarkCloudsMayOverlap(later.Cloud, candidateCloud)) continue;
             var samples = later.Samples;
+            if (samples.Length == 0) continue;
+
             var nextPriorTau = new double[samples.Length];
             var changed = false;
-            for (var m = 0; m < samples.Length; m++)
+            if (HaveIdenticalFineSamplingGeometry(later.Cloud, candidateCloud) &&
+                HaveMatchingSampleDirections(samples, fineSamples))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var addTau = EvaluateDarkCloudOpticalDepth(
-                    candidateCloud, samples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
-                if (addTau > 0d) changed = true;
-                nextPriorTau[m] = later.PriorTau[m] + addTau;
+                for (var m = 0; m < samples.Length; m++)
+                {
+                    var addTau = fineSamples[m].Tau;
+                    if (addTau > 0d) changed = true;
+                    nextPriorTau[m] = later.PriorTau[m] + addTau;
+                }
             }
+            else
+            {
+                double[]? reusedAddTau = null;
+                if (evaluatedLaterTauCache is not null)
+                {
+                    for (var c = 0; c < evaluatedLaterTauCache.Count; c++)
+                    {
+                        var cached = evaluatedLaterTauCache[c];
+                        if (HaveIdenticalFineSamplingGeometry(cached.Cloud, later.Cloud) &&
+                            HaveMatchingSampleDirections(cached.Samples, samples))
+                        {
+                            reusedAddTau = cached.AddedTau;
+                            break;
+                        }
+                    }
+                }
+
+                if (reusedAddTau is not null)
+                {
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        var addTau = reusedAddTau[m];
+                        if (addTau > 0d) changed = true;
+                        nextPriorTau[m] = later.PriorTau[m] + addTau;
+                    }
+                }
+                else
+                {
+                    ChargeSamplePoints(samples.Length, settings.MaximumTotalSamplePoints, ref totalSampledPoints);
+                    chargedFineSamples = checked(chargedFineSamples + samples.Length);
+                    var evaluatedAddTau = new double[samples.Length];
+                    for (var m = 0; m < samples.Length; m++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var addTau = EvaluateDarkCloudOpticalDepth(
+                            candidateCloud, samples[m].Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                        evaluatedAddTau[m] = addTau;
+                        if (addTau > 0d) changed = true;
+                        nextPriorTau[m] = later.PriorTau[m] + addTau;
+                    }
+                    evaluatedLaterTauCache ??= [];
+                    evaluatedLaterTauCache.Add((later.Cloud, samples, evaluatedAddTau));
+                }
+            }
+
             if (!changed) continue;
             var nextDeposits = BuildFineCellDeposits(samples, nextPriorTau, settings.MaximumSparsePixels);
             shiftedFineUpdates ??= [];
@@ -2729,8 +2853,8 @@ public sealed class DeepSkyRenderPlan
             foreach (var k in nextDeposits.Keys) fineAffectedKeys.Add(k);
         }
 
-        var fineProvisionalTransmission = CombineComponentTransmission(
-            component,
+        var fineProvisionalTransmission = CombineLayerTransmission(
+            layerState,
             fineAffectedKeys,
             resolvedUpdates: null,
             insertIdx,
@@ -2741,7 +2865,7 @@ public sealed class DeepSkyRenderPlan
         return new ProvisionalDarkCloudEvaluation(
             candidateCloud,
             IsResolved: false,
-            interiorSampleCount,
+            chargedFineSamples,
             fineProvisionalTransmission,
             ResolvedUpdates: null,
             insertIdx,
@@ -2775,8 +2899,8 @@ public sealed class DeepSkyRenderPlan
         return deposits;
     }
 
-    private static Dictionary<long, double> CombineComponentTransmission(
-        DarkOverlapComponentState component,
+    private static Dictionary<long, double> CombineLayerTransmission(
+        DarkAttenuationLayerState layerState,
         HashSet<long> affectedKeys,
         Dictionary<long, ProvisionalResolvedPixelUpdate>? resolvedUpdates,
         int insertedFineIndex,
@@ -2789,7 +2913,7 @@ public sealed class DeepSkyRenderPlan
         {
             var t = resolvedUpdates is not null && resolvedUpdates.TryGetValue(paddedKey, out var ru)
                 ? ru.NextTransmission
-                : component.ResolvedPixels.TryGetValue(paddedKey, out var rp)
+                : layerState.ResolvedPixels.TryGetValue(paddedKey, out var rp)
                     ? rp.AdmittedTransmission
                     : 1d;
 
@@ -2806,7 +2930,7 @@ public sealed class DeepSkyRenderPlan
                 }
             }
 
-            var existingCount = component.AdmittedFineClouds.Count;
+            var existingCount = layerState.AdmittedFineClouds.Count;
             for (var j = 0; j < existingCount; j++)
             {
                 if (j == insertedFineIndex && insertedFineDeposits is not null)
@@ -2815,7 +2939,7 @@ public sealed class DeepSkyRenderPlan
                 }
                 var deposits = updatedFineByIndex is not null && updatedFineByIndex.TryGetValue(j, out var upd)
                     ? upd.UpdatedDeposits
-                    : component.AdmittedFineClouds[j].CellDeposits;
+                    : layerState.AdmittedFineClouds[j].CellDeposits;
                 ApplyLayer(deposits);
             }
             if (insertedFineIndex == existingCount && insertedFineDeposits is not null)
@@ -2833,7 +2957,7 @@ public sealed class DeepSkyRenderPlan
     }
 
     private static void CommitIncrementalDarkCloud(
-        DarkOverlapComponentState component,
+        DarkAttenuationLayerState layerState,
         ProvisionalDarkCloudEvaluation evaluation,
         Dictionary<long, double> cumulativeTransmission,
         HashSet<long> prePsfSparsePixels,
@@ -2847,17 +2971,17 @@ public sealed class DeepSkyRenderPlan
                 {
                     Array.Copy(update.NextTau, update.Pixel.AdmittedTau, update.NextTau.Length);
                     update.Pixel.AdmittedTransmission = update.NextTransmission;
-                    component.ResolvedPixels[paddedKey] = update.Pixel;
+                    layerState.ResolvedPixels[paddedKey] = update.Pixel;
                 }
             }
-            component.AdmittedResolvedClouds.Add(evaluation.Cloud);
+            layerState.AdmittedResolvedClouds.Add(evaluation.Cloud);
         }
 
         if (evaluation.UpdatedFineByIndex is not null)
         {
             foreach (var (idx, (nextPriorTau, nextDeposits)) in evaluation.UpdatedFineByIndex)
             {
-                var fine = component.AdmittedFineClouds[idx];
+                var fine = layerState.AdmittedFineClouds[idx];
                 fine.PriorTau = nextPriorTau;
                 fine.CellDeposits = nextDeposits;
             }
@@ -2865,14 +2989,14 @@ public sealed class DeepSkyRenderPlan
 
         if (!evaluation.IsResolved && evaluation.NewFineCloud is not null)
         {
-            component.AdmittedFineClouds.Insert(evaluation.InsertedFineIndex, evaluation.NewFineCloud);
+            layerState.AdmittedFineClouds.Insert(evaluation.InsertedFineIndex, evaluation.NewFineCloud);
         }
 
         foreach (var (paddedKey, nextT) in evaluation.ProvisionalTransmission)
         {
             if (nextT >= 1d - 1e-15)
             {
-                component.CurrentTransmission.Remove(paddedKey);
+                layerState.CurrentTransmission.Remove(paddedKey);
                 cumulativeTransmission.Remove(paddedKey);
                 continue;
             }
@@ -2882,7 +3006,7 @@ public sealed class DeepSkyRenderPlan
                 throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
             }
             prePsfSparsePixels.Add(paddedKey);
-            component.CurrentTransmission[paddedKey] = nextT;
+            layerState.CurrentTransmission[paddedKey] = nextT;
             cumulativeTransmission[paddedKey] = nextT;
         }
     }
@@ -4350,16 +4474,6 @@ public sealed class DeepSkyRenderPlan
 
     private readonly record struct PaddedPixelBounds(int MinX, int MinY, int MaxX, int MaxY);
 
-    private sealed record PreparedDarkCandidate(
-        DeepSkyObject Item,
-        DeepSkySyntheticSourceOverride? SyntheticOverride,
-        DeepSkySimulationParameters Profile,
-        ResolvedSourceGeometry Geometry,
-        double? PaJ2000Degrees,
-        bool IsCircle,
-        double MaxSpanPixels,
-        PaddedPixelBounds? PaddedBounds);
-
     private readonly record struct FineDarkCloudSample(
         EnuVector Direction,
         long PaddedPixelKey,
@@ -4390,10 +4504,9 @@ public sealed class DeepSkyRenderPlan
         public Dictionary<long, (double AreaSum, double AbsorbAreaSum)> CellDeposits { get; set; } = cellDeposits;
     }
 
-    private sealed class DarkOverlapComponentState(int commonSub, HashSet<string> resolvedIds)
+    private sealed class DarkAttenuationLayerState(int resolvedSub)
     {
-        public int CommonSub { get; } = commonSub;
-        public HashSet<string> ResolvedIds { get; } = resolvedIds;
+        public int ResolvedSub { get; } = resolvedSub;
         public Dictionary<long, CachedResolvedPixel> ResolvedPixels { get; } = [];
         public List<AdmittedDarkCloud> AdmittedResolvedClouds { get; } = [];
         public List<AdmittedFineDarkCloud> AdmittedFineClouds { get; } = [];

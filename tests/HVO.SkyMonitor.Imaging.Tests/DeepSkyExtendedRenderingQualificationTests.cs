@@ -1561,6 +1561,333 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         var underBudgetSettings = exactBudgetSettings with { MaximumTotalSamplePoints = 947 };
         Assert.ThrowsExactly<InvalidOperationException>(() =>
             DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, underBudgetSettings));
+
+        // Reverse and interleaved arrival orders (exercising insertIdx == matchedIdx and shiftedFineUpdates reuse)
+        // plus distinct optical depths summing to 4.8 MUST also stay within the exact 948-sample budget.
+        var revPlan = DeepSkyRenderPlan.Prepare(req, null, [c3, c1, c2], null, opts, exactBudgetSettings);
+        Assert.AreEqual(3, revPlan.Statistics.AdmittedCount);
+        Assert.AreEqual(948L, revPlan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(single48Absorbed, revPlan.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), single48Absorbed * 1e-6);
+
+        var distinctTauScenario = new DeepSkySyntheticScenario("f23-distinct-tau-v1",
+            Overrides:
+            [
+                new DeepSkySyntheticSourceOverride(c1.Id, PeakOpticalDepth: 1.0),
+                new DeepSkySyntheticSourceOverride(c2.Id, PeakOpticalDepth: 1.5),
+                new DeepSkySyntheticSourceOverride(c3.Id, PeakOpticalDepth: 2.3)
+            ]);
+        var distinctTauPlan = DeepSkyRenderPlan.Prepare(req, null, [c2, c3, c1], null, opts,
+            exactBudgetSettings with { SyntheticScenario = distinctTauScenario });
+        Assert.AreEqual(3, distinctTauPlan.Statistics.AdmittedCount);
+        Assert.AreEqual(948L, distinctTauPlan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(single48Absorbed, distinctTauPlan.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate), single48Absorbed * 1e-6);
+    }
+
+    [TestMethod]
+    public void OffsetOverlappingDarkCloudsChargeEveryCrossCloudOpticalDepthEvaluationAgainstSampleBudget()
+    {
+        // Exact F23 regression for non-coincident overlapping dark clouds (where cached tau cannot be reused):
+        // every cross-cloud optical-depth evaluation MUST be charged against MaximumTotalSamplePoints before work,
+        // both for fine-on-fine overlap (forward and reverse insertion orders) and resolved-on-fine overlap.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+
+        var p1 = AltAzToJ2000(new AltAzPoint(60.000, 180.0));
+        var p2 = AltAzToJ2000(new AltAzPoint(60.002, 180.0));
+        var p3 = AltAzToJ2000(new AltAzPoint(60.004, 180.0));
+        var c1 = CreateDso("LDN-OFF-1", "Offset 1", "DrkN", p1.RaHours, p1.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 1);
+        var c2 = CreateDso("LDN-OFF-2", "Offset 2", "DrkN", p2.RaHours, p2.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 2);
+        var c3 = CreateDso("LDN-OFF-3", "Offset 3", "DrkN", p3.RaHours, p3.DecDegrees, 0.6, 0.6, 0, null, null, null, null, 3);
+        var c3First = c3 with { MessierNumber = 1 };
+        var c2Second = c2 with { MessierNumber = 2 };
+        var c1Third = c1 with { MessierNumber = 3 };
+
+        const double bg = 100.0;
+        var baseSettings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg);
+
+        // 3 offset mutually-overlapping 0.6' clouds: 3 * 316 = 948 own samples + (0 + 1 + 2) * 316 = 948 cross-cloud evaluations = 1,896 total.
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, baseSettings with { MaximumTotalSamplePoints = 948 }));
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, baseSettings with { MaximumTotalSamplePoints = 1_895 }));
+
+        var forwardPlan = DeepSkyRenderPlan.Prepare(req, null, [c1, c2, c3], null, opts, baseSettings with { MaximumTotalSamplePoints = 1_896 });
+        Assert.AreEqual(3, forwardPlan.Statistics.AdmittedCount);
+        Assert.AreEqual(1_896L, forwardPlan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(1_896, forwardPlan.Diagnostics.Sum(static d => d.SampledPoints));
+
+        // Reverse priority order exercises shiftedFineUpdates charging path and must enforce the exact same 1,896 budget.
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [c3First, c2Second, c1Third], null, opts, baseSettings with { MaximumTotalSamplePoints = 1_895 }));
+        var reversePlan = DeepSkyRenderPlan.Prepare(req, null, [c3First, c2Second, c1Third], null, opts, baseSettings with { MaximumTotalSamplePoints = 1_896 });
+        Assert.AreEqual(3, reversePlan.Statistics.AdmittedCount);
+        Assert.AreEqual(1_896L, reversePlan.Statistics.TotalSampledPoints);
+        Assert.AreEqual(1_896, reversePlan.Diagnostics.Sum(static d => d.SampledPoints));
+        Assert.AreEqual(
+            forwardPlan.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate),
+            reversePlan.Diagnostics.Sum(static d => d.AttenuatedDiffuseElectronRate),
+            1e-9);
+
+        // Resolved (6') + Fine (0.6') overlap in both orders must charge own_resolved + own_fine + 316 cross-path evaluations.
+        var large = CreateDso("LDN-RES-6", "Resolved 6'", "DrkN", p1.RaHours, p1.DecDegrees, 6.0, 6.0, 0, null, null, null, null, 1);
+        var smallAfter = c1 with { MessierNumber = 2 };
+        var smallBefore = c1 with { MessierNumber = 1 };
+        var largeAfter = large with { MessierNumber = 2 };
+
+        var resolvedOnlySamples = checked((int)DeepSkyRenderPlan.Prepare(req, null, [large], null, opts, baseSettings).Statistics.TotalSampledPoints);
+        var fineOnlySamples = checked((int)DeepSkyRenderPlan.Prepare(req, null, [c1], null, opts, baseSettings).Statistics.TotalSampledPoints);
+        var expectedCombinedSamples = resolvedOnlySamples + fineOnlySamples + fineOnlySamples;
+
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [large, smallAfter], null, opts,
+                baseSettings with { MaximumTotalSamplePoints = expectedCombinedSamples - 1 }));
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [smallBefore, largeAfter], null, opts,
+                baseSettings with { MaximumTotalSamplePoints = expectedCombinedSamples - 1 }));
+
+        var resThenFine = DeepSkyRenderPlan.Prepare(req, null, [large, smallAfter], null, opts,
+            baseSettings with { MaximumTotalSamplePoints = expectedCombinedSamples });
+        var fineThenRes = DeepSkyRenderPlan.Prepare(req, null, [smallBefore, largeAfter], null, opts,
+            baseSettings with { MaximumTotalSamplePoints = expectedCombinedSamples });
+        Assert.AreEqual((long)expectedCombinedSamples, resThenFine.Statistics.TotalSampledPoints);
+        Assert.AreEqual((long)expectedCombinedSamples, fineThenRes.Statistics.TotalSampledPoints);
+        Assert.AreEqual(expectedCombinedSamples, resThenFine.Diagnostics.Sum(static d => d.SampledPoints));
+        Assert.AreEqual(expectedCombinedSamples, fineThenRes.Diagnostics.Sum(static d => d.SampledPoints));
+    }
+
+    [TestMethod]
+    public void OffsetDarkCloudPreservesGridInvarianceForZeroDepthOrSkippedNeighborAndMonotonicityAtLowOpticalDepth()
+    {
+        // Exact F5 regressions:
+        // (1) At f = 1400 with two 3' dark clouds offset by 0.025 deg, cap = 64, and S/N gating off,
+        //     adding a transparent (tau = 0), S/N-rejected, or budget-skipped neighbor MUST leave the first cloud's
+        //     pixel-summed deficit and per-pixel rates bit-for-bit identical (no neighbor-induced grid mutation).
+        // (2) Adding the second cloud at tau = 0.001 MUST admit both clouds and strictly increase the pixel-summed
+        //     deficit (monotonicity) regardless of priority order or which cloud has tau = 0.001.
+        // (3) The same zero-depth invariance and tau = 0.001 monotonicity hold for the 3' + 6' pair at cap = 225 and default cap.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var pos1 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+        var pos2 = AltAzToJ2000(new AltAzPoint(60.025, 180.0));
+
+        var cloud1 = CreateDso("LDN-3A", "3' Cloud A", "DrkN", pos1.RaHours, pos1.DecDegrees, 3.0, 3.0, 0, null, null, null, null, 1);
+        var cloud2 = CreateDso("LDN-3B", "3' Cloud B", "DrkN", pos2.RaHours, pos2.DecDegrees, 3.0, 3.0, 0, null, null, null, null, 2);
+        var cloud6 = CreateDso("LDN-6B", "6' Cloud B", "DrkN", pos2.RaHours, pos2.DecDegrees, 6.0, 6.0, 0, null, null, null, null, 2);
+
+        const double bg = 100.0;
+
+        double SumDeficit(DeepSkyRenderPlan plan)
+        {
+            var sum = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    sum += bg - plan.ElectronRate(x, y);
+                }
+            }
+            return sum;
+        }
+
+        double MaxRateDiff(DeepSkyRenderPlan a, DeepSkyRenderPlan b)
+        {
+            var max = 0d;
+            for (var y = 0; y < projection.HeightPixels; y++)
+            {
+                for (var x = 0; x < projection.WidthPixels; x++)
+                {
+                    max = Math.Max(max, Math.Abs(a.ElectronRate(x, y) - b.ElectronRate(x, y)));
+                }
+            }
+            return max;
+        }
+
+        var cap64Settings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+        {
+            MaximumSamplePointsPerSource = 64
+        };
+        var alonePlan = DeepSkyRenderPlan.Prepare(req, null, [cloud1], null, opts, cap64Settings);
+        var aloneDeficit = SumDeficit(alonePlan);
+        Assert.IsTrue(aloneDeficit > 55.0, $"Expected ~59.7 e-/s deficit for 3' cloud alone; got {aloneDeficit:F6}.");
+
+        // (a) Zero-depth (tau = 0) second cloud in either priority order preserves bit-identical attenuation.
+        var zeroDepthScenario = new DeepSkySyntheticScenario("f5-zero-depth-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride(cloud2.Id, PeakOpticalDepth: 0.0)]);
+        var withZeroSecond = DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud2], null, opts,
+            cap64Settings with { SyntheticScenario = zeroDepthScenario });
+        var withZeroFirst = DeepSkyRenderPlan.Prepare(req, null, [cloud2 with { MessierNumber = 1 }, cloud1 with { MessierNumber = 2 }], null, opts,
+            cap64Settings with { SyntheticScenario = zeroDepthScenario });
+
+        Assert.AreEqual(1, withZeroSecond.Statistics.AdmittedCount);
+        Assert.AreEqual(0, withZeroSecond.Diagnostics.Single(d => d.ObjectId == cloud2.Id).SampledPoints);
+        Assert.AreEqual(aloneDeficit, SumDeficit(withZeroSecond), 1e-12,
+            $"Zero-depth neighbor must not alter first cloud's deficit (alone={aloneDeficit:F9}, withZero={SumDeficit(withZeroSecond):F9}).");
+        Assert.AreEqual(0d, MaxRateDiff(alonePlan, withZeroSecond), 1e-12);
+        Assert.AreEqual(aloneDeficit, SumDeficit(withZeroFirst), 1e-12);
+        Assert.AreEqual(0d, MaxRateDiff(alonePlan, withZeroFirst), 1e-12);
+
+        // (b) Budget-skipped or S/N-rejected neighbor preserves bit-identical attenuation.
+        var withBudgetSkipped = DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud2], null, opts,
+            cap64Settings with { MaximumRenderedSources = 1 });
+        Assert.AreEqual(aloneDeficit, SumDeficit(withBudgetSkipped), 1e-12);
+        Assert.AreEqual(0d, MaxRateDiff(alonePlan, withBudgetSkipped), 1e-12);
+
+        var lowTauScenario = new DeepSkySyntheticScenario("f5-low-tau-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride(cloud2.Id, PeakOpticalDepth: 0.001)]);
+        var cloud1Snr = alonePlan.Diagnostics.Single().PredictedSignal.SignalToNoise;
+        Assert.IsTrue(cloud1Snr > 0.1, $"Expected measurable S/N for 3' cloud alone; got {cloud1Snr:F4}.");
+        var withSnrRejected = DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud2], null, opts,
+            cap64Settings with { MinimumSignalToNoise = cloud1Snr * 0.5, SyntheticScenario = lowTauScenario });
+        Assert.IsTrue(withSnrRejected.Diagnostics.Single(d => d.ObjectId == cloud1.Id).Admitted);
+        Assert.IsFalse(withSnrRejected.Diagnostics.Single(d => d.ObjectId == cloud2.Id).Admitted);
+        Assert.AreEqual("annotation-only-below-snr", withSnrRejected.Diagnostics.Single(d => d.ObjectId == cloud2.Id).Reason);
+        Assert.AreEqual(aloneDeficit, SumDeficit(withSnrRejected), 1e-12);
+        Assert.AreEqual(0d, MaxRateDiff(alonePlan, withSnrRejected), 1e-12);
+
+        // (c) Adding the second cloud at tau = 0.001 with S/N gating off admits both and STRICTLY increases deficit.
+        var withLowTau = DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud2], null, opts,
+            cap64Settings with { SyntheticScenario = lowTauScenario });
+        var withLowTauRev = DeepSkyRenderPlan.Prepare(req, null, [cloud2 with { MessierNumber = 1 }, cloud1 with { MessierNumber = 2 }], null, opts,
+            cap64Settings with { SyntheticScenario = lowTauScenario });
+        var lowTauDeficit = SumDeficit(withLowTau);
+        Assert.AreEqual(2, withLowTau.Statistics.AdmittedCount);
+        Assert.AreEqual(2, withLowTau.Statistics.DarkAttenuationCount);
+        Assert.IsTrue(lowTauDeficit > aloneDeficit,
+            $"Adding positive optical depth (tau=0.001) must strictly increase attenuation (alone={aloneDeficit:F9}, withTau0001={lowTauDeficit:F9}).");
+        Assert.AreEqual(lowTauDeficit, SumDeficit(withLowTauRev), 1e-12);
+        Assert.AreEqual(0d, MaxRateDiff(withLowTau, withLowTauRev), 1e-12);
+
+        // Reversed roles: cloud2 (tau = 1.6) alone vs cloud2 + cloud1 (tau = 0.001).
+        var cloud2AloneDeficit = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud2], null, opts, cap64Settings));
+        var lowTau1Scenario = new DeepSkySyntheticScenario("f5-low-tau1-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride(cloud1.Id, PeakOpticalDepth: 0.001)]);
+        var cloud2PlusLowTau1 = DeepSkyRenderPlan.Prepare(req, null, [cloud2, cloud1], null, opts,
+            cap64Settings with { SyntheticScenario = lowTau1Scenario });
+        Assert.AreEqual(2, cloud2PlusLowTau1.Statistics.AdmittedCount);
+        Assert.IsTrue(SumDeficit(cloud2PlusLowTau1) > cloud2AloneDeficit,
+            $"Adding cloud1 (tau=0.001) onto cloud2 (tau=1.6) must strictly increase attenuation ({SumDeficit(cloud2PlusLowTau1):F9} vs {cloud2AloneDeficit:F9}).");
+
+        // (d) 3' + 6' pair at cap = 225 and default cap: zero-depth invariance and tau = 0.001 monotonicity in both directions.
+        foreach (var cap in new[] { 225, 65_536 })
+        {
+            var settings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+            {
+                MaximumSamplePointsPerSource = cap
+            };
+            var d3Alone = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud1], null, opts, settings));
+            var d6Alone = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud6], null, opts, settings));
+
+            var d3PlusZero6 = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud6], null, opts,
+                settings with { SyntheticScenario = new DeepSkySyntheticScenario($"f5-z6-{cap}", Overrides: [new DeepSkySyntheticSourceOverride(cloud6.Id, PeakOpticalDepth: 0.0)]) }));
+            var d6PlusZero3 = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud6, cloud1], null, opts,
+                settings with { SyntheticScenario = new DeepSkySyntheticScenario($"f5-z3-{cap}", Overrides: [new DeepSkySyntheticSourceOverride(cloud1.Id, PeakOpticalDepth: 0.0)]) }));
+            Assert.AreEqual(d3Alone, d3PlusZero6, 1e-12, $"3' + 6'(tau=0) invariance failed at cap={cap}.");
+            Assert.AreEqual(d6Alone, d6PlusZero3, 1e-12, $"6' + 3'(tau=0) invariance failed at cap={cap}.");
+
+            var d3PlusLow6 = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud1, cloud6], null, opts,
+                settings with { SyntheticScenario = new DeepSkySyntheticScenario($"f5-l6-{cap}", Overrides: [new DeepSkySyntheticSourceOverride(cloud6.Id, PeakOpticalDepth: 0.001)]) }));
+            var d6PlusLow3 = SumDeficit(DeepSkyRenderPlan.Prepare(req, null, [cloud6, cloud1], null, opts,
+                settings with { SyntheticScenario = new DeepSkySyntheticScenario($"f5-l3-{cap}", Overrides: [new DeepSkySyntheticSourceOverride(cloud1.Id, PeakOpticalDepth: 0.001)]) }));
+            Assert.IsTrue(d3PlusLow6 > d3Alone, $"3' + 6'(tau=0.001) monotonicity failed at cap={cap} ({d3PlusLow6:F9} <= {d3Alone:F9}).");
+            Assert.IsTrue(d6PlusLow3 > d6Alone, $"6' + 3'(tau=0.001) monotonicity failed at cap={cap} ({d6PlusLow3:F9} <= {d6Alone:F9}).");
+        }
+    }
+
+    [TestMethod]
+    public void NarrowHighAspectDarkEllipseRemainsProperlySampledAndAttenuatedAcrossSampleCaps()
+    {
+        // Exact F27 regression: a centered 20' x 0.4' dark ellipse at f = 1400, PA = 0 deg, against a declared
+        // 100 e-/px/s diffuse background has major span ~8.14 px but minor span ~0.163 px. Both projected dimensions
+        // must be accounted for when choosing quadrature so the narrow minor axis never falls between samples at
+        // cap = 64 (or any higher/lower cap) or rotated position angles, including narrow sourced outlines.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0, readNoise: 0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60.0, 180.0));
+
+        const double bg = 100.0;
+        // Exact analytic absorption for a 20' x 0.4' ellipse with tau(q) = 1.6*(1-q^2) at f = 1400, bg = 100 is ~52.22 e-/s.
+        foreach (var paDeg in new[] { 0.0, 45.0, 90.0 })
+        {
+            var narrowEllipse = CreateDso($"LDN-NARROW-PA{paDeg:F0}", "Narrow 20'x0.4' Dark Ellipse", "DrkN",
+                centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, paDeg, null, null, null, null, null);
+
+            foreach (var cap in new[] { 32, 64, 225, 65_536 })
+            {
+                var settings = CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg) with
+                {
+                    MaximumSamplePointsPerSource = cap
+                };
+                var plan = DeepSkyRenderPlan.Prepare(req, null, [narrowEllipse], null, opts, settings);
+                var diag = plan.Diagnostics.Single();
+
+                Assert.IsTrue(diag.Admitted,
+                    $"20' x 0.4' dark ellipse (PA={paDeg} deg, cap={cap}) must be admitted; got reason='{diag.Reason}'.");
+                Assert.AreEqual("admitted-dark-attenuation", diag.Reason);
+                Assert.AreEqual(1, plan.Statistics.DarkAttenuationCount);
+                Assert.IsTrue(diag.SampledPoints > 0 && diag.SampledPoints <= cap,
+                    $"Expected 0 < SampledPoints <= {cap} for PA={paDeg} deg; got {diag.SampledPoints}.");
+
+                var pixelDeficit = 0d;
+                for (var y = 0; y < projection.HeightPixels; y++)
+                {
+                    for (var x = 0; x < projection.WidthPixels; x++)
+                    {
+                        pixelDeficit += bg - plan.ElectronRate(x, y);
+                    }
+                }
+                Assert.IsTrue(pixelDeficit is > 45.0 and < 60.0,
+                    $"20' x 0.4' dark ellipse (PA={paDeg} deg, cap={cap}) must remove ~52-55 e-/s (analytic ~52.22 e-/s); got {pixelDeficit:F6} e-/s.");
+            }
+        }
+
+        // Narrow rotated outline (20' x 0.4' rectangle at PA = 45 deg): inscribed width (~0.163 px) must also route
+        // to source-local fine quadrature rather than falling between pixel centers on a resolved grid.
+        var cosDec = Math.Max(0.2, Math.Cos(centerJ2000.DecDegrees * Math.PI / 180d));
+        var raDeg0 = centerJ2000.RaHours * 15d;
+        var halfMajorDeg = 10.0 / 60.0;
+        var halfMinorDeg = 0.2 / 60.0;
+        var angleRad = 45.0 * Math.PI / 180.0;
+        var c = Math.Cos(angleRad);
+        var s = Math.Sin(angleRad);
+        DeepSkyOutlinePoint RotatedCorner(double localMajor, double localMinor)
+        {
+            var dNorth = localMajor * c - localMinor * s;
+            var dEast = localMajor * s + localMinor * c;
+            var ra = (((raDeg0 + dEast / cosDec) % 360d) + 360d) % 360d;
+            return new DeepSkyOutlinePoint(ra, centerJ2000.DecDegrees + dNorth);
+        }
+        var o0 = RotatedCorner(-halfMajorDeg, -halfMinorDeg);
+        var narrowOutline = new DeepSkyOutline("LDN-NARROW-OUTLINE", DeepSkyOutline.WidestLevel,
+        [
+            new DeepSkyOutlineRing(
+            [
+                o0,
+                RotatedCorner(halfMajorDeg, -halfMinorDeg),
+                RotatedCorner(halfMajorDeg, halfMinorDeg),
+                RotatedCorner(-halfMajorDeg, halfMinorDeg),
+                o0
+            ])
+        ]);
+        var outlineDark = CreateDso("LDN-NARROW-OUTLINE", "Narrow 20'x0.4' Outline", "DrkN",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 20.0, 0.4, 45.0, null, null, null, null, null);
+        var outlinePlan = DeepSkyRenderPlan.Prepare(req, null, [outlineDark], null, opts,
+            CreateSettings(opts, req, minSnr: 0, celestialDiffuseBg: bg,
+                syntheticScenario: new DeepSkySyntheticScenario("f27-narrow-outline-v1", AdditionalOutlines: [narrowOutline])) with
+            {
+                MaximumSamplePointsPerSource = 65_536
+            });
+        Assert.IsTrue(outlinePlan.Diagnostics.Single().Admitted,
+            $"Rotated 20' x 0.4' dark outline must be admitted; got reason='{outlinePlan.Diagnostics.Single().Reason}'.");
+        Assert.IsTrue(outlinePlan.Diagnostics.Single().AttenuatedDiffuseElectronRate > 20.0);
     }
 
     [TestMethod]

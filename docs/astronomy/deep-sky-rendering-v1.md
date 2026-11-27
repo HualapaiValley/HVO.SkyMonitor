@@ -202,16 +202,22 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    background, RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
    vignetting, and source-caused saturation bound to the exact normalized `LinearSceneRenderOptions`
    validated by `DeepSkyRenderPlan.ValidateFor`.
-6. **Order-independent dark-nebula overlap composition, exact work charging & post-attenuation PSF:**
-   Connected overlapping dark-cloud components fix their common subpixel density and
-   resolved-vs-fine classification purely from the unordered component set
-   (`PlanDarkOverlapComponents`), cache per-pixel unprojected subpixel directions and per-cloud
-   fine interior samples in canonical geometric order (charging `MaximumTotalSamplePoints` before
-   work and never rebuilding prior rasters), and commit exact canonical transmission
-   `T(x,y) = exp(-sum_k tau_k(x,y))` without retaining stale earlier estimates — guaranteeing
-   strict monotonicity (`T_all <= T_subset`), exact optical-depth additivity
-   (`tau1 + tau2 == tau_combined`), order invariance across arbitrary `N >= 2` overlapping
-   resolved and unresolved clouds, and exact sample-budget accounting. Before committing
+6. **Order-independent dark-nebula overlap composition, grid invariance, exact work charging & post-attenuation PSF:**
+   Each dark cloud selects resolved vs fine quadrature strictly from its own projected minor and
+   major dimensions (including outline inscribed thickness) against the fixed scene-wide resolved
+   subpixel grid (`resolvedSub = clamp(2 * SamplesPerProjectedPixel, 2, 8)`), requiring both
+   projected dimensions to be well-resolved (`minSpanPixels >= 1.0`, `minSpanPixels * resolvedSub >= 8.0`)
+   and the padded box to fit `MaximumSamplePointsPerSource` — guaranteeing that narrow high-aspect
+   ellipses/outlines never slip between subpixel centers and that transparent (`PeakOpticalDepth == 0`),
+   skipped, S/N-rejected, or positive-depth neighbors never mutate another cloud's sampling grid.
+   Resolved clouds share per-pixel cached unprojected subpixel directions, while fine clouds cache
+   interior samples in canonical geometric order, reuse exact cached optical depths across coincident
+   fine clouds, strictly pre-charge every non-reused cross-cloud and temporal optical-depth evaluation
+   against `MaximumTotalSamplePoints` (`actual <= reported <= MaximumTotalSamplePoints`), and commit
+   exact canonical transmission `T(x,y) = exp(-sum_k tau_k(x,y))` without retaining stale earlier
+   estimates — guaranteeing strict monotonicity (`T_all <= T_subset`), zero-depth neighbor invariance,
+   exact optical-depth additivity (`tau1 + tau2 == tau_combined`), order invariance across arbitrary
+   `N >= 2` overlapping resolved and fine clouds, and honest sample-budget accounting. Before committing
    transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes
    diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
    (`CompleteBinSupport`, including co-located foreground non-diffuse DSO and exposure-integrated
