@@ -191,7 +191,7 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2055, Level = LogLevel.Warning, Message = "Capture lane {Lane} scheduled retry attempt {Attempt} because {Reason}")]
     public static partial void CaptureLaneRetryScheduled(this ILogger logger, string lane, int attempt, string reason);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Capture lane {Lane} returned to pending at attempt 0 after Silo raw evidence became visible")]
+    [LoggerMessage(EventId = 2060, Level = LogLevel.Information, Message = "Capture lane {Lane} returned to pending at attempt 0 after Silo raw evidence became visible")]
     public static partial void CaptureLaneSiloEvidenceRestored(this ILogger logger, string lane);
 
     [LoggerMessage(EventId = 2056, Level = LogLevel.Warning, Message = "Capture lane {Lane} reached terminal outcome {Outcome} because {Reason}")]

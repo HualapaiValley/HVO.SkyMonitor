@@ -100,6 +100,24 @@ public sealed partial class SqliteOrbitalElementsStore
         return string.Equals(Convert.ToHexString(digest), sha256, StringComparison.Ordinal);
     }
 
+    private async ValueTask<bool> FileMatchesSha256Async(string path, string sha256, CancellationToken cancellationToken)
+    {
+        RequireRoot().Verify(path, "orbital-verify");
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length is 0 or > MaximumRawBytes)
+        {
+            return false;
+        }
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.Length is 0 or > MaximumRawBytes)
+        {
+            return false;
+        }
+        var digest = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        return string.Equals(Convert.ToHexString(digest), sha256, StringComparison.Ordinal);
+    }
+
     private static async ValueTask<bool> IsUsedByPublishedAsync(
         SqliteConnection connection,
         string directory,
@@ -258,8 +276,80 @@ public sealed partial class SqliteOrbitalElementsStore
             AtomicPublisher.CleanupTemporaries(root, root.Resolve(directory), MaximumReconciledEntries);
         }
         removed += await PruneQuarantineAsync(connection, cancellationToken).ConfigureAwait(false);
+        await MigrateLegacyQuarantineFilesAsync(connection, cancellationToken).ConfigureAwait(false);
         SyncDirectories(ContentDirectories);
         return removed;
+    }
+
+    /// <summary>
+    /// Migrates retained legacy <c>quarantine/&lt;sha256&gt;.json</c> bodies to <c>.raw</c> through the ledger-aware
+    /// move so malformed JSON payloads from older releases stay outside the installation's <c>*.json</c> manifest scan.
+    /// </summary>
+    private async ValueTask MigrateLegacyQuarantineFilesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var root = RequireRoot();
+        var quarantineDirectory = root.Resolve(QuarantineDirectoryName);
+        var migrated = false;
+        foreach (var source in EnumerateBounded(quarantineDirectory, "*" + JsonExtension))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var name = Path.GetFileNameWithoutExtension(source);
+            if (!OrbitalContract.IsSha256(name))
+            {
+                continue;
+            }
+            if (!await IsQuarantineRetainedAsync(connection, name, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+            var destination = FilePath(QuarantineDirectoryName, name, QuarantineExtension);
+            try
+            {
+                root.Verify(source, "orbital-quarantine-migrate");
+                root.Verify(destination, "orbital-quarantine-migrate");
+                if (Directory.Exists(source) || Directory.Exists(destination))
+                {
+                    AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    continue;
+                }
+                if (!File.Exists(source))
+                {
+                    continue;
+                }
+                DurableSync.RequireRegularFile(source);
+                if (File.Exists(destination))
+                {
+                    DurableSync.RequireRegularFile(destination);
+                    if (await FileMatchesSha256Async(destination, name, cancellationToken).ConfigureAwait(false))
+                    {
+                        if (TryDeleteRegular(source) == DeleteOutcome.Deleted)
+                        {
+                            migrated = true;
+                        }
+                        else
+                        {
+                            AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                        }
+                    }
+                    else
+                    {
+                        AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    }
+                    continue;
+                }
+                RetainedFileMutations.Move(source, destination);
+                DurableSync.File(destination);
+                migrated = true;
+            }
+            catch (FileSystemFaultException fault) when (fault.Kind == FileSystemFaultKind.Containment)
+            {
+                AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+            }
+        }
+        if (migrated)
+        {
+            SyncDirectories(QuarantineDirectoryName);
+        }
     }
 
     private async ValueTask<bool> RetainQuarantineFileAsync(

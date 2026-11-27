@@ -91,6 +91,16 @@ public sealed class ProcessingNodeSectionRegistryTests
     }
 
     [TestMethod]
+    public void CaptureSatelliteTracksMissingNodeHintMentionsTrackConfigAndObjectLabelVisibility()
+    {
+        var section = ProcessingNodeSectionRegistry.FindSection("capture-satellite-tracks");
+        Assert.IsNotNull(section);
+        Assert.IsTrue(ProcessingNodeSectionRegistry.MatchesSection("capture-satellite-tracks", "CaptureSatelliteTracks"));
+        StringAssert.Contains(section.MissingNodeMessage, "satellite track", StringComparison.OrdinalIgnoreCase);
+        StringAssert.Contains(section.MissingNodeMessage, "satellite object-label visibility", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
     [DataRow(null, "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"None"}""", "linear-normalization-none-v1")]
     [DataRow("""{"strategy":"SyntheticReferences"}""", "reference-calibration-linear16-v2")]

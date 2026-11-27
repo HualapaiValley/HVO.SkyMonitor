@@ -45,6 +45,67 @@ public sealed class OrbitalElementsStoreRetentionTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    public async Task StartupMigrationHandlesDuplicateRawAndRefusesCorruptOrLinkedLegacyQuarantine()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var duplicateBody = "{truncated-duplicate"u8.ToArray();
+        var duplicateSha = OrbitalElementsStoreTestData.Hash(duplicateBody);
+        var corruptBody = "{truncated-corrupt"u8.ToArray();
+        var corruptSha = OrbitalElementsStoreTestData.Hash(corruptBody);
+        var linkedBody = "{truncated-link"u8.ToArray();
+        var linkedSha = OrbitalElementsStoreTestData.Hash(linkedBody);
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var first = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(first, duplicateBody, duplicateSha, "orbital.json-syntax", "dup", CancellationToken.None)
+                .ConfigureAwait(false);
+            clock.Advance(OrbitalElementsStoreTestData.Interval);
+            var second = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(second, corruptBody, corruptSha, "orbital.json-syntax", "corrupt", CancellationToken.None)
+                .ConfigureAwait(false);
+            clock.Advance(OrbitalElementsStoreTestData.Interval);
+            var third = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(third, linkedBody, linkedSha, "orbital.json-syntax", "link", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        // Case 1: matching .raw already exists alongside legacy .json -> duplicate .json removed, .raw kept.
+        var duplicateJson = Path.Combine(quarantine, duplicateSha + ".json");
+        var duplicateRaw = Path.Combine(quarantine, duplicateSha + ".raw");
+        await File.WriteAllBytesAsync(duplicateJson, duplicateBody).ConfigureAwait(false);
+
+        // Case 2: mismatched .raw exists alongside legacy .json -> both left untouched (ambiguous).
+        var corruptJson = Path.Combine(quarantine, corruptSha + ".json");
+        var corruptRaw = Path.Combine(quarantine, corruptSha + ".raw");
+        await File.WriteAllBytesAsync(corruptJson, corruptBody).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(corruptRaw, "unexpected-bytes"u8.ToArray()).ConfigureAwait(false);
+
+        // Case 3: symlink at legacy .json -> refused and left untouched without failing startup.
+        var linkedJson = Path.Combine(quarantine, linkedSha + ".json");
+        var linkedRaw = Path.Combine(quarantine, linkedSha + ".raw");
+        File.Delete(linkedRaw);
+        var outside = Path.Combine(root, "outside.txt");
+        await File.WriteAllBytesAsync(outside, linkedBody).ConfigureAwait(false);
+        File.CreateSymbolicLink(linkedJson, outside);
+
+        using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.IsFalse(File.Exists(duplicateJson));
+        CollectionAssert.AreEqual(duplicateBody, await File.ReadAllBytesAsync(duplicateRaw).ConfigureAwait(false));
+        Assert.IsTrue(File.Exists(corruptJson));
+        CollectionAssert.AreEqual("unexpected-bytes"u8.ToArray(), await File.ReadAllBytesAsync(corruptRaw).ConfigureAwait(false));
+        Assert.IsNotNull(new FileInfo(linkedJson).LinkTarget);
+        Assert.IsFalse(File.Exists(linkedRaw));
+    }
+
+    [TestMethod]
     public async Task SnapshotsOutsideThePolicyAreTombstonedThenDeletedAndTheActivePairIsProtected()
     {
         var root = CreateRoot();

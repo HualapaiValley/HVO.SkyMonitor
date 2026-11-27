@@ -149,6 +149,29 @@ public sealed class MotorFocusSessionTests
     }
 
     [TestMethod]
+    [DataRow(-1, 1000, 0)]
+    [DataRow(0, 1000, -1)]
+    public async Task Sweep_RejectsNegativeMinimumPositionOrNegativeBacklashBeforeMoving(
+        int minimumPosition, int maximumPosition, int backlashSteps)
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        var camera = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var motor = new FixedCapabilitiesFocuser(new(minimumPosition, maximumPosition, backlashSteps), position: 500);
+        using var owner = Coordinator(fixture, motor);
+
+        await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
+            () => owner.StartAsync(Sweep, "alice", CancellationToken.None)).ConfigureAwait(false);
+
+        Assert.AreEqual(0, motor.Moves);
+        Assert.AreEqual(0, motor.Aborts);
+        Assert.AreEqual(500, motor.State.Position);
+        Assert.IsFalse(motor.State.IsMoving);
+        Assert.AreEqual(0, camera.Previews);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     [DataRow("cancel")]
     [DataRow("preview-failure")]
     [DataRow("observer-lost")]
@@ -536,6 +559,26 @@ public sealed class MotorFocusSessionTests
         }, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Paused, admission.Snapshot.State);
         Assert.IsFalse(await fixture.CaptureAdmittedWithinAsync(TimeSpan.FromMilliseconds(40)).ConfigureAwait(false));
+    }
+
+    private sealed class FixedCapabilitiesFocuser(MotorizedFocuserCapabilities capabilities, int position) : IMotorizedFocuser
+    {
+        public MotorizedFocuserCapabilities Capabilities { get; } = capabilities;
+        public MotorizedFocuserState State { get; } = new(true, position, null, false, null);
+        public int Moves { get; private set; }
+        public int Aborts { get; private set; }
+
+        public Task<MotorizedFocuserMoveResult> MoveAsync(int targetPosition, CancellationToken cancellationToken)
+        {
+            Moves++;
+            throw new AssertFailedException($"Unexpected focuser move to {targetPosition}.");
+        }
+
+        public Task<MotorizedFocuserState> AbortAsync(CancellationToken cancellationToken)
+        {
+            Aborts++;
+            return Task.FromResult(State);
+        }
     }
 
     private sealed class RestoreTimeoutFocuser : IMotorizedFocuser

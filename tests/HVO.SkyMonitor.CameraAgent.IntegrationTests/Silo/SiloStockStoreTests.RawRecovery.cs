@@ -200,10 +200,12 @@ public sealed partial class SiloStockStoreTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    public async Task MissingPublishedRawSidecarQuarantinesStandardLane(bool interruptReclaim, bool claimBeforePublication)
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(false, false, true)]
+    public async Task MissingPublishedRawEvidenceQuarantinesStandardLane(
+        bool interruptReclaim, bool claimBeforePublication, bool deletePayload)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromMinutes(3));
@@ -222,7 +224,7 @@ public sealed partial class SiloStockStoreTests
         var writer = await CreateWriterAsync(container, binding, token).ConfigureAwait(false);
         await InstallBindingAsync(admin, binding, writer.Access, token).ConfigureAwait(false);
 
-        var root = Directory.CreateTempSubdirectory("silo-missing-raw-sidecar-").FullName;
+        var root = Directory.CreateTempSubdirectory("silo-missing-raw-evidence-").FullName;
         var fault = new InterruptRawRecovery();
         using var host = new CameraAgentIntegrationFixture();
         var settings = InstalledSettings(binding, endpoint, writer, Guid.NewGuid(), RandomHex(24));
@@ -231,7 +233,7 @@ public sealed partial class SiloStockStoreTests
         var services = scope.ServiceProvider;
         var storage = services.GetRequiredService<SiloInstalledStorage>();
         var ingress = services.GetRequiredService<RawCaptureIngress>();
-        var config = ConfigureSiloLaneRecovery(services);
+        var config = ConfigureSiloLaneRecovery(services, requireRawFrame: deletePayload);
         await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
         var capture = await ingress.AcceptAsync(config, RecoverySubmission(), token).ConfigureAwait(false);
         Assert.IsNotNull(capture);
@@ -245,12 +247,16 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual(interruptReclaim ? "silo-raw-admission-failed" : null, publication.Status);
         Assert.AreEqual(SiloStagedState.Visible,
             (await storage.State.ReadGroupAsync(captureId.ToString("N"), "raw-1", token).ConfigureAwait(false))?.State);
+        Assert.IsFalse(File.Exists(capture.StoredFrame.AbsolutePath));
         Assert.IsFalse(File.Exists(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json")));
 
-        var sidecar = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, descriptor.Artifact.ArtifactId.ToString("D"),
-            SiloArtifactStorage.RawEvidenceRevision), token).ConfigureAwait(false);
-        Assert.IsNotNull(sidecar);
-        var locator = sidecar.Locators.Single(static copy => copy.Eligible && copy.CopyState == "active").Locator;
+        var revision = deletePayload
+            ? CaptureContractJson.ComputeDescriptorSha256(descriptor)
+            : SiloArtifactStorage.RawEvidenceRevision;
+        var member = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, descriptor.Artifact.ArtifactId.ToString("D"),
+            revision), token).ConfigureAwait(false);
+        Assert.IsNotNull(member);
+        var locator = member.Locators.Single(static copy => copy.Eligible && copy.CopyState == "active").Locator;
         await admin.DeleteObjectAsync(new DeleteObjectRequest
         {
             BucketName = locator.Bucket,
@@ -319,11 +325,14 @@ public sealed partial class SiloStockStoreTests
         }
     }
 
-    private static CameraModuleConfig ConfigureSiloLaneRecovery(IServiceProvider services)
+    private static CameraModuleConfig ConfigureSiloLaneRecovery(IServiceProvider services, bool requireRawFrame = false)
     {
         var config = NightlyProductFixture.Configuration() with
         {
-            Pipeline = new([new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+            Pipeline = new(
+                requireRawFrame
+                    ? [new("Preview", "preview", DependsOn: ["$raw"])]
+                    : [new("ProjectedScene", "scene", DependsOn: ["$raw"])],
                 CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
         services.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
@@ -57,6 +58,79 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.AreEqual(active, await locations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
         Assert.AreEqual(active, await locations.FullVerifyAsync(seed, token).ConfigureAwait(false));
         Assert.IsFalse(locations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
+    public async Task StartupMigrationMovesMalformedLegacyOrbitalQuarantineJsonAndRestoresVerification()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using (var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+                await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                    "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+                // Recreate the v0.9.1-rc.2 quarantine/*.json filename recorded through the integrity ledger.
+                RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+            }
+            Assert.IsTrue(File.Exists(legacyJsonPath));
+            Assert.IsFalse(File.Exists(migratedRawPath));
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await locations.FullVerifyAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                await locations.VerifyInstallationAsync(seed, token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        // Simulate restart on upgraded CameraAgent: deployment-location store registers the ledger first,
+        // then orbital startup reconciliation migrates retained quarantine/*.json to .raw before scrub/verify.
+        using var restartedLocations = CreateStore();
+        Assert.AreEqual(active, await restartedLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var restartedOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await restartedOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+
+            // A healthy CSV refresh succeeds while the migrated body remains retained among MaximumQuarantinedPayloads.
+            clock.Advance(OrbitalElementsStoreTestData.Interval);
+            var csv = CelesTrakGpTestData.Payload(CelesTrakGpTestData.Record(
+                ("EPOCH", clock.GetUtcNow().ToString("yyyy-MM-dd'T'HH:mm:ss.ffffff", System.Globalization.CultureInfo.InvariantCulture))));
+            var normalized = CelesTrakGpNormalizer.CreateCandidate(CelesTrakGpTestData.Retrieved(csv, clock.GetUtcNow()));
+            Assert.IsNotNull(normalized.Snapshot, normalized.Detail);
+            await OrbitalElementsStoreTestData.PublishAsync(restartedOrbital, clock, new(normalized.Snapshot, csv))
+                .ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await restartedLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await restartedLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(restartedLocations.RequiresRetainedIntegrityScrub);
+
+        // Subsequent restart is idempotent and preserves installation verification.
+        using (var secondRestart = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await secondRestart.InitializeAsync(token).ConfigureAwait(false);
+        }
+        Assert.IsFalse(File.Exists(legacyJsonPath));
+        CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await restartedLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
     }
 
     [TestMethod]
