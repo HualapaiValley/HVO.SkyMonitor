@@ -911,7 +911,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 TruncatedSmtpEndpoints: retiredBindings.TruncatedSmtpEndpoints is { Count: > 0 } ? retiredBindings.TruncatedSmtpEndpoints : null,
                 AnySmtpHistoryTruncated: retiredBindings.AnySmtpHistoryTruncated,
                 RetiredCredentialHistoryVersion: CurrentRetiredHistoryVersion,
-                HasLegacyUnnormalizedNtfyTopicHistory: retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory ? true : null);
+                HasLegacyUnnormalizedNtfyTopicHistory: retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory ? true : null,
+                NtfyTopicHashesNormalized: !retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory);
             var secretJson = JsonSerializer.Serialize(payload, CompactSecretSerializerOptions);
             if (Encoding.UTF8.GetByteCount(secretJson) > MaximumEnvelopeBytes)
             {
@@ -1130,21 +1131,21 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 _ => HostCredentialField.WebhookNtfyTopic
             };
 
-            // M2 (delta17): When the live host tracker confirms the candidate is currently active, non-withheld,
-            // and explicitly bound (same-provider Webhook:BoundOrigin) to the exact target canonical webhook
-            // destination, permit same-destination migration even over an older protected-store retirement while
-            // continuing to reject any different destination, non-explicitly-bound host value, or withheld value.
-            if (hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(hostField, candidate, nextWebhookDestination))
-            {
-                return false;
-            }
-
-            // M-ntfy-b (delta17): If a migrated pre-v3 envelope retained a legacy ntfy topic hash without
-            // plaintext, fail closed on ntfy topic writes (even on unchanged-destination saves) because canonical
-            // hash comparison cannot rule out a whitespace-padded legacy topic hash.
+            // M-ntfy-b / M2 (delta18): Enforce the unresolved-legacy ntfy topic history guard FIRST — BEFORE the
+            // exact-target host-binding exception — so an explicitly-bound host topic can NEVER bypass unresolved
+            // pre-v3 or unmarked v3 legacy unnormalized ntfy topic history (even on unchanged-destination saves).
             if (fieldKind == 2 && retired.HasLegacyUnnormalizedNtfyTopicHistory)
             {
                 return true;
+            }
+
+            // M2 (delta17/delta18): When the live host tracker confirms the candidate is currently active,
+            // non-withheld, and explicitly bound (same-provider Webhook:BoundOrigin) to the exact target canonical
+            // webhook destination, permit same-destination migration over trusted normalized v3 protected-store
+            // retirements while continuing to reject different destinations, unbound host values, and withheld values.
+            if (hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(hostField, candidate, nextWebhookDestination))
+            {
+                return false;
             }
 
             // H1 (delta15): Enforce the exact same fail-closed history truncation invariant on destination-changing
@@ -1290,8 +1291,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         var trimmedNtfyTopic = OperatorNotificationValidation.NormalizeNtfyTopic(request.WebhookNtfyTopic);
         if (!request.ClearWebhookNtfyTopic && !string.IsNullOrEmpty(trimmedNtfyTopic))
         {
-            var explicitlyAuthorizedForTarget = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.WebhookNtfyTopic, trimmedNtfyTopic, nextWebhookDestination);
+            var explicitlyAuthorizedForTarget = !retired.HasLegacyUnnormalizedNtfyTopicHistory &&
+                hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
+                    HostCredentialField.WebhookNtfyTopic, trimmedNtfyTopic, nextWebhookDestination);
             var reusedProtected = !explicitlyAuthorizedForTarget &&
                 (webhookDestinationChanged || blockUnboundProtectedWebhook) &&
                 string.Equals(trimmedNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(existingProtected.WebhookNtfyTopic), StringComparison.Ordinal);
@@ -2085,8 +2087,9 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 HostCredentialField.WebhookAuthToken, webhookAuthToken, currentWebhookDestination);
             var webhookUserKeyExplicitlyAuthorized = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
                 HostCredentialField.WebhookUserKey, webhookUserKey, currentWebhookDestination);
-            var webhookTopicExplicitlyAuthorized = hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
-                HostCredentialField.WebhookNtfyTopic, webhookNtfyTopic, currentWebhookDestination);
+            var webhookTopicExplicitlyAuthorized = !retired.HasLegacyUnnormalizedNtfyTopicHistory &&
+                hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(
+                    HostCredentialField.WebhookNtfyTopic, webhookNtfyTopic, currentWebhookDestination);
 
             // The provenance exemption for retired webhook credentials and truncated history MUST require
             // the destination BEING WRITTEN to match the read provenance's full destination identity
@@ -2126,10 +2129,10 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 }
             }
 
-            // M-ntfy-b (delta17): Fail closed on ntfy topic writes when a migrated pre-v3 envelope retained a
-            // legacy unnormalized ntfy topic hash without plaintext (unless explicitly host-authorized per M2).
+            // M-ntfy-b / M2 (delta18): Enforce the unresolved-legacy ntfy topic history guard FIRST — BEFORE any
+            // exact-target host-binding exception — so an explicitly-bound host topic can NEVER bypass unresolved
+            // pre-v3 or unmarked v3 legacy unnormalized ntfy topic history on direct/unversioned saves.
             if (!webhookNtfyTopicUntouchedByStaleRead &&
-                !webhookTopicExplicitlyAuthorized &&
                 retired.HasLegacyUnnormalizedNtfyTopicHistory &&
                 !string.IsNullOrEmpty(webhookNtfyTopic) &&
                 (!canCarryWebhookCreds || !string.Equals(webhookNtfyTopic, existingWebhookNtfyTopic, StringComparison.Ordinal)))
@@ -2416,10 +2419,12 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
     }
 
     /// <summary>
-    /// H4b (delta17): Enforces durable protected-store retirement history (and unbound legacy protected secrets /
-    /// truncation / legacy unnormalized ntfy topic history) during host-fallback delivery merge and presence
-    /// projection so a host configuration reload can never reintroduce a credential retired by the protected store
-    /// at another destination, while respecting explicit same-destination host authorization per M2.
+    /// H4b (delta17/delta18) &amp; M-ntfy-b / M2 (delta18): Enforces durable protected-store retirement history
+    /// (including same-target durable retirements after clear/restart, unbound legacy protected secrets, truncation,
+    /// and unresolved legacy unnormalized ntfy topic history) during host-fallback delivery merge and presence
+    /// projection. Unresolved legacy ntfy topic history fails closed BEFORE exact-target host authorization;
+    /// for trusted normalized v3 retirements, explicit same-provider host authorization authorizes reuse while
+    /// unbound or withheld host values cannot restore retired credentials.
     /// </summary>
     private Func<HostCredentialField, string, bool>? CreateHostFallbackCredentialFilter(
         bool hasValidProtectedState,
@@ -2445,9 +2450,6 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             protectedBindings.WebhookDestination,
             effectiveWebhookUrl);
         var retiredSalt = retiredBindings.Salt;
-        var targetWebhookDestSaltedFp = !string.IsNullOrEmpty(retiredSalt) && effectiveWebhookDestination is not null
-            ? ComputeSaltedDestinationFingerprint(effectiveWebhookDestination, retiredSalt)
-            : null;
         var normalizedProtectedNtfyTopic = OperatorNotificationValidation.NormalizeNtfyTopic(protectedSecrets.WebhookNtfyTopic);
 
         return (field, rawCandidate) =>
@@ -2460,10 +2462,20 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return false;
             }
 
+            // M-ntfy-b / M2 (delta18): Enforce unresolved-legacy ntfy topic history guard FIRST — BEFORE the
+            // exact-target host-binding exception — so an explicitly-bound host topic can NEVER bypass unresolved
+            // pre-v3 or unmarked v3 legacy unnormalized ntfy topic history during delivery fallback.
+            if (field == HostCredentialField.WebhookNtfyTopic && retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory)
+            {
+                return false;
+            }
+
             var isSmtpField = field is HostCredentialField.SmtpUsername or HostCredentialField.SmtpPassword;
             var targetDestination = isSmtpField ? effectiveSmtpEndpoint : effectiveWebhookDestination;
 
-            // M2: Explicit same-provider host authorization for this exact canonical target destination takes precedence.
+            // M2 / H4b (delta18): Explicit same-provider host authorization for this exact canonical target
+            // destination authorizes reuse over trusted normalized v3 durable retirements (including same-target
+            // retirements after clear/restart), while unbound or withheld host values fail closed below.
             if (_hostSnapshots.IsCurrentlyExplicitlyAuthorizedForDestination(field, candidate, targetDestination))
             {
                 return true;
@@ -2482,37 +2494,19 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     }
                 }
 
-                if (retiredBindings.AnySmtpHistoryTruncated)
+                if (retiredBindings.AnySmtpHistoryTruncated ||
+                    retiredBindings.TruncatedSmtpEndpoints is { Count: > 0 })
                 {
                     return false;
                 }
 
-                if (retiredBindings.TruncatedSmtpEndpoints is { Count: > 0 } truncatedEndpoints)
-                {
-                    for (var i = 0; i < truncatedEndpoints.Count; i++)
-                    {
-                        var truncatedEndpoint = truncatedEndpoints[i];
-                        if (effectiveSmtpEndpoint is null ||
-                            !string.Equals(truncatedEndpoint, effectiveSmtpEndpoint, StringComparison.OrdinalIgnoreCase))
-                        {
-                            return false;
-                        }
-                    }
-                }
-
+                // H4b (delta18): Check ALL durable SMTP retirement entries — including same-target entries — so an
+                // unbound host value can never restore a cleared/retired SMTP credential at that endpoint after restart.
                 if (retiredBindings.Smtps is { Count: > 0 } retiredSmtps && !string.IsNullOrEmpty(retiredSalt))
                 {
                     for (var i = 0; i < retiredSmtps.Count; i++)
                     {
                         var entry = retiredSmtps[i];
-                        var sameEndpoint = effectiveSmtpEndpoint is not null &&
-                            !string.IsNullOrEmpty(entry.Endpoint) &&
-                            string.Equals(entry.Endpoint, effectiveSmtpEndpoint, StringComparison.OrdinalIgnoreCase);
-                        if (sameEndpoint)
-                        {
-                            continue;
-                        }
-
                         var hash = isPassword ? entry.PasswordHash : entry.UsernameHash;
                         if (MatchesSecretFingerprint(candidate, hash, retiredSalt))
                         {
@@ -2539,42 +2533,19 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 }
             }
 
-            if (field == HostCredentialField.WebhookNtfyTopic && retiredBindings.HasLegacyUnnormalizedNtfyTopicHistory)
+            if (retiredBindings.AnyWebhookHistoryTruncated ||
+                retiredBindings.TruncatedWebhookOrigins is { Count: > 0 })
             {
                 return false;
             }
 
-            if (retiredBindings.AnyWebhookHistoryTruncated)
-            {
-                return false;
-            }
-
-            if (retiredBindings.TruncatedWebhookOrigins is { Count: > 0 } truncatedOrigins)
-            {
-                for (var i = 0; i < truncatedOrigins.Count; i++)
-                {
-                    var truncatedOrigin = truncatedOrigins[i];
-                    if (targetWebhookDestSaltedFp is null ||
-                        !FixedTimeHexEquals(truncatedOrigin, targetWebhookDestSaltedFp))
-                    {
-                        return false;
-                    }
-                }
-            }
-
+            // H4b (delta18): Check ALL durable webhook retirement entries — including same-target entries — so an
+            // unbound host value can never restore a cleared/retired webhook token, user key, or ntfy topic after restart.
             if (retiredBindings.Webhooks is { Count: > 0 } retiredWebhooks && !string.IsNullOrEmpty(retiredSalt))
             {
                 for (var i = 0; i < retiredWebhooks.Count; i++)
                 {
                     var entry = retiredWebhooks[i];
-                    var sameDestination = targetWebhookDestSaltedFp is not null &&
-                        !string.IsNullOrEmpty(entry.DestinationFingerprint) &&
-                        FixedTimeHexEquals(entry.DestinationFingerprint, targetWebhookDestSaltedFp);
-                    if (sameDestination)
-                    {
-                        continue;
-                    }
-
                     var hash = field switch
                     {
                         HostCredentialField.WebhookAuthToken => entry.AuthTokenHash,
@@ -2998,7 +2969,8 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
         bool? AnySmtpHistoryTruncated = null,
         string? BoundWebhookDestination = null,
         int? RetiredCredentialHistoryVersion = null,
-        bool? HasLegacyUnnormalizedNtfyTopicHistory = null)
+        bool? HasLegacyUnnormalizedNtfyTopicHistory = null,
+        bool? NtfyTopicHashesNormalized = null)
     {
         public OperatorNotificationSecrets ToSecrets() => new(
             SmtpUsername,
@@ -3032,11 +3004,19 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
             // migrated < 3 retired credential at any destination.
             var hasTrustedHistoryVersion = envelopeSchemaVersion >= CurrentSchemaVersion &&
                 RetiredCredentialHistoryVersion is >= CurrentRetiredHistoryVersion;
+            // M-ntfy-b (delta18): Require an explicit positive normalization attestation
+            // (NtfyTopicHashesNormalized == true alongside trusted v3 history and no legacy marker) before
+            // trusting retired ntfy topic hashes as canonicalized. Any unmarked v3 envelope (written prior to
+            // delta18 normalization attestation) carrying unattested topic hashes or truncated webhook history
+            // is conservatively treated as carrying unresolved legacy unnormalized ntfy topic history.
+            var hasTrustedNtfyTopicNormalization = hasTrustedHistoryVersion &&
+                NtfyTopicHashesNormalized == true &&
+                HasLegacyUnnormalizedNtfyTopicHistory != true;
             var anyWebhookTruncated = !hasTrustedHistoryVersion || (AnyWebhookHistoryTruncated ?? true);
             var anySmtpTruncated = !hasTrustedHistoryVersion || (AnySmtpHistoryTruncated ?? true);
-            var hasLegacyUnnormalizedNtfyTopicHistory = hasTrustedHistoryVersion
-                ? (HasLegacyUnnormalizedNtfyTopicHistory ?? false)
-                : false;
+            var hasLegacyUnnormalizedNtfyTopicHistory =
+                HasLegacyUnnormalizedNtfyTopicHistory == true ||
+                (hasTrustedHistoryVersion && NtfyTopicHashesNormalized == false);
             var salt = !string.IsNullOrEmpty(RetiredSalt)
                 ? RetiredSalt
                 : Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
@@ -3060,8 +3040,16 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                     return null;
                 }
 
+                if (hasTrustedNtfyTopicNormalization)
+                {
+                    return entryTopicHash;
+                }
+
+                // M-ntfy-b (delta18): An unmarked v3 envelope (missing NtfyTopicHashesNormalized == true) has
+                // unattested topic-hash provenance and MUST fail closed as unresolved legacy topic history.
                 if (hasTrustedHistoryVersion)
                 {
+                    hasLegacyUnnormalizedNtfyTopicHistory = true;
                     return entryTopicHash;
                 }
 
@@ -3296,6 +3284,20 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                             RetiredSmtpPasswordHash)
                     ];
                 }
+            }
+            else if (!hasTrustedNtfyTopicNormalization &&
+                     (!string.IsNullOrEmpty(RetiredWebhookNtfyTopicHash) ||
+                      (RetiredWebhooks is { Count: > 0 } && RetiredWebhooks.Any(static e => !string.IsNullOrEmpty(e?.NtfyTopicHash)))))
+            {
+                hasLegacyUnnormalizedNtfyTopicHistory = true;
+            }
+
+            // M-ntfy-b (delta18): An unmarked v3 envelope (missing NtfyTopicHashesNormalized == true) that has
+            // truncated webhook history cannot rule out evicted pre-v3 unnormalized ntfy topic hashes; fail closed.
+            if (hasTrustedHistoryVersion && !hasTrustedNtfyTopicNormalization &&
+                (anyWebhookTruncated || truncatedWebhooks.Count > 0))
+            {
+                hasLegacyUnnormalizedNtfyTopicHistory = true;
             }
 
             var hasAny = (webhooks is { Count: > 0 }) ||

@@ -11963,6 +11963,939 @@ public sealed class OperatorNotificationStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task BindingErrorRawCredentialsObservedOnEarlierConsistencyRetry_RetainedAndRejectedWhenLaterAttemptSucceedsCleanlyAsync()
+    {
+        // Delta18 H2b: Consistency retries MUST accumulate destination-unknown raw credential fingerprints from
+        // EVERY binding-error scan across the retry loop and commit them to the tracker even when a later retry
+        // attempt succeeds cleanly after the provider clears the credentials.
+        const string urlA = "https://d18-h2b-a.example.test/";
+        const string urlB = "https://d18-h2b-b.example.test/";
+
+        static OperatorNotificationsOptions BuildOptions(string smtpHost) => new()
+        {
+            Enabled = true,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = smtpHost,
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        var bindingErrorWithCreds = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d18-h2b-a.example.test",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "not-a-port",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+            [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "d18-retry-err-user",
+            [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "d18-retry-err-pass",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA,
+            [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "d18-retry-err-tok",
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = "d18-retry-err-ukey",
+            [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "  d18-retry-err-topic  "
+        };
+
+        var cleanClearedValues = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "false",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d18-h2b-a.example.test",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls)
+        };
+
+        // Case 1: Startup consistency retry — attempt 1 hits binding error with all 5 credentials, clears & fires
+        //         OnReload right after the raw scan (before line 1527), and attempt 2 succeeds cleanly.
+        {
+            var retryProv = new PostScanTransitionConfigurationProvider(
+                bindingErrorWithCreds,
+                cleanClearedValues,
+                triggerKey: ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey);
+            var root = new ConfigurationRoot([retryProv]);
+
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            Assert.IsTrue(retryProv.HasTransitioned, "Provider must have transitioned between attempt 1 scan and attempt 2 retry.");
+            Assert.IsNull(store.ConfigurationErrorReasonCode, "Attempt 2 must have settled cleanly with no binding error.");
+            var effClean = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effClean.ConfigurationErrorReasonCode);
+            Assert.IsTrue(effClean.Secrets.IsEmpty);
+
+            // Zero plaintext credentials from the attempt-1 binding error may linger in tracker memory.
+            var hostTrackerField = typeof(OperatorNotificationStore).GetField(
+                "_hostSnapshots",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var hostTracker = hostTrackerField.GetValue(store)!;
+            var reachableStrings = CollectReachableStringsExcludingConfiguration(hostTracker);
+            foreach (var secret in new[]
+            {
+                "d18-retry-err-user", "d18-retry-err-pass", "d18-retry-err-tok", "d18-retry-err-ukey", "d18-retry-err-topic"
+            })
+            {
+                Assert.IsFalse(
+                    reachableStrings.Any(s => s.Contains(secret, StringComparison.Ordinal)),
+                    $"Plaintext credential '{secret}' from retry binding-error scan must never be retained in memory.");
+            }
+
+            // Versioned saves MUST reject ALL 5 withheld credentials at both A and B!
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var (targetHost, targetUrl, topicInput, label) in new[]
+            {
+                ("relay-d18-h2b-a.example.test", urlA, "d18-retry-err-topic", "target-A-canonical"),
+                ("relay-d18-h2b-b.example.test", urlB, "  d18-retry-err-topic  ", "target-B-padded")
+            })
+            {
+                var reject = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    BuildOptions(targetHost),
+                    SmtpUsername: "d18-retry-err-user",
+                    SmtpPassword: "d18-retry-err-pass",
+                    WebhookUrl: targetUrl,
+                    WebhookAuthToken: "d18-retry-err-tok",
+                    WebhookUserKey: "d18-retry-err-ukey",
+                    WebhookNtfyTopic: topicInput), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, reject.Outcome, $"Retry-withheld credentials must reject for {label}.");
+                Assert.IsTrue(reject.Problems!.ContainsKey("smtp.username"), $"smtp.username must reject for {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("smtp.password"), $"smtp.password must reject for {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.authToken"), $"webhook.authToken must reject for {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.userKey"), $"webhook.userKey must reject for {label}.");
+                Assert.IsTrue(reject.Problems.ContainsKey("webhook.ntfyTopic"), $"webhook.ntfyTopic must reject for {label}.");
+            }
+
+            // Unversioned secret-store save MUST strip ALL 5 withheld credentials!
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                new OperatorNotificationSecrets(
+                    SmtpUsername: "d18-retry-err-user",
+                    SmtpPassword: "d18-retry-err-pass",
+                    WebhookUrl: urlB,
+                    WebhookAuthToken: "d18-retry-err-tok",
+                    WebhookUserKey: "d18-retry-err-ukey",
+                    WebhookNtfyTopic: "d18-retry-err-topic"),
+                CancellationToken.None).ConfigureAwait(false);
+            var effAfterUnversioned = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpUsername);
+            Assert.IsNull(effAfterUnversioned.Secrets.SmtpPassword);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookAuthToken);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookUserKey);
+            Assert.IsNull(effAfterUnversioned.Secrets.WebhookNtfyTopic);
+
+            // Reintroducing those credentials on a live host reload without explicit binding MUST withhold them!
+            retryProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = "relay-d18-h2b-b.example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = "d18-retry-err-user",
+                [ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = "d18-retry-err-pass",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlB,
+                [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = "d18-retry-err-tok",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = "d18-retry-err-ukey",
+                [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = "d18-retry-err-topic"
+            });
+            var effReintro = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(effReintro.Secrets.SmtpUsername);
+            Assert.IsNull(effReintro.Secrets.SmtpPassword);
+            Assert.IsNull(effReintro.Secrets.WebhookAuthToken);
+            Assert.IsNull(effReintro.Secrets.WebhookUserKey);
+            Assert.IsNull(effReintro.Secrets.WebhookNtfyTopic);
+
+            // Fresh credentials still save cleanly!
+            var snapFresh = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var savedFresh = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapFresh.Version,
+                BuildOptions("relay-d18-h2b-b.example.test"),
+                SmtpUsername: "d18-fresh-user",
+                SmtpPassword: "d18-fresh-pass",
+                WebhookUrl: urlB,
+                WebhookAuthToken: "d18-fresh-tok",
+                WebhookUserKey: "d18-fresh-ukey",
+                WebhookNtfyTopic: "d18-fresh-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, savedFresh.Outcome, savedFresh.Message);
+        }
+
+        // Case 2: Live-reload consistency retry — starts clean, reloads into binding-error attempt 1 with a
+        //         credential that is cleared before retry attempt 2 succeeds cleanly.
+        {
+            var retryProv = new PostScanTransitionConfigurationProvider(
+                cleanClearedValues,
+                cleanClearedValues,
+                triggerKey: ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey,
+                armed: false);
+            var root = new ConfigurationRoot([retryProv]);
+            using var provider = new ConfigurationOperatorNotificationConfigProvider(root);
+            Assert.IsNull(provider.ConfigurationErrorReasonCode);
+
+            // Arm transition: attempt 1 sees binding error + creds, clears & reloads -> attempt 2 succeeds cleanly!
+            retryProv.RotateArmed(bindingErrorWithCreds, cleanClearedValues);
+            Assert.IsTrue(retryProv.HasTransitioned);
+            Assert.IsNull(provider.ConfigurationErrorReasonCode);
+
+            // Tracker MUST retain the withheld fingerprints from attempt 1!
+            Assert.IsTrue(provider.IsCredentialRetiredOrBoundForOtherDestination(
+                HostCredentialField.SmtpPassword, "d18-retry-err-pass", "relay-d18-h2b-a.example.test:587:StartTls"));
+            Assert.IsTrue(provider.IsCredentialRetiredOrBoundForOtherDestination(
+                HostCredentialField.WebhookAuthToken, "d18-retry-err-tok", urlA));
+            Assert.IsTrue(provider.IsCredentialRetiredOrBoundForOtherDestination(
+                HostCredentialField.WebhookNtfyTopic, "d18-retry-err-topic", urlA));
+        }
+    }
+
+    [TestMethod]
+    public async Task PendingWaitingRotation_ClearingWinningProviderExposingIdenticalLowerProviderValue_RetiresAndWithholdsAcrossDestinationMoveAsync()
+    {
+        // Delta18 H4a: Pending rotation MUST track the winning provider identity alongside the value fingerprint
+        // and immediately retire the pending value whenever provider ownership changes — even if a lower-priority
+        // provider supplies the exact same string value!
+        const string urlA = "https://d18-h4a-a.example.test/";
+        const string urlB = "https://d18-h4a-b.example.test/";
+
+        static Dictionary<string, string?> DestDict(string url) => new(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = url
+        };
+
+        static Dictionary<string, string?> CredsDict(
+            string? tok,
+            string? ukey = null,
+            string? topic = null,
+            string? boundOrigin = null)
+        {
+            var dict = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (tok is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = tok;
+            if (ukey is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = ukey;
+            if (topic is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = topic;
+            if (boundOrigin is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = boundOrigin;
+            return dict;
+        }
+
+        // Case 1: Two-step — higher-priority provider clears while dest stays A (exposing identical lower-priority
+        //         pending credentials), then dest moves A -> B -> MUST be retired/withheld rather than published!
+        {
+            var destProv = new RotatingHostConfigurationProvider(DestDict(urlA));
+            var lowerCredsProv = new RotatingHostConfigurationProvider(
+                CredsDict("shared-pending-tok", "shared-pending-ukey", "shared-pending-topic"));
+            var upperCredsProv = new RotatingHostConfigurationProvider(
+                CredsDict("init-tok-a", "init-ukey-a", "init-topic-a"));
+            var root = new ConfigurationRoot([destProv, lowerCredsProv, upperCredsProv]);
+
+            using var dir = TempStateDir.Create();
+            using var store = CreateStore(dir.Path, isDevelopment: false, configuration: root);
+
+            var init = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("init-tok-a", init.Secrets.WebhookAuthToken);
+            Assert.AreEqual("init-ukey-a", init.Secrets.WebhookUserKey);
+            Assert.AreEqual("init-topic-a", init.Secrets.WebhookNtfyTopic);
+
+            // Step 1: Higher-priority provider rotates to the IDENTICAL pending credentials held by lower provider -> waiting!
+            upperCredsProv.Rotate(CredsDict("shared-pending-tok", "shared-pending-ukey", "  shared-pending-topic  "));
+            var waiting = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(waiting.Secrets.WebhookAuthToken);
+            Assert.IsNull(waiting.Secrets.WebhookUserKey);
+            Assert.IsNull(waiting.Secrets.WebhookNtfyTopic);
+
+            // Step 2: Higher-priority provider is cleared, exposing identical values from lower-priority provider ->
+            //         provider ownership changed, so pending values MUST retire immediately!
+            upperCredsProv.Rotate(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            var afterClear = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(afterClear.Secrets.WebhookAuthToken);
+            Assert.IsNull(afterClear.Secrets.WebhookUserKey);
+            Assert.IsNull(afterClear.Secrets.WebhookNtfyTopic);
+
+            // Step 3: Destination moves A -> B -> lower-priority provider's identical values MUST be withheld!
+            destProv.Rotate(DestDict(urlB));
+            var afterDestMove = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(urlB, afterDestMove.Secrets.WebhookUrl);
+            Assert.IsNull(afterDestMove.Secrets.WebhookAuthToken,
+                "Lower-priority provider's identical auth token must NOT be treated as an uninterrupted rotation.");
+            Assert.IsNull(afterDestMove.Secrets.WebhookUserKey,
+                "Lower-priority provider's identical user key must NOT be treated as an uninterrupted rotation.");
+            Assert.IsNull(afterDestMove.Secrets.WebhookNtfyTopic,
+                "Lower-priority provider's identical ntfy topic must NOT be treated as an uninterrupted rotation.");
+
+            // Store save using those retired values without explicit binding MUST ALSO reject!
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var rejectSave = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snap.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = true,
+                    Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                },
+                WebhookUrl: urlB,
+                WebhookAuthToken: "shared-pending-tok",
+                WebhookUserKey: "shared-pending-ukey",
+                WebhookNtfyTopic: "shared-pending-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectSave.Outcome);
+            Assert.IsTrue(rejectSave.Problems!.ContainsKey("webhook.authToken"));
+            Assert.IsTrue(rejectSave.Problems.ContainsKey("webhook.userKey"));
+            Assert.IsTrue(rejectSave.Problems.ContainsKey("webhook.ntfyTopic"));
+
+            // Step 4: Explicit same-provider Webhook:BoundOrigin = urlB on lower provider explicitly authorizes them at B!
+            lowerCredsProv.Rotate(CredsDict("shared-pending-tok", "shared-pending-ukey", "shared-pending-topic", boundOrigin: urlB));
+            var explicitAuth = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("shared-pending-tok", explicitAuth.Secrets.WebhookAuthToken);
+            Assert.AreEqual("shared-pending-ukey", explicitAuth.Secrets.WebhookUserKey);
+            Assert.AreEqual("shared-pending-topic", explicitAuth.Secrets.WebhookNtfyTopic);
+        }
+
+        // Case 2: Simultaneous reload — clearing higher-priority provider AND moving destination A -> B in one
+        //         reload MUST STILL detect winning-provider ownership change and withhold the lower-priority value!
+        {
+            var destProv = new BarrierReloadConfigurationProvider(DestDict(urlA));
+            var lowerCredsProv = new BarrierReloadConfigurationProvider(CredsDict("simul-shared-tok"));
+            var upperCredsProv = new BarrierReloadConfigurationProvider(CredsDict("simul-init-tok-a"));
+            var root = new ConfigurationRoot([destProv, lowerCredsProv, upperCredsProv]);
+            using var provider = new ConfigurationOperatorNotificationConfigProvider(root);
+
+            Assert.AreEqual("simul-init-tok-a", (await provider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookAuthToken);
+
+            // Enter waiting state owned by upperCredsProv.
+            upperCredsProv.StageNext(CredsDict("simul-shared-tok"));
+            root.Reload();
+            Assert.IsNull((await provider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookAuthToken);
+
+            // Simultaneously clear upperCredsProv (exposing lowerCredsProv's identical "simul-shared-tok") AND move dest A -> B!
+            upperCredsProv.StageNext(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            destProv.StageNext(DestDict(urlB));
+            root.Reload();
+
+            var afterSimul = await provider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(urlB, afterSimul.Secrets.WebhookUrl);
+            Assert.IsNull(afterSimul.Secrets.WebhookAuthToken,
+                "Simultaneous upper-provider clear + destination move must still retire the pending credential.");
+        }
+
+        // Case 3: Control — uninterrupted single-provider rotation (same winning provider owns pending credential
+        //         through destination move A -> B) continues to succeed cleanly!
+        {
+            var destProv = new RotatingHostConfigurationProvider(DestDict(urlA));
+            var lowerCredsProv = new RotatingHostConfigurationProvider(CredsDict("uninterrupted-tok"));
+            var upperCredsProv = new RotatingHostConfigurationProvider(CredsDict("control-init-a"));
+            var root = new ConfigurationRoot([destProv, lowerCredsProv, upperCredsProv]);
+            using var provider = new ConfigurationOperatorNotificationConfigProvider(root);
+
+            upperCredsProv.Rotate(CredsDict("uninterrupted-tok"));
+            Assert.IsNull((await provider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookAuthToken);
+
+            // upperCredsProv remains the winning provider when destination moves A -> B -> admitted cleanly!
+            destProv.Rotate(DestDict(urlB));
+            var admitted = await provider.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("uninterrupted-tok", admitted.Secrets.WebhookAuthToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task SameTargetDurableRetirementAfterClearAndRestart_BlocksUnboundHostFallbackForSmtpAndNtfyWhileHonoringExplicitHostBindingAsync()
+    {
+        // Delta18 H4b: Delivery-time host-fallback merge MUST compare same-target durable retirement entries too.
+        // After a clear and restart, an unbound host value MUST NOT restore a retired SMTP credential or webhook/ntfy
+        // credential at that same target, while an actively explicitly-bound host value continues to work for trusted
+        // normalized v3 retirements.
+        const string hostA = "relay-d18-h4b-a.example.test";
+        const string hostOther = "relay-d18-h4b-other.example.test";
+        const string urlA = "https://d18-h4b-a.example.test/";
+        const string urlOther = "https://d18-h4b-other.example.test/";
+
+        static OperatorNotificationsOptions BuildOptions(bool enabled = true) => new()
+        {
+            Enabled = enabled,
+            Smtp = new SmtpNotificationOptions
+            {
+                Enabled = true,
+                Host = hostA,
+                Port = 587,
+                SecurityMode = SmtpSecurityMode.StartTls,
+                FromAddress = "camera@example.test",
+                Recipients = ["ops@example.test"]
+            },
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        static Dictionary<string, string?> HostDict(
+            string? smtpUser,
+            string? smtpPass,
+            string? webhookTok,
+            string? webhookUkey,
+            string? webhookTopic,
+            string? smtpBound = null,
+            string? webhookBound = null)
+        {
+            var dict = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = hostA,
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:FromAddress"] = "camera@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Smtp:Recipients:0"] = "ops@example.test",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+                [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+                [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = urlA
+            };
+            if (smtpUser is not null) dict[ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = smtpUser;
+            if (smtpPass is not null) dict[ConfigurationOperatorNotificationConfigProvider.SmtpPasswordConfigKey] = smtpPass;
+            if (webhookTok is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = webhookTok;
+            if (webhookUkey is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookUserKeyConfigKey] = webhookUkey;
+            if (webhookTopic is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = webhookTopic;
+            if (smtpBound is not null) dict[ConfigurationOperatorNotificationConfigProvider.SmtpBoundEndpointConfigKey] = smtpBound;
+            if (webhookBound is not null) dict[ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = webhookBound;
+            return dict;
+        }
+
+        foreach (var clearViaSecretStore in new[] { false, true })
+        {
+            var mode = clearViaSecretStore ? "ClearAsync" : "SettingsClearFlags";
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+
+            // Step 1: Save trusted normalized v3 SMTP + webhook/ntfy credentials at target A, then clear them at A!
+            using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var s0 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var savedA = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    s0.Version,
+                    BuildOptions(enabled: true),
+                    SmtpUsername: "same-target-user-a",
+                    SmtpPassword: "same-target-pass-a",
+                    WebhookUrl: urlA,
+                    WebhookAuthToken: "same-target-tok-a",
+                    WebhookUserKey: "same-target-ukey-a",
+                    WebhookNtfyTopic: "same-target-topic-a"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, savedA.Outcome, savedA.Message);
+
+                if (clearViaSecretStore)
+                {
+                    await ((IOperatorNotificationSecretStore)store).ClearAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    var clearedA = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                        savedA.Snapshot!.Version,
+                        BuildOptions(enabled: false),
+                        ClearSmtpUsername: true,
+                        ClearSmtpPassword: true,
+                        ClearWebhookAuthToken: true,
+                        ClearWebhookUserKey: true,
+                        ClearWebhookNtfyTopic: true), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, clearedA.Outcome, clearedA.Message);
+                }
+            }
+
+            // Step 2: Cold restart with an UNBOUND host config supplying those EXACT same-target retired credentials at A!
+            var hostProv = new RotatingHostConfigurationProvider(HostDict(
+                smtpUser: "same-target-user-a",
+                smtpPass: "same-target-pass-a",
+                webhookTok: "same-target-tok-a",
+                webhookUkey: "same-target-ukey-a",
+                webhookTopic: "  same-target-topic-a  "));
+            using (var restarted = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: new ConfigurationRoot([hostProv])))
+            {
+                var (_, deliverySecrets) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(deliverySecrets.SmtpUsername, $"{mode}: unbound host SMTP username must NOT restore same-target retirement after restart.");
+                Assert.IsNull(deliverySecrets.SmtpPassword, $"{mode}: unbound host SMTP password must NOT restore same-target retirement after restart.");
+                Assert.IsNull(deliverySecrets.WebhookAuthToken, $"{mode}: unbound host webhook token must NOT restore same-target retirement after restart.");
+                Assert.IsNull(deliverySecrets.WebhookUserKey, $"{mode}: unbound host webhook user key must NOT restore same-target retirement after restart.");
+                Assert.IsNull(deliverySecrets.WebhookNtfyTopic, $"{mode}: unbound host ntfy topic must NOT restore same-target retirement after restart.");
+
+                var eff = await restarted.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(eff.Secrets.SmtpUsername);
+                Assert.IsNull(eff.Secrets.SmtpPassword);
+                Assert.IsNull(eff.Secrets.WebhookAuthToken);
+                Assert.IsNull(eff.Secrets.WebhookUserKey);
+                Assert.IsNull(eff.Secrets.WebhookNtfyTopic);
+
+                var snap = await restarted.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(snap.Secrets.HasSmtpUsername);
+                Assert.IsFalse(snap.Secrets.HasSmtpPassword);
+                Assert.IsFalse(snap.Secrets.HasWebhookAuthToken);
+                Assert.IsFalse(snap.Secrets.HasWebhookUserKey);
+                Assert.IsFalse(snap.Secrets.HasWebhookNtfyTopic);
+
+                // Step 3: Withheld host values (mismatched BoundEndpoint / BoundOrigin) MUST ALSO fail closed!
+                hostProv.Rotate(HostDict(
+                    smtpUser: "same-target-user-a",
+                    smtpPass: "same-target-pass-a",
+                    webhookTok: "same-target-tok-a",
+                    webhookUkey: "same-target-ukey-a",
+                    webhookTopic: "same-target-topic-a",
+                    smtpBound: $"{hostOther}:587:StartTls",
+                    webhookBound: urlOther));
+                var (_, withheldDelivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull(withheldDelivery.SmtpUsername);
+                Assert.IsNull(withheldDelivery.SmtpPassword);
+                Assert.IsNull(withheldDelivery.WebhookAuthToken);
+                Assert.IsNull(withheldDelivery.WebhookUserKey);
+                Assert.IsNull(withheldDelivery.WebhookNtfyTopic);
+
+                // Step 4: Actively EXPLICITLY-BOUND host credentials (same-provider BoundEndpoint=A / BoundOrigin=A)
+                //         MUST work for trusted normalized v3 retirements!
+                hostProv.Rotate(HostDict(
+                    smtpUser: "same-target-user-a",
+                    smtpPass: "same-target-pass-a",
+                    webhookTok: "same-target-tok-a",
+                    webhookUkey: "same-target-ukey-a",
+                    webhookTopic: "  same-target-topic-a  ",
+                    smtpBound: $"{hostA}:587:StartTls",
+                    webhookBound: urlA));
+                var (_, explicitDelivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual("same-target-user-a", explicitDelivery.SmtpUsername, $"{mode}: explicitly-bound SMTP username must work for trusted normalized v3 retirement.");
+                Assert.AreEqual("same-target-pass-a", explicitDelivery.SmtpPassword, $"{mode}: explicitly-bound SMTP password must work for trusted normalized v3 retirement.");
+                Assert.AreEqual("same-target-tok-a", explicitDelivery.WebhookAuthToken);
+                Assert.AreEqual("same-target-ukey-a", explicitDelivery.WebhookUserKey);
+                Assert.AreEqual("same-target-topic-a", explicitDelivery.WebhookNtfyTopic, $"{mode}: explicitly-bound ntfy topic must work for trusted normalized v3 retirement.");
+
+                // Step 5: Genuinely fresh (never-retired) unbound host credentials at target A work cleanly!
+                hostProv.Rotate(HostDict(
+                    smtpUser: "fresh-unbound-user-a",
+                    smtpPass: "fresh-unbound-pass-a",
+                    webhookTok: "fresh-unbound-tok-a",
+                    webhookUkey: "fresh-unbound-ukey-a",
+                    webhookTopic: "fresh-unbound-topic-a"));
+                var (_, freshDelivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual("fresh-unbound-user-a", freshDelivery.SmtpUsername);
+                Assert.AreEqual("fresh-unbound-pass-a", freshDelivery.SmtpPassword);
+                Assert.AreEqual("fresh-unbound-tok-a", freshDelivery.WebhookAuthToken);
+                Assert.AreEqual("fresh-unbound-ukey-a", freshDelivery.WebhookUserKey);
+                Assert.AreEqual("fresh-unbound-topic-a", freshDelivery.WebhookNtfyTopic);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task UnmarkedV3EnvelopeMissingNormalizationAttestation_WithPreV3PaddedNtfyTopicHash_FailsClosedOnUnchangedDestinationSaveAsync()
+    {
+        // Delta18 M-ntfy-b: Envelopes upgraded to v3 prior to delta18 lack the explicit positive normalization
+        // attestation (`ntfyTopicHashesNormalized: true`) and could carry a pre-v3 whitespace-padded topic hash.
+        // Loading any unmarked v3 envelope with unattested topic-hash provenance MUST fail closed on unchanged-
+        // destination saves (rejecting the trimmed topic) and persist fail-closed legacy tracking across reloads.
+        static string SaltedHash(string s, string value)
+            => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{s}:{value}")));
+        static string SaltedDestFp(string s, string canonicalDest)
+            => Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(s), Encoding.UTF8.GetBytes($"webhook-dest:{canonicalDest}")));
+
+        const string urlA = "https://d18-unmarked-v3-a.example.test/";
+        const string canonicalDestA = "HTTPS://D18-UNMARKED-V3-A.EXAMPLE.TEST:443/";
+        const string salt = "11223344556677889900aabbccddeeff";
+
+        var ntfyOptions = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        foreach (var (destFp, truncatedFlag, label) in new (string?, bool, string)[]
+        {
+            (null, true, "unmarked-v3-unknown-dest-truncated"),
+            (null, false, "unmarked-v3-unknown-dest-untruncated"),
+            (SaltedDestFp(salt, canonicalDestA), false, "unmarked-v3-same-dest-untruncated")
+        })
+        {
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            var protector = dpProvider.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+
+            // Unmarked v3 payload: schemaVersion = 3, retiredCredentialHistoryVersion = 3, NO ntfyTopicHashesNormalized,
+            // NO hasLegacyUnnormalizedNtfyTopicHistory, carrying a pre-v3 whitespace-padded ntfyTopicHash!
+            var unmarkedV3Payload = new
+            {
+                webhookUrl = urlA,
+                retiredSalt = salt,
+                retiredWebhooks = new object[]
+                {
+                    new
+                    {
+                        destinationFingerprint = destFp,
+                        ntfyTopicHash = SaltedHash(salt, "  pre-v3-padded-topic  ")
+                    }
+                },
+                anyWebhookHistoryTruncated = truncatedFlag,
+                anySmtpHistoryTruncated = false,
+                retiredCredentialHistoryVersion = 3
+            };
+            var envelope = new
+            {
+                schemaVersion = 3,
+                revision = $"d18-unmarked-v3-{label}",
+                options = ntfyOptions,
+                protectedSecrets = protector.Protect(JsonSerializer.Serialize(unmarkedV3Payload, WebJsonOptions))
+            };
+            await File.WriteAllTextAsync(
+                Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName),
+                JsonSerializer.Serialize(envelope, WebJsonOptions),
+                CancellationToken.None).ConfigureAwait(false);
+
+            using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(snap.StoreCorrupt, $"{label}: unmarked v3 envelope must load cleanly and enforce fail-closed legacy ntfy guard.");
+
+                // Unchanged-destination save with trimmed (and padded) topic MUST FAIL CLOSED!
+                foreach (var topicInput in new[] { "pre-v3-padded-topic", "  pre-v3-padded-topic  " })
+                {
+                    var rejectSame = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                        snap.Version,
+                        ntfyOptions,
+                        WebhookNtfyTopic: topicInput), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectSame.Outcome,
+                        $"{label}: unchanged-destination save MUST reject '{topicInput}' on unmarked v3 envelope.");
+                    Assert.IsTrue(rejectSame.Problems!.ContainsKey("webhook.ntfyTopic"));
+                }
+
+                // Direct save with fresh read provenance at A MUST ALSO strip the topic!
+                var readA = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+                await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                    readA with { WebhookNtfyTopic = "pre-v3-padded-topic" },
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNull((await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookNtfyTopic);
+
+                // Unrelated save persists explicit fail-closed marker (hasLegacyUnnormalizedNtfyTopicHistory=true, ntfyTopicHashesNormalized=false)!
+                var snap2 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var unrelated = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap2.Version,
+                    new OperatorNotificationsOptions
+                    {
+                        Enabled = false,
+                        Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                    },
+                    WebhookAuthToken: "fresh-v3-tok-unmarked"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, unrelated.Outcome, unrelated.Message);
+            }
+
+            // Inspect persisted JSON to verify explicit negative normalization attestation persisted on disk!
+            var diskBytes = await File.ReadAllBytesAsync(Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName), CancellationToken.None).ConfigureAwait(false);
+            using (var doc = JsonDocument.Parse(diskBytes))
+            {
+                var innerJson = protector.Unprotect(doc.RootElement.GetProperty("protectedSecrets").GetString()!);
+                using var innerDoc = JsonDocument.Parse(innerJson);
+                Assert.IsTrue(innerDoc.RootElement.GetProperty("hasLegacyUnnormalizedNtfyTopicHistory").GetBoolean(),
+                    $"{label}: unrelated save must persist hasLegacyUnnormalizedNtfyTopicHistory=true.");
+                Assert.IsFalse(innerDoc.RootElement.GetProperty("ntfyTopicHashesNormalized").GetBoolean(),
+                    $"{label}: unrelated save must persist ntfyTopicHashesNormalized=false.");
+            }
+
+            // Reload from disk: unchanged-destination save MUST STILL fail closed!
+            using (var reloaded = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider))
+            {
+                var snapReloaded = await reloaded.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var rejectAfterReload = await reloaded.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snapReloaded.Version,
+                    ntfyOptions,
+                    WebhookNtfyTopic: "pre-v3-padded-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, rejectAfterReload.Outcome);
+                Assert.IsTrue(rejectAfterReload.Problems!.ContainsKey("webhook.ntfyTopic"));
+            }
+        }
+
+        // Control: Fresh delta18 normalized v3 envelope writes explicit `ntfyTopicHashesNormalized: true`!
+        {
+            using var dirClean = TempStateDir.Create();
+            var dpClean = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dirClean.Path, "dp-keys")));
+            var protectorClean = dpClean.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+            using (var storeClean = CreateStore(dirClean.Path, isDevelopment: false, dpProvider: dpClean))
+            {
+                var s0 = await storeClean.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+                var saved = await storeClean.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    s0.Version,
+                    ntfyOptions,
+                    WebhookUrl: urlA,
+                    WebhookNtfyTopic: "clean-v3-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+            }
+
+            var cleanBytes = await File.ReadAllBytesAsync(Path.Combine(dirClean.Path, OperatorNotificationStore.ConfigFileName), CancellationToken.None).ConfigureAwait(false);
+            using var cleanDoc = JsonDocument.Parse(cleanBytes);
+            var cleanInner = protectorClean.Unprotect(cleanDoc.RootElement.GetProperty("protectedSecrets").GetString()!);
+            using var cleanInnerDoc = JsonDocument.Parse(cleanInner);
+            Assert.IsTrue(cleanInnerDoc.RootElement.GetProperty("ntfyTopicHashesNormalized").GetBoolean(),
+                "Normalized delta18 envelopes MUST write explicit positive attestation ntfyTopicHashesNormalized=true.");
+            Assert.IsFalse(cleanInnerDoc.RootElement.TryGetProperty("hasLegacyUnnormalizedNtfyTopicHistory", out _));
+        }
+    }
+
+    [TestMethod]
+    public async Task UnresolvedLegacyNtfyTopicHistory_EnforcedBeforeExplicitTargetHostBindingAcrossAllThreePathsWhileTrustedV3MigrationPassesAsync()
+    {
+        // Delta18 M-ntfy-b / M2: Unresolved legacy ntfy topic history MUST be enforced FIRST — BEFORE the exact-target
+        // host-binding exception — across ALL THREE paths (versioned save, direct/unversioned save, and delivery
+        // fallback), while trusted normalized v3 same-destination migration with an explicitly-bound host topic
+        // continues to pass on all three paths.
+        static string SaltedHash(string s, string value)
+            => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{s}:{value}")));
+
+        const string urlA = "https://d18-m2-ntfy-a.example.test/";
+        const string urlB = "https://d18-m2-ntfy-b.example.test/";
+        const string salt = "aabbccddeeff00112233445566778899";
+
+        var ntfyOptions = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Webhook = new WebhookNotificationOptions
+            {
+                Enabled = true,
+                Format = WebhookPayloadFormat.Ntfy
+            }
+        };
+
+        static Dictionary<string, string?> ExplicitBoundHostDict(string url, string topic) => new(StringComparer.OrdinalIgnoreCase)
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Enabled"] = "true",
+            [OperatorNotificationsOptions.SectionKey + ":Webhook:Format"] = nameof(WebhookPayloadFormat.Ntfy),
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = url,
+            [ConfigurationOperatorNotificationConfigProvider.WebhookNtfyTopicConfigKey] = topic,
+            [ConfigurationOperatorNotificationConfigProvider.WebhookBoundOriginConfigKey] = url
+        };
+
+        // Part A: BOTH pre-v3 hash-only AND unmarked v3 envelopes carry unresolved legacy ntfy topic history ->
+        //         ALL THREE paths MUST fail closed EVEN WITH an actively explicitly-bound host topic at exact target A!
+        foreach (var (envelopeSchemaVersion, historyVersion, label) in new (int, int, string)[]
+        {
+            (1, 2, "pre-v3-hash-only"),
+            (3, 3, "unmarked-v3-missing-attestation")
+        })
+        {
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            var protector = dpProvider.CreateProtector("CameraAgent", "OperatorNotifications", "v1");
+
+            var legacyPayload = new
+            {
+                webhookUrl = urlA,
+                retiredSalt = salt,
+                retiredWebhooks = new object[]
+                {
+                    new
+                    {
+                        ntfyTopicHash = SaltedHash(salt, "  legacy-bound-topic  ")
+                    }
+                },
+                anyWebhookHistoryTruncated = false,
+                anySmtpHistoryTruncated = false,
+                retiredCredentialHistoryVersion = historyVersion
+            };
+            var envelope = new
+            {
+                schemaVersion = envelopeSchemaVersion,
+                revision = $"d18-guard-order-{label}",
+                options = ntfyOptions,
+                protectedSecrets = protector.Protect(JsonSerializer.Serialize(legacyPayload, WebJsonOptions))
+            };
+            await File.WriteAllTextAsync(
+                Path.Combine(dir.Path, OperatorNotificationStore.ConfigFileName),
+                JsonSerializer.Serialize(envelope, WebJsonOptions),
+                CancellationToken.None).ConfigureAwait(false);
+
+            var hostProv = new RotatingHostConfigurationProvider(ExplicitBoundHostDict(urlA, "legacy-bound-topic"));
+            var root = new ConfigurationRoot([hostProv]);
+
+            using var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: root);
+
+            // Confirm the host tracker genuinely considers the topic actively explicitly authorized for urlA!
+            var hostTrackerField = typeof(OperatorNotificationStore).GetField(
+                "_hostSnapshots",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var hostTracker = (HostConfigurationSnapshotTracker)hostTrackerField.GetValue(store)!;
+            Assert.IsTrue(
+                hostTracker.IsCurrentlyExplicitlyAuthorizedForDestination(
+                    HostCredentialField.WebhookNtfyTopic, "legacy-bound-topic", urlA),
+                $"{label}: test precondition failed — host topic must be actively explicitly authorized for urlA.");
+
+            // Path 3 — Delivery fallback (and snapshot / effective configuration) MUST fail closed!
+            var (_, deliverySecrets) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(deliverySecrets.WebhookNtfyTopic,
+                $"{label}: delivery fallback MUST enforce unresolved-legacy ntfy guard BEFORE exact-target host binding.");
+            var eff = await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(eff.Secrets.WebhookNtfyTopic);
+            var snap = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(snap.Secrets.HasWebhookNtfyTopic);
+
+            // Path 1 — Versioned save MUST fail closed even with exact-target explicitly-bound host topic!
+            foreach (var topicInput in new[] { "legacy-bound-topic", "  legacy-bound-topic  " })
+            {
+                var versionedSave = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    snap.Version,
+                    ntfyOptions,
+                    WebhookNtfyTopic: topicInput), "owner-1", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Invalid, versionedSave.Outcome,
+                    $"{label}: versioned save MUST enforce unresolved-legacy ntfy guard BEFORE exact-target host binding for '{topicInput}'.");
+                Assert.IsTrue(versionedSave.Problems!.ContainsKey("webhook.ntfyTopic"));
+            }
+
+            // Path 2 — Direct/unversioned save (BOTH with fresh read provenance AND without provenance) MUST strip!
+            var readFresh = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readFresh with { WebhookNtfyTopic = "legacy-bound-topic" },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull((await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false)).WebhookNtfyTopic,
+                $"{label}: direct save with fresh provenance MUST strip ntfy topic under unresolved legacy history.");
+            Assert.IsNull((await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookNtfyTopic);
+
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                new OperatorNotificationSecrets(
+                    WebhookUrl: urlA,
+                    WebhookNtfyTopic: "legacy-bound-topic"),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull((await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false)).WebhookNtfyTopic,
+                $"{label}: provenance-free direct save MUST strip ntfy topic under unresolved legacy history.");
+            Assert.IsNull((await store.GetEffectiveConfigurationAsync(CancellationToken.None).ConfigureAwait(false)).Secrets.WebhookNtfyTopic);
+        }
+
+        // Part B: Trusted normalized v3 retirement (`ntfyTopicHashesNormalized: true`) + explicitly-bound host topic ->
+        //         ALL THREE paths (delivery fallback, direct save, and versioned save) continue to pass cleanly!
+        {
+            using var dir = TempStateDir.Create();
+            var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+            var hostProv = new RotatingHostConfigurationProvider(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
+            var root = new ConfigurationRoot([hostProv]);
+
+            using var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: root);
+
+            // 1. Create a trusted normalized v3 retirement of "trusted-v3-topic" at A, then move protected store to B.
+            var s0 = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var savedA = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                s0.Version,
+                ntfyOptions,
+                WebhookUrl: urlA,
+                WebhookNtfyTopic: "trusted-v3-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, savedA.Outcome, savedA.Message);
+
+            var movedB = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                savedA.Snapshot!.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = false,
+                    Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                },
+                WebhookUrl: urlB), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, movedB.Outcome, movedB.Message);
+
+            // 2. Actively explicitly-bound host topic for exact target B:
+            hostProv.Rotate(ExplicitBoundHostDict(urlB, "trusted-v3-topic"));
+
+            // Path 3 — Delivery fallback succeeds!
+            var (_, deliveryB) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("trusted-v3-topic", deliveryB.WebhookNtfyTopic,
+                "Trusted normalized v3 retirement must still honor exact-target explicit host binding on delivery fallback.");
+
+            // Path 2 — Direct/unversioned save migrates cleanly!
+            var readB = await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            await ((IOperatorNotificationSecretStore)store).SaveAsync(
+                readB with { WebhookNtfyTopic = "trusted-v3-topic" },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("trusted-v3-topic",
+                (await ((IOperatorNotificationSecretStore)store).ReadAsync(CancellationToken.None).ConfigureAwait(false)).WebhookNtfyTopic,
+                "Trusted normalized v3 retirement must still honor exact-target explicit host binding on direct save.");
+
+            // Clear back to B without protected topic, then verify Path 1 — Versioned save migrates cleanly!
+            var snapClear = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var clearedB = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapClear.Version,
+                new OperatorNotificationsOptions
+                {
+                    Enabled = false,
+                    Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Ntfy }
+                },
+                WebhookUrl: urlB,
+                ClearWebhookNtfyTopic: true), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, clearedB.Outcome, clearedB.Message);
+
+            var migratedVersioned = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                clearedB.Snapshot!.Version,
+                ntfyOptions,
+                WebhookUrl: urlB,
+                WebhookNtfyTopic: "trusted-v3-topic"), "owner-1", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, migratedVersioned.Outcome, migratedVersioned.Message);
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, migratedVersioned.Snapshot!.Secrets.WebhookNtfyTopicSource);
+        }
+    }
+
+    private sealed class PostScanTransitionConfigurationProvider : ConfigurationProvider
+    {
+        private readonly string _triggerKey;
+        private Dictionary<string, string?> _afterTransition;
+        private int _armed;
+        private int _transitioned;
+
+        public bool HasTransitioned => Volatile.Read(ref _transitioned) != 0;
+
+        public PostScanTransitionConfigurationProvider(
+            IDictionary<string, string?> initial,
+            IDictionary<string, string?> afterTransition,
+            string triggerKey,
+            bool armed = true)
+        {
+            _triggerKey = triggerKey;
+            Data = new Dictionary<string, string?>(initial, StringComparer.OrdinalIgnoreCase);
+            _afterTransition = new Dictionary<string, string?>(afterTransition, StringComparer.OrdinalIgnoreCase);
+            _armed = armed ? 1 : 0;
+        }
+
+        public void Rotate(IDictionary<string, string?> next)
+        {
+            Volatile.Write(ref _armed, 0);
+            Data = new Dictionary<string, string?>(next, StringComparer.OrdinalIgnoreCase);
+            OnReload();
+        }
+
+        public void RotateArmed(
+            IDictionary<string, string?> initialAttempt,
+            IDictionary<string, string?> afterTransition)
+        {
+            Volatile.Write(ref _transitioned, 0);
+            _afterTransition = new Dictionary<string, string?>(afterTransition, StringComparer.OrdinalIgnoreCase);
+            Data = new Dictionary<string, string?>(initialAttempt, StringComparer.OrdinalIgnoreCase);
+            Volatile.Write(ref _armed, 1);
+            OnReload();
+        }
+
+        public override bool TryGet(string key, out string? value)
+        {
+            var found = base.TryGet(key, out value);
+            if (string.Equals(key, _triggerKey, StringComparison.OrdinalIgnoreCase) &&
+                Interlocked.CompareExchange(ref _armed, 0, 1) == 1)
+            {
+                Data = new Dictionary<string, string?>(_afterTransition, StringComparer.OrdinalIgnoreCase);
+                Volatile.Write(ref _transitioned, 1);
+                OnReload();
+            }
+
+            return found;
+        }
+    }
+
     private static List<string> CollectReachableStringsExcludingConfiguration(object root)
     {
         var found = new List<string>();
