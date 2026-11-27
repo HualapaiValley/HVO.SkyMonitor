@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -99,6 +100,8 @@ public sealed class SiloPublicationOwnershipTests
     [TestCategory("Unit")]
     public async Task OneVisibleGroupCannotReleaseAnotherGroupsStagedBytes()
     {
+        if (!DurableSync.SupportsDirectorySync)
+            Assert.Inconclusive("The durable payload spool requires Linux directory fsync.");
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.Evidence(silo.Payloads, "shared");
@@ -130,8 +133,51 @@ public sealed class SiloPublicationOwnershipTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task StagedRawCaptureDrainsAfterRestartWithLowerSpoolLimit()
+    {
+        if (!DurableSync.SupportsDirectorySync)
+            Assert.Inconclusive("The durable payload spool requires Linux directory fsync.");
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var capture = SiloDrafts.Capture(silo.Payloads, 1);
+        var evidence = SiloDrafts.Member(silo.Payloads, capture.Members[0].ArtifactId, "raw-evidence",
+            SiloRetentionClass.Metadata, "application/json", "{}"u8.ToArray(), revision: SiloArtifactStorage.RawEvidenceRevision);
+        SiloDraftMember[] members = [capture.Members[0], evidence];
+        var draft = capture with
+        {
+            GroupKind = "raw-capture",
+            Members = members.Select(static member => member with { SourceToken = SiloFilePayloadSpool.TokenOf(member.Sha256) }).ToArray()
+        };
+        var sourceTokens = members.ToDictionary(static member => member.Sha256, static member => member.SourceToken);
+        var stagedBytes = members.Sum(static member => member.Length);
+        silo.FileSpoolCapacity = (stagedBytes, members.Length);
+        await silo.RestartAsync().ConfigureAwait(false);
+        ValueTask<Stream> OpenContent(SiloDraftMember member, CancellationToken ct) => silo.Payloads.OpenAsync(sourceTokens[member.Sha256], ct);
+        Assert.IsTrue(await silo.Publisher.StageAsync(draft, OpenContent, token).ConfigureAwait(false));
+
+        silo.FileSpoolCapacity = (stagedBytes - 1, members.Length);
+        await silo.RestartAsync().ConfigureAwait(false);
+        var payloadDirectory = new DirectoryInfo(Path.Combine(silo.RootPath, "payloads-v1"));
+        Assert.AreEqual(stagedBytes, payloadDirectory.GetFiles("*.payload").Sum(static file => file.Length));
+        Assert.ThrowsExactly<SiloSpoolFullException>(silo.PayloadSpool.RequireWithinCapacity);
+        Assert.AreEqual(0, (await silo.Publisher.ResumeAsync(1, skipRawAdmissions: true, token).ConfigureAwait(false)).Count);
+        Assert.AreEqual(SiloStagedState.Staged,
+            (await silo.State.ReadGroupAsync(draft.GroupId, draft.RevisionId, token).ConfigureAwait(false))?.State);
+
+        Assert.IsFalse(await silo.Publisher.StageAsync(draft, OpenContent, token).ConfigureAwait(false));
+        var result = await silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, token).ConfigureAwait(false);
+        Assert.AreEqual(SiloStagedState.Visible, result.State);
+        Assert.IsTrue((await silo.Catalog.ReopenAsync(draft.GroupId, draft.RevisionId, token).ConfigureAwait(false)).Reopenable);
+        Assert.AreEqual(0, payloadDirectory.GetFiles().Length);
+        silo.PayloadSpool.RequireWithinCapacity();
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task RegisteredStackStaysHiddenUntilRestartCommitsAllRequiredFiles()
     {
+        if (!DurableSync.SupportsDirectorySync)
+            Assert.Inconclusive("The durable payload spool requires Linux directory fsync.");
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.View(silo.Payloads, "registered", null, 1, [], [], publishPreview: true);

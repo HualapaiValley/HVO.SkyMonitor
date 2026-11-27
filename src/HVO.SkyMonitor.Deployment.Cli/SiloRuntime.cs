@@ -263,11 +263,11 @@ networks:
     }
 
     /// <summary>The create-only instance marker (contract 4.2/4.3). Its bytes are fixed before the first PUT.</summary>
-    public static byte[] Marker(Guid instanceId, DateTimeOffset createdUtc)
+    public static byte[] Marker(Guid instanceId, DateTimeOffset createdUtc, string? dataRootIdentity = null)
     {
         var bucket = BucketFor(instanceId);
         var storeId = StoreIdFor(instanceId);
-        return Canonical(new JsonObject
+        var marker = new JsonObject
         {
             ["format"] = MarkerFormat,
             ["instanceId"] = instanceId.ToString("D"),
@@ -276,7 +276,10 @@ networks:
             ["bucket"] = bucket,
             ["storageBindingId"] = StorageBindingIdFor(instanceId, storeId, bucket),
             ["createdUtc"] = createdUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
-        });
+        };
+        if (dataRootIdentity is not null)
+            marker[CameraAgentSiloBinding.DataRootIdentityProperty] = dataRootIdentity;
+        return Canonical(marker);
     }
 
     /// <summary>The generation-1 writer fence (contract 4.3, 7.2): the current writer generation and its credential identity.</summary>

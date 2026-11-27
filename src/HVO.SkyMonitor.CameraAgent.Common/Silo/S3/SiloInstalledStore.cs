@@ -34,7 +34,7 @@ internal sealed class SiloInstalledStore : IDisposable
 
     public ISiloObjectStore Store { get; }
 
-    public async ValueTask VerifyAsync(CancellationToken cancellationToken)
+    public async ValueTask VerifyAsync(CancellationToken cancellationToken, string? dataRootIdentity = null)
     {
         if (!await _hasVersioning(cancellationToken).ConfigureAwait(false))
             throw BindingRefused("The installed Silo bucket is not versioned.");
@@ -46,6 +46,10 @@ internal sealed class SiloInstalledStore : IDisposable
             !Matches(marker.RootElement, "stateContract", CameraAgentSiloBinding.StateContract) ||
             !Matches(marker.RootElement, "storeId", binding.StoreId) || !Matches(marker.RootElement, "bucket", binding.Bucket))
             throw BindingRefused("The Silo marker does not identify this installation.");
+
+        if (dataRootIdentity is not null &&
+            !Matches(marker.RootElement, CameraAgentSiloBinding.DataRootIdentityProperty, dataRootIdentity))
+            throw new SiloConflictException("fixture-silo-volume-mismatch", "The configured Silo endpoint does not identify this data directory.");
 
         if (!HasBinding(fence.RootElement, CameraAgentSiloBinding.FenceFormat, binding) ||
             !Matches(fence.RootElement, "writerAccessKeyId", _settings.AccessKey) ||

@@ -155,6 +155,7 @@ internal sealed class SiloJournalWriter(
     TimeProvider clock,
     ISiloFaults? faults = null) : IDisposable
 {
+    internal const string FirstGenerationOpenOperation = "generation-open:1";
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private sealed record Completed(SiloCommittedSegment Segment, string OperationId);
@@ -165,17 +166,38 @@ internal sealed class SiloJournalWriter(
     public static string GenerationOpenOperation(SiloGenerationOpenRecord open)
     {
         ArgumentNullException.ThrowIfNull(open);
-        return open.Generation == 1 ? "generation-open:1" : $"generation-open:{open.Generation}:{open.PrefixEndSha256}";
+        return open.Generation == 1 ? FirstGenerationOpenOperation : $"generation-open:{open.Generation}:{open.PrefixEndSha256}";
     }
 
     /// <summary>The canonical fingerprint of an operation's records: what its key promises on every retry.</summary>
     public static string Fingerprint(IReadOnlyList<SiloJournalRecord> records) => SiloHash.Sha256(SiloJson.Serialize(records));
 
+    private static SiloGenerationOpenRecord FirstGenerationOpen(IReadOnlyDictionary<string, long> identityFloors) =>
+        new(1, "install", 0, identityFloors);
+
+    internal static async ValueTask<bool> CanRecoverFirstGenerationAsync(SiloJournalHead? head, SiloPendingSegment? pending, SiloObjectSpool spool,
+        SiloStorageBinding binding, IReadOnlyDictionary<string, long> identityFloors, CancellationToken cancellationToken)
+    {
+        if (head is not { WriterGeneration: 1, Generation: 0, Sequence: 0, Sha256: null, VersionId: null } ||
+            pending is not { OperationId: FirstGenerationOpenOperation, GroupId: null, RevisionId: null } ||
+            pending.Position != new SiloJournalPosition(1, 1) || pending.Length is <= 0 or > SiloJson.MaximumMetadataObjectBytes ||
+            !SiloHash.IsValid(pending.Sha256) || pending.OperationSha256 != Fingerprint([FirstGenerationOpen(identityFloors)]))
+            return false;
+
+        // Readiness retries these exact locally spooled bytes, even when the first PUT may have landed.
+        var name = SiloObjectSpool.NameOf(pending.Sha256);
+        if (await spool.ReadAsync(name, pending.Sha256, cancellationToken, pending.Length).ConfigureAwait(false) is not { } bytes)
+            return false;
+        var segment = SiloJson.ReadSegment(bytes, name);
+        return segment.Position == pending.Position && segment.InstanceId == binding.InstanceId &&
+            segment.StorageBindingId == binding.BindingId && Fingerprint(segment.Records) == pending.OperationSha256;
+    }
+
     /// <summary>Open generation 1 at install. Its segment is the first of the journal.</summary>
     public async ValueTask<SiloCommittedSegment> OpenFirstGenerationAsync(
         IReadOnlyDictionary<string, long> identityFloors, CancellationToken cancellationToken)
     {
-        var open = new SiloGenerationOpenRecord(1, "install", 0, identityFloors);
+        var open = FirstGenerationOpen(identityFloors);
         var operation = GenerationOpenOperation(open);
         SiloJournalRecord[] records = [open];
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);

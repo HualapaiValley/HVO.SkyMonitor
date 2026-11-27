@@ -315,6 +315,10 @@ internal sealed class SiloTestPayloads : ISiloPayloadSpool
 
     public ConcurrentDictionary<string, int> Released { get; } = new(StringComparer.Ordinal);
 
+    public void RequireWithinCapacity()
+    {
+    }
+
     public string Add(byte[] bytes)
     {
         var token = "spool-" + SiloHash.Sha256(bytes)[..24];

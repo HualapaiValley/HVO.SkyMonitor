@@ -38,7 +38,7 @@ internal sealed class SiloStateRoot : IDisposable
 
     public string IndexDatabasePath => Root.Resolve(IndexDatabaseFileName);
 
-    public static SiloStateRoot Acquire(string path)
+    public static SiloStateRoot Acquire(string path, bool prepareSpool = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         Directory.CreateDirectory(path);
@@ -55,20 +55,25 @@ internal sealed class SiloStateRoot : IDisposable
         }
         try
         {
-            var directory = root.Resolve(SpoolDirectoryName);
-            AtomicPublisher.EnsureDirectory(root, directory);
-            // The process lock is held and no metadata writer has started.
-            if (AtomicPublisher.CleanupTemporaries(root, directory, MaximumStartupMetadataPartials) > 0)
-            {
-                DurableSync.Directory(directory);
-            }
-            return new SiloStateRoot(root, lockStream);
+            var state = new SiloStateRoot(root, lockStream);
+            if (prepareSpool)
+                state.PrepareSpool();
+            return state;
         }
         catch
         {
             lockStream.Dispose();
             throw;
         }
+    }
+
+    internal void PrepareSpool()
+    {
+        var directory = Root.Resolve(SpoolDirectoryName);
+        AtomicPublisher.EnsureDirectory(Root, directory);
+        // The process lock is held and no metadata writer has started.
+        if (AtomicPublisher.CleanupTemporaries(Root, directory, MaximumStartupMetadataPartials) > 0)
+            DurableSync.Directory(directory);
     }
 
     public void Dispose()
@@ -106,16 +111,19 @@ internal sealed class SiloObjectSpool(PhysicalRoot root, string directoryName)
     }
 
     /// <summary>The intact bytes, or null when absent or damaged.</summary>
-    public async ValueTask<byte[]?> ReadAsync(string name, string expectedSha256, CancellationToken cancellationToken)
+    public async ValueTask<byte[]?> ReadAsync(string name, string expectedSha256, CancellationToken cancellationToken,
+        long? expectedLength = null)
     {
         var path = root.Resolve(Relative(name));
-        if (!File.Exists(path))
+        var file = new FileInfo(path);
+        if (!file.Exists || expectedLength is { } length && file.Length != length)
         {
             return null;
         }
         root.Verify(path, "silo-spool-read");
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        return string.Equals(SiloHash.Sha256(bytes), expectedSha256, StringComparison.Ordinal) ? bytes : null;
+        return (expectedLength is null || bytes.LongLength == expectedLength) &&
+            string.Equals(SiloHash.Sha256(bytes), expectedSha256, StringComparison.Ordinal) ? bytes : null;
     }
 
     public void Delete(string name)

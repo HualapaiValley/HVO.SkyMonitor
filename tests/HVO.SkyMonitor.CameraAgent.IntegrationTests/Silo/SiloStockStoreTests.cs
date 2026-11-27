@@ -45,8 +45,8 @@ public sealed partial class SiloStockStoreTests
         await CheckStockVersionsAsync(container, client, store, descriptor, accessKey, secretKey, token).ConfigureAwait(false);
     }
 
-    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync, INetwork? network = null,
-        string? certificateDirectory = null)
+    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync,
+        INetwork? network = null, string? certificateDirectory = null, string? dataRoot = null, string? user = null)
     {
         var builder = new ContainerBuilder(StockImage)
             .WithEnvironment("MINIO_ROOT_USER", accessKey)
@@ -57,6 +57,8 @@ public sealed partial class SiloStockStoreTests
             .WithPortBinding(Port, assignRandomHostPort: true)
             .WithCreateParameterModifier(parameters =>
             {
+                if (user is not null)
+                    parameters.User = user;
                 var bindings = parameters.HostConfig?.PortBindings ?? throw new InvalidOperationException("The fixture requires a loopback binding.");
                 foreach (var binding in bindings.Values.SelectMany(static bindings => bindings))
                 {
@@ -75,6 +77,10 @@ public sealed partial class SiloStockStoreTests
         {
             builder = builder.WithBindMount(certificateDirectory, "/tmp/.minio/certs", AccessMode.ReadOnly)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(Port));
+        }
+        if (dataRoot is not null)
+        {
+            builder = builder.WithBindMount(dataRoot, "/data").WithEnvironment("MC_CONFIG_DIR", "/tmp/mcli");
         }
         return builder.Build();
     }

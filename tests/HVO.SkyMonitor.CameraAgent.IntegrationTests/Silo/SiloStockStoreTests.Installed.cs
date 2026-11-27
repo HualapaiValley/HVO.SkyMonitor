@@ -701,7 +701,8 @@ public sealed partial class SiloStockStoreTests
         return (document.RootElement.GetProperty("accessKey").GetString()!, document.RootElement.GetProperty("secretKey").GetString()!);
     }
 
-    private static async Task InstallBindingAsync(AmazonS3Client admin, SiloStorageBinding binding, string accessKey, CancellationToken token)
+    private static async Task InstallBindingAsync(AmazonS3Client admin, SiloStorageBinding binding, string accessKey,
+        CancellationToken token, string? dataRootIdentity = null)
     {
         var store = new SiloS3ObjectStore(admin,
             new(binding.StoreId, binding.Bucket, SiloStoreClass.Local, SiloRetrieval.Online, PersistenceQualified: true), TimeSpan.FromSeconds(30));
@@ -712,7 +713,8 @@ public sealed partial class SiloStockStoreTests
             storeId = binding.StoreId,
             bucket = binding.Bucket,
             storageBindingId = binding.BindingId,
-            stateContract = CameraAgentSiloBinding.StateContract
+            stateContract = CameraAgentSiloBinding.StateContract,
+            linuxDataRootIdentity = dataRootIdentity
         });
         var fence = JsonSerializer.SerializeToUtf8Bytes(new
         {
