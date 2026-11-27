@@ -3733,7 +3733,6 @@ public sealed partial class LifecycleContractTests
     {
         public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         public Func<TimeSpan?, CancellationToken, Task>? WaitForHealth { get; init; }
-        public bool FleetDisabled { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
@@ -3761,8 +3760,6 @@ public sealed partial class LifecycleContractTests
         }
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
-        public Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
-            => FleetDisabled ? Task.CompletedTask : throw new InstallerException("Fleet is enabled in the fixture.");
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(CurrentOwnerBootstrapState);
         public Task<string> ReadInstallationStateAsync(

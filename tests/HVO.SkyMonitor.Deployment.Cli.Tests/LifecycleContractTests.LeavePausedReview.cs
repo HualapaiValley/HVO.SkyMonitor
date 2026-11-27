@@ -24,7 +24,7 @@ public sealed partial class LifecycleContractTests
             "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY); INSERT INTO AspNetUsers VALUES('fixture-owner');");
         using var release = CandidateRelease(fixture, out var candidate, version: "0.9.1-rc.2");
         var lifecycle = new AutomaticSignedLifecycleClient(fixture.Paths);
-        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true, FleetDisabled = true };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with { Release = release.Folder };
         var verifiedImage = (await ReleaseAcquirer.AcquireImageAsync(release.Folder, null,
             fixture.Manifest.DockerDaemon.Architecture, CancellationToken.None))!;
@@ -269,19 +269,6 @@ public sealed partial class LifecycleContractTests
         await SettleAsync();
         foreach (var target in targets)
             StringAssert.Contains(await File.ReadAllTextAsync(target), "1.3.0", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    [DataRow("Healthy", "Fleet heartbeat is disabled/not configured.", true)]
-    [DataRow("Healthy", "Fleet heartbeat delivery is current.", false)]
-    [DataRow("Degraded", "Fleet heartbeat is disabled/not configured.", false)]
-    public void LeavePausedReview_FleetHeartbeatRequiresExactDisabledEvidence(string status, string description, bool expected)
-    {
-        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
-        {
-            checks = new[] { new { name = "fleet-heartbeat", status, description } }
-        }));
-        Assert.AreEqual(expected, OwnerBootstrapClient.ReportsFleetDisabled(document.RootElement));
     }
 
     [TestMethod]

@@ -121,13 +121,8 @@ public sealed class CameraAgentGalleryPerformanceTests
     // the machine is fast. That is the opposite shape from a deadline, it is not what a latency budget
     // is asked to show, and refusing slow-host measurements does nothing about it. Nor does it reach a
     // deadline enforced by a timeout or a cancellation token rather than by an assertion: that is the
-    // same directional shape wearing a different mechanism, it never reaches this method, and nothing
-    // in this branch covers it. LogicHostDependencyOutageAcceptanceTests is the worked example, checked
-    // rather than taken on description: a sixty-second recovery assertion, and around it a Timeout of
-    // 480 seconds on the class, two twelve-second CancellationTokenSource deadlines on the health
-    // polls, and a ten-second one on a request. Only the sixty-second bound is an assertion. A
-    // twelve-second client deadline tripping under contention is exactly the unattributable failure a
-    // ceiling exists to catch, and it never reaches an assert to be gated at.
+    // same directional shape wearing a different mechanism. A client timeout under contention
+    // can fail the test before this method has a latency or memory measurement to attribute.
     //
     // So the condition to encode, when something encodes it, is not the one this file implements:
     // refuse a contended measurement wherever an elapsed-time bound governs the outcome, whether that

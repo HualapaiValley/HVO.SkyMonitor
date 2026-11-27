@@ -16,9 +16,6 @@ services:
       CameraAgent__AgentId: cameraagent-physical-268
       CameraAgent__ConfigFilePath: /run/hvo/cameraagent.json
       CameraAgent__RawIngressRoot: /var/lib/hvo/data/agent
-      CameraAgent__CentralIntegration__Mode: Disabled
-      CameraAgent__CaptureDistribution__UploadEnabled: "false"
-      CameraAgent__EnvironmentalDelivery__Enabled: "false"
       CameraAgent__TransientDetection__Mode: "Off"
       CameraAgent__TransientDetection__Required: "false"
       Catalog__Root: /var/lib/hvo/data/catalog

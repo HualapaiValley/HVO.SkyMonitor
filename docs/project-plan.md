@@ -131,11 +131,8 @@ Astronomy --> Catalog.Sqlite
 AgentCore + Processing --> CameraAgent.Replay
 Processing + CameraAgent.Replay --> CameraAgent.ReplayRunner
 
-AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts + CameraAgent.Replay
+AgentCore + Astronomy + Imaging + Processing + CameraAgent.Replay
   +--> CameraAgent.Common --> CameraAgent
-
-AgentCore + Processing --> ProcessingRunner.Contracts
-AgentCore + Processing + ProcessingRunner.Contracts --> ProcessingRunner
 
 AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 

@@ -3,9 +3,8 @@
 ## Purpose
 
 The virtual camera is the first production-quality `ICameraModule` used to
-prove CameraAgent acquisition, exposure control, processing, storage, local UI,
-and eventual upload. It must behave like a camera adapter, not like a separate
-demo application.
+prove CameraAgent acquisition, exposure control, processing, storage, and the
+local UI through the same camera adapter contract as physical modules.
 
 The implementation combines three independent concerns:
 
@@ -263,11 +262,10 @@ The configured `VirtualSkyCloudObservation` standard-lane step runs only after
 durable raw ingress. It verifies the captured provenance, evaluates a fixed
 equal-area sky-dome grid, and publishes a restart-stable targetless
 `environmental-observation-v1` fact with source kind `Simulated`, value kind
-`CloudCover`, and unit `Fraction`. The CameraAgent provisioning bridge remains
-the only owner of central site/device identity, and the existing SQLite outbox
-owns retry, restart, duplicate, and delivery behavior. This simulated fact is
-not the image-derived cloud assessment, mask, confidence, or processing gate
-owned by #105.
+`CloudCover`, and unit `Fraction`. CameraAgent commits the fact to its local
+environmental observation journal, which preserves it across restarts and
+deduplicates it on retry. The image-derived cloud assessment, mask, confidence,
+and processing gate are defined under #105.
 
 Mono rendering evaluates effects on demand and retains one signal plane plus the
 raw output. RGB/Bayer rendering shares one temporary two-float effect map across
@@ -516,13 +514,11 @@ real Sun:
   gain are metered toward the target within the envelope's minimum and maximum in
   every lighting mode; the regime only selects the starting setpoint and the
   reset on a regime change. With control disabled, the fixed setpoint applies.
-- Host-metered control is what records a regime, and every consumer of it then
-  sees `Night` for a No daylight frame: edge and central cloud assessment
-  evaluate it as a night image rather
-  than rejecting it as daylight, the environmental `RegimeChange` trigger does
-  not fire at the real sunrise or sunset (switching the lighting choice across a
-  restart can fire it once), and the capture-control metrics and traces carry
-  the same `regime` label.
+- Host-metered control records `Night` for a No daylight frame. The local cloud
+  assessment evaluates it as a night image, and capture-control metrics and
+  traces carry the same `regime` label. The environmental `RegimeChange`
+  trigger follows changes in that recorded regime, such as a lighting choice
+  changed across a restart.
 - Capture windows, observing-day boundaries, sunrise and sunset events, and
   nightly, still-product and time-lapse source windows still use the real Sun.
   The installer profile captures only from sunset to sunrise, so recording a
@@ -789,29 +785,21 @@ refused for positive exposures because its altitude-floor discontinuity and
 motion derivative are outside the geometric sampling bound.
 
 Transient masking can explicitly select `ExposureIntegratedStarMask=true` in
-the CameraAgent transient options or central transient options. The shared
+the CameraAgent transient options. The shared
 `catalog-geometric-exposure-swept-mask-v1` uses an independent complete catalog
 query, captured rig/location, effective exposure and validated time-only capture
 clock facts. It never reads simulated object locations, admissions, photon
 predictions or class truth. Half the declared maximum motion step expands both
 selection and sampled supports to cover unsampled shutter endpoints; detector
-transforms use their larger scale conservatively. Mask raster work is bounded
-at 100 million cells, including the entire central window, with explicit refusal
-instead of truncation.
-Central V2 resolves each source's acknowledged capture-bound deployment version
-and checks its descriptor provenance, canonical coordinate hash and effective
-interval against actual capture time. Missing or conflicting location evidence
-returns NeedsReview; registration coordinates never substitute for it. The
-virtual celestial clock does not change deployment validity. VirtualSky likewise
-checks the deployment interval against the operational capture request, independently
-of a fixed celestial or scenario epoch. Legacy V1 keeps
-its historical registration-based behavior for frozen receipts.
+transforms use their larger scale conservatively. The evaluator refuses mask
+raster work above 100 million cells. VirtualSky checks the deployment interval
+against the operational capture request independently of a fixed celestial or
+scenario epoch.
 
 The legacy instantaneous mask remains the default. A swept profile must declare
 an adequate complete-query safety bound, such as 32,768 for the HYG magnitude
 6.5 virtual qualification, rather than inherit a 2,000-result truncation.
-Central durable execution options freeze the legacy or swept policy. An edge
-candidate whose persisted causal mask identities cannot be reproduced after a
+A local candidate whose persisted causal mask identities cannot be reproduced after a
 policy/configuration change retains its causal evidence and finalizes as
 `NeedsReview`; it does not receive a changed automatic verdict. Switch profiles
 after draining unfinished edge windows when automatic completion is required.
@@ -899,9 +887,8 @@ alone is not an independent physical validation.
 ## Optical Profiles
 
 The optical projector is created from rig configuration in
-`HVO.SkyMonitor.Astronomy`. The virtual camera, local annotation pipeline, and
-LogicHost derivative pipeline use the same projector factory and projection
-context.
+`HVO.SkyMonitor.Astronomy`. The virtual camera and local annotation pipeline
+use the same projector factory and projection context.
 
 ### Fisheye lenses
 
@@ -1140,8 +1127,7 @@ checksum includes the binding when present, and manifests without it retain thei
 existing serialization. A retry adopts an existing sidecar and scene rather than
 staging again; recovery validates its referenced immutable local revision instead
 of choosing the current active revision. A missing or never validated reference
-is refused. No graph registry is required by central consumers to read or
-reconstruct the artifact. Existing manifests without the binding keep their
+is refused. Existing manifests without the binding keep their
 existing recovery behavior; there is no layout, database schema or upgrade change.
 This stays on the existing primitives retained by #1607 and the #1615 reassessment
 under #1606; it does not change checkpoint or installation recovery.
@@ -1149,8 +1135,8 @@ under #1606; it does not change checkpoint or installation recovery.
 VirtualSky selects its render query from **module settings** and the existing
 scene-object bound. Its captured/rendered scene stays authoritative even when
 graph query options differ. The host never requeries or rewrites it. Committed
-projected scenes, central consumers, captions and archived replay consume retained
-scene evidence; replay never makes a new catalog query. The ProjectedScene option
+projected scenes, captions and archived replay use retained scene evidence.
+Replay never makes a new catalog query. The ProjectedScene option
 editor in #1619 must describe this physical-query/module-settings boundary and
 does not edit VirtualSky module settings.
 
@@ -1265,7 +1251,7 @@ Required deterministic tests cover:
   principal/focal/image-circle geometry, and impossible-mode rejection.
 - Configuration-driven module creation, reduced/full frame sizes, fixed
   checksums/statistics/centroids, time/orientation/setpoint behavior, ordinary
-  pipeline persistence/telemetry/upload, and failure before capture for invalid
+  pipeline persistence and telemetry, and failure before capture for invalid
   catalog, optics, sensor, or recipe configuration.
 - Renderer/annotation agreement, bounded/clipped topology, mirrored orientation,
   and deterministic Mono8/RGB24 overlays.

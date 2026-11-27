@@ -164,7 +164,6 @@ public sealed class LocalIdentityPasswordFileTests
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__ConfigFilePath"), modulePath).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__RawIngressRoot"), "/app/data/raw").ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__ProvisioningStartupGate__Enabled"), "true").ConfigureAwait(false);
-            await File.WriteAllTextAsync(Path.Combine(root, "CameraAgent__CaptureDistribution__UploadEnabled"), "false").ConfigureAwait(false);
             Environment.SetEnvironmentVariable(DeploymentKeyPerFile.DirectoryVariable, root);
             var configuration = new ConfigurationManager();
 

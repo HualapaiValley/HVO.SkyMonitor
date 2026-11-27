@@ -71,13 +71,6 @@ internal sealed partial class CameraAgentLifecycleManager
                 throw InstallerException.Refused("Leave-paused requires an unconfigured Fleet with no Fleet SQLite store or sidecars.");
     }
 
-    private static async Task VerifyRunningPausedFleetAsync(
-        InstallationPaths paths, IOwnerBootstrapClient owner, CancellationToken cancellationToken)
-    {
-        await owner.VerifyFleetDisabledAsync(cancellationToken).ConfigureAwait(false);
-        EnsureFleetStoresAbsent(paths);
-    }
-
     internal static async Task<StateSnapshotManifest> VerifyPausedCheckpointAsync(
         InstallationPaths paths, Guid instanceId, LifecycleStateSnapshot checkpoint, ImageInstallationIdentity originalImage,
         StateRestorePlan? restorePlan, CancellationToken cancellationToken)
@@ -141,7 +134,7 @@ internal sealed partial class CameraAgentLifecycleManager
         await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installation, manifest.Image, verificationToken,
             uid, gid, cancellationToken, expectedOwner, expectedOwner == "owner-password-change-required",
             readinessTimeout: ImageChangeReadinessTimeout).ConfigureAwait(false);
-        await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
+        EnsureFleetStoresAbsent(paths);
         var lifecycle = CreateLifecycleClient(installation.Url, lifecycleClientFactory);
         var admission = await ObserveAdmissionAsync(paths, lifecycle, lifecycleToken, cancellationToken).ConfigureAwait(false);
         if (!IsLeavePausedAdmissionPreserved(operation))
@@ -219,7 +212,7 @@ internal sealed partial class CameraAgentLifecycleManager
             uid, gid, cancellationToken, expectedOwner, allowCompletedPasswordReplacement: expectedOwner == "owner-password-change-required",
             readinessTimeout: ImageChangeReadinessTimeout)
             .ConfigureAwait(false);
-        await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
+        EnsureFleetStoresAbsent(paths);
         var lifecycle = CreateLifecycleClient(installation.Url, lifecycleClientFactory);
         var admission = await ObserveAdmissionAsync(paths, lifecycle, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
         return PausedUpgradeResult(paths, manifest, operation, receiptPath, admission);

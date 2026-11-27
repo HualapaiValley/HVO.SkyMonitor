@@ -60,7 +60,7 @@ public sealed class Linear16TransientReconstructionPerformanceTests
             {
                 "Detector-space reconstruction does not infer intra-exposure timing.",
                 "Saturated photometry remains a lower bound.",
-                "This component harness excludes SQL and MinIO, which are measured by the issue 118 LogicHost harness."
+                "This component harness measures in-process imaging work."
             }
         };
         var directory = Path.Combine(repositoryRoot, "TestResults", "issue-118", revision[..Math.Min(12, revision.Length)]);

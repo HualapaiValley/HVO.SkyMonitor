@@ -555,7 +555,7 @@ internal sealed partial class CameraAgentLifecycleManager
             allowQuarantinedReadiness: request.AllowQuarantinedReadiness,
             readinessTimeout: ImageChangeReadinessTimeout).ConfigureAwait(false);
         if (request.LeavePaused)
-            await owner.VerifyFleetDisabledAsync(cancellationToken).ConfigureAwait(false);
+            EnsureFleetStoresAbsent(paths);
         var lifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
         var continuity = await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false);
         var paused = continuity.CaptureState == "Paused" && continuity.CaptureVersion == boundary.CaptureVersion;
@@ -916,7 +916,7 @@ internal sealed partial class CameraAgentLifecycleManager
             if (request.LeavePaused)
             {
                 await VerifyPausedCommitEvidenceAsync(paths, manifest, operation, cancellationToken).ConfigureAwait(false);
-                await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
+                EnsureFleetStoresAbsent(paths);
             }
             // The commit is durable, so the retained release record is settled again here: a run that lost its final
             // resume acknowledgement, or failed between the commit and the record write, must not leave the record
@@ -1394,7 +1394,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 allowQuarantinedReadiness: request.AllowQuarantinedReadiness, readinessTimeout: ImageChangeReadinessTimeout)
                 .ConfigureAwait(false);
             if (request.LeavePaused)
-                await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
+                EnsureFleetStoresAbsent(paths);
             expectedOwnerState = verifiedOwnerState;
             allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
                                          expectedOwnerState == "owner-password-change-required";
@@ -1413,7 +1413,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 allowQuarantinedReadiness: request.AllowQuarantinedReadiness, readinessTimeout: ImageChangeReadinessTimeout)
                 .ConfigureAwait(false);
             if (request.LeavePaused)
-                await VerifyRunningPausedFleetAsync(paths, owner, cancellationToken).ConfigureAwait(false);
+                EnsureFleetStoresAbsent(paths);
             if (verifiedOwnerState != expectedOwnerState)
             {
                 expectedOwnerState = verifiedOwnerState;
