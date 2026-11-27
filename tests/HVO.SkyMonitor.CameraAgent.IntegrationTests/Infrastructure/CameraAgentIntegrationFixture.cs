@@ -157,8 +157,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     public void Dispose()
     {
-        _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
+        _agentFactory = null;
+        _agentBaseFactory = null;
         _catalogFixture?.Dispose();
         if (!KeepStorageOnDispose && _storageRoot is not null && Directory.Exists(_storageRoot))
         {
@@ -183,8 +184,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         ["LocalIdentity:AdminPasswordFile"] = string.Empty,
         ["LocalIdentity:AllowMissingAdminPassword"] = "false",
         ["LocalIdentity:DatabasePath"] = Path.Combine(_storageRoot!, "cameraagent_identity.db"),
-        ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth",
-        ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1"
+        ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth"
     };
 
     private void EnsureInitialized()

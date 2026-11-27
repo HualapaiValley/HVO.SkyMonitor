@@ -68,7 +68,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             [MinimumCompatibleRevision] = "bc5ca7489c4090c299c416309519ab72da4a8cdb"
         };
         var previousContracts = JsonNode.Parse(candidate[stateContracts])!.AsObject();
-        var environmental = previousContracts["environmentalOutbox"]!.AsObject();
+        var environmental = previousContracts["environmentalObservations"]!.AsObject();
         Assert.AreEqual(5, environmental["writes"]!.GetValue<int>());
         environmental["writes"] = 4;
         environmental["reads"]!["max"] = 4;
