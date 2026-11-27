@@ -385,10 +385,17 @@ public sealed class DeepSkyRenderPlan
 
         var rates = new Dictionary<int, DeepSkyPixelRate>();
         var temporalRates = new Dictionary<int, DeepSkyPixelRate>();
+        var renderedSparsePixels = new HashSet<int>();
+        var prePsfSparsePixels = new HashSet<long>();
         var diffusePrePsf = new Dictionary<long, DeepSkyPixelRate>();
         var cumulativeTransmission = new Dictionary<long, double>();
         var diagnostics = new List<DeepSkySourceDiagnostic>(candidates.Count);
         var darkCandidates = new List<DeepSkyObject>();
+
+        var provisionalLuminous = new List<ProvisionalLuminousEntry>();
+        var overlapDiffusePreCloud = new Dictionary<int, DeepSkyPixelRate>();
+        var overlapDiffuseTemporal = new Dictionary<int, DeepSkyPixelRate>();
+        var anyDiffuseAddedAfterAnotherSource = false;
 
         var declaredDiffuseBg = settings.CelestialDiffuseBackgroundElectronsPerSecond +
             (settings.SyntheticScenario?.CelestialDiffuseBackgroundElectronsPerSecond ?? 0d);
@@ -454,11 +461,18 @@ public sealed class DeepSkyRenderPlan
             var isUnresolvedSize = geometryInfo.Basis == DeepSkyGeometryBasis.UnresolvedPointSource ||
                 geometryInfo.MajorAxisPixels <= UnresolvedDiameterPsfSigmaRatio * settings.PsfSigmaPixels;
             var isPureDiffuseClass = profileClass is DeepSkyProfileClass.DiffuseNebula or DeepSkyProfileClass.SupernovaRemnant;
+            var routesPrePsfToDiffuseMap = profileClass is DeepSkyProfileClass.DiffuseNebula
+                or DeepSkyProfileClass.CompositeClusterNebula
+                or DeepSkyProfileClass.SupernovaRemnant;
 
             var sourceDeposits = new Dictionary<long, double>();
             var nonDiffuseClippedRates = new Dictionary<int, double>();
-            var temporalPostCloudRates = new Dictionary<int, double>();
-            var temporalPreCloudRates = new Dictionary<int, double>();
+            var nonDiffuseTempPostRates = new Dictionary<int, double>();
+            var nonDiffuseTempPreRates = new Dictionary<int, double>();
+            var diffuseTempPostRates = new Dictionary<int, double>();
+            var diffuseTempPreRates = new Dictionary<int, double>();
+            var unresolvedDiffuseSamples = new List<UnresolvedDiffuseSample>();
+            var unresolvedDiffuseFluxRate = 0d;
             PixelPoint? temporalReferencePixel = null;
             var visibleRate = 0d;
             var sampledPoints = 0;
@@ -494,17 +508,19 @@ public sealed class DeepSkyRenderPlan
                 {
                     usedUnresolvedPsf = true;
                     visibleRate = RasterizeUnresolvedTemporal(
-                        item, residualRate, routeToDiffusePrePsf: false, sceneRequest, exposureStartUtc, exposure,
-                        geometryInfo, projector, projection, renderOptions, settings, padding, paddedWidth,
-                        sourceDeposits, temporalPostCloudRates, temporalPreCloudRates,
+                        item, residualRate, sceneRequest, exposureStartUtc, exposure,
+                        geometryInfo, projector, projection, renderOptions, settings,
+                        nonDiffuseTempPostRates, nonDiffuseTempPreRates, unresolvedDiffuseSamples: null,
                         ref totalSampledPoints, ref totalKernelVisits, out sampledPoints, out temporalReferencePixel,
                         cancellationToken);
                 }
                 else
                 {
                     unresolvedMembers = DepositUnresolvedClusterMembers(
-                        item.Id, profile.MaximumUnresolvedClusterMembers, residualRate, geometryInfo, projector,
-                        nonDiffuseClippedRates, projection, settings, ref totalSampledPoints, ref totalKernelVisits, out visibleRate);
+                        item.Id, profile.MaximumUnresolvedClusterMembers, settings.MaximumSamplePointsPerSource,
+                        residualRate, geometryInfo, projector,
+                        nonDiffuseClippedRates, projection, settings,
+                        ref totalSampledPoints, ref totalKernelVisits, ref totalOutlineEdgeVisits, out visibleRate);
                     sampledPoints = unresolvedMembers;
                 }
             }
@@ -531,15 +547,25 @@ public sealed class DeepSkyRenderPlan
                     continue;
                 }
 
+                var nebulaSampleCap = settings.MaximumSamplePointsPerSource;
+                if (nebulaRate > 0 && residualClusterRate > 0 && !isUnresolvedSize)
+                {
+                    var clusterReserve = Math.Min(
+                        profile.MaximumUnresolvedClusterMembers,
+                        Math.Max(1, settings.MaximumSamplePointsPerSource / 4));
+                    nebulaSampleCap = Math.Max(1, settings.MaximumSamplePointsPerSource - clusterReserve);
+                }
+
                 if (nebulaRate > 0)
                 {
                     if (isUnresolvedSize)
                     {
                         usedUnresolvedPsf = true;
+                        unresolvedDiffuseFluxRate = nebulaRate;
                         var nebVis = RasterizeUnresolvedTemporal(
-                            item, nebulaRate, routeToDiffusePrePsf: true, sceneRequest, exposureStartUtc, exposure,
-                            geometryInfo, projector, projection, renderOptions, settings, padding, paddedWidth,
-                            sourceDeposits, temporalPostCloudRates, temporalPreCloudRates,
+                            item, nebulaRate, sceneRequest, exposureStartUtc, exposure,
+                            geometryInfo, projector, projection, renderOptions, settings,
+                            diffuseTempPostRates, diffuseTempPreRates, unresolvedDiffuseSamples,
                             ref totalSampledPoints, ref totalKernelVisits, out var nebSamples, out var nebRef,
                             cancellationToken);
                         visibleRate += nebVis;
@@ -550,7 +576,7 @@ public sealed class DeepSkyRenderPlan
                     {
                         var nebVis = RasterizeExtendedProfile(
                             item.Id, profile, nebulaRate, geometryInfo, projector, projection,
-                            settings, padding, paddedWidth, paddedHeight, sourceDeposits, nonDiffuseClippedRates,
+                            settings, nebulaSampleCap, padding, paddedWidth, paddedHeight, sourceDeposits, nonDiffuseClippedRates,
                             ref totalSampledPoints, ref totalKernelVisits, ref totalOutlineEdgeVisits,
                             out var nebSamples, cancellationToken);
                         visibleRate += nebVis;
@@ -563,9 +589,9 @@ public sealed class DeepSkyRenderPlan
                     {
                         usedUnresolvedPsf = true;
                         var clVis = RasterizeUnresolvedTemporal(
-                            item, residualClusterRate, routeToDiffusePrePsf: false, sceneRequest, exposureStartUtc, exposure,
-                            geometryInfo, projector, projection, renderOptions, settings, padding, paddedWidth,
-                            sourceDeposits, temporalPostCloudRates, temporalPreCloudRates,
+                            item, residualClusterRate, sceneRequest, exposureStartUtc, exposure,
+                            geometryInfo, projector, projection, renderOptions, settings,
+                            nonDiffuseTempPostRates, nonDiffuseTempPreRates, unresolvedDiffuseSamples: null,
                             ref totalSampledPoints, ref totalKernelVisits, out var clSamples, out var clRef,
                             cancellationToken);
                         visibleRate += clVis;
@@ -574,9 +600,12 @@ public sealed class DeepSkyRenderPlan
                     }
                     else
                     {
+                        var remainingSourceSamples = Math.Max(0, settings.MaximumSamplePointsPerSource - sampledPoints);
                         unresolvedMembers = DepositUnresolvedClusterMembers(
-                            item.Id, profile.MaximumUnresolvedClusterMembers, residualClusterRate, geometryInfo, projector,
-                            nonDiffuseClippedRates, projection, settings, ref totalSampledPoints, ref totalKernelVisits, out var clVis);
+                            item.Id, profile.MaximumUnresolvedClusterMembers, remainingSourceSamples,
+                            residualClusterRate, geometryInfo, projector,
+                            nonDiffuseClippedRates, projection, settings,
+                            ref totalSampledPoints, ref totalKernelVisits, ref totalOutlineEdgeVisits, out var clVis);
                         visibleRate += clVis;
                         sampledPoints += unresolvedMembers;
                     }
@@ -585,32 +614,56 @@ public sealed class DeepSkyRenderPlan
             else if (isUnresolvedSize)
             {
                 usedUnresolvedPsf = true;
-                visibleRate = RasterizeUnresolvedTemporal(
-                    item, sourceRate, routeToDiffusePrePsf: isPureDiffuseClass, sceneRequest, exposureStartUtc, exposure,
-                    geometryInfo, projector, projection, renderOptions, settings, padding, paddedWidth,
-                    sourceDeposits, temporalPostCloudRates, temporalPreCloudRates,
-                    ref totalSampledPoints, ref totalKernelVisits, out sampledPoints, out temporalReferencePixel,
-                    cancellationToken);
+                if (isPureDiffuseClass)
+                {
+                    unresolvedDiffuseFluxRate = sourceRate;
+                    visibleRate = RasterizeUnresolvedTemporal(
+                        item, sourceRate, sceneRequest, exposureStartUtc, exposure,
+                        geometryInfo, projector, projection, renderOptions, settings,
+                        diffuseTempPostRates, diffuseTempPreRates, unresolvedDiffuseSamples,
+                        ref totalSampledPoints, ref totalKernelVisits, out sampledPoints, out temporalReferencePixel,
+                        cancellationToken);
+                }
+                else
+                {
+                    visibleRate = RasterizeUnresolvedTemporal(
+                        item, sourceRate, sceneRequest, exposureStartUtc, exposure,
+                        geometryInfo, projector, projection, renderOptions, settings,
+                        nonDiffuseTempPostRates, nonDiffuseTempPreRates, unresolvedDiffuseSamples: null,
+                        ref totalSampledPoints, ref totalKernelVisits, out sampledPoints, out temporalReferencePixel,
+                        cancellationToken);
+                }
             }
             else
             {
                 visibleRate = RasterizeExtendedProfile(
                     item.Id, profile, sourceRate, geometryInfo, projector, projection,
-                    settings, padding, paddedWidth, paddedHeight, sourceDeposits, nonDiffuseClippedRates,
+                    settings, settings.MaximumSamplePointsPerSource, padding, paddedWidth, paddedHeight,
+                    sourceDeposits, nonDiffuseClippedRates,
                     ref totalSampledPoints, ref totalKernelVisits, ref totalOutlineEdgeVisits,
                     out sampledPoints, cancellationToken);
             }
 
-            // Convolve any padded bilinear deposits with the configured PSF for admission and footprint evaluation.
-            var preCloudClippedRates = new Dictionary<int, double>(nonDiffuseClippedRates);
+            // Convolve any padded bilinear deposits with the configured PSF for admission, footprint, and
+            // overlapping-diffuse S/N variance evaluation.
+            var convolvedDepositsMono = new Dictionary<int, double>();
             if (sourceDeposits.Count > 0)
             {
                 ConvolveToClipped(
-                    sourceDeposits, preCloudClippedRates, projection, kernel, padding, paddedWidth,
+                    sourceDeposits, convolvedDepositsMono, projection, kernel, padding, paddedWidth,
                     settings.MaximumSparsePixels, settings.MaximumKernelCellVisits, ref totalKernelVisits, cancellationToken);
             }
 
-            if (preCloudClippedRates.Count == 0 && temporalPostCloudRates.Count == 0)
+            var preCloudClippedRates = new Dictionary<int, double>(nonDiffuseClippedRates);
+            foreach (var (idx, val) in convolvedDepositsMono)
+            {
+                AddScalarRate(preCloudClippedRates, idx, val, settings.MaximumSparsePixels);
+            }
+
+            var combinedTempPostRates = MergeScalarRates(nonDiffuseTempPostRates, diffuseTempPostRates, settings.MaximumSparsePixels);
+            var combinedTempPreRates = MergeScalarRates(nonDiffuseTempPreRates, diffuseTempPreRates, settings.MaximumSparsePixels);
+
+            if (preCloudClippedRates.Count == 0 && combinedTempPostRates.Count == 0)
             {
                 diagnostics.Add(new DeepSkySourceDiagnostic(
                     item.Id, item.DisplayName, item.ObjectType, profileClass,
@@ -626,8 +679,10 @@ public sealed class DeepSkyRenderPlan
 
             var (prediction, causesSaturation, footprint, retainedMonoRate, activePixelCount) = EvaluateSignalAndFootprint(
                 item.Id, geometryInfo, temporalReferencePixel, profile.Spectral,
-                preCloudClippedRates, temporalPostCloudRates, temporalPreCloudRates,
-                declaredDiffuseBg, effectiveSourceRate, projection, renderOptions, settings, cancellationToken);
+                preCloudClippedRates, combinedTempPostRates, combinedTempPreRates,
+                declaredDiffuseBg, overlapDiffusePreCloud, overlapDiffuseTemporal,
+                selfDiffusePreCloud: null, selfDiffuseTemporal: null,
+                effectiveSourceRate, projection, renderOptions, settings, cancellationToken);
 
             var admitted = settings.MinimumSignalToNoise <= 0 ||
                 prediction.SignalToNoise >= settings.MinimumSignalToNoise ||
@@ -647,58 +702,195 @@ public sealed class DeepSkyRenderPlan
                 continue;
             }
 
-            admittedCount++;
-            if (usedUnresolvedPsf) unresolvedPsfCount++;
-            totalSourceRate += effectiveSourceRate;
-            totalVisibleRate += visibleRate;
-
-            var routesPrePsfToDiffuseMap = profileClass is DeepSkyProfileClass.DiffuseNebula
-                or DeepSkyProfileClass.CompositeClusterNebula
-                or DeepSkyProfileClass.SupernovaRemnant;
-
-            if (routesPrePsfToDiffuseMap)
+            Dictionary<int, DeepSkyPixelRate>? ownDiffusePreCloud = null;
+            Dictionary<int, DeepSkyPixelRate>? ownDiffuseTemporal = null;
+            if (routesPrePsfToDiffuseMap && convolvedDepositsMono.Count > 0)
             {
-                // Commit pre-PSF diffuse emission so overlapping dark nebulae attenuate it multiplicatively
+                ownDiffusePreCloud = new Dictionary<int, DeepSkyPixelRate>(convolvedDepositsMono.Count);
+                foreach (var (idx, monoRate) in convolvedDepositsMono)
+                {
+                    var scaled = ScaleRate(monoRate, profile.Spectral);
+                    ownDiffusePreCloud[idx] = scaled;
+                    AddUnboundedSparseRate(overlapDiffusePreCloud, idx, scaled);
+                }
+            }
+            if (routesPrePsfToDiffuseMap && diffuseTempPostRates.Count > 0)
+            {
+                ownDiffuseTemporal = new Dictionary<int, DeepSkyPixelRate>(diffuseTempPostRates.Count);
+                foreach (var (idx, monoRate) in diffuseTempPostRates)
+                {
+                    var scaled = ScaleRate(monoRate, profile.Spectral);
+                    ownDiffuseTemporal[idx] = scaled;
+                    AddUnboundedSparseRate(overlapDiffuseTemporal, idx, scaled);
+                }
+            }
+            if ((ownDiffusePreCloud is not null || ownDiffuseTemporal is not null) && provisionalLuminous.Count > 0)
+            {
+                anyDiffuseAddedAfterAnotherSource = true;
+            }
+
+            admittedCount++;
+            provisionalLuminous.Add(new ProvisionalLuminousEntry(
+                item,
+                profileClass,
+                photometryBasis,
+                geometryInfo,
+                profile,
+                temporalReferencePixel,
+                effectiveSourceRate,
+                visibleRate,
+                retainedMonoRate,
+                matchedHygCount,
+                matchedHygFluxFraction,
+                unresolvedMembers,
+                sampledPoints,
+                activePixelCount,
+                usedUnresolvedPsf,
+                routesPrePsfToDiffuseMap,
+                sourceDeposits,
+                nonDiffuseClippedRates,
+                preCloudClippedRates,
+                nonDiffuseTempPostRates,
+                diffuseTempPostRates,
+                combinedTempPostRates,
+                combinedTempPreRates,
+                unresolvedDiffuseSamples,
+                unresolvedDiffuseFluxRate,
+                ownDiffusePreCloud,
+                ownDiffuseTemporal,
+                prediction,
+                causesSaturation,
+                footprint));
+        }
+
+        // Re-evaluate S/N and variance across all provisionally admitted luminous sources whenever a later-priority
+        // diffuse source was admitted, so both admission and published diagnostics include ALL overlapping diffuse noise.
+        if (anyDiffuseAddedAfterAnotherSource && provisionalLuminous.Count > 1)
+        {
+            while (true)
+            {
+                var lowestPriorityFailingIndex = -1;
+                for (var i = 0; i < provisionalLuminous.Count; i++)
+                {
+                    var entry = provisionalLuminous[i];
+                    if (entry.Demoted) continue;
+                    var (updatedPrediction, updatedSat, _, _, _) = EvaluateSignalAndFootprint(
+                        entry.Item.Id, entry.Geometry, entry.TemporalReferencePixel, entry.Profile.Spectral,
+                        entry.PreCloudClippedRates, entry.CombinedTempPostRates, entry.CombinedTempPreRates,
+                        declaredDiffuseBg, overlapDiffusePreCloud, overlapDiffuseTemporal,
+                        entry.OwnDiffusePreCloud, entry.OwnDiffuseTemporal,
+                        entry.EffectiveSourceRate, projection, renderOptions, settings, cancellationToken);
+                    entry.Prediction = updatedPrediction;
+                    entry.CausesSaturation = updatedSat;
+                    if (settings.MinimumSignalToNoise > 0 &&
+                        updatedPrediction.SignalToNoise < settings.MinimumSignalToNoise &&
+                        !updatedSat)
+                    {
+                        lowestPriorityFailingIndex = i;
+                    }
+                }
+                if (lowestPriorityFailingIndex < 0) break;
+
+                var demoted = provisionalLuminous[lowestPriorityFailingIndex];
+                demoted.Demoted = true;
+                admittedCount--;
+                if (demoted.OwnDiffusePreCloud is not null)
+                {
+                    SubtractUnboundedSparseRates(overlapDiffusePreCloud, demoted.OwnDiffusePreCloud);
+                }
+                if (demoted.OwnDiffuseTemporal is not null)
+                {
+                    SubtractUnboundedSparseRates(overlapDiffuseTemporal, demoted.OwnDiffuseTemporal);
+                }
+            }
+        }
+
+        // Commit surviving luminous sources into pre-PSF diffuse, direct pre-cloud, and temporal rate maps while
+        // enforcing MaximumSparsePixels across the combined union of rendered pixels.
+        var admittedUnresolvedDiffuse = new List<AdmittedUnresolvedDiffuseSource>();
+        foreach (var entry in provisionalLuminous)
+        {
+            if (entry.Demoted)
+            {
+                diagnostics.Add(new DeepSkySourceDiagnostic(
+                    entry.Item.Id, entry.Item.DisplayName, entry.Item.ObjectType, entry.ProfileClass,
+                    Admitted: false, Reason: "annotation-only-below-snr",
+                    entry.PhotometryBasis, entry.Geometry.Basis,
+                    entry.Profile.ProfileSchemaVersion, entry.Profile.MorphologyModel, entry.Profile.Spectral.SpectralModel,
+                    entry.Profile.Spectral.Origin, entry.Profile.IsSimulationParameter,
+                    entry.EffectiveSourceRate, entry.VisibleRate, entry.RetainedMonoRate,
+                    entry.EffectiveSourceRate > 0 ? entry.RetainedMonoRate / entry.EffectiveSourceRate : 0d,
+                    entry.MatchedHygCount, entry.MatchedHygFluxFraction, entry.UnresolvedMembers, 0d, entry.Prediction,
+                    entry.SampledPoints, entry.ActivePixelCount, entry.UsedUnresolvedPsf, entry.Footprint));
+                continue;
+            }
+
+            if (entry.UsedUnresolvedPsf) unresolvedPsfCount++;
+            totalSourceRate += entry.EffectiveSourceRate;
+            totalVisibleRate += entry.VisibleRate;
+
+            if (entry.RoutesPrePsfToDiffuseMap)
+            {
+                // Commit resolved pre-PSF diffuse emission so overlapping dark nebulae attenuate it multiplicatively
                 // BEFORE final PSF convolution. Non-diffuse subcomponents (such as resolved Cl+N cluster members)
                 // commit directly to the pre-cloud rate map.
-                foreach (var (paddedKey, monoVal) in sourceDeposits)
+                foreach (var (paddedKey, monoVal) in entry.SourceDeposits)
                 {
-                    AddPaddedRate(diffusePrePsf, paddedKey, ScaleRate(monoVal, profile.Spectral), settings.MaximumSparsePixels);
+                    AddCombinedPaddedRate(diffusePrePsf, prePsfSparsePixels, paddedKey,
+                        ScaleRate(monoVal, entry.Profile.Spectral), settings.MaximumSparsePixels);
                 }
-                foreach (var (pixelIndex, monoRate) in nonDiffuseClippedRates)
+                foreach (var (pixelIndex, monoRate) in entry.NonDiffuseClippedRates)
                 {
-                    AddSparseRate(rates, pixelIndex, ScaleRate(monoRate, profile.Spectral), settings.MaximumSparsePixels);
+                    AddCombinedSparseRate(rates, renderedSparsePixels, pixelIndex,
+                        ScaleRate(monoRate, entry.Profile.Spectral), settings.MaximumSparsePixels);
+                }
+                if (entry.UnresolvedDiffuseSamples.Count > 0 && entry.UnresolvedDiffuseFluxRate > 0)
+                {
+                    admittedUnresolvedDiffuse.Add(new AdmittedUnresolvedDiffuseSource(
+                        entry.Item.Id,
+                        entry.UnresolvedDiffuseFluxRate,
+                        entry.Profile.Spectral,
+                        entry.UnresolvedDiffuseSamples,
+                        entry.DiffuseTempPostRates));
                 }
             }
             else
             {
-                foreach (var (pixelIndex, monoRate) in preCloudClippedRates)
+                foreach (var (pixelIndex, monoRate) in entry.PreCloudClippedRates)
                 {
-                    AddSparseRate(rates, pixelIndex, ScaleRate(monoRate, profile.Spectral), settings.MaximumSparsePixels);
+                    AddCombinedSparseRate(rates, renderedSparsePixels, pixelIndex,
+                        ScaleRate(monoRate, entry.Profile.Spectral), settings.MaximumSparsePixels);
                 }
             }
 
-            foreach (var (pixelIndex, monoRate) in temporalPostCloudRates)
+            foreach (var (pixelIndex, monoRate) in entry.NonDiffuseTempPostRates)
             {
-                AddSparseRate(temporalRates, pixelIndex, ScaleRate(monoRate, profile.Spectral), settings.MaximumSparsePixels);
+                AddCombinedSparseRate(temporalRates, renderedSparsePixels, pixelIndex,
+                    ScaleRate(monoRate, entry.Profile.Spectral), settings.MaximumSparsePixels);
             }
 
             diagnostics.Add(new DeepSkySourceDiagnostic(
-                item.Id, item.DisplayName, item.ObjectType, profileClass,
+                entry.Item.Id, entry.Item.DisplayName, entry.Item.ObjectType, entry.ProfileClass,
                 Admitted: true,
-                Reason: usedUnresolvedPsf ? "admitted-unresolved-psf" : "admitted",
-                photometryBasis, geometryInfo.Basis,
-                profile.ProfileSchemaVersion, profile.MorphologyModel, profile.Spectral.SpectralModel,
-                profile.Spectral.Origin, profile.IsSimulationParameter,
-                effectiveSourceRate, visibleRate, retainedMonoRate,
-                effectiveSourceRate > 0 ? retainedMonoRate / effectiveSourceRate : 0d,
-                matchedHygCount, matchedHygFluxFraction, unresolvedMembers, 0d, prediction,
-                sampledPoints, activePixelCount, usedUnresolvedPsf, footprint));
+                Reason: entry.UsedUnresolvedPsf ? "admitted-unresolved-psf" : "admitted",
+                entry.PhotometryBasis, entry.Geometry.Basis,
+                entry.Profile.ProfileSchemaVersion, entry.Profile.MorphologyModel, entry.Profile.Spectral.SpectralModel,
+                entry.Profile.Spectral.Origin, entry.Profile.IsSimulationParameter,
+                entry.EffectiveSourceRate, entry.VisibleRate, entry.RetainedMonoRate,
+                entry.EffectiveSourceRate > 0 ? entry.RetainedMonoRate / entry.EffectiveSourceRate : 0d,
+                entry.MatchedHygCount, entry.MatchedHygFluxFraction, entry.UnresolvedMembers, 0d, entry.Prediction,
+                entry.SampledPoints, entry.ActivePixelCount, entry.UsedUnresolvedPsf, entry.Footprint));
         }
 
-        // Pass 2: Dark nebulae attenuate ONLY compatible celestial diffuse background (overlapping diffuse nebulae or
-        // explicitly declared celestial diffuse background), never foreground terrestrial skyglow.
-        // Transmissions compose multiplicatively (T_total = prod(1 - alpha_i)) and preserve uncovered subpixel area.
+        // Pass 2: Dark nebulae attenuate ONLY compatible celestial diffuse background (overlapping diffuse nebulae,
+        // overlapping unresolved diffuse emitters, or explicitly declared celestial diffuse background), never foreground
+        // terrestrial skyglow. Optical depths compose additively at common sky/subpixel positions before pixel averaging
+        // (T_total = mean_subpixel(exp(-sum_k tau_k))), and dark sources enforce MinimumSignalToNoise before admission.
+        var admittedDarkClouds = new List<AdmittedDarkCloud>();
+        var cumulativeAttenuatedConvolved = new Dictionary<int, DeepSkyPixelRate>();
+        var cumulativeTemporalAttenuated = new Dictionary<int, DeepSkyPixelRate>();
+        var unresolvedDarkCumulativeTau = new Dictionary<(int SourceIndex, int SampleIndex), double>();
+
         foreach (var dark in darkCandidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -713,7 +905,7 @@ public sealed class DeepSkyRenderPlan
                     DeepSkyPhotometryBasis.None, geometryInfo.Basis, profile));
                 continue;
             }
-            if (declaredDiffuseBg <= 0 && diffusePrePsf.Count == 0)
+            if (declaredDiffuseBg <= 0 && diffusePrePsf.Count == 0 && admittedUnresolvedDiffuse.Count == 0)
             {
                 diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula,
                     "annotation-only-dark-no-compatible-background",
@@ -732,7 +924,15 @@ public sealed class DeepSkyRenderPlan
             var cellDeposits = new Dictionary<long, (double AreaSum, double AbsorbAreaSum)>();
             var darkSamples = RasterizeOpticalDepth(
                 profile, geometryInfo, projector, projection, settings, padding, paddedWidth, paddedHeight,
-                cellDeposits, ref totalSampledPoints, ref totalOutlineEdgeVisits, cancellationToken);
+                admittedDarkClouds, cellDeposits, ref totalSampledPoints, ref totalOutlineEdgeVisits,
+                out var maxOutlineDist, out var subpixelSamples, out var tinyOverlapUpdates, cancellationToken);
+
+            var currentDarkCloud = new AdmittedDarkCloud(
+                profile,
+                geometryInfo,
+                maxOutlineDist,
+                Math.Max(geometryInfo.MajorAxisPixels, geometryInfo.MinorAxisPixels),
+                subpixelSamples);
 
             var provisionalNegPrePsf = new Dictionary<long, DeepSkyPixelRate>();
             var provisionalTransmission = new Dictionary<long, double>();
@@ -740,34 +940,81 @@ public sealed class DeepSkyRenderPlan
             foreach (var (paddedKey, (areaSum, absorbAreaSum)) in cellDeposits)
             {
                 if (areaSum <= 0 || absorbAreaSum <= 0) continue;
-                // Subpixel clouds (areaSum < 1) leave (1 - areaSum) of the pixel uncovered; resolved pixels
-                // (areaSum >= 1) normalize absorbed area by covered area so mean transmission matches exp(-tau).
-                var alpha = areaSum > 1d
+                // Subpixel clouds (areaSum < 1) preserve uncovered subpixel area; resolved pixels (areaSum >= 1)
+                // normalize incremental absorbed area by covered area. Prior optical depth exp(-tau_prev) is already
+                // integrated at each sky sample so deltaAlpha = T_prev - T_next exactly.
+                var deltaAlpha = areaSum > 1d
                     ? Math.Clamp(absorbAreaSum / areaSum, 0d, 1d)
                     : Math.Clamp(absorbAreaSum, 0d, 1d);
-                if (alpha <= 0) continue;
+                if (deltaAlpha <= 0) continue;
 
                 var prevT = cumulativeTransmission.GetValueOrDefault(paddedKey, 1d);
                 if (prevT <= 0) continue;
+                var nextT = Math.Clamp(prevT - deltaAlpha, 0d, 1d);
+                var actualDrop = prevT - nextT;
+                if (actualDrop <= 0) continue;
 
                 var existingDiffuse = diffusePrePsf.GetValueOrDefault(paddedKey);
-                var bgMono = (existingDiffuse.Mono + declaredDiffuseBg) * prevT;
-                var bgR = (existingDiffuse.Red + declaredDiffuseBg) * prevT;
-                var bgG = (existingDiffuse.Green + declaredDiffuseBg) * prevT;
-                var bgB = (existingDiffuse.Blue + declaredDiffuseBg) * prevT;
-                if (bgMono <= 0 && bgR <= 0 && bgG <= 0 && bgB <= 0) continue;
+                var rawBgMono = existingDiffuse.Mono + declaredDiffuseBg;
+                var rawBgR = existingDiffuse.Red + declaredDiffuseBg;
+                var rawBgG = existingDiffuse.Green + declaredDiffuseBg;
+                var rawBgB = existingDiffuse.Blue + declaredDiffuseBg;
+                if (rawBgMono <= 0 && rawBgR <= 0 && rawBgG <= 0 && rawBgB <= 0) continue;
 
                 var delta = new DeepSkyPixelRate(
-                    -bgMono * alpha,
-                    -bgR * alpha,
-                    -bgG * alpha,
-                    -bgB * alpha);
+                    -rawBgMono * actualDrop,
+                    -rawBgR * actualDrop,
+                    -rawBgG * actualDrop,
+                    -rawBgB * actualDrop);
                 provisionalNegPrePsf[paddedKey] = delta;
-                provisionalTransmission[paddedKey] = prevT * (1d - alpha);
+                provisionalTransmission[paddedKey] = nextT;
                 attenuatedPrePsf += -delta.Mono;
             }
 
-            if (provisionalNegPrePsf.Count == 0 || attenuatedPrePsf <= 0)
+            // Evaluate pre-PSF attenuation of admitted unresolved diffuse emitters at their exact sky sample directions.
+            var temporalDarkDeficitPostCloud = new Dictionary<int, DeepSkyPixelRate>();
+            var temporalDarkDeficitPreCloud = new Dictionary<int, DeepSkyPixelRate>();
+            var provisionalUnresolvedTauUpdates = new Dictionary<(int SourceIndex, int SampleIndex), double>();
+            for (var srcIdx = 0; srcIdx < admittedUnresolvedDiffuse.Count; srcIdx++)
+            {
+                var uSrc = admittedUnresolvedDiffuse[srcIdx];
+                var samplePostDeficits = new List<WeightedPointSpreadSample>();
+                for (var sampIdx = 0; sampIdx < uSrc.Samples.Count; sampIdx++)
+                {
+                    var sample = uSrc.Samples[sampIdx];
+                    var tau = EvaluateDarkCloudOpticalDepth(
+                        currentDarkCloud, sample.Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    if (tau <= 0) continue;
+                    var key = (srcIdx, sampIdx);
+                    var priorTau = unresolvedDarkCumulativeTau.GetValueOrDefault(key, 0d);
+                    var deltaFraction = Math.Exp(-priorTau) * (1d - Math.Exp(-tau));
+                    if (deltaFraction <= 0) continue;
+                    provisionalUnresolvedTauUpdates[key] = priorTau + tau;
+                    samplePostDeficits.Add(new WeightedPointSpreadSample(
+                        sample.Pixel, sample.ExposureFraction * deltaFraction, sample.CloudTransmission));
+                }
+                if (samplePostDeficits.Count > 0)
+                {
+                    var postMono = new Dictionary<int, double>();
+                    var preMono = new Dictionary<int, double>();
+                    RasterizeWeightedSamplesWithPsf(
+                        samplePostDeficits.ToArray(), uSrc.FluxRate, projection, settings,
+                        postMono, preMono, ref totalKernelVisits, cancellationToken);
+                    foreach (var (idx, val) in postMono)
+                    {
+                        var neg = ScaleRate(-val, uSrc.Spectral);
+                        AddSparseRate(temporalDarkDeficitPostCloud, idx, neg, settings.MaximumSparsePixels);
+                    }
+                    foreach (var (idx, val) in preMono)
+                    {
+                        var neg = ScaleRate(-val, uSrc.Spectral);
+                        AddSparseRate(temporalDarkDeficitPreCloud, idx, neg, settings.MaximumSparsePixels);
+                        attenuatedPrePsf += -neg.Mono;
+                    }
+                }
+            }
+
+            if ((provisionalNegPrePsf.Count == 0 && temporalDarkDeficitPreCloud.Count == 0) || attenuatedPrePsf <= 0)
             {
                 diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula,
                     "annotation-only-dark-no-compatible-background",
@@ -809,8 +1056,32 @@ public sealed class DeepSkyRenderPlan
             var sumW = 0d;
             var wx = 0d;
             var wy = 0d;
+            var activeDarkPixels = new HashSet<int>();
             foreach (var (idx, delta) in clippedDelta)
             {
+                if (delta.Mono < 0 || delta.Red < 0 || delta.Green < 0 || delta.Blue < 0)
+                {
+                    activeDarkPixels.Add(idx);
+                }
+                var mag = -delta.Mono;
+                if (mag <= 0) continue;
+                var x = idx % projection.WidthPixels;
+                var y = idx / projection.WidthPixels;
+                attenuatedRetained += mag;
+                sumW += mag;
+                wx += mag * (x + 0.5);
+                wy += mag * (y + 0.5);
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+            foreach (var (idx, delta) in temporalDarkDeficitPreCloud)
+            {
+                if (delta.Mono < 0 || delta.Red < 0 || delta.Green < 0 || delta.Blue < 0)
+                {
+                    activeDarkPixels.Add(idx);
+                }
                 var mag = -delta.Mono;
                 if (mag <= 0) continue;
                 var x = idx % projection.WidthPixels;
@@ -825,40 +1096,92 @@ public sealed class DeepSkyRenderPlan
                 maxY = Math.Max(maxY, y);
             }
 
-            if (attenuatedRetained <= 0)
+            if (attenuatedRetained <= 0 || activeDarkPixels.Count == 0)
             {
                 diagnostics.Add(CreateSkipped(dark, DeepSkyProfileClass.DarkNebula,
                     "annotation-only-outside-fov", DeepSkyPhotometryBasis.None, geometryInfo.Basis, profile));
                 continue;
             }
 
-            // Commit multiplicative transmission updates only for admitted dark nebulae.
+            var darkPrediction = EvaluateDarkSignalPrediction(
+                activeDarkPixels,
+                clippedDelta,
+                temporalDarkDeficitPostCloud,
+                declaredDiffuseBg,
+                overlapDiffusePreCloud,
+                overlapDiffuseTemporal,
+                cumulativeAttenuatedConvolved,
+                cumulativeTemporalAttenuated,
+                projection,
+                renderOptions,
+                settings,
+                cancellationToken);
+
+            var centerRef = geometryInfo.CenterPixel ?? new PixelPoint(wx / sumW, wy / sumW);
+            var centroid = new PixelPoint(wx / sumW, wy / sumW);
+            var darkFootprint = new RenderedObjectGeometry(dark.Id, centerRef, centroid, 0d, 0d, 0d, minX, minY, maxX, maxY);
+
+            var darkAdmitted = settings.MinimumSignalToNoise <= 0 ||
+                darkPrediction.SignalToNoise >= settings.MinimumSignalToNoise;
+            if (!darkAdmitted)
+            {
+                diagnostics.Add(new DeepSkySourceDiagnostic(
+                    dark.Id, dark.DisplayName, dark.ObjectType, DeepSkyProfileClass.DarkNebula,
+                    Admitted: false, Reason: "annotation-only-below-snr",
+                    DeepSkyPhotometryBasis.None, geometryInfo.Basis,
+                    profile.ProfileSchemaVersion, profile.MorphologyModel, profile.Spectral.SpectralModel,
+                    profile.Spectral.Origin, profile.IsSimulationParameter,
+                    0d, 0d, 0d, 0d, 0, 0d, 0, 0d, darkPrediction,
+                    darkSamples, activeDarkPixels.Count, false, darkFootprint));
+                continue;
+            }
+
+            // Commit transmission and optical-depth tracking only for admitted dark nebulae.
             foreach (var (paddedKey, nextT) in provisionalTransmission)
             {
-                if (!cumulativeTransmission.ContainsKey(paddedKey) &&
-                    cumulativeTransmission.Count >= settings.MaximumSparsePixels)
+                if (!prePsfSparsePixels.Contains(paddedKey) &&
+                    prePsfSparsePixels.Count >= settings.MaximumSparsePixels)
                 {
                     throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
                 }
+                prePsfSparsePixels.Add(paddedKey);
                 cumulativeTransmission[paddedKey] = nextT;
             }
+            foreach (var (key, nextTau) in provisionalUnresolvedTauUpdates)
+            {
+                unresolvedDarkCumulativeTau[key] = nextTau;
+            }
+            foreach (var (idx, delta) in clippedDelta)
+            {
+                AddUnboundedSparseRate(cumulativeAttenuatedConvolved, idx, delta);
+            }
+            foreach (var (idx, delta) in temporalDarkDeficitPostCloud)
+            {
+                AddUnboundedSparseRate(cumulativeTemporalAttenuated, idx, delta);
+            }
+            if (tinyOverlapUpdates is not null)
+            {
+                foreach (var (sampleRef, addTau) in tinyOverlapUpdates)
+                {
+                    sampleRef.CumulativeTau += addTau;
+                }
+            }
+            admittedDarkClouds.Add(currentDarkCloud);
 
             admittedCount++;
             darkAttenuationCount++;
-            var centerRef = geometryInfo.CenterPixel ?? new PixelPoint(wx / sumW, wy / sumW);
-            var centroid = new PixelPoint(wx / sumW, wy / sumW);
             diagnostics.Add(new DeepSkySourceDiagnostic(
                 dark.Id, dark.DisplayName, dark.ObjectType, DeepSkyProfileClass.DarkNebula,
                 Admitted: true, Reason: "admitted-dark-attenuation",
                 DeepSkyPhotometryBasis.None, geometryInfo.Basis,
                 profile.ProfileSchemaVersion, profile.MorphologyModel, profile.Spectral.SpectralModel,
                 profile.Spectral.Origin, profile.IsSimulationParameter,
-                0d, 0d, 0d, 0d, 0, 0d, 0, attenuatedRetained, default,
-                darkSamples, clippedDelta.Count, false,
-                new RenderedObjectGeometry(dark.Id, centerRef, centroid, 0d, 0d, 0d, minX, minY, maxX, maxY)));
+                0d, 0d, 0d, 0d, 0, 0d, 0, attenuatedRetained, darkPrediction,
+                darkSamples, activeDarkPixels.Count, false, darkFootprint));
         }
 
-        // Convolve the combined post-attenuation diffuse emission and dark-nebula attenuation delta once with the PSF.
+        // Convolve the combined post-attenuation diffuse emission and dark-nebula attenuation delta once with the PSF,
+        // enforcing MaximumSparsePixels across the union of all rendered pixels (rates U temporalRates).
         if (diffusePrePsf.Count > 0 || cumulativeTransmission.Count > 0)
         {
             var diffuseKeys = new HashSet<long>(diffusePrePsf.Keys);
@@ -897,7 +1220,53 @@ public sealed class DeepSkyRenderPlan
                     }
                     var idx = py * projection.WidthPixels + px;
                     var scaled = new DeepSkyPixelRate(netDelta.Mono * w, netDelta.Red * w, netDelta.Green * w, netDelta.Blue * w);
-                    AddSparseRate(rates, idx, scaled, settings.MaximumSparsePixels);
+                    AddCombinedSparseRate(rates, renderedSparsePixels, idx, scaled, settings.MaximumSparsePixels);
+                }
+            }
+        }
+
+        // Commit admitted unresolved diffuse emitters using exact subpixel PSF placement, applying any pre-PSF
+        // dark-cloud attenuation exp(-sum_k tau_k) cleanly while enforcing the combined sparse pixel cap.
+        for (var srcIdx = 0; srcIdx < admittedUnresolvedDiffuse.Count; srcIdx++)
+        {
+            var uSrc = admittedUnresolvedDiffuse[srcIdx];
+            var anyDarkAttenuation = false;
+            for (var sampIdx = 0; sampIdx < uSrc.Samples.Count; sampIdx++)
+            {
+                if (unresolvedDarkCumulativeTau.GetValueOrDefault((srcIdx, sampIdx), 0d) > 0d)
+                {
+                    anyDarkAttenuation = true;
+                    break;
+                }
+            }
+            if (!anyDarkAttenuation)
+            {
+                foreach (var (pixelIndex, monoRate) in uSrc.UnattenuatedPostCloudRates)
+                {
+                    AddCombinedSparseRate(temporalRates, renderedSparsePixels, pixelIndex,
+                        ScaleRate(monoRate, uSrc.Spectral), settings.MaximumSparsePixels);
+                }
+            }
+            else
+            {
+                var attenuatedSamples = new WeightedPointSpreadSample[uSrc.Samples.Count];
+                for (var sampIdx = 0; sampIdx < uSrc.Samples.Count; sampIdx++)
+                {
+                    var sample = uSrc.Samples[sampIdx];
+                    var darkTau = unresolvedDarkCumulativeTau.GetValueOrDefault((srcIdx, sampIdx), 0d);
+                    var darkT = darkTau > 0d ? Math.Exp(-darkTau) : 1d;
+                    attenuatedSamples[sampIdx] = new WeightedPointSpreadSample(
+                        sample.Pixel, sample.ExposureFraction * darkT, sample.CloudTransmission);
+                }
+                var attenuatedPostMono = new Dictionary<int, double>();
+                var attenuatedPreMono = new Dictionary<int, double>();
+                RasterizeWeightedSamplesWithPsf(
+                    attenuatedSamples, uSrc.FluxRate, projection, settings,
+                    attenuatedPostMono, attenuatedPreMono, ref totalKernelVisits, cancellationToken);
+                foreach (var (pixelIndex, monoRate) in attenuatedPostMono)
+                {
+                    AddCombinedSparseRate(temporalRates, renderedSparsePixels, pixelIndex,
+                        ScaleRate(monoRate, uSrc.Spectral), settings.MaximumSparsePixels);
                 }
             }
         }
@@ -907,9 +1276,7 @@ public sealed class DeepSkyRenderPlan
 
         var retainedTotal = 0d;
         var maxRate = declaredDiffuseBg;
-        var allRenderedPixelIndices = new HashSet<int>(rates.Keys);
-        allRenderedPixelIndices.UnionWith(temporalRates.Keys);
-        foreach (var idx in allRenderedPixelIndices)
+        foreach (var idx in renderedSparsePixels)
         {
             var pre = rates.GetValueOrDefault(idx);
             var tmp = temporalRates.GetValueOrDefault(idx);
@@ -932,7 +1299,7 @@ public sealed class DeepSkyRenderPlan
             unresolvedPsfCount,
             darkAttenuationCount,
             totalSampledPoints,
-            allRenderedPixelIndices.Count,
+            renderedSparsePixels.Count,
             totalKernelVisits,
             diagnosticsSha256);
 
@@ -1275,7 +1642,6 @@ public sealed class DeepSkyRenderPlan
     private static double RasterizeUnresolvedTemporal(
         DeepSkyObject item,
         double fluxRate,
-        bool routeToDiffusePrePsf,
         VisibleSceneRequest sceneRequest,
         DateTimeOffset exposureStartUtc,
         TimeSpan exposure,
@@ -1284,11 +1650,9 @@ public sealed class DeepSkyRenderPlan
         ProjectionContext projection,
         LinearSceneRenderOptions renderOptions,
         DeepSkyRenderSettings settings,
-        int padding,
-        long paddedWidth,
-        Dictionary<long, double> sourceDeposits,
         Dictionary<int, double> temporalPostCloudRates,
         Dictionary<int, double> temporalPreCloudRates,
+        List<UnresolvedDiffuseSample>? unresolvedDiffuseSamples,
         ref long totalSampledPoints,
         ref long totalKernelVisits,
         out int sampledPoints,
@@ -1360,60 +1724,16 @@ public sealed class DeepSkyRenderPlan
                         renderOptions.Cloud.IntegrationStartUtc + (sample.Utc - exposureStartUtc)).Transmission
                     : 1d;
                 weightedSamples[i] = new WeightedPointSpreadSample(sample.Pixel, sample.ExposureFraction, transmission);
+                unresolvedDiffuseSamples?.Add(new UnresolvedDiffuseSample(
+                    CameraBasis.FromHorizontal(sample.Horizontal),
+                    sample.Pixel,
+                    sample.ExposureFraction,
+                    transmission));
             }
 
-            if (routeToDiffusePrePsf)
-            {
-                for (var i = 0; i < temporalSource.Samples.Count; i++)
-                {
-                    var sample = temporalSource.Samples[i];
-                    DepositBilinear(
-                        sourceDeposits, sample.Pixel, fluxRate * sample.ExposureFraction,
-                        projection.WidthPixels, projection.HeightPixels, padding, paddedWidth,
-                        settings.MaximumSparsePixels);
-                }
-                return fluxRate * visibleExposureFraction;
-            }
-
-            if (settings.PsfRadiusPixels >= 0.75 &&
-                weightedSamples.Length <= 64 &&
-                (long)projection.WidthPixels * projection.HeightPixels <= 16_777_216)
-            {
-                var remainingVisits = settings.MaximumKernelCellVisits - totalKernelVisits;
-                if (remainingVisits < 1)
-                {
-                    throw new InvalidOperationException("Deep-sky PSF kernel budget exceeded.");
-                }
-                var raster = TemporalPointSpreadRaster.Rasterize(
-                    weightedSamples,
-                    projection,
-                    settings.PsfSigmaPixels,
-                    settings.PsfRadiusPixels,
-                    Math.Min(remainingVisits, 1_000_000_000L),
-                    Math.Min(settings.MaximumSparsePixels, 65_536),
-                    cancellationToken);
-                totalKernelVisits += raster.KernelCellVisits;
-                foreach (var pixel in raster.Pixels)
-                {
-                    AddScalarRate(temporalPostCloudRates, pixel.Index, fluxRate * pixel.AfterTransmission, settings.MaximumSparsePixels);
-                    AddScalarRate(temporalPreCloudRates, pixel.Index, fluxRate * pixel.BeforeTransmission, settings.MaximumSparsePixels);
-                }
-                return fluxRate * visibleExposureFraction;
-            }
-
-            foreach (var sample in weightedSamples)
-            {
-                DepositDirectSubpixelPsf(
-                    temporalPostCloudRates, projection, sample.Pixel,
-                    fluxRate * sample.ExposureFraction * sample.Transmission,
-                    settings.PsfSigmaPixels, settings.PsfRadiusPixels,
-                    settings.MaximumSparsePixels, settings.MaximumKernelCellVisits, ref totalKernelVisits);
-                DepositDirectSubpixelPsf(
-                    temporalPreCloudRates, projection, sample.Pixel,
-                    fluxRate * sample.ExposureFraction,
-                    settings.PsfSigmaPixels, settings.PsfRadiusPixels,
-                    settings.MaximumSparsePixels, settings.MaximumKernelCellVisits, ref totalKernelVisits);
-            }
+            RasterizeWeightedSamplesWithPsf(
+                weightedSamples, fluxRate, projection, settings,
+                temporalPostCloudRates, temporalPreCloudRates, ref totalKernelVisits, cancellationToken);
             return fluxRate * visibleExposureFraction;
         }
 
@@ -1429,13 +1749,6 @@ public sealed class DeepSkyRenderPlan
             return 0d;
         }
         referencePixel = centerPixel;
-        if (routeToDiffusePrePsf)
-        {
-            DepositBilinear(
-                sourceDeposits, centerPixel, fluxRate, projection.WidthPixels, projection.HeightPixels,
-                padding, paddedWidth, settings.MaximumSparsePixels);
-            return fluxRate;
-        }
 
         var apparent = geometry.GeometricCenter with
         {
@@ -1444,6 +1757,11 @@ public sealed class DeepSkyRenderPlan
         var cloudTransmission = renderOptions.Cloud?.RequiresEvaluation == true
             ? renderOptions.Cloud.Field.Evaluate(apparent, renderOptions.Cloud.IntegrationStartUtc).Transmission
             : 1d;
+        unresolvedDiffuseSamples?.Add(new UnresolvedDiffuseSample(
+            geometry.Frame.Center,
+            centerPixel,
+            1d,
+            cloudTransmission));
         DepositDirectSubpixelPsf(
             temporalPostCloudRates, projection, centerPixel, fluxRate * cloudTransmission,
             settings.PsfSigmaPixels, settings.PsfRadiusPixels,
@@ -1455,6 +1773,61 @@ public sealed class DeepSkyRenderPlan
         return fluxRate;
     }
 
+    private static void RasterizeWeightedSamplesWithPsf(
+        WeightedPointSpreadSample[] weightedSamples,
+        double fluxRate,
+        ProjectionContext projection,
+        DeepSkyRenderSettings settings,
+        Dictionary<int, double> postCloudRates,
+        Dictionary<int, double> preCloudRates,
+        ref long totalKernelVisits,
+        CancellationToken cancellationToken)
+    {
+        if (weightedSamples.Length == 0 || fluxRate <= 0)
+        {
+            return;
+        }
+        if (settings.PsfRadiusPixels >= 0.75 &&
+            weightedSamples.Length <= 64 &&
+            (long)projection.WidthPixels * projection.HeightPixels <= 16_777_216)
+        {
+            var remainingVisits = settings.MaximumKernelCellVisits - totalKernelVisits;
+            if (remainingVisits < 1)
+            {
+                throw new InvalidOperationException("Deep-sky PSF kernel budget exceeded.");
+            }
+            var raster = TemporalPointSpreadRaster.Rasterize(
+                weightedSamples,
+                projection,
+                settings.PsfSigmaPixels,
+                settings.PsfRadiusPixels,
+                Math.Min(remainingVisits, 1_000_000_000L),
+                Math.Min(settings.MaximumSparsePixels, 65_536),
+                cancellationToken);
+            totalKernelVisits += raster.KernelCellVisits;
+            foreach (var pixel in raster.Pixels)
+            {
+                AddScalarRate(postCloudRates, pixel.Index, fluxRate * pixel.AfterTransmission, settings.MaximumSparsePixels);
+                AddScalarRate(preCloudRates, pixel.Index, fluxRate * pixel.BeforeTransmission, settings.MaximumSparsePixels);
+            }
+            return;
+        }
+
+        foreach (var sample in weightedSamples)
+        {
+            DepositDirectSubpixelPsf(
+                postCloudRates, projection, sample.Pixel,
+                fluxRate * sample.ExposureFraction * sample.Transmission,
+                settings.PsfSigmaPixels, settings.PsfRadiusPixels,
+                settings.MaximumSparsePixels, settings.MaximumKernelCellVisits, ref totalKernelVisits);
+            DepositDirectSubpixelPsf(
+                preCloudRates, projection, sample.Pixel,
+                fluxRate * sample.ExposureFraction,
+                settings.PsfSigmaPixels, settings.PsfRadiusPixels,
+                settings.MaximumSparsePixels, settings.MaximumKernelCellVisits, ref totalKernelVisits);
+        }
+    }
+
     private static double RasterizeExtendedProfile(
         string objectId,
         DeepSkySimulationParameters profile,
@@ -1463,6 +1836,7 @@ public sealed class DeepSkyRenderPlan
         ResolvedSourceProjector projector,
         ProjectionContext projection,
         DeepSkyRenderSettings settings,
+        int maxSourceSamples,
         int padding,
         long paddedWidth,
         long paddedHeight,
@@ -1487,11 +1861,11 @@ public sealed class DeepSkyRenderPlan
             var spanV = geometry.OutlineMaxV - geometry.OutlineMinV;
             var angularScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(
                 projection, geometry.GeometricCenter, Math.Max(1e-6, geometry.SemiMajorRadians));
-            var maxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(settings.MaximumSamplePointsPerSource)));
+            var maxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(maxSourceSamples)));
             var minGrid = Math.Min(useDirectSubpixelPsf ? 10 : 20, maxAxis);
             var nu = (int)Math.Clamp(Math.Ceiling(spanU * angularScale * settings.SamplesPerProjectedPixel), minGrid, maxAxis);
             var nv = (int)Math.Clamp(Math.Ceiling(spanV * angularScale * settings.SamplesPerProjectedPixel), minGrid, maxAxis);
-            ClampGridToBudget(ref nu, ref nv, settings.MaximumSamplePointsPerSource);
+            ClampGridToBudget(ref nu, ref nv, maxSourceSamples);
 
             var edgeCount = CountOutlineEdges(rings);
             ChargeOutlineEdgeVisits((long)nu * nv * edgeCount, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
@@ -1543,12 +1917,12 @@ public sealed class DeepSkyRenderPlan
         {
             var angularScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(
                 projection, geometry.GeometricCenter, Math.Max(1e-6, geometry.SemiMajorRadians));
-            var budgetMaxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(settings.MaximumSamplePointsPerSource)));
+            var budgetMaxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(maxSourceSamples)));
             var maxAxis = useDirectSubpixelPsf ? Math.Min(16, budgetMaxAxis) : budgetMaxAxis;
             var minAxis = Math.Min(useDirectSubpixelPsf ? 8 : 20, maxAxis);
             var nu = (int)Math.Clamp(Math.Ceiling(2d * geometry.SemiMajorRadians * angularScale * settings.SamplesPerProjectedPixel), minAxis, maxAxis);
             var nv = (int)Math.Clamp(Math.Ceiling(2d * geometry.SemiMinorRadians * angularScale * settings.SamplesPerProjectedPixel), minAxis, maxAxis);
-            ClampGridToBudget(ref nu, ref nv, settings.MaximumSamplePointsPerSource);
+            ClampGridToBudget(ref nu, ref nv, maxSourceSamples);
 
             var du = 2d / nu;
             var dv = 2d / nv;
@@ -1619,6 +1993,7 @@ public sealed class DeepSkyRenderPlan
     private static int DepositUnresolvedClusterMembers(
         string objectId,
         int maxMembers,
+        int maxSourceSamples,
         double residualRate,
         ResolvedSourceGeometry geometry,
         ResolvedSourceProjector projector,
@@ -1627,12 +2002,19 @@ public sealed class DeepSkyRenderPlan
         DeepSkyRenderSettings settings,
         ref long totalSampledPoints,
         ref long totalKernelVisits,
+        ref long totalOutlineEdgeVisits,
         out double visibleRate)
     {
-        var minMembers = Math.Min(4, maxMembers);
+        var effectiveMaxMembers = Math.Min(maxMembers, maxSourceSamples);
+        if (effectiveMaxMembers <= 0)
+        {
+            visibleRate = 0d;
+            return 0;
+        }
+        var minMembers = Math.Min(4, effectiveMaxMembers);
         var memberCount = Math.Clamp(
             (int)Math.Round(Math.Sqrt(Math.Max(16d, geometry.MajorAxisPixels * Math.Max(1d, geometry.MinorAxisPixels)))),
-            minMembers, maxMembers);
+            minMembers, effectiveMaxMembers);
         var state = DeepSkySourceProfileResolver.ComputeStableObjectHash(objectId + ":unresolved-members");
         var members = new List<(EnuVector Direction, double Weight)>(memberCount);
         var totalWeight = 0d;
@@ -1641,7 +2023,8 @@ public sealed class DeepSkyRenderPlan
         {
             // Deterministic identity per unresolved member: "{objectId}:member:{index:D3}".
             var memberHash = DeepSkySourceProfileResolver.ComputeStableObjectHash($"{objectId}:member:{index:D3}");
-            var direction = SampleMemberDirection(geometry, memberHash, ref state);
+            var direction = SampleMemberDirection(
+                geometry, memberHash, ref state, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
             // Bounded Salpeter-like deterministic flux weights normalized strictly to residualRate.
             var u = NextUnit(ref memberHash);
             var weight = Math.Pow(0.2 + 0.8 * u, 2.2);
@@ -1669,13 +2052,20 @@ public sealed class DeepSkyRenderPlan
         return members.Count;
     }
 
-    private static EnuVector SampleMemberDirection(ResolvedSourceGeometry geometry, ulong seed, ref ulong state)
+    private static EnuVector SampleMemberDirection(
+        ResolvedSourceGeometry geometry,
+        ulong seed,
+        ref ulong state,
+        long maximumOutlineEdgeVisits,
+        ref long totalOutlineEdgeVisits)
     {
         var local = seed ^ state;
         if (geometry.TangentRings is { Count: > 0 } rings)
         {
+            var edgeCount = CountOutlineEdges(rings);
             for (var attempt = 0; attempt < 64; attempt++)
             {
+                ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
                 var u = geometry.OutlineMinU + NextUnit(ref local) * (geometry.OutlineMaxU - geometry.OutlineMinU);
                 var v = geometry.OutlineMinV + NextUnit(ref local) * (geometry.OutlineMaxV - geometry.OutlineMinV);
                 if (DeepSkyOutlineSampler.ContainsTangentPoint(rings, u, v))
@@ -1706,11 +2096,20 @@ public sealed class DeepSkyRenderPlan
         int padding,
         long paddedWidth,
         long paddedHeight,
+        List<AdmittedDarkCloud> admittedDarkClouds,
         Dictionary<long, (double AreaSum, double AbsorbAreaSum)> cellDeposits,
         ref long totalSampledPoints,
         ref long totalOutlineEdgeVisits,
+        out double maxOutlineDist,
+        out List<SubpixelDarkSample>? subpixelSamples,
+        out List<(SubpixelDarkSample Sample, double AddTau)>? tinyOverlapUpdates,
         CancellationToken cancellationToken)
     {
+        maxOutlineDist = 0d;
+        var currentMaxSpanPixels = Math.Max(geometry.MajorAxisPixels, geometry.MinorAxisPixels);
+        subpixelSamples = currentMaxSpanPixels < 0.25 ? new List<SubpixelDarkSample>() : null;
+        tinyOverlapUpdates = null;
+
         var angularScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(
             projection, geometry.GeometricCenter, Math.Max(1e-6, geometry.SemiMajorRadians));
         var maxAxis = Math.Max(1, (int)Math.Floor(Math.Sqrt(settings.MaximumSamplePointsPerSource)));
@@ -1750,6 +2149,7 @@ public sealed class DeepSkyRenderPlan
                     interior.Add((u, v, dist));
                 }
             }
+            maxOutlineDist = maxDist;
             if (maxDist <= 0) return 0;
             foreach (var (u, v, dist) in interior)
             {
@@ -1762,10 +2162,14 @@ public sealed class DeepSkyRenderPlan
                 var rSq = u * u + v * v;
                 var solidAngle = cellArea * Math.Pow(1d + rSq, -1.5);
                 var pixelArea = solidAngle * areaScale;
-                var absorbArea = pixelArea * (1d - Math.Exp(-tau));
+                var priorTau = EvaluatePriorDarkOpticalDepth(
+                    admittedDarkClouds, direction, currentMaxSpanPixels,
+                    settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                var absorbArea = pixelArea * Math.Exp(-priorTau) * (1d - Math.Exp(-tau));
                 AccumulateDarkAbsorption(
                     cellDeposits, pixel, pixelArea, absorbArea,
                     projection.WidthPixels, projection.HeightPixels, padding, paddedWidth, settings.MaximumSparsePixels);
+                subpixelSamples?.Add(new SubpixelDarkSample(direction, pixel, pixelArea, priorTau + tau));
             }
         }
         else
@@ -1796,10 +2200,39 @@ public sealed class DeepSkyRenderPlan
                     var r = tangent.Length;
                     var solidAngle = cellArea * (r < 1e-8 ? 1d : Math.Sin(r) / r);
                     var pixelArea = solidAngle * areaScale;
-                    var absorbArea = pixelArea * (1d - Math.Exp(-tau));
+                    var priorTau = EvaluatePriorDarkOpticalDepth(
+                        admittedDarkClouds, direction, currentMaxSpanPixels,
+                        settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    var absorbArea = pixelArea * Math.Exp(-priorTau) * (1d - Math.Exp(-tau));
                     AccumulateDarkAbsorption(
                         cellDeposits, pixel, pixelArea, absorbArea,
                         projection.WidthPixels, projection.HeightPixels, padding, paddedWidth, settings.MaximumSparsePixels);
+                    subpixelSamples?.Add(new SubpixelDarkSample(direction, pixel, pixelArea, priorTau + tau));
+                }
+            }
+        }
+
+        // If a coarse resolved dark cloud overlaps an earlier-admitted strictly subpixel dark cloud, subtract
+        // the overlap over-count at the subpixel cloud's exact fine samples so optical-depth additivity is
+        // preserved regardless of admission order.
+        if (currentMaxSpanPixels >= 2.0 && admittedDarkClouds.Count > 0)
+        {
+            var probeCloud = new AdmittedDarkCloud(profile, geometry, maxOutlineDist, currentMaxSpanPixels, null);
+            foreach (var prior in admittedDarkClouds)
+            {
+                if (prior.SubpixelSamples is not { Count: > 0 } priorSamples) continue;
+                var sep = AngularSeparationRadians(geometry.Frame.Center, prior.Geometry.Frame.Center);
+                if (sep > geometry.SemiMajorRadians + prior.Geometry.SemiMajorRadians + 1e-6) continue;
+                foreach (var s in priorSamples)
+                {
+                    var tauCurrent = EvaluateDarkCloudOpticalDepth(
+                        probeCloud, s.Direction, settings.MaximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+                    if (tauCurrent <= 0) continue;
+                    var overlapSubtract = s.PixelArea * (1d - Math.Exp(-s.CumulativeTau)) * (1d - Math.Exp(-tauCurrent));
+                    SubtractDarkAbsorption(
+                        cellDeposits, s.Pixel, overlapSubtract,
+                        projection.WidthPixels, projection.HeightPixels, padding, paddedWidth);
+                    (tinyOverlapUpdates ??= []).Add((s, tauCurrent));
                 }
             }
         }
@@ -1810,6 +2243,108 @@ public sealed class DeepSkyRenderPlan
             throw new InvalidOperationException("Deep-sky sampling point budget exceeded.");
         }
         return sampled;
+    }
+
+    private static double EvaluatePriorDarkOpticalDepth(
+        List<AdmittedDarkCloud> admittedDarkClouds,
+        EnuVector direction,
+        double currentMaxSpanPixels,
+        long maximumOutlineEdgeVisits,
+        ref long totalOutlineEdgeVisits)
+    {
+        if (admittedDarkClouds.Count == 0) return 0d;
+        var totalTau = 0d;
+        for (var i = 0; i < admittedDarkClouds.Count; i++)
+        {
+            var prior = admittedDarkClouds[i];
+            if (prior.MaxSpanPixels < 0.25 && currentMaxSpanPixels >= 2.0)
+            {
+                // Handled via exact fine-sample overlap subtraction above.
+                continue;
+            }
+            totalTau += EvaluateDarkCloudOpticalDepth(prior, direction, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+        }
+        return totalTau;
+    }
+
+    private static double EvaluateDarkCloudOpticalDepth(
+        AdmittedDarkCloud cloud,
+        EnuVector direction,
+        long maximumOutlineEdgeVisits,
+        ref long totalOutlineEdgeVisits)
+    {
+        var geometry = cloud.Geometry;
+        var profile = cloud.Profile;
+        if (geometry.TangentRings is { Count: > 0 } rings)
+        {
+            if (cloud.MaxOutlineDist <= 0) return 0d;
+            var cosine = EnuVector.Dot(direction, geometry.Frame.Center);
+            if (cosine <= DeepSkyOutlineSampler.MinimumTangentCosine) return 0d;
+            var u = EnuVector.Dot(direction, geometry.Frame.CelestialEast) / cosine;
+            var v = EnuVector.Dot(direction, geometry.Frame.CelestialNorth) / cosine;
+            if (u < geometry.OutlineMinU || u > geometry.OutlineMaxU ||
+                v < geometry.OutlineMinV || v > geometry.OutlineMaxV)
+            {
+                return 0d;
+            }
+            var edgeCount = CountOutlineEdges(rings);
+            ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+            if (!DeepSkyOutlineSampler.ContainsTangentPoint(rings, u, v)) return 0d;
+            ChargeOutlineEdgeVisits(edgeCount, maximumOutlineEdgeVisits, ref totalOutlineEdgeVisits);
+            var dist = DeepSkyOutlineSampler.DistanceToTangentBoundary(rings, u, v);
+            return profile.PeakOpticalDepth * DeepSkySourceProfileResolver.EvaluateOutlineDensity(profile, dist / cloud.MaxOutlineDist, 0d);
+        }
+
+        if (geometry.SemiMajorRadians <= 0 || geometry.SemiMinorRadians <= 0) return 0d;
+        var sinMajor = EnuVector.Dot(direction, geometry.MajorAxis);
+        var sinMinor = EnuVector.Dot(direction, geometry.MinorAxis);
+        var sinAngle = double.Hypot(sinMajor, sinMinor);
+        var cosAngle = EnuVector.Dot(direction, geometry.Frame.Center);
+        var angle = Math.Atan2(sinAngle, cosAngle);
+        if (angle > geometry.SemiMajorRadians * (1d + 1e-9)) return 0d;
+        var scale = sinAngle > 1e-15 ? angle / sinAngle : 1d;
+        var eu = (sinMajor * scale) / geometry.SemiMajorRadians;
+        var ev = (sinMinor * scale) / geometry.SemiMinorRadians;
+        var qSq = eu * eu + ev * ev;
+        if (qSq >= 1d) return 0d;
+        return profile.PeakOpticalDepth * DeepSkySourceProfileResolver.EvaluateRadialDensity(profile, Math.Sqrt(qSq), 0d, 0UL);
+    }
+
+    private static double AngularSeparationRadians(EnuVector a, EnuVector b)
+    {
+        var cross = EnuVector.Cross(a, b).Length;
+        var dot = EnuVector.Dot(a, b);
+        return Math.Atan2(cross, dot);
+    }
+
+    private static void SubtractDarkAbsorption(
+        Dictionary<long, (double AreaSum, double AbsorbAreaSum)> deposits,
+        PixelPoint point,
+        double subtractAbsorbArea,
+        int width,
+        int height,
+        int padding,
+        long paddedWidth)
+    {
+        if (subtractAbsorbArea <= 0) return;
+        var x = (long)Math.Floor(point.X - 0.5);
+        var y = (long)Math.Floor(point.Y - 0.5);
+        var fx = point.X - 0.5 - x;
+        var fy = point.Y - 0.5 - y;
+        Sub(x, y, (1d - fx) * (1d - fy));
+        Sub(x + 1, y, fx * (1d - fy));
+        Sub(x, y + 1, (1d - fx) * fy);
+        Sub(x + 1, y + 1, fx * fy);
+
+        void Sub(long cx, long cy, double w)
+        {
+            if (w <= 0 || cx < -padding || cx >= width + padding || cy < -padding || cy >= height + padding) return;
+            var key = (cy + padding) * paddedWidth + cx + padding;
+            if (deposits.TryGetValue(key, out var prior))
+            {
+                deposits[key] = (prior.AreaSum, Math.Max(0d, prior.AbsorbAreaSum - w * subtractAbsorbArea));
+            }
+        }
     }
 
     private static (int Count, double TotalFluxRate) MatchHygStarsInFootprint(
@@ -2047,6 +2582,10 @@ public sealed class DeepSkyRenderPlan
             Dictionary<int, double> temporalPostCloudMonoRates,
             Dictionary<int, double> temporalPreCloudMonoRates,
             double declaredDiffuseBg,
+            Dictionary<int, DeepSkyPixelRate>? overlapDiffusePreCloud,
+            Dictionary<int, DeepSkyPixelRate>? overlapDiffuseTemporal,
+            Dictionary<int, DeepSkyPixelRate>? selfDiffusePreCloud,
+            Dictionary<int, DeepSkyPixelRate>? selfDiffuseTemporal,
             double expectedSourceRate,
             ProjectionContext projection,
             LinearSceneRenderOptions options,
@@ -2130,12 +2669,29 @@ public sealed class DeepSkyRenderPlan
                     Rgb24CompatibilityRenderOptions => channel,
                     _ => -1
                 };
-                var diffuseBgRate = declaredDiffuseBg * (options is BayerRggb16RenderOptions bayerBg
+                var cfaScale = options is BayerRggb16RenderOptions bayerBg
                     ? StellarExposureRenderPlan.Channel(bayerBg.ChannelResponse, skyChannel)
-                    : 1d);
+                    : 1d;
+                var overlapPre = overlapDiffusePreCloud is null
+                    ? 0d
+                    : overlapDiffusePreCloud.GetValueOrDefault(index).Channel(skyChannel);
+                if (selfDiffusePreCloud is not null)
+                {
+                    overlapPre -= selfDiffusePreCloud.GetValueOrDefault(index).Channel(skyChannel);
+                }
+                var overlapTmp = overlapDiffuseTemporal is null
+                    ? 0d
+                    : overlapDiffuseTemporal.GetValueOrDefault(index).Channel(skyChannel);
+                if (selfDiffuseTemporal is not null)
+                {
+                    overlapTmp -= selfDiffuseTemporal.GetValueOrDefault(index).Channel(skyChannel);
+                }
+                var diffuseBgRate = (declaredDiffuseBg + Math.Max(0d, overlapPre)) * cfaScale;
+                var diffuseTmpRate = Math.Max(0d, overlapTmp) * cfaScale;
                 var sourceElectrons = (preMono * diskTransmission + tmpPostMono) * channelMultiplier * vignette * options.ExposureSeconds;
                 var bgElectrons = (options.BackgroundRate(x, y, skyChannel) * backgroundTransmission +
-                    (options.DiskRate(x, y, skyChannel) + diffuseBgRate) * diskTransmission) * vignette * options.ExposureSeconds;
+                    (options.DiskRate(x, y, skyChannel) + diffuseBgRate) * diskTransmission +
+                    diffuseTmpRate) * vignette * options.ExposureSeconds;
                 var channelWeight = maximumDisplayWeight > 0 ? displayWeights[channel] / maximumDisplayWeight : 0d;
                 if (response is null && options.Gain == 0)
                 {
@@ -2191,6 +2747,113 @@ public sealed class DeepSkyRenderPlan
             expectedSourceRate > 0 ? retainedMono / expectedSourceRate : 0d,
             minX, minY, maxX, maxY);
         return (prediction, causesSaturation, footprint, retainedMono, activePixels.Count);
+    }
+
+    private static StellarSignalPrediction EvaluateDarkSignalPrediction(
+        HashSet<int> activeDarkPixels,
+        Dictionary<int, DeepSkyPixelRate> preCloudDarkDelta,
+        Dictionary<int, DeepSkyPixelRate> temporalDarkDelta,
+        double declaredDiffuseBg,
+        Dictionary<int, DeepSkyPixelRate> overlapDiffusePreCloud,
+        Dictionary<int, DeepSkyPixelRate> overlapDiffuseTemporal,
+        Dictionary<int, DeepSkyPixelRate> priorDarkAttenuatedPreCloud,
+        Dictionary<int, DeepSkyPixelRate> priorDarkAttenuatedTemporal,
+        ProjectionContext projection,
+        LinearSceneRenderOptions options,
+        DeepSkyRenderSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var response = options switch
+        {
+            Mono16SceneRenderOptions mono => mono.SensorResponse,
+            BayerRggb16RenderOptions bayer => bayer.SensorResponse,
+            _ => null
+        };
+        var readVariance = response is null
+            ? Math.Pow(options.Gain > 0 ? options.ReadNoiseStandardDeviation / options.Gain : 0, 2)
+            : response.ReadNoiseElectrons * response.ReadNoiseElectrons;
+        var darkElectrons = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
+        var extractionWeight = settings.DigitalAverage ? 1d / (settings.DigitalBinX * settings.DigitalBinY) : 1d;
+        var projector = options.Cloud?.RequiresEvaluation == true ? ProjectorFactory.Create(projection) : null;
+        var stellarSettings = new StellarExposureRenderSettings(
+            DigitalBinX: settings.DigitalBinX,
+            DigitalBinY: settings.DigitalBinY,
+            DigitalAverage: settings.DigitalAverage,
+            CfaOriginX: settings.CfaOriginX,
+            CfaOriginY: settings.CfaOriginY);
+        var displayWeights = DisplayWeights(options);
+        var maximumDisplayWeight = displayWeights.Max();
+        var channelCount = options is Rgb24CompatibilityRenderOptions ? 3 : 1;
+
+        var nativePixels = CompleteBinSupport(activeDarkPixels, projection, settings);
+        var signalTotal = 0d;
+        var varianceTotal = 0d;
+
+        foreach (var index in nativePixels.Order())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var x = index % projection.WidthPixels;
+            var y = index / projection.WidthPixels;
+            var vignette = 1d - options.VignettingStrength * projection.NormalizedRadiusSquared(x + 0.5, y + 0.5);
+            var backgroundTransmission = 1d;
+            var diskTransmission = 1d;
+            if (projector is not null)
+            {
+                var dir = projector.Unproject(new PixelPoint(x + 0.5, y + 0.5));
+                if (dir is not null)
+                {
+                    var eff = options.Cloud!.Field.Integrate(dir.Value, options.Cloud.IntegrationStartUtc, options.Cloud.IntegrationDuration);
+                    backgroundTransmission = (float)eff.Transmission + (float)eff.Scatter;
+                    diskTransmission = (float)eff.Transmission;
+                }
+            }
+
+            var preDelta = preCloudDarkDelta.GetValueOrDefault(index);
+            var tmpDelta = temporalDarkDelta.GetValueOrDefault(index);
+            var overlapPreRate = overlapDiffusePreCloud.GetValueOrDefault(index);
+            var overlapTmpRate = overlapDiffuseTemporal.GetValueOrDefault(index);
+            var priorPreAtten = priorDarkAttenuatedPreCloud.GetValueOrDefault(index);
+            var priorTmpAtten = priorDarkAttenuatedTemporal.GetValueOrDefault(index);
+
+            for (var channel = 0; channel < channelCount; channel++)
+            {
+                var skyChannel = options switch
+                {
+                    BayerRggb16RenderOptions => StellarExposureRenderPlan.CfaChannel(x, y, stellarSettings),
+                    Rgb24CompatibilityRenderOptions => channel,
+                    _ => -1
+                };
+                var cfaScale = options is BayerRggb16RenderOptions bayerBg
+                    ? StellarExposureRenderPlan.Channel(bayerBg.ChannelResponse, skyChannel)
+                    : 1d;
+                var preDeficit = Math.Max(0d, -preDelta.Channel(skyChannel)) * cfaScale;
+                var tmpDeficit = Math.Max(0d, -tmpDelta.Channel(skyChannel)) * cfaScale;
+                var deficitElectrons = (preDeficit * diskTransmission + tmpDeficit) * vignette * options.ExposureSeconds;
+
+                // Null-hypothesis local photon rate before this dark cloud attenuates the extraction footprint.
+                var preDiffuseBefore = Math.Max(
+                    preDeficit,
+                    Math.Max(0d, declaredDiffuseBg + overlapPreRate.Channel(skyChannel) + priorPreAtten.Channel(skyChannel)) * cfaScale);
+                var tmpDiffuseBefore = Math.Max(
+                    tmpDeficit,
+                    Math.Max(0d, overlapTmpRate.Channel(skyChannel) + priorTmpAtten.Channel(skyChannel)) * cfaScale);
+                var bgBeforeElectrons = (options.BackgroundRate(x, y, skyChannel) * backgroundTransmission +
+                    (options.DiskRate(x, y, skyChannel) + preDiffuseBefore) * diskTransmission +
+                    tmpDiffuseBefore) * vignette * options.ExposureSeconds;
+
+                var channelWeight = maximumDisplayWeight > 0 ? displayWeights[channel] / maximumDisplayWeight : 0d;
+                if (response is null && options.Gain == 0)
+                {
+                    channelWeight = 0d;
+                }
+                var weight = extractionWeight * channelWeight;
+                signalTotal += weight * deficitElectrons;
+                varianceTotal += weight * weight * (bgBeforeElectrons + darkElectrons + readVariance);
+            }
+        }
+
+        var snr = varianceTotal > 0 ? signalTotal / Math.Sqrt(varianceTotal) : 0d;
+        return new StellarSignalPrediction(signalTotal, varianceTotal, snr);
     }
 
     private static HashSet<int> CompleteBinSupport(
@@ -2394,14 +3057,38 @@ public sealed class DeepSkyRenderPlan
         }
     }
 
-    private static void AddSparseRate(Dictionary<int, DeepSkyPixelRate> map, int key, DeepSkyPixelRate add, int limit)
+    private static Dictionary<int, double> MergeScalarRates(
+        Dictionary<int, double> first,
+        Dictionary<int, double> second,
+        int limit)
     {
-        if (!map.TryGetValue(key, out var prior))
+        if (second.Count == 0) return new Dictionary<int, double>(first);
+        if (first.Count == 0) return new Dictionary<int, double>(second);
+        var merged = new Dictionary<int, double>(first);
+        foreach (var (key, value) in second)
         {
-            if (map.Count >= limit)
+            AddScalarRate(merged, key, value, limit);
+        }
+        return merged;
+    }
+
+    private static void AddCombinedSparseRate(
+        Dictionary<int, DeepSkyPixelRate> map,
+        HashSet<int> unionPixels,
+        int key,
+        DeepSkyPixelRate add,
+        int limit)
+    {
+        if (!unionPixels.Contains(key))
+        {
+            if (unionPixels.Count >= limit)
             {
                 throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
             }
+            unionPixels.Add(key);
+        }
+        if (!map.TryGetValue(key, out var prior))
+        {
             map[key] = add;
         }
         else
@@ -2410,7 +3097,68 @@ public sealed class DeepSkyRenderPlan
         }
     }
 
-    private static void AddPaddedRate(Dictionary<long, DeepSkyPixelRate> map, long key, DeepSkyPixelRate add, int limit)
+    private static void AddCombinedPaddedRate(
+        Dictionary<long, DeepSkyPixelRate> map,
+        HashSet<long> unionPaddedKeys,
+        long key,
+        DeepSkyPixelRate add,
+        int limit)
+    {
+        if (!unionPaddedKeys.Contains(key))
+        {
+            if (unionPaddedKeys.Count >= limit)
+            {
+                throw new InvalidOperationException("Deep-sky sparse pixel budget exceeded.");
+            }
+            unionPaddedKeys.Add(key);
+        }
+        if (!map.TryGetValue(key, out var prior))
+        {
+            map[key] = add;
+        }
+        else
+        {
+            map[key] = prior + add;
+        }
+    }
+
+    private static void AddUnboundedSparseRate(Dictionary<int, DeepSkyPixelRate> map, int key, DeepSkyPixelRate add)
+    {
+        if (!map.TryGetValue(key, out var prior))
+        {
+            map[key] = add;
+        }
+        else
+        {
+            map[key] = prior + add;
+        }
+    }
+
+    private static void SubtractUnboundedSparseRates(
+        Dictionary<int, DeepSkyPixelRate> target,
+        Dictionary<int, DeepSkyPixelRate> remove)
+    {
+        foreach (var (key, sub) in remove)
+        {
+            if (!target.TryGetValue(key, out var prior)) continue;
+            var next = new DeepSkyPixelRate(
+                prior.Mono - sub.Mono,
+                prior.Red - sub.Red,
+                prior.Green - sub.Green,
+                prior.Blue - sub.Blue);
+            if (Math.Abs(next.Mono) <= 1e-15 && Math.Abs(next.Red) <= 1e-15 &&
+                Math.Abs(next.Green) <= 1e-15 && Math.Abs(next.Blue) <= 1e-15)
+            {
+                target.Remove(key);
+            }
+            else
+            {
+                target[key] = next;
+            }
+        }
+    }
+
+    private static void AddSparseRate(Dictionary<int, DeepSkyPixelRate> map, int key, DeepSkyPixelRate add, int limit)
     {
         if (!map.TryGetValue(key, out var prior))
         {
@@ -2448,6 +3196,103 @@ public sealed class DeepSkyRenderPlan
     }
 
     private readonly record struct HygStarEntry(string Id, EnuVector Direction, double FluxRate);
+
+    private readonly record struct UnresolvedDiffuseSample(
+        EnuVector Direction,
+        PixelPoint Pixel,
+        double ExposureFraction,
+        double CloudTransmission);
+
+    private sealed record AdmittedUnresolvedDiffuseSource(
+        string ObjectId,
+        double FluxRate,
+        DeepSkySpectralFactors Spectral,
+        List<UnresolvedDiffuseSample> Samples,
+        Dictionary<int, double> UnattenuatedPostCloudRates);
+
+    private sealed class SubpixelDarkSample(
+        EnuVector direction,
+        PixelPoint pixel,
+        double pixelArea,
+        double cumulativeTau)
+    {
+        public EnuVector Direction { get; } = direction;
+        public PixelPoint Pixel { get; } = pixel;
+        public double PixelArea { get; } = pixelArea;
+        public double CumulativeTau { get; set; } = cumulativeTau;
+    }
+
+    private sealed record AdmittedDarkCloud(
+        DeepSkySimulationParameters Profile,
+        ResolvedSourceGeometry Geometry,
+        double MaxOutlineDist,
+        double MaxSpanPixels,
+        List<SubpixelDarkSample>? SubpixelSamples);
+
+    private sealed class ProvisionalLuminousEntry(
+        DeepSkyObject item,
+        DeepSkyProfileClass profileClass,
+        DeepSkyPhotometryBasis photometryBasis,
+        ResolvedSourceGeometry geometry,
+        DeepSkySimulationParameters profile,
+        PixelPoint? temporalReferencePixel,
+        double effectiveSourceRate,
+        double visibleRate,
+        double retainedMonoRate,
+        int matchedHygCount,
+        double matchedHygFluxFraction,
+        int unresolvedMembers,
+        int sampledPoints,
+        int activePixelCount,
+        bool usedUnresolvedPsf,
+        bool routesPrePsfToDiffuseMap,
+        Dictionary<long, double> sourceDeposits,
+        Dictionary<int, double> nonDiffuseClippedRates,
+        Dictionary<int, double> preCloudClippedRates,
+        Dictionary<int, double> nonDiffuseTempPostRates,
+        Dictionary<int, double> diffuseTempPostRates,
+        Dictionary<int, double> combinedTempPostRates,
+        Dictionary<int, double> combinedTempPreRates,
+        List<UnresolvedDiffuseSample> unresolvedDiffuseSamples,
+        double unresolvedDiffuseFluxRate,
+        Dictionary<int, DeepSkyPixelRate>? ownDiffusePreCloud,
+        Dictionary<int, DeepSkyPixelRate>? ownDiffuseTemporal,
+        StellarSignalPrediction prediction,
+        bool causesSaturation,
+        RenderedObjectGeometry footprint)
+    {
+        public DeepSkyObject Item { get; } = item;
+        public DeepSkyProfileClass ProfileClass { get; } = profileClass;
+        public DeepSkyPhotometryBasis PhotometryBasis { get; } = photometryBasis;
+        public ResolvedSourceGeometry Geometry { get; } = geometry;
+        public DeepSkySimulationParameters Profile { get; } = profile;
+        public PixelPoint? TemporalReferencePixel { get; } = temporalReferencePixel;
+        public double EffectiveSourceRate { get; } = effectiveSourceRate;
+        public double VisibleRate { get; } = visibleRate;
+        public double RetainedMonoRate { get; } = retainedMonoRate;
+        public int MatchedHygCount { get; } = matchedHygCount;
+        public double MatchedHygFluxFraction { get; } = matchedHygFluxFraction;
+        public int UnresolvedMembers { get; } = unresolvedMembers;
+        public int SampledPoints { get; } = sampledPoints;
+        public int ActivePixelCount { get; } = activePixelCount;
+        public bool UsedUnresolvedPsf { get; } = usedUnresolvedPsf;
+        public bool RoutesPrePsfToDiffuseMap { get; } = routesPrePsfToDiffuseMap;
+        public Dictionary<long, double> SourceDeposits { get; } = sourceDeposits;
+        public Dictionary<int, double> NonDiffuseClippedRates { get; } = nonDiffuseClippedRates;
+        public Dictionary<int, double> PreCloudClippedRates { get; } = preCloudClippedRates;
+        public Dictionary<int, double> NonDiffuseTempPostRates { get; } = nonDiffuseTempPostRates;
+        public Dictionary<int, double> DiffuseTempPostRates { get; } = diffuseTempPostRates;
+        public Dictionary<int, double> CombinedTempPostRates { get; } = combinedTempPostRates;
+        public Dictionary<int, double> CombinedTempPreRates { get; } = combinedTempPreRates;
+        public List<UnresolvedDiffuseSample> UnresolvedDiffuseSamples { get; } = unresolvedDiffuseSamples;
+        public double UnresolvedDiffuseFluxRate { get; } = unresolvedDiffuseFluxRate;
+        public Dictionary<int, DeepSkyPixelRate>? OwnDiffusePreCloud { get; } = ownDiffusePreCloud;
+        public Dictionary<int, DeepSkyPixelRate>? OwnDiffuseTemporal { get; } = ownDiffuseTemporal;
+        public StellarSignalPrediction Prediction { get; set; } = prediction;
+        public bool CausesSaturation { get; set; } = causesSaturation;
+        public RenderedObjectGeometry Footprint { get; } = footprint;
+        public bool Demoted { get; set; }
+    }
 
     private sealed record ResolvedSourceGeometry(
         DeepSkyGeometryBasis Basis,

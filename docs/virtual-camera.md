@@ -635,17 +635,22 @@ unset or disabled (`Enabled = false`) omits it from scene identity serialization
 bypasses all DSO work, and preserves exact prior `SceneId` identities and raw
 pixel bytes even with stochastic sensor noise enabled. When enabled, `SceneId`
 and `SceneProvenance.DeepSkyCatalog` bind the active DSO catalog snapshot and
-render-model identity independently of annotation selection.
+render-model identity independently of annotation selection; when an in-memory
+or custom `IDeepSkyCatalog` supplies `SnapshotIdentity == null`, `VirtualSky`
+derives a deterministic canonical content-hash fallback identity so distinct
+catalog rows never collide on `SceneId` or publish null DSO provenance.
 
 - **Pipeline order:** `DeepSkyRenderPlan` normalizes each source's compatible
   integrated flux over its full angular profile before horizon, projection, PSF,
   aperture, or sensor clipping (exterior energy is lost and never renormalized).
-  Unresolved non-diffuse emitters (`<= 0.5 * PsfSigmaPixels`) reuse
+  Unresolved emitters (`<= 0.5 * PsfSigmaPixels`) reuse
   `StellarExposureGeometryBuilder` and `TemporalPointSpreadRaster` across the
   full exposure (matching sidereal motion, horizon crossing, and instantaneous
-  cloud transmission to the stellar PSF path); unresolved and resolved diffuse
-  emitters route through the pre-PSF diffuse map so dark nebulae attenuate them
-  multiplicatively with subpixel-area weighting before final PSF convolution.
+  cloud transmission to the stellar PSF path); unresolved diffuse emitters
+  evaluate overlapping dark-cloud optical depth at each exposure sample before
+  PSF deposition, while resolved diffuse emitters attenuate on the pre-PSF grid
+  before final PSF convolution. Overlapping rendered diffuse emission enters
+  local shot-noise variance when evaluating `MinimumSignalToNoise` admission.
   Incident rates enter `RenderCore` in electron-rate space (pre-cloud diffuse/
   extended rates before cloud attenuation; temporal point-source rates after
   instantaneous cloud attenuation) before vignetting, exposure/gain, noise,
@@ -655,11 +660,14 @@ render-model identity independently of annotation selection.
   facts. Missing photometry or incomplete geometry stays annotation-only unless
   an explicit `DeepSkySyntheticScenario` supplies validated overrides. Open
   clusters and `Cl+N` composites deduct matched HYG star flux before unresolved
-  fallback to prevent double-counting. Dark nebulae (`DrkN`) compose
-  multiplicatively (`T_total = prod(1 - alpha_i)`) over covered subpixel area
-  on compatible celestial diffuse background only and never attenuate foreground
-  terrestrial skyglow. Antipodal/near-antipodal outline edges are refused
-  honestly without aborting sibling objects.
+  fallback to prevent double-counting. Dark nebulae (`DrkN`) compose optical
+  depth additively in sky space at each sample position
+  (`T = exp(-sum_k tau_k)`) before pixel coverage averaging, enforce
+  `MinimumSignalToNoise` against real absorption deficit and local pre-attenuation
+  variance before admission or slot consumption, attenuate only compatible
+  celestial diffuse background, and never attenuate foreground terrestrial
+  skyglow. Antipodal/near-antipodal outline edges are refused honestly without
+  aborting sibling objects.
 - **Diagnostics vs measured associations:** Frame metadata records bounded
   `deepSky*` statistics, canonical `deepSkyDiagnosticsSha256` computed over the
   final delivered (post-readout) diagnostics payload (plus
@@ -674,7 +682,8 @@ render-model identity independently of annotation selection.
   for the full profile table, morphology/photometry limits, independent analytic
   clipping error budget, carried-over `#1191` mapping, and matched baseline vs
   enabled `1936 × 1216` measured counts, per-operation latency breakdown, CPU,
-  allocations, and sampled working set.
+  allocations, sampled working set, and `projected-scene-v3` geometry
+  serialization / SQLite persistence overhead.
 
 ### Exposure-aware stellar visibility and motion
 

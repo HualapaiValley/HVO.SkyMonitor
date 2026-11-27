@@ -120,10 +120,12 @@ internal static class IndependentAnalyticClippingOracle
     public const double ContinuousHausdorffBudgetPixels = 0.27;
     public const double BoundaryEndpointResidualBudgetPixels = 2e-3;
     public const double TransformParityBudgetPixels = 1e-8;
+    public const double ReferenceSagittaTolerancePixels = 1e-4;
 
     private const int BracketSamplesPerCurve = 2048;
     private const int BisectionIterations = 52;
     private const int GoldenIterations = 60;
+    private const int ReferenceAdaptiveMaxDepth = 14;
 
     /// <summary>
     /// Converts J2000 equatorial coordinates to geometric ENU unit vector using independent matrix algebra:
@@ -598,19 +600,19 @@ internal static class IndependentAnalyticClippingOracle
 
         var forwardMax = 0d;
         var maxVertexDist = 0d;
-        foreach (var (a, b) in actualSegments)
+        foreach (var seg in actualSegments)
         {
-            var da = DistancePointToSegments(a, refSegments);
-            var db = DistancePointToSegments(b, refSegments);
+            var da = DistancePointToSegments(seg.A, refSegments);
+            var db = DistancePointToSegments(seg.B, refSegments);
             maxVertexDist = Math.Max(maxVertexDist, Math.Max(da, db));
-            var segMax = MaxDistanceSegmentToSegments(a, b, refSegments);
+            var segMax = MaxDistanceSegmentToSegments(seg.A, seg.B, refSegments);
             if (segMax > forwardMax) forwardMax = segMax;
         }
 
         var reverseMax = 0d;
-        foreach (var (a, b) in refSegments)
+        foreach (var seg in refSegments)
         {
-            var segMax = MaxDistanceSegmentToSegments(a, b, actualSegments);
+            var segMax = MaxDistanceSegmentToSegments(seg.A, seg.B, actualSegments);
             if (segMax > reverseMax) reverseMax = segMax;
         }
 
@@ -662,7 +664,7 @@ internal static class IndependentAnalyticClippingOracle
     private static double MaxDistanceSegmentToSegments(
         OraclePoint a,
         OraclePoint b,
-        List<(OraclePoint A, OraclePoint B)> targetSegments)
+        List<OracleSegment> targetSegments)
     {
         var len = Distance(a, b);
         var steps = Math.Max(8, (int)Math.Ceiling(len / 0.02));
@@ -987,19 +989,7 @@ internal static class IndependentAnalyticClippingOracle
                     allVisible = false;
                     continue;
                 }
-                var samples = Math.Max(64, (int)Math.Ceiling(256d * (b - a) / fullSpan));
-                var pts = new List<OraclePoint>(samples + 1);
-                for (var s = 0; s <= samples; s++)
-                {
-                    var t = a + (b - a) * s / samples;
-                    var evalT = s == 0 ? Math.Min(b, a + 1e-12 * (b - a))
-                        : s == samples ? Math.Max(a, b - 1e-12 * (b - a))
-                        : t;
-                    if (SignedVisibilityMargin(cam, basis, transform, curve(evalT), out var p) >= -1e-6)
-                    {
-                        pts.Add(p);
-                    }
-                }
+                var pts = SampleVisibleArcAdaptively(cam, basis, transform, curve, a, b, fullSpan);
                 if (pts.Count >= 2)
                 {
                     arcs.Add(new OracleVisibleArc(false, pts.ToArray()));
@@ -1120,45 +1110,167 @@ internal static class IndependentAnalyticClippingOracle
         return result;
     }
 
-    private static List<(OraclePoint A, OraclePoint B)> ExtractSegments(IReadOnlyList<(bool Closed, OraclePoint[] Points)> parts)
+    private static List<OraclePoint> SampleVisibleArcAdaptively(
+        OracleCamera cam,
+        (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleTransform transform,
+        Func<double, OracleVec3> curve,
+        double a,
+        double b,
+        double fullSpan)
     {
-        var segs = new List<(OraclePoint, OraclePoint)>();
+        var baseSamples = Math.Max(32, (int)Math.Ceiling(128d * (b - a) / fullSpan));
+        var pts = new List<OraclePoint>(baseSamples + 1);
+        var eps = 1e-12 * (b - a);
+        var hasPrev = false;
+        var prevT = 0d;
+        OraclePoint prevP = default;
+
+        for (var s = 0; s <= baseSamples; s++)
+        {
+            var t = s == 0 ? Math.Min(b, a + eps)
+                : s == baseSamples ? Math.Max(a, b - eps)
+                : a + (b - a) * s / baseSamples;
+            if (SignedVisibilityMargin(cam, basis, transform, curve(t), out var p) < -1e-6)
+            {
+                hasPrev = false;
+                continue;
+            }
+            if (!hasPrev)
+            {
+                pts.Add(p);
+                prevT = t;
+                prevP = p;
+                hasPrev = true;
+            }
+            else
+            {
+                AppendAdaptiveReferenceChord(cam, basis, transform, curve, prevT, prevP, t, p, 0, pts);
+                prevT = t;
+                prevP = p;
+            }
+        }
+        return pts;
+    }
+
+    private static void AppendAdaptiveReferenceChord(
+        OracleCamera cam,
+        (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleTransform transform,
+        Func<double, OracleVec3> curve,
+        double t0,
+        OraclePoint p0,
+        double t1,
+        OraclePoint p1,
+        int depth,
+        List<OraclePoint> pts)
+    {
+        if (depth >= ReferenceAdaptiveMaxDepth || t1 - t0 <= 1e-14)
+        {
+            pts.Add(p1);
+            return;
+        }
+        var tMid = 0.5 * (t0 + t1);
+        if (SignedVisibilityMargin(cam, basis, transform, curve(tMid), out var pMid) < -1e-6)
+        {
+            pts.Add(p1);
+            return;
+        }
+        var chordMid = new OraclePoint(0.5 * (p0.X + p1.X), 0.5 * (p0.Y + p1.Y));
+        var sagitta = Distance(pMid, chordMid);
+        var needsSplit = sagitta > ReferenceSagittaTolerancePixels;
+        if (!needsSplit && depth == 0)
+        {
+            // Guard against inflection-point coincidence where midpoint hits chord while quarter points bow.
+            var tQ1 = 0.5 * (t0 + tMid);
+            var tQ3 = 0.5 * (tMid + t1);
+            if (SignedVisibilityMargin(cam, basis, transform, curve(tQ1), out var pQ1) >= -1e-6 &&
+                Distance(pQ1, new OraclePoint(0.75 * p0.X + 0.25 * p1.X, 0.75 * p0.Y + 0.25 * p1.Y)) > ReferenceSagittaTolerancePixels)
+            {
+                needsSplit = true;
+            }
+            else if (SignedVisibilityMargin(cam, basis, transform, curve(tQ3), out var pQ3) >= -1e-6 &&
+                Distance(pQ3, new OraclePoint(0.25 * p0.X + 0.75 * p1.X, 0.25 * p0.Y + 0.75 * p1.Y)) > ReferenceSagittaTolerancePixels)
+            {
+                needsSplit = true;
+            }
+        }
+        if (needsSplit)
+        {
+            AppendAdaptiveReferenceChord(cam, basis, transform, curve, t0, p0, tMid, pMid, depth + 1, pts);
+            AppendAdaptiveReferenceChord(cam, basis, transform, curve, tMid, pMid, t1, p1, depth + 1, pts);
+        }
+        else
+        {
+            pts.Add(p1);
+        }
+    }
+
+    private readonly record struct OracleSegment(
+        OraclePoint A,
+        OraclePoint B,
+        double MinX,
+        double MaxX,
+        double MinY,
+        double MaxY,
+        double Dx,
+        double Dy,
+        double LenSq);
+
+    private static List<OracleSegment> ExtractSegments(IReadOnlyList<(bool Closed, OraclePoint[] Points)> parts)
+    {
+        var segs = new List<OracleSegment>();
         foreach (var (closed, pts) in parts)
         {
             if (pts.Length < 2) continue;
             var count = closed ? pts.Length : pts.Length - 1;
             for (var i = 0; i < count; i++)
             {
-                segs.Add((pts[i], pts[(i + 1) % pts.Length]));
+                var a = pts[i];
+                var b = pts[(i + 1) % pts.Length];
+                var dx = b.X - a.X;
+                var dy = b.Y - a.Y;
+                segs.Add(new OracleSegment(
+                    a, b,
+                    Math.Min(a.X, b.X), Math.Max(a.X, b.X),
+                    Math.Min(a.Y, b.Y), Math.Max(a.Y, b.Y),
+                    dx, dy, dx * dx + dy * dy));
             }
         }
         return segs;
     }
 
-    private static double DistancePointToSegments(OraclePoint p, List<(OraclePoint A, OraclePoint B)> segments)
+    private static double DistancePointToSegments(OraclePoint p, List<OracleSegment> segments)
     {
         var bestSq = double.PositiveInfinity;
+        var bestDist = double.PositiveInfinity;
         for (var i = 0; i < segments.Count; i++)
         {
-            var (a, b) = segments[i];
-            var dx = b.X - a.X;
-            var dy = b.Y - a.Y;
-            var lenSq = dx * dx + dy * dy;
-            double dSq;
-            if (lenSq <= 1e-24)
+            var seg = segments[i];
+            if (p.X < seg.MinX - bestDist || p.X > seg.MaxX + bestDist ||
+                p.Y < seg.MinY - bestDist || p.Y > seg.MaxY + bestDist)
             {
-                dSq = (p.X - a.X) * (p.X - a.X) + (p.Y - a.Y) * (p.Y - a.Y);
+                continue;
+            }
+            double dSq;
+            if (seg.LenSq <= 1e-24)
+            {
+                dSq = (p.X - seg.A.X) * (p.X - seg.A.X) + (p.Y - seg.A.Y) * (p.Y - seg.A.Y);
             }
             else
             {
-                var t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0d, 1d);
-                var rx = a.X + t * dx - p.X;
-                var ry = a.Y + t * dy - p.Y;
+                var t = Math.Clamp(((p.X - seg.A.X) * seg.Dx + (p.Y - seg.A.Y) * seg.Dy) / seg.LenSq, 0d, 1d);
+                var rx = seg.A.X + t * seg.Dx - p.X;
+                var ry = seg.A.Y + t * seg.Dy - p.Y;
                 dSq = rx * rx + ry * ry;
             }
-            if (dSq < bestSq) bestSq = dSq;
+            if (dSq < bestSq)
+            {
+                bestSq = dSq;
+                bestDist = Math.Sqrt(bestSq);
+            }
         }
-        return Math.Sqrt(bestSq);
+        return bestDist;
     }
 
     private static double Distance(OraclePoint a, OraclePoint b) =>

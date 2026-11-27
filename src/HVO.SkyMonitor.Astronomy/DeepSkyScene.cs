@@ -145,8 +145,10 @@ public sealed record ProjectedDeepSkyObject(
 }
 
 /// <summary>
-/// Reserved wire shape for source contours. Curated producers emit an empty collection and readers reject
-/// populated contours; expanded contour presentation belongs to a separate delivery.
+/// Projected sourced catalog contour carried in a <c>projected-scene-v3</c> document. Legacy curated presets emit an
+/// empty collection (<c>MaximumOutlines = 0</c>), whereas explicit OpenNGC query selections may opt in to bounded
+/// sourced contours (<c>MaximumOutlines</c> up to <see cref="ProjectedSceneDeepSkySelection.MaximumOutlineLimit"/>),
+/// validated by v3 readers and drawn by presentation layers as <c>Outline</c> geometry.
 /// </summary>
 public sealed record ProjectedDeepSkyOutline(
     [property: JsonRequired] string Id,

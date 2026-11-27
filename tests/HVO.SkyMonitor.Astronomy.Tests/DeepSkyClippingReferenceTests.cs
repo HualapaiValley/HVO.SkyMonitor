@@ -124,7 +124,125 @@ public sealed class DeepSkyClippingReferenceTests
         var vertexCount = footprint.Parts.Sum(static p => p.Points.Count);
         Assert.AreEqual(39, vertexCount,
             $"Legacy v2 clipped Moon must preserve exact frozen 39-vertex output from base; got {vertexCount}.");
+        // Byte length and SHA-256 captured verbatim on base commit 214e5ffa0ea31babeeb28768e37972966c565a36 for this exact fixture.
+        Assert.AreEqual(5_262, v2Bytes.Length,
+            $"Legacy v2 clipped Moon must preserve exact frozen base byte length (5262); got {v2Bytes.Length}.");
+        Assert.AreEqual(
+            "902A65B8B607955A74F309358EFBF5009F5135D8343EE6C7AC8F38379796E017",
+            Convert.ToHexString(SHA256.HashData(v2Bytes)),
+            "Legacy v2 clipped Moon serialized payload must match exact frozen base 214e5ffa0 SHA-256 byte-for-byte.");
         CollectionAssert.AreEqual(v2Bytes, ProjectedSceneJson.Serialize(ProjectedSceneJson.Parse(v2Bytes).Scene!));
+
+        // Also verify centered unclipped Moon preserves frozen 64-vertex, 6,268-byte base 214e5ffa0 v2 payload byte-for-byte.
+        var centeredMoonDisk = new SolarDiskAppearance(
+            SolarSystemBody.Moon, ReferenceUtc, new AltAzPoint(60.0, 180), 0.25, -12.1, 0.75, 90, 384_400);
+        var centeredVisible = new VisibleScene(
+                request,
+                [],
+                computationProvenance: new("astronomy-v1", null, null, "astronomy-engine-2.1.19-eqj-v1"))
+            .WithResolvedBodies([centeredMoonDisk]);
+        var centeredV2 = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, centeredVisible,
+            ProjectedSceneImageTransformV1.Identity(160, 160), source, "cal-v1", "cal-v1");
+        var centeredV2Bytes = ProjectedSceneJson.Serialize(centeredV2);
+        Assert.AreEqual(64, centeredV2.ResolvedFootprints!.Single().Parts.Sum(static p => p.Points.Count));
+        Assert.AreEqual(6_268, centeredV2Bytes.Length);
+        Assert.AreEqual(
+            "860F12CB02870E141F0179D97C970F006F581C04A0405ACB83BAB8E60696C61F",
+            Convert.ToHexString(SHA256.HashData(centeredV2Bytes)),
+            "Legacy v2 centered Moon serialized payload must match exact frozen base 214e5ffa0 SHA-256 byte-for-byte.");
+    }
+
+    [TestMethod]
+    public void OracleReferenceCurveAccuracyIsBoundedBelowHalfMillipixelForSmallAndLargeCircles()
+    {
+        // F6 self-verification: verify the independent oracle's own chord sagitta and vertex radial error
+        // stay strictly < 0.0005 px on both a 40 px circle and a 4,000 px circle!
+        foreach (var (radiusPx, sensorSize, focalPx) in new[]
+        {
+            (40d, 200, 1_000d),
+            (4_000d, 10_000, 100_000d)
+        })
+        {
+            var half = sensorSize / 2d;
+            var angularRadiusDeg = Math.Atan(radiusPx / focalPx) * 180d / Math.PI;
+            var cam = new OracleCamera(
+                OracleProjectionModel.Perspective,
+                OracleAperture.Rectangular,
+                half, half, focalPx, focalPx,
+                sensorSize, sensorSize, null,
+                60, 180, 0, false, true, 0,
+                OracleHorizonPolicy.GeometricHorizon, false, -1);
+            var transform = OracleTransform.Identity(sensorSize, sensorSize);
+            var (raHours, decDeg) = HorizontalToJ2000(new AltAzPoint(60, 180), ReferenceUtc, Site);
+            var arcs = IndependentAnalyticClippingOracle.ClipEllipse(
+                cam, transform, raHours, decDeg, angularRadiusDeg, angularRadiusDeg, 0,
+                ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+
+            Assert.HasCount(1, arcs, $"Expected single closed reference circle for R={radiusPx} px.");
+            Assert.IsTrue(arcs[0].Closed);
+            var pts = arcs[0].Points;
+            var maxVertexRadialErr = 0d;
+            var maxMidpointSagittaErr = 0d;
+            for (var i = 0; i < pts.Length; i++)
+            {
+                var p = pts[i];
+                var q = pts[(i + 1) % pts.Length];
+                var rv = double.Hypot(p.X - half, p.Y - half);
+                maxVertexRadialErr = Math.Max(maxVertexRadialErr, Math.Abs(rv - radiusPx));
+                var mx = 0.5 * (p.X + q.X);
+                var my = 0.5 * (p.Y + q.Y);
+                var rm = double.Hypot(mx - half, my - half);
+                maxMidpointSagittaErr = Math.Max(maxMidpointSagittaErr, Math.Abs(rm - radiusPx));
+            }
+            Assert.IsTrue(maxVertexRadialErr < 0.0005,
+                $"Oracle vertex radial error on R={radiusPx} px circle was {maxVertexRadialErr:F6} px (must be < 0.0005 px).");
+            Assert.IsTrue(maxMidpointSagittaErr < 0.0005,
+                $"Oracle chord midpoint sagitta error on R={radiusPx} px circle was {maxMidpointSagittaErr:F6} px (must be < 0.0005 px).");
+        }
+    }
+
+    [TestMethod]
+    public void SensorBoundaryGrazingExcursionBetweenSamplesReportsOpenClippedLimb()
+    {
+        // Exact F18 reproducer: 200x160 perspective sensor, f=1000, principal point (100, 49.999),
+        // boresight (alt 60 deg, az 180 deg), boresight-centered circle of projected radius 50 px and PA 1.40625 deg.
+        // Analytic min Y is 49.999 - 50 = -0.001 px, so the limb exits the top sensor edge between base samples
+        // and MUST report Clipped == true and 1 open part (Closed == false)!
+        const double focalPx = 1000d;
+        const double radiusPx = 50d;
+        const double paDeg = 1.40625d;
+        var angularRadiusDeg = Math.Atan(radiusPx / focalPx) * 180d / Math.PI;
+
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 100, 49.999, focalPx, focalPx, 200, 160,
+            ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = new VisibleSceneRequest(ReferenceUtc, Site, projection, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
+        var centerGeom = new AltAzPoint(60, 180);
+        var extent = new ResolvedFootprintExtent(
+            ResolvedFootprintShape.Ellipse, angularRadiusDeg, angularRadiusDeg, paDeg, null, null, null, "fixture");
+
+        var actual = ResolvedFootprintSampler.SampleBoundarySafe(
+            request, "deep-sky:SENSOR_EXCURSION", "SensorExcursion",
+            ResolvedFootprintSourceKind.DeepSkyObject, extent, centerGeom, null);
+        Assert.IsNotNull(actual);
+        Assert.IsTrue(actual.Clipped,
+            $"Circle reaching analytic Y = -0.001 px must be marked Clipped=true; bounds MinY={actual.Bounds.MinY:F6}.");
+        Assert.HasCount(1, actual.Parts);
+        Assert.IsFalse(actual.Parts[0].Closed,
+            "Circle clipped at top sensor edge (Y = -0.001 px) must have open topology (Closed=false).");
+        Assert.IsTrue(actual.Bounds.MinY <= 1e-6,
+            $"Clipped top limb endpoints must reach sensor edge Y=0; got MinY={actual.Bounds.MinY:F6}.");
+
+        var (raHours, decDeg) = HorizontalToJ2000(centerGeom, ReferenceUtc, Site);
+        var oracleCam = ToOracleCamera(request);
+        var oracleArcs = IndependentAnalyticClippingOracle.ClipEllipse(
+            oracleCam, OracleTransform.Identity(200, 160),
+            raHours, decDeg, angularRadiusDeg, angularRadiusDeg, paDeg,
+            ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        Assert.HasCount(1, oracleArcs);
+        Assert.IsFalse(oracleArcs[0].Closed);
+        AssertHasAgreedGeometry(actual.Parts, oracleArcs, oracleCam, OracleTransform.Identity(200, 160));
     }
 
     [TestMethod]

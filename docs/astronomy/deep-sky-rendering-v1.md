@@ -26,7 +26,10 @@ an independent analytic clipping reference completing the carried-over #1191 ver
   and `VirtualSky` preserves exact prior `SceneId`, `stellarNoiseIdentity`, and raw pixel bytes
   even with stochastic sensor noise enabled. When enabled, `SceneId` and
   `SceneProvenance.DeepSkyCatalog` bind the active DSO catalog snapshot and render-model identity
-  independently of annotation selection.
+  independently of annotation selection; when an in-memory or custom `IDeepSkyCatalog` reports
+  `SnapshotIdentity == null`, `VirtualSky` derives a deterministic canonical content-hash fallback
+  `CatalogSnapshotIdentity` (`{SourceName}:content` / `in-memory-content-v1` / `canonical-json-v1`)
+  so distinct catalog contents never share a `SceneId` or publish null DSO provenance.
 
 ## Shared Geometry, Antipodal Safety, and Clipping (#1191)
 
@@ -44,13 +47,17 @@ an independent analytic clipping reference completing the carried-over #1191 ver
   geometry when available or skips that object honestly (`annotation-only-invalid-antipodal-outline`).
 - **Frozen v2 vs boundary-safe v3 sampling (`ResolvedFootprintSampler`):**
   - `ResolvedFootprintSampler.Sample` (`resolved-footprint-limb-adaptive-v1`) remains byte-frozen
-    for legacy `projected-scene-v2` solar-system footprints.
+    for legacy `projected-scene-v2` solar-system footprints (pinned by exact base `214e5ffa0`
+    payload lengths and SHA-256 digests for both clipped 39-vertex and centered 64-vertex Moon probes).
   - `ResolvedFootprintSampler.SampleBoundarySafe` (`resolved-footprint-limb-adaptive-v2`) is the
     versioned clipping sampler used for `projected-scene-v3` deep-sky extents and shared by
     `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), optical projection domain
     (`cz >= minDomainCosine`), and sensor/aperture boundaries sequentially using Lipschitz exclusion,
-    60-iteration golden-section extremum search, and 52-bit inside-bracket bisection — preserving
-    arbitrarily narrow horizon/domain grazes while never fabricating exterior connecting chords.
+    60-iteration golden-section extremum search (including between-sample sensor/aperture excursion
+    splitting so curved limbs grazing past a rectangular or circular edge between adjacent inside
+    samples are split into clipped open arcs rather than bridged inside), and 52-bit inside-bracket
+    bisection — preserving arbitrarily narrow horizon/domain grazes while never fabricating exterior
+    connecting chords.
 - **Explicit sourced contour parity (`projected-scene-v3` & presentation):** OpenNGC query
   selections (`OpenNgcDeepSkyOptions`) support bounded opt-in sourced contours via
   `MaximumOutlines` (`0..32`, default `0` for legacy curated presets) and `PreferredOutlineLevel`
@@ -68,7 +75,8 @@ an independent analytic clipping reference completing the carried-over #1191 ver
   carries deep-sky sections (including optional sourced outlines) and fails closed in older or
   mismatched readers across `ProjectedSceneJson`, `ProjectedSceneRecipe`, and
   `SqliteCaptureProcessingStore` (which rejects conflicting content or source-lineage reinsertion
-  under the same `OutputIdentitySha256`).
+  under the same `OutputIdentitySha256`, and preserves exact v3 output identity and payload bytes
+  across archived replay executions).
 
 ### Independent Analytic Clipping Oracle & Error Budget
 
@@ -87,13 +95,18 @@ coordinate, or clipping code:
   three separate stages using closed-form great-circle plane/cone roots (`a·cos θ + b·sin θ = c`),
   Lipschitz exclusion + 60-iteration golden-section extremum search, and 52-bit bisection refinement
   so domain failures never mask narrow horizon grazes.
+- Samples every visible reference arc adaptively to a strict `<= 1e-4 px` chord-sagitta tolerance
+  (up to depth 14 with inflection-point quarter-chord guard), self-verified to `< 5e-4 px` on both
+  `40 px` and `4,000 px` circles so large projected extents never incur reference-curve chord bias.
 - Evaluates **continuous bidirectional segment-to-curve Hausdorff distance** (dense `<= 0.02 px`
-  stepping plus 28-iteration golden-section local-maximum refinement), **bidirectional open-arc
-  endpoint residuals**, and **part/closed topology equality**, verified by negative controls
-  including the `[0, 1]` vs `[0, 0.17] + [0.73, 1]` sub-pixel bridged-gap probe (`0.28 px > 0.27 px`).
+  stepping plus 28-iteration golden-section local-maximum refinement with AABB pruning),
+  **bidirectional open-arc endpoint residuals**, and **part/closed topology equality**, verified by
+  negative controls including the `[0, 1]` vs `[0, 0.17] + [0.73, 1]` sub-pixel bridged-gap probe
+  (`0.28 px > 0.27 px`).
 
 | Metric | Documented Numerical Error Budget |
 | --- | --- |
+| Oracle reference-curve chord sagitta (`ReferenceSagittaTolerancePixels`) | `<= 1e-4 px` (self-verified `< 5e-4 px` up to `4,000 px` radius) |
 | Continuous bidirectional Hausdorff distance (`ContinuousHausdorffBudgetPixels`) | `<= 0.27 px` (`0.25 px` chord sagitta contract + `<= 0.02 px` boundary/rounding margin) |
 | Vertex-to-curve distance (`VertexOnCurveTolerancePixels`) | `<= 2e-3 px` |
 | Bidirectional open-endpoint residual (`BoundaryEndpointResidualBudgetPixels`) | `<= 2e-3 px` |
@@ -154,23 +167,32 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    always match and deduct rendered HYG star flux inside their footprints BEFORE selecting
    unresolved point-source vs resolved member rendering, eliminating double-counting even for
    compact clusters lacking a minor axis.
-4. **Exposure-integrated unresolved convergence:** Unresolved non-diffuse emitters
+4. **Exposure-integrated unresolved convergence:** Unresolved emitters
    (`<= 0.5 * PsfSigmaPixels` or point-source geometry) reuse `StellarExposureGeometryBuilder` and
    `TemporalPointSpreadRaster` across the full exposure interval (`ExposureStartUtc` ..
    `ExposureStartUtc + ExposureSeconds`), matching sidereal motion, horizon crossings, and
    instantaneous moving-cloud transmission identically to the stellar PSF path. Unresolved diffuse
-   emitters (`DiffuseNebula`, `SupernovaRemnant`, and `Cl+N` nebula portions) deposit their
-   temporal samples into the pre-PSF diffuse map so overlapping dark nebulae attenuate them cleanly.
-5. **Admission bound to render options:** `EvaluateSignalAndFootprint` evaluates expected signal,
-   complete output-bin noise variance (`CompleteBinSupport`), declared celestial diffuse background,
-   RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
+   emitters (`DiffuseNebula`, `SupernovaRemnant`, and `Cl+N` nebula portions) retain their exact
+   sky-direction exposure samples, evaluate overlapping dark-cloud optical depth `exp(-sum_k tau_k)`
+   at each sample direction before PSF deposition, and converge smoothly to the stellar PSF when
+   no dark cloud overlaps.
+5. **Admission bound to render options & overlapping diffuse noise:** `EvaluateSignalAndFootprint`
+   evaluates expected signal, complete output-bin noise variance (`CompleteBinSupport`), overlapping
+   rendered diffuse emission electrons (with fixed-point re-evaluation when a lower-priority diffuse
+   emitter overlaps an earlier source, excluding a source's own flux), declared celestial diffuse
+   background, RGB `ChannelResponse` & `WhiteBalance`, Bayer CFA response, cloud transmission/scatter,
    vignetting, and source-caused saturation bound to the exact normalized `LinearSceneRenderOptions`
    validated by `DeepSkyRenderPlan.ValidateFor`.
-6. **Dark-nebula subpixel-area multiplicative attenuation & post-attenuation PSF:** Dark nebulae
-   integrate local solid-angle-to-pixel-area (`px^2/sr`) coverage into padded cells so uncovered
-   subpixel background radiance is preserved, compose transmissions multiplicatively
-   (`T_total = prod(1 - alpha_i)`) across stacked clouds, respect `MaximumRenderedSources`, and
-   convolve `E * T - Bg_diffuse * (1 - T)` once with the configured PSF kernel after Pass 2.
+6. **Dark-nebula additive sky-space optical depth, S/N gating & post-attenuation PSF:** Dark nebulae
+   evaluate total prior overlapping optical depth `priorTau = sum_{j < i} tau_j(dir)` at every sky
+   sample direction before averaging pixel coverage (`T_pixel = mean(exp(-sum_k tau_k))`), preserving
+   exact optical-depth additivity (`exp(-tau1) * exp(-tau2) = exp(-(tau1 + tau2))`) for coincident
+   subpixel and resolved clouds across all projections and focal lengths. Before committing
+   transmission or consuming a `MaximumRenderedSources` slot, each dark nebula computes real
+   absorption deficit electrons, null-hypothesis pre-attenuation local variance (`CompleteBinSupport`),
+   and S/N via `EvaluateDarkSignalPrediction`, enforcing `MinimumSignalToNoise` and publishing real
+   `PredictedSignal` in diagnostics; `E * T - Bg_diffuse * (1 - T)` is convolved once with the
+   configured PSF kernel after Pass 2.
 7. **Existing `#518`/`#522` sensor order & final-coordinate diagnostics hash:** `DeepSkyPreCloudRate`
    enters `RenderCore` before cloud attenuation while `DeepSkyTemporalRate` enters after cloud
    attenuation (alongside `StellarExposureRenderPlan`), followed by vignetting, exposure/gain,
@@ -184,31 +206,53 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
 cleanly without throwing, while rejecting invalid merged synthetic geometry/outlines):
 
 - `MaximumCandidates`: default `128` (range `1..2048`)
-- `MaximumRenderedSources`: default `64` (range `1..512`, charged across both luminous and dark sources)
-- `MaximumSparsePixels`: default/max `524,288`
-- `MaximumSamplePointsPerSource`: default `65,536` (range `16..262,144`)
+- `MaximumRenderedSources`: default `64` (range `1..512`, charged across both admitted luminous and dark sources)
+- `MaximumSparsePixels`: default/max `524,288` (enforced across the combined union of pre-cloud and temporal sparse pixel maps as well as pre-PSF diffuse/transmission maps)
+- `MaximumSamplePointsPerSource`: default `65,536` (range `16..262,144`, enforced across extended rasterization and resolved open-cluster / `Cl+N` member generation)
 - `MaximumTotalSamplePoints`: default `2,000,000` (range `16..8,000,000`, charged across all paths including unresolved sources)
 - `MaximumKernelCellVisits`: default/max `67,108,864`
-- `MaximumOutlineEdgeVisits`: default/max `16,777,216` (checked before outline rasterization loops)
+- `MaximumOutlineEdgeVisits`: default/max `16,777,216` (checked before outline rasterization loops, cluster-member outline containment queries, and dark-cloud outline optical-depth evaluations)
 
 ### Representative Full-Resolution Measurement (`1936 × 1216` Mono16, ASI174MM-class)
 
-Measured via `VirtualSkyExtendedDeepSkyTests.FullResolutionAsi174DeepSkyCaptureMeasuresBoundedLatencyCpuAllocationsAndCounts`
+#### Raw Rendering Pipeline Overhead (`RenderDeepSkySources`)
+
+Measured in isolation via `VirtualSkyExtendedDeepSkyTests.FullResolutionAsi174DeepSkyCaptureMeasuresBoundedLatencyCpuAllocationsAndCounts`
 comparing matched **baseline (`RenderDeepSkySources = null`)** vs **enabled (`RenderDeepSkySources.Enabled = true`)**
 with 7 multi-class deep-sky sources (`M31` galaxy, `M42` composite `Cl+N` with catalog outline,
 `M45` open cluster with HYG star deduplication, `M13` globular cluster, `M76` unresolved planetary
-nebula, `NGC 2023` missing-photometry control, and `LDN-M42` dark nebula overlapping `M42`) at
-`SamplesPerProjectedPixel = 2` (5 timed captures each after warmup, Release build on `osx-arm64`):
+nebula, `NGC 2023` missing-photometry control, and `LDN-M42` dark nebula overlapping `M42`, where
+`LDN-M42` is honestly filtered below `MinimumSignalToNoise = 1.0`) at `SamplesPerProjectedPixel = 2`
+(5 timed captures each after warmup, Release build on `osx-arm64`):
 
 | Metric | Baseline (Disabled) | Enabled (7 DSOs) | Delta / Bound |
 | --- | --- | --- | --- |
-| Candidate / eligible / admitted sources | `0` / `0` / `0` | `7` / `6` / `6` (`1` annotation-only, `1` unresolved PSF, `1` dark attenuation) | Caps: `128` / `64` |
+| Candidate / eligible / admitted sources | `0` / `0` / `0` | `7` / `6` / `5` (`2` annotation-only, `1` unresolved PSF, `0` dark attenuation above S/N 1.0) | Caps: `128` / `64` |
 | Total sampled points / sparse pixels / PSF kernel visits | `0` / `0` / `0` | `1,588` / `1,064` / `25,738` | Caps: `2,000,000` / `524,288` / `67,108,864` |
-| Serialized `deepSkyDiagnostics` metadata size | `0 B` | `8,093 B` | Bounded (`< 64 KiB` for 7 sources) |
-| Stellar projection / prediction / reference scene (median wall) | `0.02 ms` / `0.06 ms` / `0.02 ms` | `0.01 ms` / `0.06 ms` / `0.02 ms` | Unchanged |
-| DSO candidate select / total DSO prepare (incl. select) / diagnostics serialize (median wall) | `0.00 ms` / `0.00 ms` / `0.00 ms` | `0.01 ms` / `4.20 ms` / `0.03 ms` | `+4.23 ms` DSO pipeline work |
-| Sensor plane render (median wall) | `37.49 ms` | `35.40 ms` | Sparse scatter avoids per-pixel lookup overhead |
-| Full `1936 × 1216` capture latency (median wall) | `37.79 ms` | `40.03 ms` | `+2.24 ms` |
-| Full `1936 × 1216` capture CPU time (mean process CPU) | `40.54 ms` | `43.10 ms` | `+2.56 ms` |
-| Mean managed allocations per full-frame capture | `22.56 MiB` | `23.31 MiB` | `+0.75 MiB` |
-| Sampled process working set (start / sampled peak across capture loop) | `251.3 MiB` / `296.3 MiB` | `232.3 MiB` / `341.5 MiB` | Sampled between captures (not continuous RSS tracing) |
+| Serialized `deepSkyDiagnostics` metadata size | `0 B` | `8,126 B` | Bounded (`< 64 KiB` for 7 sources) |
+| Stellar projection / prediction / reference scene (median wall) | `0.02 ms` / `0.06 ms` / `0.01 ms` | `0.02 ms` / `0.07 ms` / `0.02 ms` | Unchanged |
+| DSO candidate select / total DSO prepare (incl. select) / diagnostics serialize (median wall) | `0.00 ms` / `0.00 ms` / `0.00 ms` | `0.01 ms` / `4.92 ms` / `0.05 ms` | `+4.97 ms` DSO pipeline work |
+| Sensor plane render (median wall) | `34.22 ms` | `34.22 ms` | `+0.00 ms` (sparse scatter avoids per-pixel lookup overhead) |
+| Full `1936 × 1216` capture latency (median wall) | `34.51 ms` | `39.58 ms` | `+5.07 ms` |
+| Full `1936 × 1216` capture CPU time (mean process CPU) | `38.32 ms` | `51.17 ms` | `+12.86 ms` |
+| Mean managed allocations per full-frame capture | `22.56 MiB` | `23.50 MiB` | `+0.95 MiB` |
+| Sampled process working set (start / sampled peak across capture loop) | `247.2 MiB` / `292.2 MiB` | `234.1 MiB` / `342.6 MiB` | Sampled between captures (not continuous RSS tracing) |
+
+#### `#1191` Geometry Serialization & SQLite Persistence I/O Overhead (`projected-scene-v1` vs `projected-scene-v3`)
+
+Measured in isolation via `VirtualSkyExtendedDeepSkyTests.FullResolutionAsi174DeepSkyV3GeometrySerializationAndSqlitePersistenceBenchmark`
+comparing matched `1936 × 1216` Mono16 captures executed through the real `RawCaptureIngress`,
+`StandardCaptureLaneHandler`, `IProjectedSceneStagingStore`, and `SqliteCaptureProcessingStore`
+(`projected-scene-v1` baseline vs `projected-scene-v3` with `DeepSkyEnabled = true`,
+`DeepSkyMaximumOutlines = 16`, 3 timed runs after warmup, Release build on `osx-arm64`):
+
+| Metric | Baseline (`projected-scene-v1`) | Enabled (`projected-scene-v3`) | Delta / Bound |
+| --- | --- | --- | --- |
+| Serialized projected-scene payload size | `2,774 B` | `16,090 B` | `+13,316 B` (`< 256 KiB` bound) |
+| Projected DSO objects / outlines (parts, vertices) / footprints (parts, vertices) | `0` / `0` (`0`, `0`) / `0` (`0`, `0`) | `6` / `1` (`1`, `4`) / `2` (`2`, `128`) | Within contract point caps |
+| Capture + staging latency (median wall) | `42.63 ms` | `46.65 ms` | `+4.02 ms` |
+| Ingress + lane processing + SQLite/file persistence latency (median wall) | `30.06 ms` | `33.06 ms` | `+2.99 ms` |
+| End-to-end capture + persistence latency (median wall) | `71.88 ms` | `79.50 ms` | `+7.62 ms` |
+| End-to-end CPU time (mean process CPU per capture) | `49.99 ms` | `61.58 ms` | `+11.59 ms` |
+| Mean managed allocations per end-to-end capture | `24.20 MiB` | `27.01 MiB` | `+2.80 MiB` |
+| SQLite database + WAL/SHM footprint on disk (after 4 captures) | `3,131,344 B` | `3,156,064 B` | `+24,720 B` |

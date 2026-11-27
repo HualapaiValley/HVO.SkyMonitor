@@ -67,8 +67,9 @@ when it does not.
   `resolved-footprint-limb-adaptive-v2`) is used for `projected-scene-v3` deep-sky extents and shared with
   `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), optical projection domain
   (`cz >= minDomainCosine`), and sensor/aperture boundaries sequentially via Lipschitz exclusion, 60-iteration
-  golden-section extremum search, and 52-bit inside-bracket bisection so arbitrarily narrow horizon/domain
-  grazes remain visible without fabricating exterior connecting chords.
+  golden-section extremum search (including curved sensor/aperture boundary excursion splitting between adjacent
+  inside samples), and 52-bit inside-bracket bisection so arbitrarily narrow horizon/domain grazes remain
+  visible without fabricating exterior connecting chords.
 - Great-circle catalog outlines share `AppendBoundarySafeCurve` through `DeepSkyOutlineSampler`, rejecting
   antipodal or near-antipodal edges (`>= π - 1e-5 rad`) honestly without inventing ambiguous great-circle
   routes or aborting sibling objects in a scene. See

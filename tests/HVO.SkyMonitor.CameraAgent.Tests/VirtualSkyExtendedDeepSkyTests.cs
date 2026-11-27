@@ -191,6 +191,91 @@ public sealed class VirtualSkyExtendedDeepSkyTests
     }
 
     [TestMethod]
+    public async Task SnapshotlessDeepSkyCatalogsWithIdenticalSemanticsAndAnnotationsOffProduceDistinctSceneIdsAndProvenance()
+    {
+        // Exact F2 regression: annotations off, identical stellar inputs, two valid in-memory DeepSkyCatalogs
+        // sharing identical DeepSkySemantics with SnapshotIdentity == null (1 M31 row vs 0 rows) MUST produce
+        // distinct raw hashes, distinct SceneIds, and non-null distinct DeepSkyCatalog provenance, while
+        // preserving exact F1 opt-out (null / enabled:false) byte-identity!
+        var nullSnapshotSemantics = OpenNgcSemantics with { SnapshotIdentity = null };
+        var midpoint = FixtureUtc.AddSeconds(1);
+        var m31Pos = AltAzToJ2000(new AltAzPoint(60.0, 180.0), midpoint);
+        var m31 = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+            m31Pos.RaHours, m31Pos.DecDegrees, "And", 60, 24, 35, 4.29, 3.44, 23.63, "Sb", 31, null, null, "Andromeda Galaxy");
+
+        var oneRowCatalog = new CombinedVirtualCatalog([],
+            new DeepSkyCatalog(
+                nullSnapshotSemantics,
+                [m31],
+                [new("NGC 224", m31.Id, DeepSkyAliasKinds.Designation), new("M31", m31.Id, DeepSkyAliasKinds.Messier)],
+                [],
+                []));
+        var zeroRowCatalog = new CombinedVirtualCatalog([],
+            new DeepSkyCatalog(nullSnapshotSemantics, [], [], [], []));
+
+        var enabledConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: true, enableDeepSkyAnnotations: false);
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+
+        var oneRowModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), oneRowCatalog, new ProjectedSceneStore());
+        await using var oneRowLifetime = oneRowModule.ConfigureAwait(false);
+        await oneRowModule.InitializeAsync(enabledConfig, CancellationToken.None).ConfigureAwait(false);
+        var oneRowFrame = (await oneRowModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var oneRowRepeatModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), oneRowCatalog, new ProjectedSceneStore());
+        await using var oneRowRepeatLifetime = oneRowRepeatModule.ConfigureAwait(false);
+        await oneRowRepeatModule.InitializeAsync(enabledConfig, CancellationToken.None).ConfigureAwait(false);
+        var oneRowRepeatFrame = (await oneRowRepeatModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var zeroRowModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), zeroRowCatalog, new ProjectedSceneStore());
+        await using var zeroRowLifetime = zeroRowModule.ConfigureAwait(false);
+        await zeroRowModule.InitializeAsync(enabledConfig, CancellationToken.None).ConfigureAwait(false);
+        var zeroRowFrame = (await zeroRowModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        Assert.IsFalse(oneRowFrame.PixelData.Span.SequenceEqual(zeroRowFrame.PixelData.Span),
+            "1 M31 row vs 0 rows must produce different raw pixel bytes.");
+        Assert.AreNotEqual(oneRowFrame.Metadata.Scene!.SceneId, zeroRowFrame.Metadata.Scene!.SceneId,
+            "Different raw images from snapshotless DSO catalogs must never share a SceneId.");
+        Assert.AreNotEqual(oneRowFrame.Metadata.Extra!["stellarNoiseIdentity"], zeroRowFrame.Metadata.Extra!["stellarNoiseIdentity"]);
+        Assert.IsNotNull(oneRowFrame.Metadata.Scene!.DeepSkyCatalog,
+            "Snapshotless DSO render catalog must publish deterministic content-bound DeepSkyCatalog provenance.");
+        Assert.IsNotNull(zeroRowFrame.Metadata.Scene!.DeepSkyCatalog);
+        Assert.AreEqual(64, oneRowFrame.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256.Length);
+        Assert.AreEqual(64, zeroRowFrame.Metadata.Scene!.DeepSkyCatalog!.DatabaseSha256.Length);
+        Assert.AreNotEqual(oneRowFrame.Metadata.Scene!.DeepSkyCatalog, zeroRowFrame.Metadata.Scene!.DeepSkyCatalog);
+
+        // Repeat determinism check.
+        Assert.AreEqual(oneRowFrame.Metadata.Scene!.SceneId, oneRowRepeatFrame.Metadata.Scene!.SceneId);
+        Assert.AreEqual(oneRowFrame.Metadata.Scene!.DeepSkyCatalog, oneRowRepeatFrame.Metadata.Scene!.DeepSkyCatalog);
+        CollectionAssert.AreEqual(oneRowFrame.PixelData.ToArray(), oneRowRepeatFrame.PixelData.ToArray());
+
+        // Exact F1 opt-out preservation with snapshotless catalogs (null vs enabled:false).
+        var omittedConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false,
+            readNoise: 2.0, shotNoiseEnabled: true);
+        var explicitDisabledConfig = CreateModuleConfig(
+            CameraPixelFormat.Mono16, 128, 128, renderDeepSky: false, enableDeepSkyAnnotations: false,
+            readNoise: 2.0, shotNoiseEnabled: true,
+            explicitDisabledRenderOptions: new VirtualSkyDeepSkyRenderOptions(Enabled: false));
+
+        var optOutOneModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), oneRowCatalog, new ProjectedSceneStore());
+        await using var optOutOneLifetime = optOutOneModule.ConfigureAwait(false);
+        await optOutOneModule.InitializeAsync(omittedConfig, CancellationToken.None).ConfigureAwait(false);
+        var optOutOneFrame = (await optOutOneModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        var optOutZeroModule = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), zeroRowCatalog, new ProjectedSceneStore());
+        await using var optOutZeroLifetime = optOutZeroModule.ConfigureAwait(false);
+        await optOutZeroModule.InitializeAsync(explicitDisabledConfig, CancellationToken.None).ConfigureAwait(false);
+        var optOutZeroFrame = (await optOutZeroModule.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false)).Frame!;
+
+        Assert.AreEqual(optOutOneFrame.Metadata.Scene!.SceneId, optOutZeroFrame.Metadata.Scene!.SceneId);
+        Assert.IsNull(optOutOneFrame.Metadata.Scene!.DeepSkyCatalog);
+        Assert.IsNull(optOutZeroFrame.Metadata.Scene!.DeepSkyCatalog);
+        CollectionAssert.AreEqual(optOutOneFrame.PixelData.ToArray(), optOutZeroFrame.PixelData.ToArray());
+    }
+
+    [TestMethod]
     public async Task HostDeepSkyCandidateSelectionUsesBoundedCatalogQueryLimitAndBinnedHashMatchesDeliveredDiagnostics()
     {
         // F12 host query bound check: SelectDeepSkyRenderCandidates must never request int.MaxValue from IDeepSkyCatalog.Query.
@@ -464,15 +549,32 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                 var completedReplay = await reopenedStore.CompleteReplayAsync(replayLease, replayResult, token).ConfigureAwait(false);
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completedReplay.Status);
 
-                var afterReplayNode = await reopenedStore.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
-                Assert.IsNotNull(afterReplayNode);
-                Assert.HasCount(1, afterReplayNode.Outputs);
-                var replayedBytes = await File.ReadAllBytesAsync(Path.Combine(tempRoot, afterReplayNode.Outputs.Single().PayloadRelativePath), token).ConfigureAwait(false);
-                var replayed = ProjectedSceneJson.Parse(replayedBytes);
+                // F8: Read and assert the replay execution's OWN output node directly by execution ID!
+                var replayExecutionNode = await reopenedStore.ReadExecutionNodeAsync(
+                    replayLease.Execution.ExecutionId, captureId, "scene", token).ConfigureAwait(false);
+                Assert.IsNotNull(replayExecutionNode, "Replay execution must record its own completed scene node.");
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, replayExecutionNode.Status);
+                Assert.HasCount(1, replayExecutionNode.Outputs);
+                var replayOutput = replayExecutionNode.Outputs.Single();
+                Assert.AreEqual(committedOutput.OutputIdentitySha256, replayOutput.OutputIdentitySha256);
+                Assert.AreEqual(committedOutput.ContentIdentitySha256, replayOutput.ContentIdentitySha256);
+                Assert.AreEqual(committedOutput.ArtifactId, replayOutput.ArtifactId);
+                Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, replayOutput.ProductSchemaVersion);
+                var replayOutputBytes = await File.ReadAllBytesAsync(
+                    Path.Combine(tempRoot, replayOutput.PayloadRelativePath), token).ConfigureAwait(false);
+                CollectionAssert.AreEqual(expectedSceneBytes, replayOutputBytes,
+                    "Replay execution's own output payload must match the live committed v3 scene byte-for-byte.");
+                var replayed = ProjectedSceneJson.Parse(replayOutputBytes);
                 Assert.IsTrue(replayed.IsValid);
                 Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, replayed.Scene!.SchemaVersion);
                 Assert.AreEqual(expectedSceneSha, replayed.Scene.SceneIdentitySha256);
                 CollectionAssert.AreEqual(expectedSceneBytes, ProjectedSceneJson.Serialize(replayed.Scene));
+
+                // Live node remains intact and consistent with replay execution output.
+                var afterReplayNode = await reopenedStore.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
+                Assert.IsNotNull(afterReplayNode);
+                Assert.HasCount(1, afterReplayNode.Outputs);
+                Assert.AreEqual(committedOutput.OutputIdentitySha256, afterReplayNode.Outputs.Single().OutputIdentitySha256);
 
                 // 2. Deliberately attempt conflicting reinsertion under the SAME OutputIdentitySha256:
                 //    (a) conflicting ContentIdentitySha256, and (b) conflicting SourceArtifactIds lineage.
@@ -580,6 +682,200 @@ public sealed class VirtualSkyExtendedDeepSkyTests
         Assert.IsTrue(int.Parse(extra["deepSkyDiagnosticsBytes"], CultureInfo.InvariantCulture) is > 0 and < 65_536);
         Assert.AreNotEqual(baselineStats.PixelShaPrefix, enabledStats.PixelShaPrefix);
     }
+
+    [TestMethod]
+    public async Task FullResolutionAsi174DeepSkyV3GeometrySerializationAndSqlitePersistenceBenchmark()
+    {
+        // F15 / carried #1191 benchmark: matched full-resolution 1936x1216 baseline (v1 projected scene,
+        // DSO rendering & annotations off) vs enabled (v3 projected scene with DSO rendering, footprints,
+        // sourced OpenNGC outlines, JSON serialization, and real SQLite + file persistence I/O).
+        var catalog = CreateFixtureCatalog(includeHygStar: true);
+        var baseline = await MeasureGeometryAndPersistencePipelineAsync(catalog, enableDeepSky: false).ConfigureAwait(false);
+        var enabled = await MeasureGeometryAndPersistencePipelineAsync(catalog, enableDeepSky: true).ConfigureAwait(false);
+
+        TestContext.WriteLine(
+            $"W1_DSO_1936x1216_PERSIST_BASELINE (v1): schema={baseline.SchemaVersion} sceneBytes={baseline.ScenePayloadBytes} " +
+            $"dsoObjects={baseline.DeepSkyObjectCount} outlines={baseline.OutlineCount} outlineParts={baseline.OutlinePartCount} outlineVertices={baseline.OutlineVertexCount} " +
+            $"footprints={baseline.FootprintCount} footprintParts={baseline.FootprintPartCount} footprintVertices={baseline.FootprintVertexCount} " +
+            $"medianCaptureStageMs={baseline.MedianCaptureStageMs:F2} medianPersistMs={baseline.MedianPersistMs:F2} medianTotalMs={baseline.MedianTotalMs:F2} " +
+            $"avgCpuMs={baseline.AvgCpuMs:F2} avgAllocMiB={baseline.AvgAllocMiB:F2} dbBytes={baseline.SqliteDbBytes}");
+        TestContext.WriteLine(
+            $"W1_DSO_1936x1216_PERSIST_ENABLED (v3): schema={enabled.SchemaVersion} sceneBytes={enabled.ScenePayloadBytes} " +
+            $"deltaSceneBytes={enabled.ScenePayloadBytes - baseline.ScenePayloadBytes:+0;-0} " +
+            $"dsoObjects={enabled.DeepSkyObjectCount} outlines={enabled.OutlineCount} outlineParts={enabled.OutlinePartCount} outlineVertices={enabled.OutlineVertexCount} " +
+            $"footprints={enabled.FootprintCount} footprintParts={enabled.FootprintPartCount} footprintVertices={enabled.FootprintVertexCount} " +
+            $"medianCaptureStageMs={enabled.MedianCaptureStageMs:F2} medianPersistMs={enabled.MedianPersistMs:F2} " +
+            $"deltaPersistMs={enabled.MedianPersistMs - baseline.MedianPersistMs:+0.00;-0.00} " +
+            $"medianTotalMs={enabled.MedianTotalMs:F2} deltaTotalMs={enabled.MedianTotalMs - baseline.MedianTotalMs:+0.00;-0.00} " +
+            $"avgCpuMs={enabled.AvgCpuMs:F2} deltaCpuMs={enabled.AvgCpuMs - baseline.AvgCpuMs:+0.00;-0.00} " +
+            $"avgAllocMiB={enabled.AvgAllocMiB:F2} deltaAllocMiB={enabled.AvgAllocMiB - baseline.AvgAllocMiB:+0.00;-0.00} " +
+            $"dbBytes={enabled.SqliteDbBytes} deltaDbBytes={enabled.SqliteDbBytes - baseline.SqliteDbBytes:+0;-0}");
+
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, baseline.SchemaVersion);
+        Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, enabled.SchemaVersion);
+        Assert.IsTrue(enabled.DeepSkyObjectCount >= 4);
+        Assert.IsTrue(enabled.OutlineCount >= 1 && enabled.OutlineVertexCount > 0);
+        Assert.IsTrue(enabled.FootprintCount >= 2 && enabled.FootprintVertexCount > 0);
+        Assert.IsTrue(enabled.OutlineVertexCount <= ProjectedDeepSky.MaximumTotalOutlinePointCount);
+        Assert.IsTrue(enabled.FootprintVertexCount <= ProjectedResolvedFootprint.MaximumPointCount * enabled.FootprintCount);
+        Assert.IsTrue(enabled.ScenePayloadBytes > baseline.ScenePayloadBytes);
+        Assert.IsTrue(enabled.ScenePayloadBytes < 262_144,
+            $"Serialized v3 projected scene payload must stay tightly bounded (< 256 KiB); got {enabled.ScenePayloadBytes} B.");
+        Assert.IsTrue(enabled.SqliteDbBytes < 16 * 1024 * 1024,
+            $"SQLite persistence database size must stay tightly bounded; got {enabled.SqliteDbBytes} B.");
+    }
+
+    private static async Task<PersistenceBenchmarkResult> MeasureGeometryAndPersistencePipelineAsync(
+        CombinedVirtualCatalog catalog,
+        bool enableDeepSky)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"hvo-dso-bench-{(enableDeepSky ? "v3" : "v1")}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var token = CancellationToken.None;
+            var baseConfig = CreateModuleConfig(
+                CameraPixelFormat.Mono16, 1936, 1216,
+                renderDeepSky: enableDeepSky,
+                enableDeepSkyAnnotations: enableDeepSky,
+                boresightAlt: 60, boresightAz: 180, focalLengthPx: 950,
+                background: 20, readNoise: 1.5,
+                annotationMaximumOutlines: enableDeepSky ? 16 : 0);
+            // Both baseline and enabled retain ProjectedScene step so baseline measures v1 serialization + SQLite I/O!
+            var config = baseConfig with
+            {
+                AgentId = "dso-v3-sqlite-agent",
+                Pipeline = new CapturePipelineConfig(
+                [
+                    new CaptureProcessingStepConfig("ProjectedScene", "scene", DependsOn: ["$raw"],
+                        Options: enableDeepSky
+                            ? JsonSerializer.SerializeToElement(new { DeepSkyEnabled = true, DeepSkyMaximumOutlines = 16 }, WebJsonOptions)
+                            : null)
+                ])
+            };
+
+            using var provider = CreateAgentProvider(tempRoot, catalog);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            await ingress.InitializeAsync(token).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            _ = await operations.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+            var standardLane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static d => d.Name == "standard");
+            var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+
+            var module = new VirtualSkyCameraModule(
+                ExposureTestTimeProvider.ForRendering(),
+                provider.GetRequiredService<ICelestialCatalog>(),
+                provider.GetRequiredService<IProjectedSceneStore>(),
+                stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
+            await using var lifetime = module.ConfigureAwait(false);
+            await module.InitializeAsync(config, token).ConfigureAwait(false);
+
+            async Task<(double CaptureStageMs, double PersistMs, byte[] SceneBytes)> RunOneAsync(int seq)
+            {
+                var reqTime = FixtureUtc.AddSeconds(seq * 5);
+                var req = new CaptureRequest(reqTime, TimeSpan.FromSeconds(5), CaptureMode.Still,
+                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
+                var swCapture = Stopwatch.StartNew();
+                var capture = await module.CaptureAsync(req, token).ConfigureAwait(false);
+                var captureStageMs = swCapture.Elapsed.TotalMilliseconds;
+
+                var swPersist = Stopwatch.StartNew();
+                var submission = new CaptureLoopSubmission(req, capture, req.RequestedStartUtc, req.TargetInterval, TimeSpan.Zero);
+                var accepted = await ingress.AcceptAsync(config, submission, token).ConfigureAwait(false);
+                Assert.IsNotNull(accepted);
+                var lease = await ingress.ClaimAsync(standardLane, "dso-bench-worker", config, token).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                var captureId = lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId;
+                var processed = await handler.HandleAsync(lease.Context, token).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
+                await ingress.CompleteAsync(lease, token).ConfigureAwait(false);
+                var persistMs = swPersist.Elapsed.TotalMilliseconds;
+
+                var node = await store.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                var sceneBytes = await File.ReadAllBytesAsync(
+                    Path.Combine(tempRoot, node.Outputs.Single().PayloadRelativePath), token).ConfigureAwait(false);
+                return (captureStageMs, persistMs, sceneBytes);
+            }
+
+            // Warmup
+            _ = await RunOneAsync(0).ConfigureAwait(false);
+
+            const int runs = 3;
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+            using var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var cpuStart = process.TotalProcessorTime;
+            var allocStart = GC.GetTotalAllocatedBytes(true);
+
+            var captureStageMsArr = new double[runs];
+            var persistMsArr = new double[runs];
+            var totalMsArr = new double[runs];
+            byte[] finalSceneBytes = [];
+            for (var i = 0; i < runs; i++)
+            {
+                var (capMs, persMs, bytes) = await RunOneAsync(i + 1).ConfigureAwait(false);
+                captureStageMsArr[i] = capMs;
+                persistMsArr[i] = persMs;
+                totalMsArr[i] = capMs + persMs;
+                finalSceneBytes = bytes;
+            }
+
+            process.Refresh();
+            var avgCpuMs = (process.TotalProcessorTime - cpuStart).TotalMilliseconds / runs;
+            var avgAllocMiB = (GC.GetTotalAllocatedBytes(true) - allocStart) / (double)runs / (1024d * 1024d);
+            Array.Sort(captureStageMsArr);
+            Array.Sort(persistMsArr);
+            Array.Sort(totalMsArr);
+
+            var parsed = ProjectedSceneJson.Parse(finalSceneBytes);
+            Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+            var scene = parsed.Scene!;
+            var outlines = scene.DeepSky?.Outlines ?? [];
+            var footprints = scene.ResolvedFootprints ?? [];
+            var sqliteFiles = Directory.GetFiles(tempRoot, "*.db*", SearchOption.AllDirectories);
+            var dbBytes = sqliteFiles.Sum(static f => new FileInfo(f).Length);
+
+            return new PersistenceBenchmarkResult(
+                scene.SchemaVersion,
+                finalSceneBytes.Length,
+                scene.DeepSky?.Objects.Count ?? 0,
+                outlines.Count,
+                outlines.Sum(static o => o.Parts.Count),
+                outlines.Sum(static o => o.Parts.Sum(static p => p.Points.Count)),
+                footprints.Count,
+                footprints.Sum(static f => f.Parts.Count),
+                footprints.Sum(static f => f.Parts.Sum(static p => p.Points.Count)),
+                captureStageMsArr[runs / 2],
+                persistMsArr[runs / 2],
+                totalMsArr[runs / 2],
+                avgCpuMs,
+                avgAllocMiB,
+                dbBytes);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    private sealed record PersistenceBenchmarkResult(
+        string SchemaVersion,
+        int ScenePayloadBytes,
+        int DeepSkyObjectCount,
+        int OutlineCount,
+        int OutlinePartCount,
+        int OutlineVertexCount,
+        int FootprintCount,
+        int FootprintPartCount,
+        int FootprintVertexCount,
+        double MedianCaptureStageMs,
+        double MedianPersistMs,
+        double MedianTotalMs,
+        double AvgCpuMs,
+        double AvgAllocMiB,
+        long SqliteDbBytes);
 
     private static async Task<CaptureBenchmarkResult> MeasureFullResolutionCaptureAsync(
         CombinedVirtualCatalog catalog,

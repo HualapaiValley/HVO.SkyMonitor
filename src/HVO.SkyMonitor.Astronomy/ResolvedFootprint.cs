@@ -873,8 +873,10 @@ public static class ResolvedFootprintSampler
             var middleIn = TryProjectVisible(request, basis, curve(middle), out var middlePixel);
             var clampedFrom = ClampToProjection(request.Projection, fromPixel);
             var clampedTo = ClampToProjection(request.Projection, toPixel);
-            if (!middleIn ||
-                Distance(middlePixel, new PixelPoint(0.5 * (clampedFrom.X + clampedTo.X), 0.5 * (clampedFrom.Y + clampedTo.Y))) > MaximumChordErrorPixels)
+            var sagitta = middleIn
+                ? Distance(middlePixel, new PixelPoint(0.5 * (clampedFrom.X + clampedTo.X), 0.5 * (clampedFrom.Y + clampedTo.Y)))
+                : double.PositiveInfinity;
+            if (!middleIn || sagitta > MaximumChordErrorPixels)
             {
                 if (depth < maxDepth)
                 {
@@ -891,6 +893,57 @@ public static class ResolvedFootprintSampler
                 }
                 return;
             }
+
+            // Detect curved sensor or circular-aperture boundary excursions between endpoints and midpoint
+            // before accepting an interior chord as unclipped.
+            var minMargin = Math.Min(
+                PixelSignedMargin(request.Projection, fromPixel),
+                Math.Min(PixelSignedMargin(request.Projection, middlePixel), PixelSignedMargin(request.Projection, toPixel)));
+            var chordLength = Distance(clampedFrom, clampedTo);
+            var excursionGuard = Math.Max(4d * sagitta + 0.1, Math.Min(2d, 0.25 * chordLength));
+            if (double.IsFinite(minMargin) && minMargin <= excursionGuard)
+            {
+                double EvalMargin(double t) =>
+                    VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(t), out var p)
+                        ? PixelSignedMargin(request.Projection, p)
+                        : double.NegativeInfinity;
+
+                var dipLeft = MinimizeGolden(EvalMargin, from, middle, ConstraintGoldenIterations);
+                var leftOut = !TryProjectVisible(request, basis, curve(dipLeft), out _);
+                var dipRight = MinimizeGolden(EvalMargin, middle, to, ConstraintGoldenIterations);
+                var rightOut = !TryProjectVisible(request, basis, curve(dipRight), out _);
+                if (leftOut || rightOut)
+                {
+                    clipped = true;
+                    if (leftOut)
+                    {
+                        AppendBoundaryExcursionSplit(request, basis, curve, from, dipLeft, middle, depth, maxDepth, output, ref clipped);
+                    }
+                    else if (depth < maxDepth)
+                    {
+                        AppendFeasibleChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+                    }
+                    else
+                    {
+                        output.Add((clampedFrom, middlePixel));
+                    }
+
+                    if (rightOut)
+                    {
+                        AppendBoundaryExcursionSplit(request, basis, curve, middle, dipRight, to, depth, maxDepth, output, ref clipped);
+                    }
+                    else if (depth < maxDepth)
+                    {
+                        AppendFeasibleChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                    }
+                    else
+                    {
+                        output.Add((middlePixel, clampedTo));
+                    }
+                    return;
+                }
+            }
+
             output.Add((clampedFrom, clampedTo));
             return;
         }
@@ -1002,6 +1055,24 @@ public static class ResolvedFootprintSampler
                 }
             }
         }
+    }
+
+    private static void AppendBoundaryExcursionSplit(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        Func<double, EnuVector> curve,
+        double a,
+        double dipOut,
+        double b,
+        int depth,
+        int maxDepth,
+        List<(PixelPoint From, PixelPoint To)> output,
+        ref bool clipped)
+    {
+        clipped = true;
+        var nextDepth = Math.Min(depth + 1, maxDepth);
+        AppendFeasibleChord(request, basis, curve, a, dipOut, nextDepth, maxDepth, output, ref clipped);
+        AppendFeasibleChord(request, basis, curve, dipOut, b, nextDepth, maxDepth, output, ref clipped);
     }
 
     private static bool CanApproachProjection(
