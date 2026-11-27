@@ -4140,6 +4140,9 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         private readonly InMemoryCelestialCatalog _inner = new(objects);
 
+        public string CatalogId => Metadata.Name;
+        public string CatalogPackageVersion => Metadata.Version;
+
         public CatalogMetadata Metadata { get; } = new(
             "centered-526-fixture",
             "1",

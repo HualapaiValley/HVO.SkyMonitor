@@ -69,7 +69,7 @@ public sealed class CameraAgentSystemOperationsEndpointsTests
         var informational = application.GetProperty("informationalVersion").GetString()!;
         Assert.AreEqual(informational.Split('+')[0], application.GetProperty("version").GetString());
         Assert.IsGreaterThan(0, root.GetProperty("host").GetProperty("processStartedUtc").GetDateTimeOffset().Year);
-        Assert.AreEqual("hyg-v42-production", root.GetProperty("catalog").GetProperty("catalogId").GetString());
+        Assert.AreEqual("hyg-v44-production", root.GetProperty("catalog").GetProperty("catalogId").GetString());
         Assert.AreEqual("Fixture", root.GetProperty("catalog").GetProperty("packageKind").GetString());
         Assert.IsFalse(root.GetProperty("restart").GetProperty("supervised").GetBoolean());
         Assert.IsFalse(root.GetProperty("restart").GetProperty("requested").GetBoolean());
@@ -181,8 +181,8 @@ public sealed class CameraAgentSystemOperationsEndpointsTests
         .AddInMemoryCollection([new KeyValuePair<string, string?>(CameraAgentRestart.SupervisedKey, supervised ? "true" : "false")])
         .Build();
 
-    private static readonly CatalogSnapshotResult Catalog = new("2026.09.1", CatalogSnapshotPackageKind.Fixture, 2, "hyg-v42-production",
-        "4.2", "celestial-v2", "3", "/opt/hvo/catalog/manifest.json", "/opt/hvo/catalog/catalog.db", new string('a', 64), 52_428_800,
+    private static readonly CatalogSnapshotResult Catalog = new("2026.09.1", CatalogSnapshotPackageKind.Fixture, 2, "hyg-v44-production",
+        "4.4", "3", "4", "/opt/hvo/catalog/manifest.json", "/opt/hvo/catalog/catalog.db", new string('a', 64), 52_428_800,
         118_218, null!);
 
     /// <summary>The routes and their metadata, with request services of their own (<see cref="TestApp"/>).</summary>

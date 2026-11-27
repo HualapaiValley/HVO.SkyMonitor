@@ -72,10 +72,7 @@ selection out of the shared 64 KiB graph-node options envelope without raising
 that bound.
 
 Build the astrometry snapshot through the local catalog adapter, including
-package provenance and its completeness declaration. The qualified catalog is
-HYG 4.2 production package `hyg-v4.2-p3-s2-r1`, 119,625 database rows, SHA-256
-`B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2`;
-its complete magnitude-3.25 selection contains 226 stars, below the 2,500-row
+package provenance and its completeness declaration. Use the approved HYG 4.4 production catalog. Its complete magnitude-3.25 selection contains 226 stars, below the 2,500-row
 contract bound. For a magnitude-5 profile, use
 `hvo-sky astrometry configure --reference-magnitude 5` or set the prediction,
 pin and solver magnitudes all to 5. This HYG selection contains 1,637 stars.

@@ -72,8 +72,8 @@ public sealed class NamedOrbitalPassCaptureTests
             var catalogRoot = Environment.GetEnvironmentVariable("HVO_NAMED_PASS_HYG42_ROOT");
             ICelestialCatalog catalog = catalogRoot is null
                 ? new InMemoryCelestialCatalog([])
-                : CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production")
-                { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" }).Catalog;
+                : CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production")
+                { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" }).Catalog;
             var preparationTime = TimeSpan.FromHours(3);
             var clock = new ExposureTestTimeProvider(First - preparationTime, autoAdvance: true);
             var ingressRoot = Path.Combine(root, "ingress");

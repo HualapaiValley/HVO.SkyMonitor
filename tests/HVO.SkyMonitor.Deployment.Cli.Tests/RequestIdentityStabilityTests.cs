@@ -40,14 +40,14 @@ public sealed class RequestIdentityStabilityTests
     }
 
     [TestMethod]
-    public void CatalogBundleInstall_KeepsTheIdentityAnEarlierBuildJournaled()
+    public void CatalogBundleInstall_KeepsItsRequestIdentity()
     {
         var request = new LifecycleRequest(LifecycleOperationKind.CatalogInstall, null, "/var/lib/hvo-sky", false, false, false)
         {
-            CatalogBundle = "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle"
+            CatalogBundle = "/srv/hvo/hyg-v4.4-p4-s3-r1.bundle"
         };
 
-        Assert.AreEqual("39df4426a9187b68603f1e76ab65fec927555c37fede3e8c74f17dd5f761e14f", request.ComputeRequestSha256());
+        Assert.AreEqual("00f74c93c1f0b0acfe6a83acade141859080a4b8e2458cbfd8199e0043a38f0c", request.ComputeRequestSha256());
     }
 
     [TestMethod]

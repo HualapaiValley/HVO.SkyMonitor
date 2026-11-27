@@ -27,9 +27,9 @@ public sealed class VirtualAstrometryResourceTests
         Assert.IsTrue(binaryRevision.Contains(revision, StringComparison.OrdinalIgnoreCase), "Build this exact committed head before resource evidence.");
         var root = Environment.GetEnvironmentVariable("HVO_ASTROMETRY_CATALOG_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(root), "Approved production snapshot is mandatory.");
-        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v42-production"));
-        Assert.AreEqual(119625L, snapshot.RowCount);
-        Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
+        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v44-production"));
+        Assert.AreEqual(119613L, snapshot.RowCount);
+        Assert.AreEqual("2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321", snapshot.DatabaseSha256);
         Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Resource evidence renders only the unvaried scene.");
         var exposureSeconds = VirtualAstrometryFixture.ExposureSeconds; var measurer = VirtualAstrometryFixture.Measurer;
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);

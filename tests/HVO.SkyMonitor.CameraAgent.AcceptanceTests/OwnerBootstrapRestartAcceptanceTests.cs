@@ -54,7 +54,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
             Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired, json.RootElement.GetProperty("ownerBootstrapState").GetString());
             Assert.AreEqual(64, json.RootElement.GetProperty("configurationSha256").GetString()?.Length);
             Assert.AreEqual("InProcess", json.RootElement.GetProperty("replayProfile").GetString());
-            Assert.AreEqual("hyg-v42-fixture", json.RootElement.GetProperty("catalogId").GetString());
+            Assert.AreEqual("hyg-v44-fixture", json.RootElement.GetProperty("catalogId").GetString());
         }
         using (var healthClient = new HttpClient { BaseAddress = host.BaseAddress })
         using (var health = await healthClient.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false))

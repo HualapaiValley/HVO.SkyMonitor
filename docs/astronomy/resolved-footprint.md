@@ -110,9 +110,9 @@ Structural limits per footprint: at most 256 parts and 16,384 points. Per scene:
 
 ## Projected-scene schema
 
-- A projected scene is `projected-scene-v2` **only when it carries at least one footprint**. Every other scene is
-  still `projected-scene-v1`, byte for byte, and its identity is unchanged.
-  - The v1 golden identity test pins this.
+- For star-only scenes, the presence of at least one resolved footprint selects `projected-scene-v2`.
+  A star-only scene without footprints uses `projected-scene-v1`. Both schemas require the
+  catalog ID and SHA-256 checksum.
   - `resolvedFootprints` is omitted from v1 JSON and required, and non-empty, in v2.
 - Readers accept both versions through `ProjectedSceneV1.IsSupportedSchemaVersion` and
   `SceneProvenance.IsRetainedProjectedSceneSchemaVersion`. Producers never choose the version themselves. It

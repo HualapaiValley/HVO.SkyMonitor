@@ -90,9 +90,9 @@ public sealed class VirtualExposureProvenanceTests
         var request = original.Descriptor.Timing.RequestedStartUtc;
         var logical = VirtualExposureProvenance.Create(request, request.AddHours(-1), request.AddDays(-1),
             original.Descriptor.Controls.EffectiveExposure, VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc);
-        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.2", new string('A', 64),
+        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.4", new string('A', 64),
             "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
-            SceneUtc: logical.CelestialMidpointUtc, VirtualExposure: logical);
+            SceneUtc: logical.CelestialMidpointUtc, VirtualExposure: logical, CatalogId: "test-catalog");
         var manifest = original with { Scene = scene };
         var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
         Assert.IsTrue(parsed.IsValid);
@@ -161,9 +161,9 @@ public sealed class VirtualExposureProvenanceTests
             ? timing.ExposureStartedUtc : timing.RequestedStartUtc.AddDays(-1);
         var shutter = VirtualExposureProvenance.Create(timing.RequestedStartUtc, timing.ExposureStartedUtc, celestialStart,
             original.Descriptor.Controls.EffectiveExposure, mapping);
-        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.2", new string('A', 64),
+        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.4", new string('A', 64),
             "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
-            SceneUtc: shutter.CelestialMidpointUtc, VirtualExposure: shutter);
+            SceneUtc: shutter.CelestialMidpointUtc, VirtualExposure: shutter, CatalogId: "test-catalog");
         var manifest = original with { Scene = scene };
         var roundTrip = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
         Assert.IsTrue(roundTrip.IsValid);

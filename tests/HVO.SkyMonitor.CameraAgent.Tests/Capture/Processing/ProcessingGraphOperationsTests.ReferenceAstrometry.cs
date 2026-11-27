@@ -114,6 +114,8 @@ public sealed partial class ProcessingGraphOperationsTests
             var metadata = catalog.As<ICelestialCatalogMetadataSource>();
             metadata.SetupGet(value => value.Metadata).Returns(catalogData.Metadata);
             metadata.SetupGet(value => value.PreprocessingVersion).Returns(catalogData.Provenance!.PreprocessingVersion);
+            metadata.SetupGet(value => value.CatalogId).Returns(catalogData.Provenance!.CatalogId);
+            metadata.SetupGet(value => value.CatalogPackageVersion).Returns(catalogData.Provenance!.PackageVersion);
             catalog.Setup(value => value.QueryCandidatesAsync(It.IsAny<CatalogCandidateQuery>(), It.IsAny<CancellationToken>()))
                 .Returns((CatalogCandidateQuery query, CancellationToken cancellation) => stars.QueryCandidatesAsync(query, cancellation));
 
@@ -900,10 +902,10 @@ public sealed class VerifiedReferenceAstrometryCatalogTests
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_BETA_HYG42_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle))
-            Assert.Inconclusive("Set HVO_BETA_HYG42_BUNDLE to the verified production HYG 4.2 bundle directory.");
-        var catalog = CatalogSnapshotResolver.ResolveDirectory(bundle!, new(bundle!, "hyg-v42-production")
+            Assert.Inconclusive("Set HVO_BETA_HYG42_BUNDLE to the verified production HYG 4.4 bundle directory.");
+        var catalog = CatalogSnapshotResolver.ResolveDirectory(bundle!, new(bundle!, "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         }).Catalog;
         var pipeline = new CapturePipelineConfig([], CapturePipelineSchemaVersions.ExplicitV2);
         var token = CancellationToken.None;

@@ -31,7 +31,7 @@
 <text x="28.80" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Answers</text>
 <text x="112.80" y="181.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
 <text x="28.80" y="199.50" fill="#98a7bb" textLength="462.00" lengthAdjust="spacingAndGlyphs">The command, under this panel, is the one to run again.</text>
-<text x="12.00" y="235.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle</text>
+<text x="12.00" y="235.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle</text>
 <text x="12.00" y="271.50" fill="#d4d4d4" textLength="630.00" lengthAdjust="spacingAndGlyphs">Installation failed: CameraAgent did not become healthy within 120 seconds.</text>
 <text x="20.40" y="289.50" fill="#fecaca" textLength="294.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[STOPPED] A step failed: see above.</text>
 <text x="37.20" y="307.50" fill="#58a6ff" textLength="75.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">WHAT NEXT</text>
@@ -39,6 +39,6 @@
 <text x="112.80" y="325.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
 <text x="28.80" y="343.50" fill="#98a7bb" textLength="596.40" lengthAdjust="spacingAndGlyphs">What it finished is kept. Run the command below again to carry on, with</text>
 <text x="28.80" y="361.50" fill="#98a7bb" textLength="294.00" lengthAdjust="spacingAndGlyphs">--resume where the message says so.</text>
-<text x="12.00" y="397.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle</text>
+<text x="12.00" y="397.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle</text>
 </g>
 </svg>

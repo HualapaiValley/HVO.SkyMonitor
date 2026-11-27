@@ -411,7 +411,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:CaptureDistribution:UploadEnabled"));
         Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:EnvironmentalDelivery:Enabled"));
         Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
-        Assert.AreEqual("hyg-v42-production", deployment["Catalog:RequiredCatalogId"]);
+        Assert.AreEqual("hyg-v44-production", deployment["Catalog:RequiredCatalogId"]);
         Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
         Assert.AreEqual(
             deployment["CameraAgent:RawIngressRoot"],
@@ -1957,7 +1957,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     public async Task CaptureAsyncUsesValidatedCatalogMetadataForSceneProvenance()
     {
         var catalog = new ProvenanceCatalog(new CatalogMetadata(
-            "validated fixture", "4.2-fixture.1", new Uri("https://example.test/hyg"),
+            "validated fixture", "4.4-fixture.1", new Uri("https://example.test/hyg"),
             new string('A', 64), "CC BY-SA 4.0", "1"));
         var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await module.InitializeAsync(CreateConfig(), CancellationToken.None).ConfigureAwait(false);

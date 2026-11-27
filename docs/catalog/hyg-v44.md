@@ -1,19 +1,12 @@
 # HYG 4.4 catalog snapshot
 
-HYG 4.4 is a second approved catalog lineage. It is installed beside HYG 4.2,
-not over it. HYG 4.2 keeps its catalog ID, package versions, database bytes and
-meaning ([HYG 4.2 catalog snapshot](hyg-v42.md)). Every instance selects exactly
-one package version, and frames that were already recorded keep resolving to the
-catalog identity they recorded.
+HYG 4.4 is the default star catalog for fresh CameraAgent installations.
+The approved package lineage is `hyg-v44-production-p4-s3`. Each instance
+selects an exact revision and records its identity in new captures.
 
-Like 4.2, the bundle is an explicitly built deployment artifact. Capture,
-application startup and installation never download or preprocess catalog data.
-`scripts/catalog/build-hyg-v44.sh` takes either `--source` for an offline build
-from a previously acquired compressed input or `--fetch` to request the pinned
-HTTPS download. `scripts/catalog/bundle-hyg-v44.sh` then emits the
-self-contained bundle. The shell installer `scripts/catalog:install` is
-HYG 4.2-only: install a 4.4 bundle with the deployment CLI `catalog install`
-command described in [Side-by-side selection](#side-by-side-selection).
+The bundle is built explicitly before deployment. Runtime startup and capture
+use the installed snapshot. Build and install it with the
+[production catalog procedure](production-install.md).
 
 ## Pinned evidence
 
@@ -89,7 +82,7 @@ Preprocessing version 4 imports the decompressed CSV into SQLite 3.45.1 with a
 - `catalog_metadata` records the name, catalog version, source commit and URL,
   license, preprocessing and schema versions, and the conventions below.
 - `celestial_objects` has one row per HYG row with a nonblank ID, right
-  ascension, declination and magnitude. Row `0` (Sol) is excluded, as in 4.2.
+  ascension, declination and magnitude. Row `0` (Sol) is excluded.
   The columns are:
   - display name, J2000 position, magnitude and B−V color index;
   - `hipparcos_id`;
@@ -132,64 +125,28 @@ the fixed J2000 catalog positions. Astrometric uncertainty continues to report
 explicitly through `ICelestialCatalogDetailsSource`, which returns
 `CelestialCatalogObjectDetails`. It then applies the explicit
 `ProperMotionPropagation` helper in `HVO.SkyMonitor.Astronomy`. Selecting
-HYG 4.4 therefore changes which rows and designations are available. It does
-not change how a star's position is computed.
+The default projection uses the fixed positions.
 
-## Side-by-side selection
+## Select and roll back revisions
 
-Each approved lineage has its own root under the product root:
+HYG 4.4 revisions are installed under
+`/var/lib/hvo-sky/catalogs/hyg-v44-production/versions/`. The deployment CLI
+verifies the bundle against approved registry v4. The running CameraAgent
+image declares `hvo-approved-catalogs-v4`.
 
-```text
-/var/lib/hvo-sky/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1
-/var/lib/hvo-sky/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1
-```
+Install a new revision with `hvo-sky-install catalog install --catalog-bundle BUNDLE`.
+To activate it, run `hvo-sky-install catalog select --instance-id UUID --catalog-version VERSION`.
+An instance whose layout admits catalog commands can select revisions of its installed star lineage. The separately
+installed [composed catalog](hyg-v44-openngc.md) follows the same rule for its
+own revisions.
 
-`catalog install` reads the catalog ID from the bundle manifest, checks it
-against the registry and installs the bundle beneath that lineage's root. It does
-not select the catalog for any instance:
-
-```bash
-hvo-sky-install catalog install --catalog-bundle /owner-private/hyg-v4.4-p4-s3-r1.bundle
-hvo-sky-install catalog select --instance-id <uuid> --catalog-version hyg-v4.4-p4-s3-r1
-hvo-sky-install catalog rollback --instance-id <uuid>
-```
-
-Package versions are unique across lineages, so `--catalog-version` names exactly
-one root. A selection that crosses lineages does all of the following:
-
-- rewrites the instance's `Catalog__RequiredCatalogId` setting and its
-  `HVO_CATALOG_ROOT` mount;
-- reauthenticates the changed Compose model;
-- verifies health against the selected specification before it commits;
-- pins the previously selected identity as a historical reference, so garbage
-  collection cannot delete it while a frame still names it.
-
-A current image declares `hvo-approved-catalogs-v3`, which resolves HYG 4.2,
-HYG 4.4, the composed OpenNGC lineage and the standalone OpenNGC deep-sky
-lineage. An image that declares `hvo-approved-catalogs-v2` resolves the first
-three. An image that declares
-`hvo-approved-catalogs-v1` resolves the two HYG lineages and refuses the composed
-catalog. An older image that only knows HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
-selection retires the retained image rollback because that rollback environment
-mounts the old lineage's root. Catalog `rollback` returns to the previous catalog
-selection, including across lineages.
-
-Selection and rollback both refuse while CameraAgent still has capture-processing
-work pending or awaiting retry at the drained boundary. A processing node that has
-not committed regenerates its annotated derivative from whichever catalog is
-mounted when it retries. Under another package, that derivative gets a different
-scene identity, and central would refuse it as a second derivative of the same
-capture. The refusal restores and resumes the exact prior selection and names the
-pending count. Raw captures and queued uploads are untouched, so retry once
-processing has drained.
-
-Two instances on one host may select different catalog IDs, and offline
-instances on different hosts may run different IDs. Each host resolves only the
-root it mounts.
-
-The installer checks an installed catalog's identity when it installs and selects it. There is no
-`catalog check` command: the signed catalog manifests it read are retired (install contract section 10), and a
-release carries its catalog bundle as an ordinary asset with a SHA-256 in `SHA256SUMS`.
+`hvo-sky-install catalog rollback --instance-id UUID` restores the previously
+selected revision of the same lineage. It refuses when there is no previous
+revision. Selection and rollback both refuse while capture-processing items
+remain pending or await retry at the drained boundary. The installer resumes
+the prior selection and reports the pending count so the operator can retry
+after processing drains. These behaviors are the catalog rollback baseline
+for subsequent releases.
 
 ## Runtime identity and health
 
@@ -205,18 +162,14 @@ alias lookup index is then built on first use.
 
 The catalog health check reports `CatalogId`, `PackageVersion`,
 `CatalogVersion`, `SchemaVersion`, the database checksum and the row count.
-Scenes rendered from a schema-3 lineage such as HYG 4.4 record `CatalogId` and
-`CatalogPackageVersion` alongside the existing `CatalogName`, `CatalogVersion`
-and `CatalogChecksumSha256`. Schema-2 HYG 4.2 scenes record neither, because
-name, version and checksum already identify them. As a result, provenance
-regenerated for a retained 4.2 capture stays byte-identical to the evidence
-recorded before HYG 4.4 existed. Frames recorded before these fields existed
-deserialize with both values `null` and continue to resolve through their
-recorded checksum.
+Scenes record the star catalog ID, package version and database checksum
+alongside its display name and catalog version. Retained scenes require a
+catalog ID and checksum.
+
 A selection never rewrites recorded provenance. The displaced package stays
 pinned as a historical reference, so garbage collection refuses to delete a
 snapshot that recorded frames still name.
 
 The scope is the HYG 4.4 star catalog only. It excludes Gaia data, a catalog
-marketplace, in-place migration of an installed 4.2 root, and deep-sky object
+marketplace and deep-sky object
 data.

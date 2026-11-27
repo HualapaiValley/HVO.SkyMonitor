@@ -11,7 +11,7 @@ Issue #877. Parent epic #876. This document is the approved current-state eviden
 | Job | Runner | Selector | Role |
 | --- | --- | --- | --- |
 | Change Classification | hosted | not draft | Emits the selection plan consumed by every other job |
-| Catalog Contracts | hosted | `mode == full` | Produces the `hyg-v42-contracts` artifact consumed by four jobs |
+| Catalog Contracts | hosted | `mode == full` | Produces the `hyg-v44-contracts` artifact consumed by four jobs |
 | Quality | hosted | always, inner steps `mode == full` | Format, package audit, shell syntax, CI-control guards |
 | Deployment Contracts | self-hosted | `deployment == true` | Catalog, shard, and installer deployment gates |
 | Build | self-hosted | `mode == full` | Warning-clean Debug and Release solution build |

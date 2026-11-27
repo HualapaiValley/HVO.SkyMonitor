@@ -1,12 +1,9 @@
 # HYG 4.4 + OpenNGC composed catalog
 
-`hyg-v44-openngc-production` is a third approved catalog lineage (#1186, the
-facts/package/query foundation of #525). It contains the HYG 4.4 star catalog,
-unchanged, plus OpenNGC v20260501 deep-sky objects: identities, extents, sourced
-outlines and search aliases. It changes neither original HYG package nor the
-default catalog ([HYG 4.4 catalog snapshot](hyg-v44.md)). A current CameraAgent
-image can select this lineage beside the existing HYG catalogs. Curated
-expected-position annotations stay opt-in.
+`hyg-v44-openngc-production` is the approved composed lineage from #1186
+and #525. It combines the unchanged HYG 4.4 star data with OpenNGC v20260501
+deep-sky objects, extents, sourced outlines and search aliases. Curated
+expected-position annotations are opt-in.
 
 Like the other lineages, the bundle is an explicitly built deployment artifact.
 Capture, application startup and installation never download or preprocess
@@ -25,8 +22,7 @@ to reproduce the approved bytes with upstream and Ubuntu SQLite 3.45.1 builds.
 See the [toolchain, root cause and repeated-build regression](hyg-v44-reproducibility.md).
 
 Library consumers resolve the explicitly selected pinned package. A current
-CameraAgent image can install and select this package, as described below.
-The default catalog for a fresh install remains HYG 4.2.
+CameraAgent image can install this package as described below.
 
 ## Pinned evidence
 
@@ -208,31 +204,14 @@ unsupported version-1 manifests remain rejected.
 
 ## Image selection
 
-The current CameraAgent image declares catalog contract `hvo-approved-catalogs-v3`
-and `io.hvo.skymonitor.catalog-manifest-version` `4`. That label is the highest
-manifest version the image reads. Upgrade preflight accepts a selected catalog
-whose manifest is version 2, 3 or 4, so an instance that still has HYG 4.2,
-HYG 4.4 or this composed lineage keeps that selection. Manifest version 1, and
-any manifest newer than the label, is refused. Manifest 4 is the standalone
-OpenNGC deep-sky lineage described in [openngc-independent.md](openngc-independent.md).
+The CameraAgent image declares `hvo-approved-catalogs-v4` and catalog
+manifest reader version 4. The composed lineage uses manifest version 3.
 
-`catalog select` accepts `hyg-v44-openngc-production` from an image whose
-catalog contract is `hvo-approved-catalogs-v3` or `hvo-approved-catalogs-v2`.
-An image that still declares
-`hvo-approved-catalogs-v1` resolves HYG 4.2 and HYG 4.4 and refuses this lineage.
-An image that declares only `hyg-v42-production-p3-s2` resolves HYG 4.2.
-An image that omits the manifest label is still held to manifest version 2.
-Installation and selection keep the registry's checksum, length, schema and
-count checks. Nothing skips them, and a bundle whose bytes differ from the
-pinned specification is refused.
-
-The default catalog for a fresh install remains HYG 4.2. Selecting this lineage
-is explicit. An upgrade from an image labeled manifest version 2 to one labeled
-3 changes that label, so the upgrade snapshots the small databases; the selected
-HYG catalog itself stays mounted. Roll a composed selection back to a manifest 2
-lineage before rolling the image back to a v1 contract: the older image refuses
-manifest 3. Likewise, disable a standalone OpenNGC selection before rolling the
-image back to a v2 contract, which refuses manifest 4.
+Choose this lineage by supplying its verified bundle at fresh install.
+An instance installed with this lineage can select and roll back its own
+package revisions. The [HYG 4.4 star-only lineage](hyg-v44.md) is the default
+at fresh install. The [standalone OpenNGC family](openngc-independent.md)
+is configured independently.
 
 The package root is:
 

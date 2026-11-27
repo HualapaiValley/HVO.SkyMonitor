@@ -233,7 +233,7 @@ public sealed partial class CameraAgentStateSnapshotTests
         {
             Root = Path.Combine(Path.GetTempPath(), $"hvo-snapshot-{Guid.NewGuid():N}");
             InstanceId = Guid.NewGuid();
-            Paths = InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId);
+            Paths = InstallationPaths.Create(Root, InstanceId, HygV44.CatalogId);
             foreach (var directory in new[] { Paths.InstanceRoot, Paths.StateRoot, Paths.OperationsRoot })
                 SafeFileSystem.CreateOwnerDirectory(directory);
             SafeFileSystem.CreateOwnerDirectory(Path.Combine(Paths.OperationsRoot, "lifecycle"));

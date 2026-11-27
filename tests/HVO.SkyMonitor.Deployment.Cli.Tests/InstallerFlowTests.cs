@@ -44,7 +44,7 @@ public sealed partial class InstallerFlowTests
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity(string? illuminationMode)
     {
         // Deliberately environment-gated. These contracts install a real catalog bundle, which is
-        // too large to check in, so the CI Unit lane restores it from the hyg-v42-contracts artifact
+        // too large to check in, so the CI Unit lane restores it from the hyg-v44-contracts artifact
         // and exports this variable; locally it is absent and the test skips. The skip is silent --
         // a skipped MSTest records notExecuted="0" and inconclusive="0" in its TRX -- so the lane
         // that is supposed to run these asserts the bundle exists before exporting the variable,
@@ -1625,7 +1625,7 @@ public sealed partial class InstallerFlowTests
             cancellationToken.ThrowIfCancellationRequested();
             Verifications++;
             InspectVerification?.Invoke(expectation);
-            Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
+            Assert.AreEqual("hyg-v44-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
             Assert.IsTrue(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
@@ -1806,7 +1806,7 @@ public sealed partial class InstallerFlowTests
             {
                 var id = instanceId.ToString("D");
                 var instanceRoot = Path.Combine(root, "cameraagents", id);
-                var catalog = Path.Combine(root, "catalogs", "hyg-v42-production");
+                var catalog = Path.Combine(root, "catalogs", "hyg-v44-production");
                 return Success(JsonSerializer.Serialize(new[]
                 {
                     new

@@ -125,11 +125,11 @@ reuse a prior frame fit even when its selected stars are unchanged. This adds no
 catalog schema, HYG upgrade, proper-motion or lifecycle behavior; those remain
 owned by #521.
 
-The initial #1098 catalog profile is the approved full HYG 4.2 snapshot with
+The current catalog selection uses the approved full HYG 4.4 snapshot with
 magnitude <=5: 1,637 entries, below both the 2,500 solver bound and the current
 2,000 visible-render bound. Set `AstrometricSolverOptions.MaximumCatalogMagnitude`
 and VirtualSky `MaximumMagnitude` to 5 explicitly for that profile. The existing
-solver default of 7 selects 15,598 catalog rows and therefore remains unavailable
+solver default of 7 selects 15,597 catalog rows and therefore remains unavailable
 through this bounded adapter; defaults are not silently reinterpreted. A
 magnitude <=5.5 request already has 2,865 rows and is incomplete at the legacy
 2,500 bound, and no deeper selection is qualified (see below). These
@@ -176,7 +176,7 @@ advertised:
   this.
 
 Settings keep the legacy 2,500-entry bound. That bound admits any requested
-magnitude whose complete selection fits: on the HYG 4.2 production snapshot,
+magnitude whose complete selection fits: on the HYG 4.4 production snapshot,
 up to magnitude 5.37 (2,483 rows; 5.38 selects 2,517 and is incomplete). Only
 magnitude 5 is qualified (#1098/#1126). The band above 5.0 up to 5.37 is
 admitted unqualified, exactly as before #1167.

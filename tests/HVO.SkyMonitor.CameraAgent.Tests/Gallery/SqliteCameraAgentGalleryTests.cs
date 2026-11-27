@@ -1054,7 +1054,7 @@ public sealed class SqliteCameraAgentGalleryTests
         "projection",
         "projection-v1",
         "astronomy-v1",
-        "sensor-v1");
+        "sensor-v1", CatalogId: "test-catalog");
 
     private static CloudAssessmentV1 CreateCloudAssessment(
         ArtifactManifestV2 raw,

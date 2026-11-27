@@ -39,7 +39,7 @@ public sealed partial class InstallerFlowTests
     private static InstallerProcessRunner OpenNgcLegacyInstallerRunner(InstallRequest request)
     {
         var labels = OpenNgcImageLabels();
-        labels["io.hvo.skymonitor.catalog-contract"] = CameraAgentImageContract.ComposedCatalogContract;
+        labels["io.hvo.skymonitor.catalog-contract"] = CameraAgentImageContract.CatalogContract;
         labels["io.hvo.skymonitor.catalog-manifest-version"] = "3";
         return new(request.ImageReference, request.ProductRoot, request.InstanceId!.Value)
         { RenderComposeFile = true, Labels = labels };
@@ -131,7 +131,7 @@ public sealed partial class InstallerFlowTests
     {
         var owner = new InstallerOwnerClient();
         var first = await InstallResourceRequestAsync(request, OpenNgcLegacyInstallerRunner(request), owner);
-        Assert.AreEqual(CameraAgentImageContract.ComposedCatalogContract, first.Image.CatalogContract);
+        Assert.AreEqual(CameraAgentImageContract.CatalogContract, first.Image.CatalogContract);
         var paths = InstallationPaths.Create(request.ProductRoot, first.InstanceId, first.Catalog.CatalogId);
         var state = await ReadOpenNgcInstallationStateAsync(paths);
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
@@ -143,7 +143,7 @@ public sealed partial class InstallerFlowTests
             RuntimeUid, RuntimeGid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
         manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
-        Assert.AreEqual(CameraAgentImageContract.IndependentCatalogContract, manifest.Image.CatalogContract);
+        Assert.AreEqual(CameraAgentImageContract.CatalogContract, manifest.Image.CatalogContract);
         Assert.AreNotEqual(first.Image.ImageId, manifest.Image.ImageId);
         Assert.AreEqual(state.RequestSha256, (await ReadOpenNgcInstallationStateAsync(paths)).RequestSha256);
         var bundle = Environment.GetEnvironmentVariable("HVO_OPENNGC_CATALOG_BUNDLE");

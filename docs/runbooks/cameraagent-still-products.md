@@ -250,7 +250,7 @@ and never cached as one. Its tile opens the player in the same viewer. Large sam
 ## Reproducible qualification
 
 `FullDayStillProductQualificationTests` uses actual 640×640 RGGB VirtualSky
-output and the verified 119,625-row production catalog. Its fixed site is
+output and the verified 119,613-row production catalog. Its fixed site is
 35.347° N, 113.878° W, America/Phoenix, starting October 12, 2026. It resolves
 both sunrise boundaries through shared Astronomy and retains every actual raw
 capture and published fixed preview. The bounded exposure recipe is documented

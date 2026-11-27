@@ -472,6 +472,9 @@ public sealed class CameraAgentSkyMapProjectionTests
             PreprocessingVersion = preprocessingVersion;
         }
 
+        public string CatalogId => Metadata.Name;
+        public string CatalogPackageVersion => Metadata.Version;
+
         public CatalogMetadata Metadata { get; }
 
         public string PreprocessingVersion { get; }

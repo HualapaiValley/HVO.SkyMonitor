@@ -1,12 +1,8 @@
-using System.Text;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.AgentCore.Tests;
 
-/// <summary>
-/// Issue #521 adds the selected catalog ID and package version to scene provenance as trailing optional members.
-/// Frames recorded before the change must keep their exact bytes, digest, and meaning.
-/// </summary>
 [TestClass]
 [TestCategory("Unit")]
 public sealed class SceneProvenanceCatalogIdentityTests
@@ -25,30 +21,27 @@ public sealed class SceneProvenanceCatalogIdentityTests
     }
 
     [TestMethod]
-    public void PersistedSceneWithoutCatalogIdentityKeepsItsBytesAndDeserializes()
+    [DataRow("catalogId", null)]
+    [DataRow("catalogChecksumSha256", null)]
+    [DataRow("catalogId", "")]
+    [DataRow("catalogChecksumSha256", "invalid")]
+    public void PersistedSceneWithoutValidCatalogIdentityIsRefused(string field, string? invalidValue)
     {
-        var manifest = CreateManifest(CreateScene());
-        var bytes = CaptureContractJson.Serialize(manifest);
-        var text = Encoding.UTF8.GetString(bytes);
+        var manifest = JsonNode.Parse(CaptureContractJson.Serialize(CreateManifest(CreateScene())))!;
+        var scene = manifest["scene"]!.AsObject();
+        if (invalidValue is null)
+            scene.Remove(field);
+        else
+            scene[field] = invalidValue;
 
-        Assert.DoesNotContain("catalogId", text, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("catalogPackageVersion", text, StringComparison.OrdinalIgnoreCase);
-        var parsed = CaptureContractJson.ParseManifest(bytes);
-        Assert.IsTrue(parsed.IsValid);
-        var scene = parsed.Document!.Manifest.Scene!;
-        Assert.IsNull(scene.CatalogId);
-        Assert.IsNull(scene.CatalogPackageVersion);
-        Assert.AreEqual("HYG", scene.CatalogName);
-        Assert.AreEqual("4.2", scene.CatalogVersion);
-        CollectionAssert.AreEqual(bytes, CaptureContractJson.Serialize(parsed.Document.Manifest));
-        Assert.AreEqual(CaptureContractJson.ComputeManifestSha256(manifest),
-            CaptureContractJson.ComputeManifestSha256(parsed.Document.Manifest));
+        Assert.IsFalse(CaptureContractJson.ParseManifest(
+            System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest)).IsValid);
     }
 
     [TestMethod]
     public void SelectedCatalogIdentityRoundTripsAndIsBoundIntoTheManifestDigest()
     {
-        var legacy = CreateManifest(CreateScene());
+        var original = CreateManifest(CreateScene());
         var selected = CreateManifest(CreateScene() with
         {
             CatalogId = "hyg-v44-production",
@@ -60,12 +53,12 @@ public sealed class SceneProvenanceCatalogIdentityTests
         Assert.IsTrue(parsed.IsValid);
         Assert.AreEqual("hyg-v44-production", parsed.Document!.Manifest.Scene!.CatalogId);
         Assert.AreEqual("hyg-v4.4-p4-s3-r1", parsed.Document.Manifest.Scene.CatalogPackageVersion);
-        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(legacy), CaptureContractJson.ComputeManifestSha256(selected));
+        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(original), CaptureContractJson.ComputeManifestSha256(selected));
     }
 
     private static SceneProvenance CreateScene()
-        => new("scene", "rig-v1", "HYG", "4.2", new string('A', 64),
-            "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1");
+        => new("scene", "rig-v1", "HYG", "4.4", new string('A', 64),
+            "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1", CatalogId: "test-catalog");
 
     private static ArtifactManifestV2 CreateManifest(SceneProvenance scene)
         => ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };

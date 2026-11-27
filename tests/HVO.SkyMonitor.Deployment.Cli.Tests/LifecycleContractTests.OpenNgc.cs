@@ -106,7 +106,7 @@ public sealed partial class LifecycleContractTests
         await DeepSkyTransitionAsync(fixture, deepSky, lifecycle, owner);
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
-        var candidate = manifest.Catalog with { PackageVersion = "hyg-v4.2-p3-s2-r2" };
+        var candidate = manifest.Catalog with { PackageVersion = "hyg-v4.4-p4-s3-r2" };
         var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidate.PackageVersion };
         var compose = CameraAgentLifecycleManager.ComposeFrom(fixture.Paths, manifest, result);
         var composeBefore = await File.ReadAllTextAsync(compose.ComposeFile);
@@ -301,7 +301,7 @@ public sealed partial class LifecycleContractTests
     private static async Task<LifecycleFixture> DeepSkyFixtureAsync()
     {
         var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed,
-            installedImage: image => image with { CatalogContract = CameraAgentImageContract.IndependentCatalogContract, CatalogManifestVersion = "4" });
+            installedImage: image => image with { CatalogContract = CameraAgentImageContract.CatalogContract, CatalogManifestVersion = "4" });
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
         File.SetUnixFileMode(Path.Combine(fixture.Paths.ConfigRoot, "compose", "instance.env"), UnixFileMode.UserRead | UnixFileMode.UserWrite);
         var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");

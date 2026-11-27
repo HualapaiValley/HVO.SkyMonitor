@@ -474,7 +474,7 @@ public sealed partial class VirtualSkyCloudPerformanceTests
             "projection-v1",
             "astronomy-v1",
             "sensor-v1",
-            CloudScenario: cloud);
+            CloudScenario: cloud, CatalogId: "test-catalog");
         var setpoint = new CaptureSetpoint(exposure, 0, null, null);
         var frame = new CameraFrame(
             startUtc,

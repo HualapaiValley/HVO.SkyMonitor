@@ -28,7 +28,7 @@ preprocessing version 4 (`scripts/catalog/hyg-v44-common.sh`). Its SHA-256 is
 
 The rows were chosen to exercise these behaviours:
 
-- **Bright-star parity with the HYG 4.2 fixture:** Sirius, Canopus, Rigil
+- **Bright stars:** Sirius, Canopus, Rigil
   Kentaurus, Vega, Arcturus and Betelgeuse.
 - **High proper motion:** 61 Cygni A and B, Kapteyn's Star, Groombridge 1830,
   Proxima Centauri, Sirius and Arcturus.

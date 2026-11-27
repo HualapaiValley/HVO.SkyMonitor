@@ -196,7 +196,7 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "0.9.0-test+" + new string('c', 40), StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "CameraAgent: 0.9.0-test+" + new string('b', 40), StringComparison.Ordinal);
         StringAssert.Contains(result.Out, ".NET 10.0.13 (linux-arm64)", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "hyg-v42-production 4.2 (118218 rows)", StringComparison.Ordinal);
+        StringAssert.Contains(result.Out, "hyg-v44-production 4.4 (119613 rows)", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "supervised: 'hvo-sky restart' restarts it", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, $"API key {CliHarness.KeyId} (read-write), from {harness.CredentialsPath}", StringComparison.Ordinal);
     }

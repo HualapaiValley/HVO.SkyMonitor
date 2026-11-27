@@ -24,13 +24,13 @@ for name in "${success[@]}"; do jobs="$(jq -c --arg name "$name" --arg head "$he
 for name in "${skipped[@]}"; do jobs="$(jq -c --arg name "$name" --arg head "$head_sha" --argjson id "$id" --argjson run "$run_id" '. + [{id:$id,name:$name,run_id:$run,run_attempt:1,head_sha:$head,status:"completed",conclusion:"skipped"}]' <<< "$jobs")"; id=$((id+1)); done
 jq -n --argjson jobs "$jobs" '{total_count:($jobs|length),jobs:$jobs}' > "$fixture/jobs.json"
 
-names=(hyg-v42-contracts package-audit deployment-contract-logs unit-test-evidence integration-test-evidence architecture-unit-evidence architecture-test-evidence publish-evidence coverage-report)
+names=(hyg-v44-contracts package-audit deployment-contract-logs unit-test-evidence integration-test-evidence architecture-unit-evidence architecture-test-evidence publish-evidence coverage-report)
 artifacts='[]'; id=300
 for name in "${names[@]}"; do
     artifact_dir="$root/artifact-$id"
     mkdir "$artifact_dir"
     printf 'artifact-%s\n' "$name" > "$artifact_dir/content.txt"
-    job_key="$(jq -nr --arg name "$name" '{"hyg-v42-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts","unit-test-evidence":"unit","integration-test-evidence":"integration","architecture-unit-evidence":"architecture","architecture-test-evidence":"architecture","publish-evidence":"architecture","coverage-report":"coverage"}[$name]')"
+    job_key="$(jq -nr --arg name "$name" '{"hyg-v44-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts","unit-test-evidence":"unit","integration-test-evidence":"integration","architecture-unit-evidence":"architecture","architecture-test-evidence":"architecture","publish-evidence":"architecture","coverage-report":"coverage"}[$name]')"
     jq -nS --arg artifact "$name" --arg job "$job_key" --arg head "$head_sha" --argjson run "$run_id" \
       '{schemaVersion:"hvo-ci-artifact-provenance-v1",artifact:$artifact,jobKey:$job,runId:$run,attempt:1,headSha:$head,workflowPath:".github/workflows/ci.yml"}' > "$artifact_dir/ci-artifact-provenance.json"
     (cd "$artifact_dir" && zip -q "$fixture/downloads/$id.zip" content.txt ci-artifact-provenance.json)

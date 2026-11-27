@@ -28,7 +28,7 @@ internal static partial class Program
             "mono174" => (1936, 1216, false, false), "day3552" => (3552, 3552, true, true),
             _ => throw new ArgumentException("Unknown production case.", nameof(caseName))
         };
-        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production") { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" });
+        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production") { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" });
         var start = DateTimeOffset.Parse(daytime ? "2026-10-12T19:00:00Z" : "2026-10-13T07:00:00Z", CultureInfo.InvariantCulture);
         var interval = daytime ? 5 : 20;
         var count = 300 / interval;

@@ -48,45 +48,17 @@ internal sealed record CameraAgentStatePreflightReport(
 internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
-    /// <summary>
-    /// The catalog contract a current image declares. Registry version 3 approves the stars-only lineages, the
-    /// composed HYG 4.4 + OpenNGC lineage (manifest 3) and the standalone OpenNGC deep-sky lineage (manifest 4). The
-    /// image's catalog-manifest-version label is the highest manifest it reads.
-    /// </summary>
-    public const string IndependentCatalogContract = "hvo-approved-catalogs-v3";
-
-    /// <summary>
-    /// The catalog contract of an image that embeds registry version 2: the stars-only lineages and the composed
-    /// HYG 4.4 + OpenNGC lineage, every manifest up to version 3.
-    /// </summary>
-    public const string ComposedCatalogContract = "hvo-approved-catalogs-v2";
-
-    /// <summary>
-    /// The catalog contract of an image that embeds registry version 1 (issue #521): HYG 4.2 and HYG 4.4 only.
-    /// </summary>
-    public const string CatalogContract = "hvo-approved-catalogs-v1";
-
-    /// <summary>The catalog contract images before issue #521 declared; such an image can resolve only HYG 4.2.</summary>
-    public const string LegacyCatalogContract = "hyg-v42-production-p3-s2";
+    public const string CatalogContract = "hvo-approved-catalogs-v4";
 
     public const string ReplayRunnerContract = "local-replay-runner-v1";
 
-    /// <summary>The catalog IDs approved by registry version 1. A unit test pins this to the embedded registry.</summary>
-    public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
-
     public static bool IsKnownCatalogContract(string? catalogContract)
-        => catalogContract is IndependentCatalogContract or ComposedCatalogContract or CatalogContract or LegacyCatalogContract;
+        => catalogContract == CatalogContract;
 
-    /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
+    /// <summary>True when the image declares the current registry and that registry contains the catalog.</summary>
     public static bool SupportsCatalog(string? catalogContract, string? catalogId)
-        => catalogContract switch
-        {
-            IndependentCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _),
-            ComposedCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out var specification) && specification.ManifestVersion <= 3,
-            CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
-            LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
-            _ => false
-        };
+        => IsKnownCatalogContract(catalogContract) &&
+           catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _);
 }
 
 /// <summary>A raw-ingress schema's declared migration: the oldest source schema it converts and its contract.</summary>

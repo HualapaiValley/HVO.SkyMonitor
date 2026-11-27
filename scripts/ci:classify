@@ -125,7 +125,7 @@ is_reduced_path() {
   fi
 
   case "$path" in
-    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
+    docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
       return 1
       ;;
   esac
@@ -527,13 +527,13 @@ is_deployment_path() {
     scripts/ci:* | scripts/test:ci-classification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/*)
       return 0
       ;;
-    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
+    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/catalog/* | scripts/infra:operation-lock)
       return 0
       ;;
     deploy/*)
       return 0
       ;;
-    tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
+    tests/fixtures/catalog/hyg-v44-subset.sqlite)
       return 0
       ;;
     src/HVO.SkyMonitor.CameraAgent/Dockerfile)
@@ -564,7 +564,7 @@ select_deployment_suites() {
     .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification | .github/workflows/release-image.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml)
       select_all_deployment_suites
       ;;
-    scripts/catalog:* | scripts/catalog/* | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite | scripts/infra:operation-lock)
+    scripts/catalog/* | tests/fixtures/catalog/hyg-v44-subset.sqlite | scripts/infra:operation-lock)
       deployment_catalog="true"
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)

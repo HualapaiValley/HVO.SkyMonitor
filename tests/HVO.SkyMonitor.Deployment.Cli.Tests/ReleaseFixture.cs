@@ -43,7 +43,7 @@ internal sealed class ReleaseFixture : IDisposable
         ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
         ["io.hvo.skymonitor.component"] = "CameraAgent",
         ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-        ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
+        ["io.hvo.skymonitor.catalog-contract"] = CameraAgentImageContract.CatalogContract,
         ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
     };
 
@@ -367,3 +367,12 @@ internal sealed class ReleaseFixture : IDisposable
 
 /// <summary>One entry of an offline archive the fixture writes: a regular file's bytes, or a link's target.</summary>
 internal sealed record ArchiveEntry(string Name, byte[] Bytes, TarEntryType Type = TarEntryType.RegularFile);
+
+internal static class HygV44
+{
+    public const string CatalogId = "hyg-v44-production";
+    public const string PackageVersion = "hyg-v4.4-p4-s3-r1";
+    public const string DatabaseSha256 = "2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321";
+    public const long DatabaseLength = 16_166_912;
+    public const long RowCount = 119_613;
+}

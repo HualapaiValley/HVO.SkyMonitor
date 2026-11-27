@@ -39,9 +39,9 @@ only. It makes no claim about physical accuracy, and the hardware evidence it do
   that base. Neither changes production code or any harness.
 - **Host.** Intel i9-14900K, 12 logical processors, 47 GiB, Linux 6.8, .NET SDK 10.0.401 (runtime 10.0.12),
   Release, `DOTNET_TieredCompilation=0`, sequential runs on an otherwise idle host.
-- **Catalog.** Installed `hyg-v42-production` snapshot `hyg-v4.2-p3-s2-r1`: HYG 4.2, 119,625 rows, database
-  SHA-256 `B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2`. Complete magnitude ≤ 5 selection:
-  1,637 entries, catalog identity `e29a02ef…25b60b`, selection identity `ce81fa2e…274cb8`.
+- **Catalog.** The retired snapshot used by the run is pinned in the
+  [qualification manifest](../validation/issue-1106-qualification-manifest.json).
+  The magnitude ≤ 5 selection contained 1,637 entries.
 - **Manifest.** [`issue-1106-qualification-manifest.json`](../validation/issue-1106-qualification-manifest.json)
   was first committed in `e73d0a7d` (SHA-256 `4025bb0d…bcfe09`) before any measurement. `9061c8f7` amended only
   its attachment rule, again before the measured run, giving the measured SHA-256 `b56fa6d0…19db76a`. It pins the harness set, the
@@ -60,7 +60,7 @@ only. It makes no claim about physical accuracy, and the hardware evidence it do
   files, the output path was absolute and new, and the retained index passes the same manifest check.
 
 ```bash
-HVO_ASTROMETRY_CATALOG_ROOT=<installed hyg-v42-production root> \
+HVO_ASTROMETRY_CATALOG_ROOT=<snapshot root from the qualification manifest> \
   docs/validation/issue-1106-qualification.sh <new output directory>
 ```
 
@@ -247,7 +247,7 @@ outside the envelope, whether or not a unit test exercises it.
 | Lens projection | Equidistant fisheye. ASI174 mono: 1936×1216, 5.86 µm, 595.84 px image circle. ASI178MC RGGB: 3096×2080, 2.4 µm, Fujinon FE185C057HA-1 candidate, 185°. | Equisolid, orthographic, stereographic and perspective/rectilinear ([#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126)); any physical lens |
 | Distortion | Radial k1 only, inside the \|k1\| ≤ 0.5 invertibility domain. Held-out truth up to ±0.8 % focal, 6.5 px principal point and \|k1\| 0.008. | Higher radial, tangential or decentring terms; parameters beyond the qualified perturbations |
 | Readouts | Mono native, ROI (240, 96, 1440, 1024), 2×2 digital average, ROI+2×2, mirror and roll. CFA native, plus derived phases GRBG/GBRG/BGGR for scientific reconstruction only. Every view is derived from one native-sensor calibration. | Bayer crop or bin and charge binning (rejected explicitly); separate per-readout calibrations |
-| Catalog | HYG 4.2 snapshot `hyg-v4.2-p3-s2-r1`, complete selection to magnitude 5 (1,637 entries), fixed J2000 positions, geometric altitude | Incomplete selections (magnitude 5.5 and 7) are labelled incomplete and never presented as complete; proper motion and refraction |
+| Catalog | Snapshot pinned by the qualification manifest, complete selection to magnitude 5 (1,637 entries), fixed J2000 positions, geometric altitude | Incomplete selections (magnitude 5.5 and 7) are labelled incomplete and never presented as complete; proper motion and refraction |
 | Exposure and solving | Exposure-integrated rendering (#522) for every declared workload. Solving, calibration and uncertainty at 1 s exposures and gain 150 across three held-out seasons. | Solving accuracy on long trailed exposures; daytime solving |
 | Measurement and uncertainty | `linear-stellar-local-v2`. Systematic floors 0.042 px mono unbinned, 0.028 px mono 2×2, 0.063 px CFA, valid for the VirtualSky renderer and these profiles. | Any other measurer, PSF or sensor response |
 | Calibration authority | Virtual-profile review, accept, reject and retention | Activating or writing back any physical rig profile |
@@ -352,7 +352,7 @@ real-camera accuracy. #1107 needs the following evidence:
 | Stable optics within a session | The emulator lens never drifts | Repeat calibrations over temperature and time to measure stability |
 | Linear RAW16 with declared black/white level and Gaussian PSF | Real sensors add non-linearity, hot pixels, amp glow and an irregular PSF | Sensor response and saturation characterization; re-qualified detection thresholds |
 | Virtual-profile accept/reject with prior retention | `VirtualOpticalCalibrationReviewService` refuses physical rigs | Operator review, explicit real-rig activation, rejected-candidate retention and rollback on actual rig profiles; no automatic write-back |
-| Fixed J2000 positions, geometric altitude | Real images include refraction near the horizon; HYG 4.2 has no epoch or proper-motion contract | Refraction qualification consistent in renderer and solver; proper motion only on the #521 data contract |
+| Fixed J2000 positions, geometric altitude | Real images include refraction near the horizon; the measured catalog model used fixed J2000 positions | Refraction qualification consistent in renderer and solver; proper motion only on the #521 data contract |
 | Clock contributes only a bound | No real clock in the emulator | #1095 clock-health facts from the actual host |
 
 ## Known gaps and follow-ups

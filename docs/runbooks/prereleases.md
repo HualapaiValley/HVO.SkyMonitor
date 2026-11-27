@@ -19,7 +19,7 @@ in the Build job, before anything is pushed.
 | `hvo-sky-install-linux-x64`, `hvo-sky-install-linux-arm64` | The self-contained installer. `--version` prints `<version>+<commit>` |
 | `hvo-sky-linux-x64`, `hvo-sky-linux-arm64` | The runtime client, `hvo-sky` (asset kind `cli`, [hvo-sky.md](hvo-sky.md), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317)), self-contained. `--version` prints `<version>+<commit>`. A pre-release tagged before #1317 has none |
 | `skymonitor-cameraagent-<version>-linux-amd64.oci.tar`, `...-linux-arm64.oci.tar` | The CameraAgent image for one platform, as an OCI archive `docker image load` reads |
-| `<catalog version>.bundle.tar.gz` | Independent approved catalog bundles: default stars `hyg-v4.2-p3-s2-r1.bundle.tar.gz` and deep-sky `openngc-v20260501-p6-s5-r1.bundle.tar.gz`. HYG 4.4 remains held pending separate approval |
+| `<catalog version>.bundle.tar.gz` | Independent approved catalog bundles: default stars `hyg-v4.4-p4-s3-r1.bundle.tar.gz` and deep-sky `openngc-v20260501-p6-s5-r1.bundle.tar.gz`. |
 | `install.sh` | The entry point, with the pre-release's version written in ([install.sh](deployment-installer.md#installsh), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311)). A pre-release tagged before #1311 has none |
 | `release.json` | The release manifest, RoofController's schema 1 (contract section 4) |
 | `SHA256SUMS` | The SHA-256 of every other file, `release.json` included |
@@ -170,7 +170,7 @@ operations manual's change-management rules for a live host. An upgrade pauses c
 
    ```bash
    mkdir -m 700 catalog
-   tar -xzf hyg-v4.2-p3-s2-r1.bundle.tar.gz -C catalog
+   tar -xzf hyg-v4.4-p4-s3-r1.bundle.tar.gz -C catalog
    ```
 
    The OpenNGC archive is independent of the star bundle. To select it after installing the instance, extract
@@ -188,7 +188,7 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    # A new instance, from the offline archive (the default image source).
    ./hvo-sky-install-linux-arm64 cameraagent install \
      --release "$release" \
-     --catalog-bundle "$release/catalog/hyg-v4.2-p3-s2-r1.bundle" \
+     --catalog-bundle "$release/catalog/hyg-v4.4-p4-s3-r1.bundle" \
      --friendly-name "SkyMonitor 01" --bind-address 127.0.0.1 --port 5130 \
      --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
 

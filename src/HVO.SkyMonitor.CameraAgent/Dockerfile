@@ -134,9 +134,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 #
 # catalog-manifest-version is the highest catalog manifest this image reads. Preflight
 # accepts a selected catalog from manifest 2 through that label. catalog-contract
-# hvo-approved-catalogs-v3 resolves every lineage in the embedded registry, including
-# the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
-# image that omits the manifest label is held to manifest 2 only.
+# hvo-approved-catalogs-v4 resolves every lineage in the embedded registry, including
+# HYG 4.4 (manifest 2), the composed catalog (manifest 3), and standalone OpenNGC (manifest 4).
 #
 # The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
 # and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
@@ -175,7 +174,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
-      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v4" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       io.hvo.skymonitor.first-boot-contract="cameraagent-first-boot-pause-v1" \
       io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \

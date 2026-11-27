@@ -194,8 +194,8 @@ internal static partial class Program
         }
         var injectedConfig = Configure(true);
         var controlConfig = Configure(false);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(args[2], "hyg-v42-production")
-        { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" });
+        var snapshot = CatalogSnapshotResolver.Resolve(new(args[2], "hyg-v44-production")
+        { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" });
         Directory.CreateDirectory(output);
         var privatePath = Path.Combine(output, "private-truth");
         Directory.CreateDirectory(privatePath);

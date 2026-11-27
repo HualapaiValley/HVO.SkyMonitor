@@ -80,7 +80,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var catalog = CatalogFixtureInstallation.Create(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite"),
             Path.Combine(root, "catalog"));
 
         try
@@ -112,7 +112,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["LocalIdentity:CookieName"] = "CameraAgent.Standalone194.Auth",
                 ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
                 ["Catalog:Root"] = catalog.Root,
-                ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
+                ["Catalog:RequiredCatalogId"] = "hyg-v44-fixture",
                 ["Catalog:RequiredPackageKind"] = "Fixture",
                 ["CentralIdentity:ServiceUrl"] = "http://central-forbidden.invalid/",
                 ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
@@ -192,7 +192,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["LocalIdentity:CookieName"] = "CameraAgent.Standalone171.Auth",
                 ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
                 ["Catalog:Root"] = Path.GetFullPath(catalogRoot),
-                ["Catalog:RequiredCatalogId"] = "hyg-v42-production",
+                ["Catalog:RequiredCatalogId"] = "hyg-v44-production",
                 ["Catalog:RequiredPackageKind"] = "Production",
                 ["CentralIdentity:ServiceUrl"] = "http://central-forbidden.invalid/",
                 ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",

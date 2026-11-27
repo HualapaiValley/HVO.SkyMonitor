@@ -107,7 +107,6 @@ internal sealed class AnnotationSceneProvider(
         });
         var rigHash = RigProjectionContextFactory.CreateProfileHashSha256(config.Rig);
         var topologyMetadata = constellationTopology.Metadata;
-        var (catalogId, catalogPackageVersion) = CatalogSceneProvenanceIdentity.For(metadataSource);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -135,8 +134,8 @@ internal sealed class AnnotationSceneProvider(
             IncludeConstellationEndpointStars: false,
             RigProfileHashSha256: rigHash,
             ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion,
-            CatalogId: catalogId,
-            CatalogPackageVersion: catalogPackageVersion);
+            CatalogId: scene.ComputationProvenance.CatalogId,
+            CatalogPackageVersion: scene.ComputationProvenance.CatalogPackageVersion);
         return new AnnotationSceneResult(scene, provenance);
     }
 

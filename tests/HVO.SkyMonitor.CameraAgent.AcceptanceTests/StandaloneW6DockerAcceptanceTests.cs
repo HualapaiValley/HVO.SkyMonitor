@@ -39,10 +39,10 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed class StandaloneW6DockerAcceptanceTests
 {
     private const string ExpectedAgentId = "cameraagent-standalone-w6-asi676mc";
-    private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
+    private const string ExpectedCatalogSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
     private const string ExpectedRigSha256 = "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B";
     private const string ExpectedProcessingSha256 = "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE";
-    private const string ExpectedLocalProfileSha256 = "86F33CC1F53B39B3307B3100FB942348A16C4DB8AEFB3B1987C542E23D020CB5";
+    private const string ExpectedLocalProfileSha256 = "72334250B056B6839BEBAF660224D0DD539711C8DEA7B6D0B7220C8BD7CB3357";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
     private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
     private const string ExpectedEffectiveGraphSha256 = "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339";
@@ -50,7 +50,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106";
-    private const string ExpectedMonoLocalProfileSha256 = "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD";
+    private const string ExpectedMonoLocalProfileSha256 = "D6A67F26F8D105ECA8EEEEB577917F9B008904E9F8BC51B48F3105BE12295C83";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
     private const string ExpectedMonoDesiredGraphSha256 = "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90";
     private const string ExpectedMonoEffectiveGraphSha256 = "52281764A916B8CD0AA35B59E60F1FF97DEE0AFBC27411D0BA5951BD9F4CD2D8";
@@ -410,7 +410,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 cadenceSeconds = 10,
                 warmupCount,
                 measuredCount,
-                catalogRows = 119_625,
+                catalogRows = 119_613,
                 catalogSha256 = ExpectedCatalogSha256,
                 rigSha256 = ExpectedRigSha256,
                 processingSha256 = ExpectedProcessingSha256,
@@ -4735,7 +4735,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var catalogRoot = Environment.GetEnvironmentVariable("HVO_CATALOG_PERF_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(catalogRoot));
         var catalog = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            catalogRoot!, "hyg-v42-production"));
+            catalogRoot!, "hyg-v44-production"));
         // Issue #770. The resolved digest is retained so the document records what the run read,
         // not only the constant it was checked against.
         var observedCatalogSha256 = catalog.DatabaseSha256;

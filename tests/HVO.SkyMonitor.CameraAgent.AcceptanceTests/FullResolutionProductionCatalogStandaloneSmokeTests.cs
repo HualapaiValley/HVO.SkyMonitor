@@ -30,10 +30,10 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
     private const string CatalogRootEnvironmentVariable = "HVO_CATALOG_PERF_ROOT";
     private const string EvidenceRootEnvironmentVariable = "HVO_ISSUE_171_EVIDENCE_ROOT";
     private const string FixedUtcEnvironmentVariable = "HVO_ISSUE_171_FIXED_UTC";
-    private const string ProductionSnapshotVersion = "hyg-v4.2-p3-s2-r1";
-    private const string ProductionDatabaseSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
-    private const long ProductionDatabaseLength = 9_302_016;
-    private const long ProductionRowCount = 119_625;
+    private const string ProductionSnapshotVersion = "hyg-v4.4-p4-s3-r1";
+    private const string ProductionDatabaseSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
+    private const long ProductionDatabaseLength = 16_166_912;
+    private const long ProductionRowCount = 119_613;
     private const int PreRestartCaptureCount = 12;
     private static readonly DateTimeOffset FixedStartUtc = CreateRunAnchorUtc();
     private static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -57,7 +57,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         var catalogRoot = Environment.GetEnvironmentVariable(CatalogRootEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(catalogRoot))
         {
-            Assert.Inconclusive($"Set {CatalogRootEnvironmentVariable} to an installed verified Production HYG 4.2 catalog root.");
+            Assert.Inconclusive($"Set {CatalogRootEnvironmentVariable} to an installed verified Production HYG 4.4 catalog root.");
         }
 
         var snapshot = ResolveApprovedSnapshot(catalogRoot);
@@ -468,16 +468,16 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
     private static ApprovedCatalogSnapshot ResolveApprovedSnapshot(string catalogRoot)
     {
         var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            catalogRoot, "hyg-v42-production")
+            catalogRoot, "hyg-v44-production")
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Production
         });
         Assert.AreEqual(ProductionSnapshotVersion, snapshot.SnapshotVersion);
         Assert.AreEqual(CatalogSnapshotPackageKind.Production, snapshot.PackageKind);
         Assert.AreEqual(2, snapshot.ManifestVersion);
-        Assert.AreEqual("4.2", snapshot.CatalogVersion);
-        Assert.AreEqual("2", snapshot.SchemaVersion);
-        Assert.AreEqual("3", snapshot.PreprocessingVersion);
+        Assert.AreEqual("4.4", snapshot.CatalogVersion);
+        Assert.AreEqual("3", snapshot.SchemaVersion);
+        Assert.AreEqual("4", snapshot.PreprocessingVersion);
         Assert.AreEqual(ProductionDatabaseSha256, snapshot.DatabaseSha256, ignoreCase: true);
         Assert.AreEqual(ProductionDatabaseLength, snapshot.DatabaseLength);
         Assert.AreEqual(ProductionRowCount, snapshot.RowCount);
@@ -720,7 +720,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual("hualapai-cameraagent-standalone-full", descriptor.Location?.LocationId);
         Assert.IsFalse(string.IsNullOrWhiteSpace(descriptor.Location?.IdentitySha256));
         Assert.IsNotNull(scene);
-        Assert.AreEqual("HYG 4.2", scene.CatalogName);
+        Assert.AreEqual("HYG 4.4", scene.CatalogName);
         Assert.AreEqual(snapshot.CatalogVersion, scene.CatalogVersion);
         Assert.AreEqual(snapshot.DatabaseSha256, scene.CatalogChecksumSha256, ignoreCase: true);
         Assert.AreEqual(snapshot.SchemaVersion, scene.CatalogSchemaVersion);

@@ -36,7 +36,7 @@ internal static partial class Program
         var width = sequence["width"]!.GetValue<int>();
         var height = sequence["height"]!.GetValue<int>();
         var start = DateTimeOffset.Parse(rows[0]!["sourceUtc"]!.GetValue<string>(), CultureInfo.InvariantCulture);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production") { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" });
+        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production") { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" });
         var config = Config(width, height, CameraPixelFormat.BayerRggb16, start, 0);
         if (sequence["rig"] is { } rig) config = config with { Rig = rig.Deserialize<CameraRigConfig>(Json)! };
         var projection = RigProjectionContextFactory.Create(config.Rig);

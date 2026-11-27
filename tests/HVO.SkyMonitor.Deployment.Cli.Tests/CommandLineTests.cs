@@ -262,7 +262,7 @@ public sealed class CommandLineTests
     [DataRow("--image-version", "1.2.0")]
     [DataRow("--catalog-manifest", "/srv/hvo/catalog-manifest.json")]
     [DataRow("--catalog-index", "https://downloads.example/catalog-index.json")]
-    [DataRow("--catalog-version", "hyg-v4.2-p3-s2-r1")]
+    [DataRow("--catalog-version", "hyg-v4.4-p4-s3-r1")]
     [DataRow("--asset-base-url", "https://mirror.example/releases")]
     [DataRow("--channel", "stable")]
     public void Parse_RetiredSignedReleaseOption_IsUnknown(string option, string value)
@@ -644,7 +644,7 @@ public sealed class CommandLineTests
         ]);
         var select = (LifecycleRequest)CommandLine.ParseCommand([
             "catalog", "select", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--catalog-version", "hyg-v4.2-p3-s2-r2"
+            "--catalog-version", "hyg-v4.4-p4-s3-r2"
         ]);
 
         Assert.AreEqual(LifecycleOperationKind.CatalogInstall, install.Operation);
@@ -670,7 +670,7 @@ public sealed class CommandLineTests
         {
             null => ["catalog", "install"],
             "relative" => ["catalog", "install", "--catalog-bundle", "relative/catalog.bundle"],
-            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.2-p3-s2-r1"]
+            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.4-p4-s3-r1"]
         };
 
         var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));

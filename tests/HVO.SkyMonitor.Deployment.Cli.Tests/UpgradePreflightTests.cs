@@ -989,7 +989,7 @@ public sealed partial class UpgradePreflightTests
             Root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-{Guid.NewGuid():N}");
             InstanceId = Guid.NewGuid();
             InstallationId = Guid.NewGuid();
-            Paths = InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId);
+            Paths = InstallationPaths.Create(Root, InstanceId, HygV44.CatalogId);
             foreach (var directory in new[]
             {
                 Paths.ProductRoot, Path.Combine(Paths.ProductRoot, "cameraagents"), Paths.InstanceRoot,
@@ -1009,14 +1009,14 @@ public sealed partial class UpgradePreflightTests
 
         public void WriteCatalogManifest(int manifestVersion)
         {
-            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV42.PackageVersion);
+            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV44.PackageVersion);
             SafeFileSystem.CreateOwnerDirectory(versionRoot);
             File.WriteAllText(
                 Path.Combine(versionRoot, "manifest.json"),
                 "{\"manifestVersion\":" + manifestVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                ",\"catalog\":{\"id\":\"" + HygV42.CatalogId + "\"}}");
+                ",\"catalog\":{\"id\":\"" + HygV44.CatalogId + "\"}}");
             Directory.CreateSymbolicLink(
-                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV42.PackageVersion}");
+                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV44.PackageVersion}");
         }
 
         public void CreateBindSources()
@@ -1162,14 +1162,14 @@ public sealed partial class UpgradePreflightTests
             var applicationIdentity = Guid.NewGuid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
             var catalog = new CatalogInstallationIdentity(
-                HygV42.CatalogId, HygV42.PackageVersion, "2", "3",
-                HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount,
+                HygV44.CatalogId, HygV44.PackageVersion, "3", "4",
+                HygV44.DatabaseSha256, HygV44.DatabaseLength, HygV44.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
                 UpgradeCompatibility: CameraAgentStateContract.LegacyUnbounded, SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
-                CatalogContract: "hyg-v42-production-p3-s2");
+                CatalogContract: CameraAgentImageContract.CatalogContract);
             var manifest = new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent, InstanceId,
                 "Preflight Camera", applicationIdentity, $"installer-{InstanceId:D}", 1, new string('d', 64),

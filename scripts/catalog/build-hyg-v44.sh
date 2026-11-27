@@ -13,7 +13,7 @@ Usage: $0 (--source COMPRESSED_FILE | --fetch) OUTPUT_DIRECTORY
 
 --source uses an existing compressed HYG 4.4 input and performs no network I/O.
 --fetch explicitly downloads the pinned compressed input over HTTPS.
-Install the resulting bundle with the deployment CLI catalog install command; the shell installer is HYG 4.2-only.
+Install the resulting bundle with the deployment CLI catalog install command.
 USAGE
 }
 

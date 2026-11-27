@@ -37,7 +37,7 @@
 <text x="238.80" y="307.50" fill="#d4d4d4" textLength="67.20" lengthAdjust="spacingAndGlyphs">archive)</text>
 <text x="54.00" y="325.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="325.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">catalog</text>
-<text x="238.80" y="325.50" fill="#d4d4d4" textLength="285.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v4.2</text>
+<text x="238.80" y="325.50" fill="#d4d4d4" textLength="369.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v44-production</text>
 <text x="37.20" y="343.50" fill="#d4d4d4" textLength="369.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">-- lines 1-11 of 20: Up, Down, PgUp, PgDn --</text>
 <text x="37.20" y="379.50" fill="#d4d4d4" textLength="126.00" lengthAdjust="spacingAndGlyphs">Save answers to</text>
 <text x="188.40" y="379.50" fill="#d4d4d4" textLength="428.40" lengthAdjust="spacingAndGlyphs" text-decoration="underline">/home/operator/.config/hvo-sky/install-answers.json</text>

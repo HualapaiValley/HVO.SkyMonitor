@@ -52,8 +52,7 @@ diagnostic, not a pass condition; its numbers are under [results](#negative-cont
 
 ## Frozen matrix
 
-Every cell uses gain 150, a PSF of σ 1 px with a 4 px radius, and the shared HYG 4.2 snapshot
-`hyg-v4.2-p3-s2-r1` (119,625 rows, database SHA-256 `b51d18b7…b0f9e2`). The solver catalog is unchanged at
+Every cell uses gain 150, a PSF of σ 1 px with a 4 px radius, and the retired snapshot pinned by the [original experiment](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/83ff398089778d51ef1e26ad848052493b685ed9/docs/astronomy/virtual-astrometry-long-exposure-v1.md). The solver catalog is unchanged at
 magnitude 5 (1,637 entries) and owned by #1167. The `product-depth` variant deepens only the render; no
 deeper-catalog claim is made.
 

@@ -215,7 +215,9 @@ public sealed record VisibleSceneComputationProvenance(
     string CatalogPreprocessingVersion,
     ConstellationTopologyMetadata? ConstellationTopology,
     string? ConstellationTopologyArtifactSha256,
-    string? EphemerisModelVersion);
+    string? EphemerisModelVersion,
+    string CatalogId = "uninstalled",
+    string? CatalogPackageVersion = null);
 
 /// <summary>The immutable geometry authority shared by rendering and annotation.</summary>
 public sealed class VisibleScene
@@ -424,7 +426,8 @@ public sealed class VisibleSceneBuilder
     {
         ArgumentNullException.ThrowIfNull(request);
         var catalogPreprocessingVersion = "unspecified";
-        if (_catalog is ICelestialCatalogMetadataSource metadataSource)
+        var metadataSource = _catalog as ICelestialCatalogMetadataSource;
+        if (metadataSource is not null)
         {
             var actualMetadata = metadataSource.Metadata
                 ?? throw new InvalidOperationException("Catalog metadata source returned no metadata.");
@@ -555,7 +558,9 @@ public sealed class VisibleSceneBuilder
                 catalogPreprocessingVersion,
                 request.ConstellationIds.Count > 0 ? _constellationTopology?.Metadata : null,
                 request.ConstellationIds.Count > 0 ? _constellationTopology?.ArtifactSha256 : null,
-                request.SolarSystemBodies.Count > 0 ? _planetEphemeris?.ModelVersion : null));
+                request.SolarSystemBodies.Count > 0 ? _planetEphemeris?.ModelVersion : null,
+                metadataSource?.CatalogId ?? "uninstalled",
+                metadataSource?.CatalogPackageVersion));
     }
 
     private static VisibleSceneRequest CopyWithCatalogMetadata(VisibleSceneRequest request, CatalogMetadata metadata) => new(

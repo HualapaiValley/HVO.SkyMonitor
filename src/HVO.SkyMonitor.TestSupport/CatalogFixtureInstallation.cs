@@ -6,8 +6,8 @@ namespace HVO.SkyMonitor.TestSupport;
 /// <summary>Creates an explicit installed catalog snapshot from the deterministic test fixture.</summary>
 public sealed class CatalogFixtureInstallation : IDisposable
 {
-    private const string PackageVersion = "hyg-v42-fixture-1";
-    private const string CatalogId = "hyg-v42-fixture";
+    private const string PackageVersion = "hyg-v44-fixture-1";
+    private const string CatalogId = "hyg-v44-fixture";
     private bool _disposed;
 
     private CatalogFixtureInstallation(string root)
@@ -27,7 +27,7 @@ public sealed class CatalogFixtureInstallation : IDisposable
         var versionDirectory = Path.Combine(installationRoot, "versions", PackageVersion);
         Directory.CreateDirectory(versionDirectory);
 
-        var databasePath = Path.Combine(versionDirectory, "hyg_v42.sqlite");
+        var databasePath = Path.Combine(versionDirectory, "hyg_v44.sqlite");
         File.Copy(fixturePath, databasePath);
         using var source = File.OpenRead(databasePath);
         var checksum = Convert.ToHexString(SHA256.HashData(source));
@@ -35,15 +35,15 @@ public sealed class CatalogFixtureInstallation : IDisposable
         {
             manifestVersion = 2,
             package = new { kind = "fixture", version = PackageVersion },
-            catalog = new { id = CatalogId, name = "HYG bright-star test fixture", version = "4.2-fixture.1" },
-            schemaVersion = "2",
-            preprocessingVersion = "3",
+            catalog = new { id = CatalogId, name = "HYG 4.4 subset test fixture", version = "4.4-fixture.1" },
+            schemaVersion = "3",
+            preprocessingVersion = "4",
             database = new
             {
-                relativePath = "hyg_v42.sqlite",
+                relativePath = "hyg_v44.sqlite",
                 sha256 = checksum,
                 length = new FileInfo(databasePath).Length,
-                rowCount = 9
+                rowCount = 16
             }
         };
         File.WriteAllText(

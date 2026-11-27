@@ -18,7 +18,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 SPEC = Path("src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json")
-HYG = Path("build/hyg-v4.2-p3-s2-r1.bundle")
+HYG = Path("build/hyg-v4.4-p4-s3-r1.bundle")
 OPENNGC = Path("openngc/openngc-v20260501-p6-s5-r1.bundle")
 DATABASE = OPENNGC / "openngc.sqlite"
 REJECTION = "Restored OpenNGC database does not match the approved SHA-256 and length."
@@ -34,7 +34,7 @@ def replay(shell, workspace, catalog, head, label, *, attempt="1", producer_run=
         ["sha256sum", *members], cwd=catalog, text=True,
     ))
     runner = catalog.parent / label
-    download = runner / f"hyg-v42-contract-artifact-{RUN_ID}-{attempt}"
+    download = runner / f"hyg-v44-contract-artifact-{RUN_ID}-{attempt}"
     download.mkdir(parents=True)
     with tarfile.open(download / "catalog-contracts.tar.gz", "w:gz") as archive:
         archive.add(catalog, arcname=".")
@@ -58,7 +58,7 @@ def replay(shell, workspace, catalog, head, label, *, attempt="1", producer_run=
                 f"got exit {result.returncode}\n{log}"
             )
     else:
-        restored = runner / f"hyg-v42-contracts-{RUN_ID}-{attempt}"
+        restored = runner / f"hyg-v44-contracts-{RUN_ID}-{attempt}"
         expected = (
             f"HVO_PRODUCTION_CATALOG_BUNDLE={restored / HYG}\n"
             f"HVO_OPENNGC_CATALOG_BUNDLE={restored / OPENNGC}\n"

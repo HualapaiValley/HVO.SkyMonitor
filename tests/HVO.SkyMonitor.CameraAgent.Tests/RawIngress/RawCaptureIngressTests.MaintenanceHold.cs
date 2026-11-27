@@ -135,7 +135,7 @@ public sealed partial class RawCaptureIngressTests
                             new string('B', 64), "rig-v1", "catalog", "1", new string('C', 64),
                             "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
                             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                            ProjectedSceneStageKey: stageKey)
+                            ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog")
                     }
                 }
             }

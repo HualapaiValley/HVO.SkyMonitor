@@ -11,10 +11,10 @@ uncertainty. Runtime algorithms and host recipes are unchanged by this harness.
 
 ## Workload and input boundary
 
-Use an approved offline HYG 4.2 installation through `CatalogSnapshotResolver`.
+Use an approved offline HYG 4.4 installation through `CatalogSnapshotResolver`.
 The expected database SHA-256 is
-`B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2`,
-with 119,625 fixed-star rows. The complete magnitude <=5 selection contains
+`2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321`,
+with 119,613 fixed-star rows. The complete magnitude <=5 selection contains
 1,637 entries, below renderer admission 2,000 and solver materialization 2,500.
 An unavailable snapshot fails the qualification; sparse fixtures do not replace it.
 

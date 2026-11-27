@@ -11,12 +11,12 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 [DoNotParallelize]
 internal sealed class CatalogSnapshotResolverTests
 {
-    private const string FixtureCatalogId = "hyg-v42-fixture";
-    private const string ProductionCatalogId = "hyg-v42-production";
+    private const string FixtureCatalogId = "hyg-v44-fixture";
+    private const string ProductionCatalogId = "hyg-v44-production";
     private const string ComposedProductionCatalogId = "hyg-v44-openngc-production";
-    private const string SnapshotVersion = "hyg-v42-fixture-1";
+    private const string SnapshotVersion = "hyg-v44-fixture-1";
     private static readonly string FixturePath = Path.Combine(
-        AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite");
+        AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite");
 
     [TestMethod]
     public void InternalTestClassSupportsReflectionConstruction()
@@ -115,12 +115,12 @@ internal sealed class CatalogSnapshotResolverTests
         Assert.AreEqual(SnapshotVersion, result.SnapshotVersion);
         Assert.AreEqual(CatalogSnapshotPackageKind.Fixture, result.PackageKind);
         Assert.AreEqual(2, result.ManifestVersion);
-        Assert.AreEqual("hyg-v42-fixture", result.CatalogId);
-        Assert.AreEqual("4.2-fixture.1", result.CatalogVersion);
-        Assert.AreEqual("2", result.SchemaVersion);
-        Assert.AreEqual("3", result.PreprocessingVersion);
-        Assert.AreEqual(9, result.RowCount);
-        Assert.AreEqual(9, result.Catalog.ObjectCount);
+        Assert.AreEqual("hyg-v44-fixture", result.CatalogId);
+        Assert.AreEqual("4.4-fixture.1", result.CatalogVersion);
+        Assert.AreEqual("3", result.SchemaVersion);
+        Assert.AreEqual("4", result.PreprocessingVersion);
+        Assert.AreEqual(16, result.RowCount);
+        Assert.AreEqual(16, result.Catalog.ObjectCount);
         Assert.AreEqual(result.DatabaseSha256, result.Catalog.Metadata.Checksum);
         Assert.IsTrue(Path.IsPathFullyQualified(result.DatabasePath));
     }
@@ -263,7 +263,7 @@ internal sealed class CatalogSnapshotResolverTests
         var result = ResolveFixture(installation.Root);
 
         Assert.AreEqual(SnapshotVersion, result.SnapshotVersion);
-        Assert.AreEqual("hyg-v42-fixture", result.CatalogId);
+        Assert.AreEqual("hyg-v44-fixture", result.CatalogId);
     }
 
     [TestMethod]
@@ -288,7 +288,7 @@ internal sealed class CatalogSnapshotResolverTests
         StringAssert.Contains(unknown.Message, "unknown property", StringComparison.Ordinal);
 
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath)
-            .Replace("    \"name\": \"HYG bright-star test fixture\",\n", string.Empty, StringComparison.Ordinal));
+            .Replace("    \"name\": \"HYG 4.4 subset test fixture\",\n", string.Empty, StringComparison.Ordinal));
         var missing = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
         StringAssert.Contains(missing.Message, "missing required property", StringComparison.Ordinal);
     }
@@ -577,7 +577,7 @@ internal sealed class CatalogSnapshotResolverTests
         {
             var result = ResolveFixture(installation.Root);
 
-            Assert.AreEqual(9, result.RowCount);
+            Assert.AreEqual(16, result.RowCount);
             Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
             Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.ManifestPath));
         }
@@ -626,7 +626,7 @@ internal sealed class CatalogSnapshotResolverTests
         {
             var result = ResolveFixture(installation.Root);
 
-            Assert.AreEqual(9, result.Catalog.ObjectCount);
+            Assert.AreEqual(16, result.Catalog.ObjectCount);
             Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
             Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.DatabasePath));
         }
@@ -706,11 +706,11 @@ internal sealed class CatalogSnapshotResolverTests
     {
         using var installation = CreateInstallation();
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath)
-            .Replace("\"id\": \"hyg-v42-fixture\"", "\"id\": \"HYG-invalid\"", StringComparison.Ordinal));
+            .Replace("\"id\": \"hyg-v44-fixture\"", "\"id\": \"HYG-invalid\"", StringComparison.Ordinal));
         Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath)
-            .Replace("\"id\": \"hyg-v42-fixture\"", $"\"id\": \"{new string('a', 33)}\"", StringComparison.Ordinal));
+            .Replace("\"id\": \"hyg-v44-fixture\"", $"\"id\": \"{new string('a', 33)}\"", StringComparison.Ordinal));
         Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, schemaVersion: "1"));
@@ -784,7 +784,7 @@ internal sealed class CatalogSnapshotResolverTests
         var versionDirectory = Path.Combine(root, "versions", SnapshotVersion);
         Directory.CreateDirectory(versionDirectory);
         var pointerPath = Path.Combine(root, "current");
-        var databasePath = Path.Combine(versionDirectory, "hyg_v42.sqlite");
+        var databasePath = Path.Combine(versionDirectory, "hyg_v44.sqlite");
         var manifestPath = Path.Combine(versionDirectory, "manifest.json");
         Directory.CreateSymbolicLink(pointerPath, $"versions/{SnapshotVersion}");
         File.Copy(FixturePath, databasePath);
@@ -798,26 +798,26 @@ internal sealed class CatalogSnapshotResolverTests
         var versionDirectory = Path.Combine(root, "versions", SnapshotVersion);
         Directory.CreateDirectory(versionDirectory);
         var pointerPath = Path.Combine(root, "current");
-        var databasePath = Path.Combine(versionDirectory, "hyg_v42.sqlite");
+        var databasePath = Path.Combine(versionDirectory, "hyg_v44.sqlite");
         var manifestPath = Path.Combine(versionDirectory, "manifest.json");
         Directory.CreateSymbolicLink(pointerPath, $"versions/{SnapshotVersion}");
         File.Copy(FixturePath, databasePath);
         File.WriteAllText(manifestPath, CreateManifest(
             databasePath,
             manifestVersion: 1,
-            relativePath: "hyg_v42.sqlite",
+            relativePath: "hyg_v44.sqlite",
             includeCatalogId: false));
         return new Installation(root, pointerPath, manifestPath, databasePath);
     }
 
     private static Installation CreateProductionInstallation()
     {
-        const string version = "hyg-v4.2-p3-s2-r1";
+        const string version = "hyg-v4.4-p4-s3-r1";
         var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-install-{Guid.NewGuid():N}");
         var versionDirectory = Path.Combine(root, "versions", version);
         Directory.CreateDirectory(versionDirectory);
         var pointerPath = Path.Combine(root, "current");
-        var databasePath = Path.Combine(versionDirectory, "hyg_v42.sqlite");
+        var databasePath = Path.Combine(versionDirectory, "hyg_v44.sqlite");
         var manifestPath = Path.Combine(versionDirectory, "manifest.json");
         Directory.CreateSymbolicLink(pointerPath, $"versions/{version}");
         File.Copy(FixturePath, databasePath);
@@ -830,7 +830,7 @@ internal sealed class CatalogSnapshotResolverTests
         var installation = CreateProductionInstallation();
         var versionDirectory = Path.GetDirectoryName(installation.ManifestPath)!;
         File.WriteAllBytes(Path.Combine(versionDirectory, "LICENSE-HYG.md"), new byte[423]);
-        File.WriteAllBytes(Path.Combine(versionDirectory, "ATTRIBUTION-HYG.md"), new byte[1_361]);
+        File.WriteAllBytes(Path.Combine(versionDirectory, "ATTRIBUTION-HYG.md"), new byte[1_748]);
         return installation;
     }
 
@@ -866,13 +866,13 @@ internal sealed class CatalogSnapshotResolverTests
         string databasePath,
         int manifestVersion = 2,
         string packageVersion = SnapshotVersion,
-        string catalogVersion = "4.2-fixture.1",
-        string schemaVersion = "2",
-        string preprocessingVersion = "3",
-        string relativePath = "hyg_v42.sqlite",
+        string catalogVersion = "4.4-fixture.1",
+        string schemaVersion = "3",
+        string preprocessingVersion = "4",
+        string relativePath = "hyg_v44.sqlite",
         string? sha256 = null,
         long? length = null,
-        long rowCount = 9,
+        long rowCount = 16,
         bool includeCatalogId = true)
         => $$"""
             {
@@ -882,8 +882,8 @@ internal sealed class CatalogSnapshotResolverTests
                 "version": "{{packageVersion}}"
               },
               "catalog": {
-                {{(includeCatalogId ? "\"id\": \"hyg-v42-fixture\"," : string.Empty)}}
-                "name": "HYG bright-star test fixture",
+                {{(includeCatalogId ? "\"id\": \"hyg-v44-fixture\"," : string.Empty)}}
+                "name": "HYG 4.4 subset test fixture",
                 "version": "{{catalogVersion}}"
               },
               "schemaVersion": "{{schemaVersion}}",
@@ -904,37 +904,37 @@ internal sealed class CatalogSnapshotResolverTests
               "manifestVersion": 2,
               "package": {
                 "kind": "production",
-                "version": "hyg-v4.2-p3-s2-r1"
+                "version": "hyg-v4.4-p4-s3-r1"
               },
               "catalog": {
-                "id": "hyg-v42-production",
-                "name": "HYG 4.2",
-                "version": "4.2"
+                "id": "hyg-v44-production",
+                "name": "HYG 4.4",
+                "version": "4.4"
               },
               "source": {
                 "projectUrl": "{{sourceProjectUrl}}",
-                "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
-                "oid": "5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
+                "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+                "oid": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
                 "compressed": {
-                  "sha256": "5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
-                  "length": 13636976
+                  "sha256": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+                  "length": 13636362
                 },
                 "decompressed": {
-                  "sha256": "b2983a8d934e4f031cdb67bdd6c3437f8c5143cd6606a9573a9a9ac4b6375fd2",
-                  "length": 33932800
+                  "sha256": "ea0e1699a1e7d48daa197b5fe567fcf447420e367f37619862ee1d6f077599cd",
+                  "length": 33929696
                 }
               },
-              "schemaVersion": "2",
-              "preprocessingVersion": "3",
+              "schemaVersion": "3",
+              "preprocessingVersion": "4",
               "serializer": {
                 "name": "sqlite3",
                 "version": "3.45.1"
               },
               "database": {
-                "relativePath": "hyg_v42.sqlite",
-                "sha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
-                "length": 9302016,
-                "rowCount": 119625,
+                "relativePath": "hyg_v44.sqlite",
+                "sha256": "2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321",
+                "length": 16166912,
+                "rowCount": 119613,
                 "solCount": 0,
                 "requiredColumn": "hipparcos_id"
               },
@@ -948,8 +948,8 @@ internal sealed class CatalogSnapshotResolverTests
                 },
                 "attribution": {
                   "relativePath": "ATTRIBUTION-HYG.md",
-                  "sha256": "e3addc3480a0d0f07129f332b0dea592fa315373f21111d54ac8e2aebd03b5f1",
-                  "length": 1361
+                  "sha256": "98f4eaaeb9458b58b5aab1d019d7d6d62c52dd9a3ef5ee29cbc7037d3d44152c",
+                  "length": 1748
                 }
               },
               "topology": {
