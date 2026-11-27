@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -632,6 +633,18 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<ILogger<ClockSyncMonitor>>()));
         services.AddSingleton<IClockSyncMonitor>(provider => provider.GetRequiredService<ClockSyncMonitor>());
         services.AddHostedService(provider => provider.GetRequiredService<ClockSyncMonitor>());
+
+        services.TryAddSingleton(new OperatorNotificationNetworkPolicy(isDevelopment: false));
+        services.AddSingleton<OperatorNotificationTelemetry>();
+        services.TryAddSingleton<IOperatorNotificationConfigProvider, ConfigurationOperatorNotificationConfigProvider>();
+        services.TryAddSingleton<ISmtpNotificationTransport, SmtpNotificationTransport>();
+        services.TryAddSingleton<IWebhookNotificationTransport, WebhookNotificationTransport>();
+        services.AddSingleton<OperatorNotificationDispatcher>();
+        services.AddSingleton<IOperatorNotificationPublisher>(provider => provider.GetRequiredService<OperatorNotificationDispatcher>());
+        services.AddSingleton<IOperatorNotificationService>(provider => provider.GetRequiredService<OperatorNotificationDispatcher>());
+        services.AddHostedService(provider => provider.GetRequiredService<OperatorNotificationDispatcher>());
+        services.AddSingleton<OperatorNotificationMonitorService>();
+        services.AddHostedService(provider => provider.GetRequiredService<OperatorNotificationMonitorService>());
 
         return services;
     }

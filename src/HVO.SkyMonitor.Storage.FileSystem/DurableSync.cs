@@ -236,10 +236,9 @@ public static class DurableSync
 
     private static SafeFileHandle OpenLinux(string path, int flags, string operation)
     {
-        var descriptor = NativeOpen(path, flags);
+        var descriptor = SecureFileSystem.OpenLinuxDescriptor(path, flags, out var errno);
         if (descriptor < 0)
         {
-            var errno = Marshal.GetLastPInvokeError();
             var kind = errno switch
             {
                 2 => FileSystemFaultKind.NotFound,
@@ -252,11 +251,7 @@ public static class DurableSync
         return new SafeFileHandle((nint)descriptor, ownsHandle: true);
     }
 
-#pragma warning disable SYSLIB1054 // A single narrow libc call; source-generated interop would require unsafe code for no benefit.
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
-    private static extern int NativeOpen(string path, int flags);
-
+#pragma warning disable SYSLIB1054 // Narrow libc calls; source-generated interop would require unsafe code for no benefit.
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
     private static extern int NativeFsync(SafeFileHandle handle);

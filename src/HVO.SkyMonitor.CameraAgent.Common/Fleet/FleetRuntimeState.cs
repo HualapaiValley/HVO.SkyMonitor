@@ -19,6 +19,42 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
     private DateTimeOffset? _lastFailedUtc;
     private DateTimeOffset? _lastRecoveredUtc;
     private bool _failed;
+    private bool _cameraDisconnected;
+    private bool _storageFailure;
+    private bool _startupStorageFailure;
+
+    public bool IsCameraDisconnected
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _cameraDisconnected;
+            }
+        }
+    }
+
+    public bool IsStorageFailure
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _storageFailure;
+            }
+        }
+    }
+
+    public bool IsStartupStorageFailure
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _startupStorageFailure;
+            }
+        }
+    }
 
     public FleetRuntimeSnapshot Snapshot
     {
@@ -67,10 +103,22 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
         {
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "ready";
+            _cameraDisconnected = false;
+            _storageFailure = false;
+            _startupStorageFailure = false;
         }
     }
 
     public void CaptureFailed(string reason)
+        => CaptureFailed(reason, isCameraDisconnected: false, isStorageFailure: false, isStartupStorageFailure: false);
+
+    public void CaptureFailed(string reason, bool isCameraDisconnected)
+        => CaptureFailed(reason, isCameraDisconnected, isStorageFailure: false, isStartupStorageFailure: false);
+
+    public void CaptureFailed(string reason, bool isCameraDisconnected, bool isStorageFailure)
+        => CaptureFailed(reason, isCameraDisconnected, isStorageFailure, isStartupStorageFailure: false);
+
+    public void CaptureFailed(string reason, bool isCameraDisconnected, bool isStorageFailure, bool isStartupStorageFailure)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         lock (_gate)
@@ -79,7 +127,38 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
             _captureReason = Bound(reason);
             _lastFailedUtc = timeProvider.GetUtcNow();
             _failed = true;
+            _cameraDisconnected = isCameraDisconnected;
+            _storageFailure = isStorageFailure;
+            _startupStorageFailure = isStorageFailure && isStartupStorageFailure;
         }
+    }
+
+    internal static bool IsCameraDisconnectException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception.Data["IsCameraDisconnected"] is bool typedDisconnected)
+        {
+            return typedDisconnected;
+        }
+
+        var typeName = exception.GetType().Name;
+        var message = exception.Message ?? string.Empty;
+        if (string.Equals(typeName, "AsiException", StringComparison.Ordinal))
+        {
+            return message.Contains("CameraRemoved", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("CameraClosed", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("removed", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("disconnect", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return message.Contains("camera is not connected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("camera removed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("camera disconnected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("device disconnected", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("device removed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("usb disconnect", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("CameraRemoved", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("CameraClosed", StringComparison.OrdinalIgnoreCase);
     }
 
     public void CaptureSucceeded(CaptureResult result, TimeSpan moduleDuration, TimeSpan ingressDuration)
@@ -93,6 +172,9 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
                 _lastRecoveredUtc = now;
             }
             _failed = false;
+            _cameraDisconnected = false;
+            _storageFailure = false;
+            _startupStorageFailure = false;
             _captureAvailability = FleetAvailability.Available;
             _captureReason = "capturing";
             _lastSucceededUtc = now;

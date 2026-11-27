@@ -1,0 +1,47 @@
+/* Operator notifications configuration page. Shared Operations styles live in OperationsLayout.razor.css. */
+
+.notifications-form { display: grid; gap: .9rem; }
+.notifications-fieldset { display: grid; gap: .9rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+
+.notifications-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: .55rem;
+    cursor: pointer;
+    font-size: .68rem;
+    line-height: 1.4;
+}
+.notifications-toggle input[type="checkbox"] { width: 1rem; height: 1rem; margin-top: .15rem; flex: 0 0 auto; }
+.notifications-toggle span { display: grid; gap: .15rem; }
+.notifications-toggle small { color: var(--muted); font-size: .6rem; }
+.notifications-toggle.compact { color: var(--muted); font-size: .6rem; }
+
+.notifications-row { display: grid; gap: .7rem; }
+.notifications-row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.notifications-row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.notifications-secret-box {
+    display: grid;
+    gap: .55rem;
+    padding: .75rem;
+    border: 1px solid var(--border);
+    border-radius: .5rem;
+    background: rgba(255, 255, 255, 0.02);
+}
+.notifications-secret-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: .4rem; font-size: .66rem; }
+.notifications-secret-meta { color: var(--muted); font-size: .58rem; }
+.notifications-hint { margin: 0; color: var(--muted); font-size: .6rem; line-height: 1.45; }
+
+.notifications-clear-row { display: flex; flex-wrap: wrap; gap: .9rem; font-size: .6rem; color: var(--muted); }
+.notifications-clear-row label { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; }
+
+.notifications-events-table input[type="number"] { width: 4.5rem; }
+.notifications-events-table input[type="text"] { width: 5.5rem; }
+
+.notifications-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+.notifications-test-results { display: grid; gap: .45rem; }
+
+@media (max-width: 940px) {
+    .notifications-row.two,
+    .notifications-row.three { grid-template-columns: 1fr; }
+}

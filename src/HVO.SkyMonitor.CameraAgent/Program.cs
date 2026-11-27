@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -323,6 +324,7 @@ public class Program
                     metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                     metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
                     metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.MeterName);
+                    metrics.AddMeter(OperatorNotificationTelemetry.MeterName);
                 })
                 .WithTracing(tracing =>
                 {
@@ -345,7 +347,8 @@ public class Program
                         .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
                         .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
                         .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.ActivitySourceName)
-                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName);
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName)
+                        .AddSource(OperatorNotificationTelemetry.ActivitySourceName);
                 });
         }
 
@@ -407,7 +410,18 @@ public class Program
         builder.Services.AddSingleton<SpaceWeatherUiProjectionSource>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
+        builder.Services.AddScoped<ICameraAgentNotificationsUiService, CameraAgentNotificationsUiService>();
         builder.Services.AddCameraAgentReplayFlow();
+
+        builder.Services.AddSingleton(new OperatorNotificationNetworkPolicy(builder.Environment.IsDevelopment()));
+        builder.Services.AddSingleton<OperatorNotificationStore>();
+        builder.Services.AddSingleton<IOperatorNotificationSecretStore>(provider =>
+            provider.GetRequiredService<OperatorNotificationStore>());
+        builder.Services.AddSingleton<IOperatorNotificationConfigProvider>(provider =>
+            provider.GetRequiredService<OperatorNotificationStore>());
+        builder.Services.AddSingleton<IOperatorNotificationHeartbeatStore>(provider =>
+            new FileOperatorNotificationHeartbeatStore(
+                provider.GetRequiredService<IOptions<DeviceProvisioningOptions>>().Value.StateDirectory));
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -439,6 +453,7 @@ public class Program
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
         healthChecks.AddCheck<ClockHealthCheck>("clock", tags: ["dependency"]);
+        healthChecks.AddCheck<OperatorNotificationsHealthCheck>("operator-notifications", tags: ["dependency"]);
         AddCameraModules(builder.Services);
 
         var app = builder.Build();
@@ -504,6 +519,7 @@ public class Program
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSystemOperationsEndpoints();
+        app.MapCameraAgentNotificationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();

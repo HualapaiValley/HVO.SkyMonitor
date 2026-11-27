@@ -119,3 +119,16 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 commits = ["742d3590ef764a3d6b8d623ada2f4bef185edcb3"]
 paths = ['''^tests/HVO\.SkyMonitor\.CameraAgent\.Tests/Fixtures/legacy-local-archive/frames/2026/01/02/Calibrated/2026-01-02_03-04-06\.000Z-f866ce6a86b74289bbe1247cc658f198\.json$''']
+
+[[allowlists]]
+description = """The #2128 credential-retirement regression tests in OperatorNotificationStoreTests.cs use purely \
+synthetic unit-test placeholders (d15-*, d17-*, d18-*, delta13-*, and fresh-v3-tok-unmarked). These values grant no \
+access and authenticate no service. This exception covers only the three immutable historical commits listed here."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+  "005d99f289b2bfe38c42314539c8aa908b8362a3",
+  "24c4b37fb3200560ef0ab8bb83047e8965924247",
+  "db2366437c1bfb49b4494ec3b8e6e1f037d6fce6",
+]
+paths = ['''^tests/HVO\.SkyMonitor\.CameraAgent\.Tests/Notifications/OperatorNotificationStoreTests\.cs$''']
