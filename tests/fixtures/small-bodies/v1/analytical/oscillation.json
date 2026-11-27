@@ -1,0 +1,1 @@
+{"amplitudeArcsec":2,"expected":{"integerStrideResidualArcsec":"0.000000","interpolationBoundVerified":false,"midpointResidualArcsec":"2.000000","reasonCode":"InterpolationBoundExceeded"},"integerLeaveOutIndex":3,"knotIndices":[0,1,2,3,4,5,6],"midpointIndices":[1.5,2.5,3.5,4.5],"stepSeconds":60}
