@@ -100,7 +100,12 @@ internal sealed record OracleComparisonMetrics(
     double ReverseHausdorffPixels,
     double SymmetricHausdorffPixels,
     double MaxVertexToReferencePixels,
-    double MaxEndpointBoundaryResidualPixels);
+    double MaxEndpointBoundaryResidualPixels,
+    int ActualPartCount,
+    int ReferencePartCount,
+    int ActualClosedCount,
+    int ReferenceClosedCount,
+    bool TopologyMatches);
 
 /// <summary>
 /// Completely independent analytic/root-based sky-curve clipping oracle with documented error budget.
@@ -109,7 +114,7 @@ internal static class IndependentAnalyticClippingOracle
 {
     // Documented numerical error budget derived from contract + root residual + chord sagitta:
     // - Chord sagitta contract bound: 0.25 px (ResolvedFootprintSampler.MaximumChordErrorPixels)
-    // - Bisection root precision: 40 iterations -> <= 2^-40 * 2 deg ~ 1e-10 rad (< 1e-5 px at 100k px/rad)
+    // - Bisection root precision: 52 iterations -> <= 2^-52 * 2 deg ~ 1e-14 rad (< 1e-9 px at 100k px/rad)
     // - Floating-point + precession/projection rounding budget: <= 1e-4 px
     public const double VertexOnCurveTolerancePixels = 2e-3;
     public const double ContinuousHausdorffBudgetPixels = 0.27;
@@ -118,7 +123,7 @@ internal static class IndependentAnalyticClippingOracle
 
     private const int BracketSamplesPerCurve = 2048;
     private const int BisectionIterations = 52;
-    private const int GoldenIterations = 48;
+    private const int GoldenIterations = 60;
 
     /// <summary>
     /// Converts J2000 equatorial coordinates to geometric ENU unit vector using independent matrix algebra:
@@ -470,7 +475,12 @@ internal static class IndependentAnalyticClippingOracle
             return ang < 1e-15 ? center : (center * Math.Cos(ang) + tan * (Math.Sin(ang) / ang)).Normalized();
         }
 
-        return ClipParameterizedCurve(cam, basis, transform, Curve, 0d, 2d * Math.PI, periodic: true, analyticHints: null);
+        return ClipParameterizedCurve(
+            cam, basis, transform, Curve, 0d, 2d * Math.PI,
+            maxAngularSpeedRadPerParam: Math.Max(1e-9, a),
+            periodic: true,
+            analyticHorizonHints: null,
+            analyticDomainHints: null);
     }
 
     /// <summary>
@@ -507,6 +517,8 @@ internal static class IndependentAnalyticClippingOracle
             if (double.IsFinite(thetaMax)) analyticApertureCosine = Math.Cos(thetaMax);
         }
 
+        var minDomainCosine = ComputeMinimumDomainCosine(cam);
+
         for (var i = 0; i < verts.Length - 1; i++)
         {
             var start = verts[i];
@@ -516,19 +528,20 @@ internal static class IndependentAnalyticClippingOracle
             {
                 throw new InvalidOperationException("Antipodal edge cannot be clipped uniquely.");
             }
-            var hints = new List<double>();
-            // Closed-form analytic roots for horizon (z=0), perspective hemisphere (forward·p=0), and circular aperture cone.
+            var horizonHints = new List<double>();
+            var domainHints = new List<double>();
+            // Closed-form analytic roots for horizon (z=0), optical domain cone, and circular aperture cone.
             if (cam.HorizonPolicy == OracleHorizonPolicy.GeometricHorizon)
             {
-                hints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, new OracleVec3(0, 0, 1), 0d));
+                horizonHints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, new OracleVec3(0, 0, 1), 0d));
             }
-            if (cam.Model is OracleProjectionModel.Perspective or OracleProjectionModel.OrthographicFisheye && !cam.RefractionEnabled)
+            if (!cam.RefractionEnabled && minDomainCosine > -1d + 1e-12)
             {
-                hints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, basis.Forward, 0d));
+                domainHints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, basis.Forward, minDomainCosine));
             }
             if (analyticApertureCosine is { } cosAp)
             {
-                hints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, basis.Forward, cosAp));
+                domainHints.AddRange(SolveAnalyticGreatCirclePlaneRoots(start, end, basis.Forward, cosAp));
             }
 
             OracleVec3 Arc(double t)
@@ -538,7 +551,12 @@ internal static class IndependentAnalyticClippingOracle
                 return (start * (Math.Sin((1d - t) * angle) / sinA) + end * (Math.Sin(t * angle) / sinA)).Normalized();
             }
 
-            var edgeArcs = ClipParameterizedCurve(cam, basis, transform, Arc, 0d, 1d, periodic: false, hints);
+            var edgeArcs = ClipParameterizedCurve(
+                cam, basis, transform, Arc, 0d, 1d,
+                maxAngularSpeedRadPerParam: Math.Max(1e-9, angle),
+                periodic: false,
+                analyticHorizonHints: horizonHints,
+                analyticDomainHints: domainHints);
             if (edgeArcs.Length != 1 || Distance(edgeArcs[0].Points[0], EvaluatePoint(cam, basis, transform, start)) > 1e-4 ||
                 Distance(edgeArcs[0].Points[^1], EvaluatePoint(cam, basis, transform, end)) > 1e-4)
             {
@@ -551,8 +569,8 @@ internal static class IndependentAnalyticClippingOracle
     }
 
     /// <summary>
-    /// Computes true continuous bidirectional Hausdorff distance between actual output polylines and reference arcs.
-    /// Every actual segment is densely subdivided so an extra connecting chord across an exterior gap is always detected.
+    /// Computes true continuous bidirectional Hausdorff distance between actual output polylines and reference arcs,
+    /// using dense sampling plus golden-section peak refinement, bidirectional open-endpoint residuals, and topology checks.
     /// </summary>
     public static OracleComparisonMetrics ComparePolylines(
         IReadOnlyList<(bool Closed, OraclePoint[] Points)> actualParts,
@@ -562,15 +580,20 @@ internal static class IndependentAnalyticClippingOracle
     {
         var refSegments = ExtractSegments(referenceArcs.Select(static a => (a.Closed, a.Points)).ToArray());
         var actualSegments = ExtractSegments(actualParts);
+        var actualClosedCount = actualParts.Count(static p => p.Closed);
+        var refClosedCount = referenceArcs.Count(static a => a.Closed);
+        var topologyMatches = actualParts.Count == referenceArcs.Count && actualClosedCount == refClosedCount;
 
         if (refSegments.Count == 0 && actualSegments.Count == 0)
         {
-            return new OracleComparisonMetrics(0, 0, 0, 0, 0);
+            return new OracleComparisonMetrics(0, 0, 0, 0, 0, actualParts.Count, referenceArcs.Count,
+                actualClosedCount, refClosedCount, topologyMatches);
         }
         if (refSegments.Count == 0 || actualSegments.Count == 0)
         {
             return new OracleComparisonMetrics(double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity,
-                double.PositiveInfinity, double.PositiveInfinity);
+                double.PositiveInfinity, double.PositiveInfinity, actualParts.Count, referenceArcs.Count,
+                actualClosedCount, refClosedCount, false);
         }
 
         var forwardMax = 0d;
@@ -580,46 +603,46 @@ internal static class IndependentAnalyticClippingOracle
             var da = DistancePointToSegments(a, refSegments);
             var db = DistancePointToSegments(b, refSegments);
             maxVertexDist = Math.Max(maxVertexDist, Math.Max(da, db));
-            var len = Distance(a, b);
-            var steps = Math.Max(4, (int)Math.Ceiling(len / 0.1));
-            for (var s = 0; s <= steps; s++)
-            {
-                var t = (double)s / steps;
-                var p = new OraclePoint(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
-                var d = DistancePointToSegments(p, refSegments);
-                if (d > forwardMax) forwardMax = d;
-            }
+            var segMax = MaxDistanceSegmentToSegments(a, b, refSegments);
+            if (segMax > forwardMax) forwardMax = segMax;
         }
 
         var reverseMax = 0d;
         foreach (var (a, b) in refSegments)
         {
-            var len = Distance(a, b);
-            var steps = Math.Max(2, (int)Math.Ceiling(len / 0.25));
-            for (var s = 0; s <= steps; s++)
-            {
-                var t = (double)s / steps;
-                var p = new OraclePoint(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
-                var d = DistancePointToSegments(p, actualSegments);
-                if (d > reverseMax) reverseMax = d;
-            }
+            var segMax = MaxDistanceSegmentToSegments(a, b, actualSegments);
+            if (segMax > reverseMax) reverseMax = segMax;
         }
 
-        // Measure endpoint distance to reference open-arc endpoints.
+        // Bidirectional open-arc endpoint residual catches missing interior gap endpoints as well as shifted endpoints.
         var refEndpoints = referenceArcs
             .Where(static a => !a.Closed && a.Points.Length >= 2)
             .SelectMany(static a => new[] { a.Points[0], a.Points[^1] })
             .ToArray();
+        var actualEndpoints = actualParts
+            .Where(static p => !p.Closed && p.Points.Length >= 2)
+            .SelectMany(static p => new[] { p.Points[0], p.Points[^1] })
+            .ToArray();
         var maxEndpointDist = 0d;
-        if (refEndpoints.Length > 0)
+        if (refEndpoints.Length == 0 && actualEndpoints.Length == 0)
         {
-            foreach (var part in actualParts.Where(static p => !p.Closed && p.Points.Length >= 2))
+            maxEndpointDist = 0d;
+        }
+        else if (refEndpoints.Length == 0 || actualEndpoints.Length == 0)
+        {
+            maxEndpointDist = double.PositiveInfinity;
+        }
+        else
+        {
+            foreach (var ep in actualEndpoints)
             {
-                foreach (var ep in new[] { part.Points[0], part.Points[^1] })
-                {
-                    var minD = refEndpoints.Min(r => Distance(ep, r));
-                    if (minD > maxEndpointDist) maxEndpointDist = minD;
-                }
+                var minD = refEndpoints.Min(r => Distance(ep, r));
+                if (minD > maxEndpointDist) maxEndpointDist = minD;
+            }
+            foreach (var r in refEndpoints)
+            {
+                var minD = actualEndpoints.Min(ep => Distance(r, ep));
+                if (minD > maxEndpointDist) maxEndpointDist = minD;
             }
         }
 
@@ -628,7 +651,198 @@ internal static class IndependentAnalyticClippingOracle
             reverseMax,
             Math.Max(forwardMax, reverseMax),
             maxVertexDist,
-            maxEndpointDist);
+            maxEndpointDist,
+            actualParts.Count,
+            referenceArcs.Count,
+            actualClosedCount,
+            refClosedCount,
+            topologyMatches);
+    }
+
+    private static double MaxDistanceSegmentToSegments(
+        OraclePoint a,
+        OraclePoint b,
+        List<(OraclePoint A, OraclePoint B)> targetSegments)
+    {
+        var len = Distance(a, b);
+        var steps = Math.Max(8, (int)Math.Ceiling(len / 0.02));
+        var ds = new double[steps + 1];
+        var best = 0d;
+        for (var s = 0; s <= steps; s++)
+        {
+            var t = (double)s / steps;
+            var d = Eval(t);
+            ds[s] = d;
+            if (d > best) best = d;
+        }
+        // Refine every local maximum bracket with golden-section search so gap midpoints are measured accurately.
+        for (var s = 0; s <= steps; s++)
+        {
+            var isPeak = (s == 0 || ds[s] >= ds[s - 1]) && (s == steps || ds[s] >= ds[s + 1]);
+            if (!isPeak) continue;
+            var lo = s == 0 ? 0d : (double)(s - 1) / steps;
+            var hi = s == steps ? 1d : (double)(s + 1) / steps;
+            var peakT = MaximizeGolden(Eval, lo, hi, iterations: 28);
+            var peakD = Eval(peakT);
+            if (peakD > best) best = peakD;
+        }
+        return best;
+
+        double Eval(double t)
+        {
+            var p = new OraclePoint(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y));
+            return DistancePointToSegments(p, targetSegments);
+        }
+    }
+
+    private static double ComputeMinimumDomainCosine(OracleCamera cam)
+    {
+        var maxIdeal = cam.Model switch
+        {
+            OracleProjectionModel.EquidistantFisheye => Math.PI,
+            OracleProjectionModel.EquisolidFisheye => 2d,
+            OracleProjectionModel.OrthographicFisheye => 1d,
+            _ => double.PositiveInfinity
+        };
+        if (cam.RadialDistortionK1 < 0)
+        {
+            maxIdeal = Math.Min(maxIdeal, Math.Sqrt(-0.5 / (3d * cam.RadialDistortionK1)));
+        }
+        return cam.Model switch
+        {
+            OracleProjectionModel.Perspective => double.IsFinite(maxIdeal)
+                ? 1d / Math.Sqrt(1d + maxIdeal * maxIdeal)
+                : 1e-12,
+            OracleProjectionModel.OrthographicFisheye => Math.Cos(Math.Asin(Math.Clamp(maxIdeal, 0d, 1d))),
+            OracleProjectionModel.EquidistantFisheye => Math.Cos(Math.Min(Math.PI, maxIdeal)),
+            OracleProjectionModel.EquisolidFisheye => Math.Cos(2d * Math.Asin(Math.Clamp(maxIdeal / 2d, 0d, 1d))),
+            OracleProjectionModel.StereographicFisheye => Math.Cos(double.IsFinite(maxIdeal) ? 2d * Math.Atan(maxIdeal / 2d) : Math.PI - 1e-12),
+            _ => -1d
+        };
+    }
+
+    private static double OpticalDomainMargin(
+        OracleCamera cam,
+        (OracleVec3 Right, OracleVec3 Up, OracleVec3 Forward) basis,
+        OracleVec3 geomEnu,
+        double minDomainCosine)
+    {
+        var appEnu = geomEnu;
+        if (cam.RefractionEnabled)
+        {
+            var geomAltDeg = Math.Asin(Math.Clamp(geomEnu.Z, -1d, 1d)) * 180d / Math.PI;
+            var appAltRad = ApplyBennettRefraction(geomAltDeg, true, cam.RefractionMinAltDeg) * Math.PI / 180d;
+            var horizLen = Math.Sqrt(geomEnu.X * geomEnu.X + geomEnu.Y * geomEnu.Y);
+            appEnu = horizLen <= 1e-15
+                ? new OracleVec3(0, 0, Math.Sin(appAltRad))
+                : new OracleVec3(
+                    Math.Cos(appAltRad) * (geomEnu.X / horizLen),
+                    Math.Cos(appAltRad) * (geomEnu.Y / horizLen),
+                    Math.Sin(appAltRad));
+        }
+        return OracleVec3.Dot(appEnu, basis.Forward) - minDomainCosine;
+    }
+
+    private static List<(double From, double To)> IsolatePositiveIntervals(
+        Func<double, double> f,
+        double tStart,
+        double tEnd,
+        int baseSteps,
+        double lipschitzBound,
+        List<double>? analyticHints,
+        out bool fullyPositive,
+        double extraExclusionAllowance = 0d)
+    {
+        var grid = new List<double>(baseSteps + 1 + (analyticHints?.Count ?? 0));
+        for (var i = 0; i <= baseSteps; i++)
+        {
+            grid.Add(tStart + (tEnd - tStart) * i / baseSteps);
+        }
+        if (analyticHints is not null)
+        {
+            foreach (var h in analyticHints)
+            {
+                if (h > tStart && h < tEnd) grid.Add(h);
+            }
+        }
+        grid.Sort();
+        var uniqueGrid = Deduplicate(grid, 1e-13 * Math.Max(1d, tEnd - tStart));
+        var values = uniqueGrid.Select(f).ToArray();
+        var rawIntervals = new List<(double From, double To)>();
+        var anyOutside = false;
+
+        for (var i = 0; i < uniqueGrid.Count - 1; i++)
+        {
+            var a = uniqueGrid[i];
+            var b = uniqueGrid[i + 1];
+            var fa = values[i];
+            var fb = values[i + 1];
+            var inA = fa >= 0d;
+            var inB = fb >= 0d;
+            var maxVariation = lipschitzBound * 0.5 * (b - a) + extraExclusionAllowance;
+
+            if (inA && inB)
+            {
+                var mid = 0.5 * (a + b);
+                var fm = f(mid);
+                if (fm < 0d || fm - maxVariation <= 1e-12)
+                {
+                    var dipT = MinimizeGolden(f, a, b, GoldenIterations);
+                    if (f(dipT) < 0d)
+                    {
+                        anyOutside = true;
+                        var exitRoot = BisectVisibilityRoot(f, a, dipT, aIsInside: true);
+                        var enterRoot = BisectVisibilityRoot(f, dipT, b, aIsInside: false);
+                        if (exitRoot > a) rawIntervals.Add((a, exitRoot));
+                        if (b > enterRoot) rawIntervals.Add((enterRoot, b));
+                        continue;
+                    }
+                }
+                rawIntervals.Add((a, b));
+            }
+            else if (inA != inB)
+            {
+                anyOutside = true;
+                var root = BisectVisibilityRoot(f, a, b, aIsInside: inA);
+                if (inA && root > a) rawIntervals.Add((a, root));
+                else if (inB && b > root) rawIntervals.Add((root, b));
+            }
+            else
+            {
+                anyOutside = true;
+                var mid = 0.5 * (a + b);
+                var fm = f(mid);
+                if (fm >= 0d || fm + maxVariation >= -1e-12)
+                {
+                    var peakT = MaximizeGolden(f, a, b, GoldenIterations);
+                    if (f(peakT) > 0d)
+                    {
+                        var enterRoot = BisectVisibilityRoot(f, a, peakT, aIsInside: false);
+                        var exitRoot = BisectVisibilityRoot(f, peakT, b, aIsInside: true);
+                        if (exitRoot > enterRoot) rawIntervals.Add((enterRoot, exitRoot));
+                    }
+                }
+            }
+        }
+
+        fullyPositive = !anyOutside;
+        if (rawIntervals.Count <= 1) return rawIntervals;
+        var merged = new List<(double From, double To)> { rawIntervals[0] };
+        var mergeTol = 1e-13 * Math.Max(1d, tEnd - tStart);
+        for (var i = 1; i < rawIntervals.Count; i++)
+        {
+            var prev = merged[^1];
+            var cur = rawIntervals[i];
+            if (cur.From <= prev.To + mergeTol)
+            {
+                merged[^1] = (prev.From, Math.Max(prev.To, cur.To));
+            }
+            else
+            {
+                merged.Add(cur);
+            }
+        }
+        return merged;
     }
 
     private static OracleVisibleArc[] ClipParameterizedCurve(
@@ -638,105 +852,164 @@ internal static class IndependentAnalyticClippingOracle
         Func<double, OracleVec3> curve,
         double tMin,
         double tMax,
+        double maxAngularSpeedRadPerParam,
         bool periodic,
-        List<double>? analyticHints)
+        List<double>? analyticHorizonHints,
+        List<double>? analyticDomainHints)
     {
+        var intervals = new List<(double From, double To)> { (tMin, tMax) };
+        var allVisible = true;
+        var fullSpan = Math.Max(1e-15, tMax - tMin);
+
+        // Stage 1: Isolate geometric horizon (Up >= 0) independently so domain failures never mask narrow horizon grazes.
+        if (cam.HorizonPolicy == OracleHorizonPolicy.GeometricHorizon)
+        {
+            var horizonIntervals = new List<(double From, double To)>();
+            foreach (var (a, b) in intervals)
+            {
+                var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (b - a) / fullSpan));
+                var sub = IsolatePositiveIntervals(
+                    t => curve(t).Z,
+                    a, b, steps,
+                    Math.Max(1e-9, maxAngularSpeedRadPerParam),
+                    analyticHorizonHints,
+                    out var fullyAbove);
+                if (!fullyAbove) allVisible = false;
+                horizonIntervals.AddRange(sub);
+            }
+            intervals = horizonIntervals;
+            if (intervals.Count == 0) return Array.Empty<OracleVisibleArc>();
+        }
+
+        // Stage 2: Isolate optical projection domain (cz >= minDomainCosine) independently.
+        var minDomainCosine = ComputeMinimumDomainCosine(cam);
+        if (minDomainCosine > -1d + 1e-12)
+        {
+            var domainIntervals = new List<(double From, double To)>();
+            var domainSpeed = Math.Max(1e-9, maxAngularSpeedRadPerParam * (cam.RefractionEnabled ? 1.25 : 1d));
+            var refractionAllowance = cam.RefractionEnabled ? 0.015 : 0d;
+            foreach (var (a, b) in intervals)
+            {
+                var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (b - a) / fullSpan));
+                var sub = IsolatePositiveIntervals(
+                    t => OpticalDomainMargin(cam, basis, curve(t), minDomainCosine),
+                    a, b, steps,
+                    domainSpeed,
+                    analyticDomainHints,
+                    out var fullyInDomain,
+                    extraExclusionAllowance: refractionAllowance);
+                if (!fullyInDomain) allVisible = false;
+                domainIntervals.AddRange(sub);
+            }
+            intervals = domainIntervals;
+            if (intervals.Count == 0) return Array.Empty<OracleVisibleArc>();
+        }
+
+        // Stage 3: Isolate sensor, circular aperture, and crop boundaries on each domain-feasible interval.
         double Margin(double t) => SignedVisibilityMargin(cam, basis, transform, curve(t), out _);
 
-        var grid = new List<double>(BracketSamplesPerCurve + 1 + (analyticHints?.Count ?? 0));
-        for (var i = 0; i <= BracketSamplesPerCurve; i++)
-        {
-            grid.Add(tMin + (tMax - tMin) * i / BracketSamplesPerCurve);
-        }
-        if (analyticHints is not null)
-        {
-            foreach (var h in analyticHints)
-            {
-                if (h > tMin && h < tMax) grid.Add(h);
-            }
-        }
-        grid.Sort();
-        var uniqueGrid = Deduplicate(grid, 1e-13);
-
-        var transitions = new List<double> { tMin, tMax };
-        var values = uniqueGrid.Select(Margin).ToArray();
-
-        for (var i = 0; i < uniqueGrid.Count - 1; i++)
-        {
-            var a = uniqueGrid[i];
-            var b = uniqueGrid[i + 1];
-            var fa = values[i];
-            var fb = values[i + 1];
-            var inA = fa >= 0;
-            var inB = fb >= 0;
-
-            if (inA != inB)
-            {
-                transitions.Add(BisectVisibilityRoot(Margin, a, b, inA));
-            }
-            else if (!inA && fa > -25 && fb > -25)
-            {
-                // Search for a local maximum (short incursion / tangency) via golden-section search.
-                var peakT = MaximizeGolden(Margin, a, b);
-                if (Margin(peakT) > 1e-9)
-                {
-                    transitions.Add(BisectVisibilityRoot(Margin, a, peakT, false));
-                    transitions.Add(BisectVisibilityRoot(Margin, peakT, b, true));
-                }
-            }
-            else if (inA && fa < 25 && fb < 25)
-            {
-                // Search for a local minimum (short excursion outside) via golden-section search.
-                var dipT = MinimizeGolden(Margin, a, b);
-                if (Margin(dipT) < -1e-9)
-                {
-                    transitions.Add(BisectVisibilityRoot(Margin, a, dipT, true));
-                    transitions.Add(BisectVisibilityRoot(Margin, dipT, b, false));
-                }
-            }
-        }
-
-        transitions.Sort();
-        var knots = Deduplicate(transitions, 1e-11);
-
         var arcs = new List<OracleVisibleArc>();
-        var allVisible = true;
-        for (var i = 0; i < knots.Count - 1; i++)
+        foreach (var (segStart, segEnd) in intervals)
         {
-            var a = knots[i];
-            var b = knots[i + 1];
-            if (b - a <= 1e-11) continue;
-            var mid = (a + b) / 2d;
-            if (Margin(mid) < 0)
+            if (segEnd - segStart <= 1e-14 * fullSpan) continue;
+            var steps = Math.Max(64, (int)Math.Ceiling(BracketSamplesPerCurve * (segEnd - segStart) / fullSpan));
+            var grid = new List<double>(steps + 1 + (analyticDomainHints?.Count ?? 0));
+            for (var i = 0; i <= steps; i++)
             {
-                allVisible = false;
-                continue;
+                grid.Add(segStart + (segEnd - segStart) * i / steps);
             }
-            // Sample densely along this certified visible sub-arc.
-            var samples = Math.Max(32, (int)Math.Ceiling(256d * (b - a) / (tMax - tMin)));
-            var pts = new List<OraclePoint>(samples + 1);
-            for (var s = 0; s <= samples; s++)
+            if (analyticDomainHints is not null)
             {
-                var t = a + (b - a) * s / samples;
-                // Nudge boundary samples inward by 1e-12 to ensure exact finite projection on domain boundary.
-                var evalT = s == 0 ? Math.Min(b, a + 1e-12 * (b - a))
-                    : s == samples ? Math.Max(a, b - 1e-12 * (b - a))
-                    : t;
-                if (SignedVisibilityMargin(cam, basis, transform, curve(evalT), out var p) >= -1e-6)
+                foreach (var h in analyticDomainHints)
                 {
-                    pts.Add(p);
+                    if (h > segStart && h < segEnd) grid.Add(h);
                 }
             }
-            if (pts.Count >= 2)
+            grid.Sort();
+            var uniqueGrid = Deduplicate(grid, 1e-14 * Math.Max(1d, segEnd - segStart));
+            var values = uniqueGrid.Select(Margin).ToArray();
+            var transitions = new List<double> { segStart, segEnd };
+
+            for (var i = 0; i < uniqueGrid.Count - 1; i++)
             {
-                arcs.Add(new OracleVisibleArc(false, pts.ToArray()));
+                var a = uniqueGrid[i];
+                var b = uniqueGrid[i + 1];
+                var fa = values[i];
+                var fb = values[i + 1];
+                var inA = fa >= 0d;
+                var inB = fb >= 0d;
+
+                if (inA != inB)
+                {
+                    allVisible = false;
+                    transitions.Add(BisectVisibilityRoot(Margin, a, b, inA));
+                }
+                else if (!inA)
+                {
+                    allVisible = false;
+                    var midVal = Margin(0.5 * (a + b));
+                    if (midVal >= 0d || Math.Max(fa, Math.Max(fb, midVal)) > -250d)
+                    {
+                        var peakT = MaximizeGolden(Margin, a, b, GoldenIterations);
+                        if (Margin(peakT) > 1e-12)
+                        {
+                            transitions.Add(BisectVisibilityRoot(Margin, a, peakT, false));
+                            transitions.Add(BisectVisibilityRoot(Margin, peakT, b, true));
+                        }
+                    }
+                }
+                else
+                {
+                    var midVal = Margin(0.5 * (a + b));
+                    if (midVal < 0d || Math.Min(fa, Math.Min(fb, midVal)) < 250d)
+                    {
+                        var dipT = MinimizeGolden(Margin, a, b, GoldenIterations);
+                        if (Margin(dipT) < -1e-12)
+                        {
+                            allVisible = false;
+                            transitions.Add(BisectVisibilityRoot(Margin, a, dipT, true));
+                            transitions.Add(BisectVisibilityRoot(Margin, dipT, b, false));
+                        }
+                    }
+                }
+            }
+
+            transitions.Sort();
+            var knots = Deduplicate(transitions, 1e-14 * Math.Max(1d, segEnd - segStart));
+            for (var i = 0; i < knots.Count - 1; i++)
+            {
+                var a = knots[i];
+                var b = knots[i + 1];
+                if (b - a <= 1e-14 * fullSpan) continue;
+                var mid = 0.5 * (a + b);
+                if (Margin(mid) < 0d)
+                {
+                    allVisible = false;
+                    continue;
+                }
+                var samples = Math.Max(64, (int)Math.Ceiling(256d * (b - a) / fullSpan));
+                var pts = new List<OraclePoint>(samples + 1);
+                for (var s = 0; s <= samples; s++)
+                {
+                    var t = a + (b - a) * s / samples;
+                    var evalT = s == 0 ? Math.Min(b, a + 1e-12 * (b - a))
+                        : s == samples ? Math.Max(a, b - 1e-12 * (b - a))
+                        : t;
+                    if (SignedVisibilityMargin(cam, basis, transform, curve(evalT), out var p) >= -1e-6)
+                    {
+                        pts.Add(p);
+                    }
+                }
+                if (pts.Count >= 2)
+                {
+                    arcs.Add(new OracleVisibleArc(false, pts.ToArray()));
+                }
             }
         }
 
         if (periodic && allVisible && arcs.Count > 0)
         {
-            var combined = MergeContiguousArcs(arcs, closedCandidate: true);
-            return combined;
+            return MergeContiguousArcs(arcs, closedCandidate: true);
         }
         return MergeContiguousArcs(arcs, closedCandidate: false);
     }
@@ -787,14 +1060,14 @@ internal static class IndependentAnalyticClippingOracle
         return 0.5 * (lo + hi);
     }
 
-    private static double MaximizeGolden(Func<double, double> f, double a, double b)
+    private static double MaximizeGolden(Func<double, double> f, double a, double b, int iterations = GoldenIterations)
     {
         const double invPhi = 0.6180339887498949;
         var c = b - invPhi * (b - a);
         var d = a + invPhi * (b - a);
         var fc = f(c);
         var fd = f(d);
-        for (var i = 0; i < GoldenIterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
             if (fc < fd)
             {
@@ -816,8 +1089,8 @@ internal static class IndependentAnalyticClippingOracle
         return 0.5 * (a + b);
     }
 
-    private static double MinimizeGolden(Func<double, double> f, double a, double b) =>
-        MaximizeGolden(t => -f(t), a, b);
+    private static double MinimizeGolden(Func<double, double> f, double a, double b, int iterations = GoldenIterations) =>
+        MaximizeGolden(t => -f(t), a, b, iterations);
 
     private static OraclePoint EvaluatePoint(
         OracleCamera cam,

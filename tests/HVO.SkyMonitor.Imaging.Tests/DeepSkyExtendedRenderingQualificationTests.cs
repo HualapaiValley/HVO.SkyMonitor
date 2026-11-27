@@ -195,9 +195,11 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         var coreRatio = CoreMean(doublePlan) / CoreMean(smallPlan);
         Assert.IsTrue(coreRatio is > 0.23 and < 0.29, $"Expected ~0.25x core SB at 2x diameter, got {coreRatio:F4}.");
 
-        // 2. Exposure scaling invariant: 2x exposure => 2x excess ADU.
+        // 2. Exposure scaling invariant: 2x exposure => 2x excess ADU (plan bound to exact exposure options).
+        var opts2s = opts with { ExposureSeconds = 2.0 };
+        var doublePlan2s = DeepSkyRenderPlan.Prepare(scene.Request, null, [doubleNebula], null, opts2s, CreateSettings(opts2s, scene.Request));
         var render1s = Mono16SceneRenderer.Render(scene, layout, opts with { ExposureSeconds = 1.0, DeepSkySources = doublePlan });
-        var render2s = Mono16SceneRenderer.Render(scene, layout, opts with { ExposureSeconds = 2.0, DeepSkySources = doublePlan });
+        var render2s = Mono16SceneRenderer.Render(scene, layout, opts2s with { DeepSkySources = doublePlan2s });
         var sum1s = SumMono16(render1s.Pixels.Span);
         var sum2s = SumMono16(render2s.Pixels.Span);
         Assert.IsTrue(sum1s > 1000, $"Expected meaningful signal, got {sum1s}.");
@@ -218,8 +220,10 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
 
         // 4. Vignetting invariant: off-axis galaxy loses signal proportionally to VignettingStrength.
         var offAxisPlan = DeepSkyRenderPlan.Prepare(scene.Request, null, [offAxisGalaxy], null, opts, CreateSettings(opts, scene.Request));
+        var optsVig = opts with { VignettingStrength = 0.5 };
+        var offAxisPlanVig = DeepSkyRenderPlan.Prepare(scene.Request, null, [offAxisGalaxy], null, optsVig, CreateSettings(optsVig, scene.Request));
         var noVig = Mono16SceneRenderer.Render(scene, layout, opts with { VignettingStrength = 0, DeepSkySources = offAxisPlan });
-        var withVig = Mono16SceneRenderer.Render(scene, layout, opts with { VignettingStrength = 0.5, DeepSkySources = offAxisPlan });
+        var withVig = Mono16SceneRenderer.Render(scene, layout, optsVig with { DeepSkySources = offAxisPlanVig });
         Assert.IsTrue(SumMono16(withVig.Pixels.Span) < SumMono16(noVig.Pixels.Span) * 0.90,
             "Off-axis deep-sky flux must undergo optical vignetting.");
 
@@ -238,11 +242,13 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             Keyframes = [new VirtualCloudKeyframe { OffsetSeconds = 0, Coverage = 1.0, MaximumOpacity = 0.6, ScatterFraction = 0.0 }]
         };
         var cloudContext = new VirtualCloudRenderContext(new VirtualCloudField(cloudScenario), Utc, TimeSpan.FromSeconds(1));
-        var clouded = Mono16SceneRenderer.Render(scene, layout, opts with { Cloud = cloudContext, DeepSkySources = doublePlan });
+        var optsCloud = opts with { Cloud = cloudContext };
+        var doublePlanCloud = DeepSkyRenderPlan.Prepare(scene.Request, null, [doubleNebula], null, optsCloud, CreateSettings(optsCloud, scene.Request));
+        var clouded = Mono16SceneRenderer.Render(scene, layout, optsCloud with { DeepSkySources = doublePlanCloud });
         var cloudRatio = SumMono16(clouded.Pixels.Span) / (double)sum1s;
         Assert.IsTrue(cloudRatio is > 0.35 and < 0.45, $"Expected ~0.40 cloud transmission, got {cloudRatio:F4}.");
 
-        // 6. Binning invariant via MonoDigitalReadoutRenderer (2x2 DigitalSumV1 & DigitalAverageV1).
+        // 6. Binning invariant via MonoDigitalReadoutRenderer (2x2 DigitalSumV1 & DigitalAverageV1) + recomputed hash (F14).
         var binnedLayout = Mono16Layout(80, 80);
         var readoutSum = new SensorReadoutProfile(new SensorCrop(0, 0, 160, 160), 2, 2, FrameBinningAlgorithm.DigitalSumV1,
             CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1, FrameLevelCodeSpace.NativeSample, 0, 65535, 160);
@@ -259,6 +265,11 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         Assert.AreEqual(nativeFp.SourcePixel.Y / 2.0, binnedFp.SourcePixel.Y, 1e-9);
         Assert.AreEqual(nativeFp.MinimumX / 2, binnedFp.MinimumX);
         Assert.AreEqual(nativeFp.MaximumY / 2, binnedFp.MaximumY);
+        Assert.AreEqual(
+            DeepSkyRenderPlan.ComputeDiagnosticsSha256(binnedSum.DeepSkyDiagnostics!),
+            binnedSum.DeepSkyStatistics!.DiagnosticsSha256,
+            "Readout renderer must recompute DiagnosticsSha256 over the final binned diagnostics.");
+        Assert.AreNotEqual(render1s.DeepSkyStatistics!.DiagnosticsSha256, binnedSum.DeepSkyStatistics!.DiagnosticsSha256);
     }
 
     [TestMethod]
@@ -491,16 +502,16 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         var nebula = CreateDso("NGC1976", "M42", "EmN", nebPos.RaHours, nebPos.DecDegrees, 36, 36, 0, null, 3.44, null, null, 42);
 
         var monoBase = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
-        var plan = DeepSkyRenderPlan.Prepare(req, null, [galaxy, nebula], null, monoBase, CreateSettings(monoBase, req));
+        var monoPlan = DeepSkyRenderPlan.Prepare(req, null, [galaxy, nebula], null, monoBase, CreateSettings(monoBase, req));
 
         var monoLayout = Mono16Layout(160, 160);
-        var mono1 = Mono16SceneRenderer.Render(emptyScene, monoLayout, monoBase with { DeepSkySources = plan });
-        var mono2 = Mono16SceneRenderer.Render(emptyScene, monoLayout, monoBase with { DeepSkySources = plan });
+        var mono1 = Mono16SceneRenderer.Render(emptyScene, monoLayout, monoBase with { DeepSkySources = monoPlan });
+        var mono2 = Mono16SceneRenderer.Render(emptyScene, monoLayout, monoBase with { DeepSkySources = monoPlan });
         CollectionAssert.AreEqual(mono1.Pixels.ToArray(), mono2.Pixels.ToArray());
         StringAssert.Contains(mono1.AlgorithmVersion, DeepSkyRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
 
         var rgbLayout = new ImageLayout(160, 160, CameraPixelFormat.Rgb24, 160 * 3);
-        var rgbOpts = new Rgb24CompatibilityRenderOptions
+        var rgbBase = new Rgb24CompatibilityRenderOptions
         {
             ExposureSeconds = 1.0,
             Gain = 1.0,
@@ -513,16 +524,17 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             ReadNoiseStandardDeviation = 0,
             ShotNoiseEnabled = false,
             DarkCurrentElectronsPerSecond = 0,
-            Seed = 777,
-            DeepSkySources = plan
+            Seed = 777
         };
+        var rgbPlan = DeepSkyRenderPlan.Prepare(req, null, [galaxy, nebula], null, rgbBase, CreateSettings(rgbBase, req));
+        var rgbOpts = rgbBase with { DeepSkySources = rgbPlan };
         var rgb1 = Rgb24CompatibilityRenderer.Render(emptyScene, rgbLayout, rgbOpts);
         var rgb2 = Rgb24CompatibilityRenderer.Render(emptyScene, rgbLayout, rgbOpts);
         CollectionAssert.AreEqual(rgb1.Pixels.ToArray(), rgb2.Pixels.ToArray());
         StringAssert.Contains(rgb1.AlgorithmVersion, DeepSkyRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
 
         var bayerLayout = new ImageLayout(160, 160, CameraPixelFormat.BayerRggb16, 160 * 2);
-        var bayerOpts = new BayerRggb16RenderOptions
+        var bayerBase = new BayerRggb16RenderOptions
         {
             ExposureSeconds = 1.0,
             Gain = 1.0,
@@ -535,22 +547,408 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
             ReadNoiseStandardDeviation = 0,
             ShotNoiseEnabled = false,
             DarkCurrentElectronsPerSecond = 0,
-            Seed = 777,
-            DeepSkySources = plan
+            Seed = 777
         };
+        var bayerPlan = DeepSkyRenderPlan.Prepare(req, null, [galaxy, nebula], null, bayerBase, CreateSettings(bayerBase, req));
+        var bayerOpts = bayerBase with { DeepSkySources = bayerPlan };
         var bayer1 = BayerRggb16Renderer.Render(emptyScene, bayerLayout, bayerOpts);
         var bayer2 = BayerRggb16Renderer.Render(emptyScene, bayerLayout, bayerOpts);
         CollectionAssert.AreEqual(bayer1.Pixels.ToArray(), bayer2.Pixels.ToArray());
         StringAssert.Contains(bayer1.AlgorithmVersion, DeepSkyRenderPlan.AlgorithmVersion, StringComparison.Ordinal);
 
-        Assert.AreEqual(mono1.DeepSkyStatistics!.DiagnosticsSha256, rgb1.DeepSkyStatistics!.DiagnosticsSha256);
-        Assert.AreEqual(mono1.DeepSkyStatistics!.DiagnosticsSha256, bayer1.DeepSkyStatistics!.DiagnosticsSha256);
+        Assert.AreEqual(mono1.DeepSkyDiagnostics!.Single(static d => d.ObjectId == "NGC1976").Footprint,
+            rgb1.DeepSkyDiagnostics!.Single(static d => d.ObjectId == "NGC1976").Footprint);
+        Assert.AreEqual(mono1.DeepSkyDiagnostics!.Single(static d => d.ObjectId == "NGC1976").Footprint,
+            bayer1.DeepSkyDiagnostics!.Single(static d => d.ObjectId == "NGC1976").Footprint);
 
-        var nebFp = plan.Diagnostics.Single(static d => d.ObjectId == "NGC1976").Footprint!;
+        var nebFp = monoPlan.Diagnostics.Single(static d => d.ObjectId == "NGC1976").Footprint!;
         var (rgbR, _, rgbB) = SumRgb24Box(rgb1.Pixels.Span, 160, nebFp.MinimumX, nebFp.MinimumY, nebFp.MaximumX, nebFp.MaximumY);
         var (bayerMeanR, _, bayerMeanB) = MeanBayerRggb16Box(bayer1.Pixels.Span, 160, nebFp.MinimumX, nebFp.MinimumY, nebFp.MaximumX, nebFp.MaximumY);
         Assert.IsTrue(rgbR > rgbB, $"Emission nebula should have stronger red H-alpha than blue in RGB24 (R={rgbR}, B={rgbB}).");
         Assert.IsTrue(bayerMeanR > bayerMeanB, $"Emission nebula should have stronger mean red photosite response than blue in Bayer RGGB16 (meanR={bayerMeanR:F2}, meanB={bayerMeanB:F2}).");
+    }
+
+    [TestMethod]
+    public void DarkNebulaObeysMultiplicativeTransmissionSubpixelAreaScalingAndUnresolvedDiffuseAttenuation()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1600, 1600, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        // (a) Two identical finite-optical-depth dark clouds over 100 e-/px/s diffuse bg obey multiplicative exp(-(tau1+tau2)) > 0.
+        var dark1 = CreateDso("LDN-STACK-1", "Dark 1", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 60, 60, 0, null, null, null, null, null);
+        var dark2 = CreateDso("LDN-STACK-2", "Dark 2", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 60, 60, 0, null, null, null, null, null);
+        var oneCloudPlan = DeepSkyRenderPlan.Prepare(req, null, [dark1], null, opts, CreateSettings(opts, req, celestialDiffuseBg: 100.0));
+        var twoCloudPlan = DeepSkyRenderPlan.Prepare(req, null, [dark1, dark2], null, opts, CreateSettings(opts, req, celestialDiffuseBg: 100.0));
+
+        var singleCenter = oneCloudPlan.ElectronRate(80, 80);
+        var doubleCenter = twoCloudPlan.ElectronRate(80, 80);
+        var expectedSingle = 100.0 * Math.Exp(-1.6);
+        var expectedDouble = 100.0 * Math.Exp(-3.2);
+        Assert.IsTrue(doubleCenter > 2.0,
+            $"Stacked finite-tau dark clouds must retain positive multiplicative transmission exp(-(tau1+tau2)); got {doubleCenter:F4} e-/px/s.");
+        Assert.AreEqual(expectedSingle, singleCenter, expectedSingle * 0.15,
+            $"Single dark cloud center should match ~100*exp(-1.6)={expectedSingle:F2}; got {singleCenter:F2}.");
+        Assert.AreEqual(expectedDouble, doubleCenter, expectedDouble * 0.25,
+            $"Double stacked dark cloud center should match ~100*exp(-3.2)={expectedDouble:F2}; got {doubleCenter:F2}.");
+
+        // (b) Shrinking a subpixel dark cloud 100x in diameter (0.001' -> 0.00001') reduces projected area 10,000x
+        //     and reduces absorbed flux by ~10,000x (uncovered subpixel radiance is preserved).
+        var subpixelLarger = CreateDso("LDN-SUB-1", "Subpixel 0.001", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.001, 0.001, 0, null, null, null, null, null);
+        var subpixelSmaller = CreateDso("LDN-SUB-2", "Subpixel 0.00001", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.00001, 0.00001, 0, null, null, null, null, null);
+        var largerPlan = DeepSkyRenderPlan.Prepare(req, null, [subpixelLarger], null, opts, CreateSettings(opts, req, celestialDiffuseBg: 100.0));
+        var smallerPlan = DeepSkyRenderPlan.Prepare(req, null, [subpixelSmaller], null, opts, CreateSettings(opts, req, celestialDiffuseBg: 100.0));
+        var attenLarger = largerPlan.Diagnostics.Single().AttenuatedDiffuseElectronRate;
+        var attenSmaller = smallerPlan.Diagnostics.Single().AttenuatedDiffuseElectronRate;
+        Assert.IsTrue(attenLarger > 0 && attenSmaller > 0);
+        var areaScaleRatio = attenLarger / attenSmaller;
+        Assert.IsTrue(areaScaleRatio is > 9_500 and < 10_500,
+            $"Shrinking dark cloud from 0.001' to 0.00001' must scale absorbed flux by ~10,000x; got {areaScaleRatio:F2}x (larger={attenLarger:E4}, smaller={attenSmaller:E4}).");
+
+        // (c) Unresolved diffuse emitter (0.01' EmN) routes through pre-PSF diffuse map and is attenuated by overlapping dark cloud.
+        var unresolvedEmn = CreateDso("EMN-UNRES", "Compact HII", "EmN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.01, 0.01, 0, 3.0, 3.0, null, null, null);
+        var unattenuatedPlan = DeepSkyRenderPlan.Prepare(req, null, [unresolvedEmn], null, opts, CreateSettings(opts, req));
+        var attenuatedPlan = DeepSkyRenderPlan.Prepare(req, null, [unresolvedEmn, dark1], null, opts, CreateSettings(opts, req));
+        Assert.IsTrue(unattenuatedPlan.Diagnostics.Single().UsedUnresolvedPsfPath);
+        var darkDiag = attenuatedPlan.Diagnostics.Single(static d => d.ObjectId == "LDN-STACK-1");
+        Assert.IsTrue(darkDiag.Admitted && darkDiag.AttenuatedDiffuseElectronRate > 0,
+            "Overlapping dark nebula must attenuate an unresolved diffuse emitter via the pre-PSF diffuse map.");
+        Assert.IsTrue(attenuatedPlan.ElectronRate(80, 80) < unattenuatedPlan.ElectronRate(80, 80) * 0.40,
+            $"Unresolved diffuse emitter peak must drop cleanly under tau=1.6 dark cloud ({attenuatedPlan.ElectronRate(80, 80):F2} vs {unattenuatedPlan.ElectronRate(80, 80):F2}).");
+    }
+
+    [TestMethod]
+    public async Task UnresolvedPlanetaryNebulaConvergesToExposureIntegratedStellarPsfAcrossMotionHorizonAndMovingClouds()
+    {
+        var exposure = TimeSpan.FromSeconds(30);
+        var startUtc = Utc;
+        var midUtc = startUtc.AddTicks(exposure.Ticks / 2);
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1800, 1800, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 50, BoresightAzimuthDegrees: 180);
+        var layout = Mono16Layout(160, 160);
+        var targetJ2000 = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(50, 180), midUtc, HvoObserver.LatitudeDegrees, HvoObserver.LongitudeDegrees),
+            midUtc);
+
+        // Moving cloud scenario over the 30-second exposure.
+        var cloudScenario = new VirtualCloudScenarioDefinition
+        {
+            ScenarioId = "dso-temporal-cloud-v1",
+            ScenarioVersion = "1",
+            Seed = 99,
+            EpochUtc = startUtc,
+            SpatialFrequency = 0.8,
+            DriftEastCellsPerSecond = 0.08,
+            EvolutionCellsPerSecond = 0.04,
+            Octaves = 2,
+            EdgeSoftness = 0.1,
+            HorizonFadeDegrees = 1,
+            TemporalSampleCount = 6,
+            Keyframes =
+            [
+                new VirtualCloudKeyframe { OffsetSeconds = 0, Coverage = 0.7, MaximumOpacity = 0.7, ScatterFraction = 0.0 },
+                new VirtualCloudKeyframe { OffsetSeconds = 30, Coverage = 0.9, MaximumOpacity = 0.8, ScatterFraction = 0.0 }
+            ]
+        };
+        var cloudCtx = new VirtualCloudRenderContext(new VirtualCloudField(cloudScenario), startUtc, exposure);
+        var baseOpts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 30.0, gain: 1.0, psfSigma: 1.0, psfRadius: 4.0) with
+        {
+            Cloud = cloudCtx
+        };
+
+        // 1. Sidereal motion + time-varying cloud transmission convergence over 30s.
+        var star = new CelestialCatalogObject("STAR-30S", "Star30s", targetJ2000.RightAscensionHours, targetJ2000.DeclinationDegrees, 4.0, 0.0);
+        var pn = CreateDso("PN-30S", "PN30s", "PN", targetJ2000.RightAscensionHours, targetJ2000.DeclinationDegrees, 0.02, 0.02, 0, 4.0, 4.0, null, null, null);
+        var request = new VisibleSceneRequest(midUtc, HvoObserver, projection, new CatalogQuery(20, 100), CatalogMeta,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon);
+        var starCatalog = new InMemoryCelestialCatalog([star]);
+        var emptyScene = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(request).ConfigureAwait(false);
+        var starScene = await new VisibleSceneBuilder(starCatalog).BuildAsync(request).ConfigureAwait(false);
+
+        var stellarGeom = await new StellarExposureGeometryBuilder(starCatalog)
+            .BuildAsync(request, startUtc, exposure, new StellarExposureGeometryOptions(
+                MaximumSamplesPerSource: 64, MaximumStepPixels: 0.15, PsfSupportRadiusPixels: 4.0, MinimumSamplesPerSource: 6))
+            .ConfigureAwait(false);
+        var stellarPlan = StellarExposureRenderPlan.Prepare(stellarGeom, baseOpts, new StellarExposureRenderSettings(MinimumSignalToNoise: 1e-3));
+        var dsoSettings = CreateSettings(baseOpts, request, minSnr: 1e-3) with
+        {
+            ExposureStartUtc = startUtc,
+            MaximumTemporalSamples = 64,
+            MaximumTemporalStepPixels = 0.15,
+            MinimumTemporalSamples = 6
+        };
+        var pnPlan = DeepSkyRenderPlan.Prepare(request, null, [pn], null, baseOpts, dsoSettings);
+        Assert.IsTrue(pnPlan.Diagnostics.Single().UsedUnresolvedPsfPath);
+        Assert.IsTrue(pnPlan.Diagnostics.Single().SampledPoints >= 6,
+            $"30s exposure unresolved PN must integrate multiple temporal samples; got {pnPlan.Diagnostics.Single().SampledPoints}.");
+
+        var starRender = Mono16SceneRenderer.Render(starScene, layout, baseOpts with { StellarExposure = stellarPlan });
+        var pnRender = Mono16SceneRenderer.Render(emptyScene, layout, baseOpts with { DeepSkySources = pnPlan });
+        Assert.AreEqual(0, MaxMono16Difference(starRender.Pixels.Span, pnRender.Pixels.Span),
+            "Unresolved PN must converge identically (0 ADU) to exposure-integrated stellar PSF with sidereal motion & moving clouds.");
+
+        // 2. Horizon-crossing convergence over 30s (rising across eastern geometric horizon during exposure).
+        var horProj = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1800, 1800, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 0, BoresightAzimuthDegrees: 90);
+        var horReq = new VisibleSceneRequest(midUtc, HvoObserver, horProj, new CatalogQuery(20, 100), CatalogMeta,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon);
+        var risingJ2000 = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(0.0, 90), midUtc, HvoObserver.LatitudeDegrees, HvoObserver.LongitudeDegrees),
+            midUtc);
+        var horStar = new CelestialCatalogObject("STAR-HOR", "StarHor", risingJ2000.RightAscensionHours, risingJ2000.DeclinationDegrees, 4.0, 0.0);
+        var horPn = CreateDso("PN-HOR", "PNHor", "PN", risingJ2000.RightAscensionHours, risingJ2000.DeclinationDegrees, 0.02, 0.02, 0, 4.0, 4.0, null, null, null);
+        var horStarCat = new InMemoryCelestialCatalog([horStar]);
+        var horOpts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 30.0, gain: 1.0, psfSigma: 1.0, psfRadius: 4.0);
+        var horEmptyScene = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(horReq).ConfigureAwait(false);
+        var horStarScene = await new VisibleSceneBuilder(horStarCat).BuildAsync(horReq).ConfigureAwait(false);
+        var horStellarGeom = await new StellarExposureGeometryBuilder(horStarCat)
+            .BuildAsync(horReq, startUtc, exposure, new StellarExposureGeometryOptions(
+                MaximumSamplesPerSource: 64, MaximumStepPixels: 0.15, PsfSupportRadiusPixels: 4.0, MinimumSamplesPerSource: 1))
+            .ConfigureAwait(false);
+        var horStellarPlan = StellarExposureRenderPlan.Prepare(horStellarGeom, horOpts, new StellarExposureRenderSettings(MinimumSignalToNoise: 1e-3));
+        var horDsoSettings = CreateSettings(horOpts, horReq, minSnr: 1e-3) with
+        {
+            ExposureStartUtc = startUtc,
+            MaximumTemporalSamples = 64,
+            MaximumTemporalStepPixels = 0.15,
+            MinimumTemporalSamples = 1
+        };
+        var horPnPlan = DeepSkyRenderPlan.Prepare(horReq, null, [horPn], null, horOpts, horDsoSettings);
+        Assert.IsTrue(horPnPlan.VisibleElectronRate > 0 && horPnPlan.VisibleElectronRate < horPnPlan.SourceElectronRate * 0.75,
+            "Horizon-crossing unresolved PN must retain only its above-horizon exposure fraction.");
+        var horStarRender = Mono16SceneRenderer.Render(horStarScene, layout, horOpts with { StellarExposure = horStellarPlan });
+        var horPnRender = Mono16SceneRenderer.Render(horEmptyScene, layout, horOpts with { DeepSkySources = horPnPlan });
+        Assert.AreEqual(0, MaxMono16Difference(horStarRender.Pixels.Span, horPnRender.Pixels.Span),
+            "Horizon-crossing unresolved PN must converge identically (0 ADU) to exposure-integrated stellar PSF.");
+    }
+
+    [TestMethod]
+    public void UnresolvedOpenClusterAndCompositeDeduplicateRenderedHygStarsBeforeUnresolvedFallback()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1200, 1200, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        // Exact F10 probe: 0.01' mag-4 OCl (missing minor axis!) centered on an already-rendered mag-3 HYG star -> residual flux == 0.
+        var unresolvedOcl = CreateDso("OCL-TINY", "Tiny OCl", "OCl",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, majArcmin: 0.01, minArcmin: null, paDeg: null,
+            bMag: null, vMag: 4.0, surfBr: null, hubble: null, messier: null);
+        var brightHygStar = new CelestialCatalogObject("HIP 100001", "BrightMember",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, 3.0, 0.1);
+
+        var oclPlan = DeepSkyRenderPlan.Prepare(req, null, [unresolvedOcl], [brightHygStar], opts, CreateSettings(opts, req));
+        var oclDiag = oclPlan.Diagnostics.Single();
+        Assert.IsFalse(oclDiag.Admitted, "Unresolved OCl covered by rendered mag-3 HYG star must not double-count.");
+        Assert.AreEqual("annotation-only-hyg-flux-covered", oclDiag.Reason);
+        Assert.AreEqual(1, oclDiag.MatchedHygStarCount);
+        Assert.AreEqual(0d, oclPlan.SourceElectronRate);
+        Assert.AreEqual(0d, oclPlan.RetainedElectronRate);
+
+        // Unresolved Cl+N (missing minor axis) centered on mag-3 HYG star deducts cluster flux to 0 and keeps only nebula fraction (75%).
+        var unresolvedComposite = CreateDso("CLN-TINY", "Tiny Cl+N", "Cl+N",
+            centerJ2000.RaHours, centerJ2000.DecDegrees, majArcmin: 0.01, minArcmin: null, paDeg: null,
+            bMag: null, vMag: 4.0, surfBr: null, hubble: null, messier: null);
+        var compPlan = DeepSkyRenderPlan.Prepare(req, null, [unresolvedComposite], [brightHygStar], opts, CreateSettings(opts, req));
+        var compDiag = compPlan.Diagnostics.Single();
+        var rawMag4Rate = opts.MagnitudeZeroElectronsPerSecond * Math.Pow(10, -0.4 * 4.0);
+        Assert.IsTrue(compDiag.Admitted);
+        Assert.AreEqual(1, compDiag.MatchedHygStarCount);
+        Assert.AreEqual(rawMag4Rate * 0.75, compPlan.SourceElectronRate, rawMag4Rate * 1e-6);
+    }
+
+    [TestMethod]
+    public async Task AdmissionBindsRenderOptionsDiffuseBackgroundRgbWeightsAndCompleteBinVariance()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var emptyScene = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(req).ConfigureAwait(false);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+        var galaxy = CreateDso("G-SNR-TEST", "Galaxy", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 30, 20, 0, 5.0, 4.5, null, "Sb", null);
+        var opts = CreateDeterministicMonoOptions(background: 1.0, exposureSeconds: 2.0, readNoise: 1.5);
+
+        // (a) Exact F11 probe: raising celestial diffuse background to 1,000,000 e-/px/s collapses S/N and rejects admission!
+        var darkDiffusePlan = DeepSkyRenderPlan.Prepare(req, null, [galaxy], null, opts,
+            CreateSettings(opts, req, minSnr: 5.0, celestialDiffuseBg: 0));
+        var brightDiffusePlan = DeepSkyRenderPlan.Prepare(req, null, [galaxy], null, opts,
+            CreateSettings(opts, req, minSnr: 5.0, celestialDiffuseBg: 1_000_000.0));
+        Assert.IsTrue(darkDiffusePlan.Diagnostics.Single().Admitted);
+        Assert.IsFalse(brightDiffusePlan.Diagnostics.Single().Admitted);
+        Assert.AreEqual("annotation-only-below-snr", brightDiffusePlan.Diagnostics.Single().Reason);
+        Assert.IsTrue(brightDiffusePlan.Diagnostics.Single().PredictedSignal.SignalToNoise < 1.0);
+
+        // (b) RGB24 ChannelResponse & WhiteBalance affect PredictedSignal.
+        var rgbBalanced = new Rgb24CompatibilityRenderOptions
+        {
+            ExposureSeconds = 2.0,
+            Gain = 1.0,
+            MagnitudeZeroElectronsPerSecond = 10_000,
+            BackgroundElectronsPerSecond = 1.0,
+            PsfSigmaPixels = 1.0,
+            PsfRadiusPixels = 4.0,
+            ShotNoiseEnabled = false,
+            WhiteBalance = new RgbChannelSettings(1, 1, 1),
+            ChannelResponse = new RgbChannelSettings(1, 1, 1)
+        };
+        var rgbRedWeighted = rgbBalanced with { WhiteBalance = new RgbChannelSettings(2.0, 0.25, 0.25) };
+        var planRgbBal = DeepSkyRenderPlan.Prepare(req, null, [galaxy], null, rgbBalanced, CreateSettings(rgbBalanced, req));
+        var planRgbRed = DeepSkyRenderPlan.Prepare(req, null, [galaxy], null, rgbRedWeighted, CreateSettings(rgbRedWeighted, req));
+        Assert.AreNotEqual(
+            planRgbBal.Diagnostics.Single().PredictedSignal.SignalToNoise,
+            planRgbRed.Diagnostics.Single().PredictedSignal.SignalToNoise,
+            "RGB24 white balance and channel response must enter admission prediction.");
+
+        // (c) Complete output-bin pixel variance for DigitalBinX=2, DigitalBinY=2 (DigitalAverage=false keeps signal equal while adding sibling photosite background variance).
+        var pn = CreateDso("PN-BIN", "PNBin", "PN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.02, 0.02, 0, 5.0, 5.0, null, null, null);
+        var noisyBgOpts = CreateDeterministicMonoOptions(background: 200.0, exposureSeconds: 2.0, readNoise: 5.0);
+        var planUnbinned = DeepSkyRenderPlan.Prepare(req, null, [pn], null, noisyBgOpts,
+            CreateSettings(noisyBgOpts, req) with { DigitalBinX = 1, DigitalBinY = 1, DigitalAverage = false });
+        var planBinned2x2 = DeepSkyRenderPlan.Prepare(req, null, [pn], null, noisyBgOpts,
+            CreateSettings(noisyBgOpts, req) with { DigitalBinX = 2, DigitalBinY = 2, DigitalAverage = false });
+        Assert.IsTrue(planBinned2x2.Diagnostics.Single().PredictedSignal.NoiseVariance >
+                      planUnbinned.Diagnostics.Single().PredictedSignal.NoiseVariance,
+            "Complete 2x2 digital-bin support must include sibling photosites' background/read noise variance.");
+
+        // (d) ValidateFor rejects mismatched render options (e.g. different exposure).
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            Mono16SceneRenderer.Render(emptyScene, Mono16Layout(160, 160),
+                opts with { ExposureSeconds = 4.0, DeepSkySources = darkDiffusePlan }));
+    }
+
+    [TestMethod]
+    public void CandidateSelectionIsOrderInvariantAndEnforcesCapsOnDarkAndUnresolvedPaths()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        // (a) Reversing candidate input order with count > MaximumCandidates produces bit-identical selection & DiagnosticsSha256!
+        DeepSkyObject[] sixCandidates =
+        [
+            CreateDso("NGC-Z", "Z", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 9.0, 8.5, null, "Sb", null),
+            CreateDso("NGC-B", "B", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 5.0, 4.5, null, "Sb", 31),
+            CreateDso("NGC-A", "A", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 6.0, 5.5, null, "Sb", null),
+            CreateDso("NGC-M", "M", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 4.0, 3.5, null, "Sb", 42),
+            CreateDso("NGC-C", "C", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 7.0, 6.5, null, "Sb", null),
+            CreateDso("NGC-D", "D", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 5.5, 5.0, null, "Sb", null)
+        ];
+        var capSettings = CreateSettings(opts, req) with { MaximumCandidates = 3 };
+        var planForward = DeepSkyRenderPlan.Prepare(req, null, sixCandidates, null, opts, capSettings);
+        var planReversed = DeepSkyRenderPlan.Prepare(req, null, sixCandidates.Reverse().ToArray(), null, opts, capSettings);
+
+        Assert.AreEqual(3, planForward.Statistics.CandidateCount);
+        Assert.AreEqual(planForward.Statistics.DiagnosticsSha256, planReversed.Statistics.DiagnosticsSha256);
+        CollectionAssert.AreEqual(
+            planForward.Diagnostics.Select(static d => d.ObjectId).ToArray(),
+            planReversed.Diagnostics.Select(static d => d.ObjectId).ToArray());
+        Assert.IsTrue(planForward.Diagnostics.Any(static d => d.ObjectId == "NGC-B"));
+        Assert.IsTrue(planForward.Diagnostics.Any(static d => d.ObjectId == "NGC-M"));
+        Assert.IsTrue(planForward.Diagnostics.Any(static d => d.ObjectId == "NGC-D"));
+
+        // (b) Synthetic additions enter ranking BEFORE truncation and respect MaximumCandidates!
+        var synthMessier = CreateDso("SYN-M1", "Synth M1", "G", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, 3.0, 2.5, null, "Sb", 1);
+        var planWithSynth = DeepSkyRenderPlan.Prepare(req, null, sixCandidates, null, opts,
+            capSettings with { SyntheticScenario = new DeepSkySyntheticScenario("cap-synth-v1", AdditionalObjects: [synthMessier]) });
+        Assert.AreEqual(3, planWithSynth.Statistics.CandidateCount);
+        Assert.IsTrue(planWithSynth.Diagnostics.Any(static d => d.ObjectId == "SYN-M1"));
+
+        // (c) MaximumRenderedSources = 1 with 2 dark sources admits 1 and budget-skips the 2nd!
+        var darkA = CreateDso("LDN-A", "Dark A", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, null, null, null, null, null);
+        var darkB = CreateDso("LDN-B", "Dark B", "DrkN", centerJ2000.RaHours, centerJ2000.DecDegrees, 20, 20, 0, null, null, null, null, null);
+        var darkCapPlan = DeepSkyRenderPlan.Prepare(req, null, [darkA, darkB], null, opts,
+            CreateSettings(opts, req, celestialDiffuseBg: 100.0) with { MaximumRenderedSources = 1 });
+        Assert.AreEqual(1, darkCapPlan.Statistics.AdmittedCount);
+        Assert.AreEqual(1, darkCapPlan.Statistics.DarkAttenuationCount);
+        Assert.IsTrue(darkCapPlan.Diagnostics.Any(static d => d.Admitted && d.Reason == "admitted-dark-attenuation"));
+        Assert.IsTrue(darkCapPlan.Diagnostics.Any(static d => !d.Admitted && d.Reason == "budget-skipped"));
+
+        // (d) MaximumTotalSamplePoints is enforced on unresolved sources too!
+        var twentyUnresolved = Enumerable.Range(0, 20)
+            .Select(i => CreateDso($"PN-{i:D2}", $"PN-{i:D2}", "PN", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.02, 0.02, 0, 5.0, 5.0, null, null, null))
+            .ToArray();
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, twentyUnresolved, null, opts,
+                CreateSettings(opts, req) with { MaximumTotalSamplePoints = 16, MaximumCandidates = 32, MaximumRenderedSources = 32 }));
+    }
+
+    [TestMethod]
+    public void AcceptedConfigurationMinimaMergedSyntheticValidationAndOutlineEdgeVisitBudget()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var req = CreateRequest(projection, HorizonPolicy.GeometricHorizon);
+        var opts = CreateDeterministicMonoOptions(background: 0, exposureSeconds: 1.0);
+        var centerJ2000 = AltAzToJ2000(new AltAzPoint(60, 180));
+
+        // (a) Valid accepted minimum MaximumSamplePointsPerSource = 16 succeeds on resolved nebula (both ellipse & outline)!
+        var resolvedNebula = CreateDso("NEB-MIN16", "Nebula Min16", "EmN", centerJ2000.RaHours, centerJ2000.DecDegrees, 30, 30, 0, 4.0, 4.0, null, null, null);
+        var minSampleSettings = CreateSettings(opts, req) with { MaximumSamplePointsPerSource = 16 };
+        var minEllipsePlan = DeepSkyRenderPlan.Prepare(req, null, [resolvedNebula], null, opts, minSampleSettings);
+        Assert.IsTrue(minEllipsePlan.Diagnostics.Single().Admitted);
+        Assert.IsTrue(minEllipsePlan.Diagnostics.Single().SampledPoints <= 16);
+
+        var sqOutline = CreateSquareOutline("NEB-MIN16", centerJ2000.RaHours, centerJ2000.DecDegrees, 0.25);
+        var minOutlinePlan = DeepSkyRenderPlan.Prepare(req, null, [resolvedNebula], null, opts,
+            minSampleSettings with { SyntheticScenario = new DeepSkySyntheticScenario("min16-out-v1", AdditionalOutlines: [sqOutline]) });
+        Assert.IsTrue(minOutlinePlan.Diagnostics.Single().Admitted);
+
+        // (b) Valid accepted MaximumUnresolvedClusterMembers = 2 succeeds without throwing!
+        var resolvedOcl = CreateDso("OCL-MIN2", "OCl Min2", "OCl", centerJ2000.RaHours, centerJ2000.DecDegrees, 40, 40, 0, null, 4.0, null, null, null);
+        var minMemberScenario = new DeepSkySyntheticScenario("min-members-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride("OCL-MIN2", MaximumUnresolvedClusterMembers: 2)]);
+        var minMemberPlan = DeepSkyRenderPlan.Prepare(req, null, [resolvedOcl], null, opts,
+            CreateSettings(opts, req, syntheticScenario: minMemberScenario));
+        Assert.IsTrue(minMemberPlan.Diagnostics.Single().Admitted);
+        Assert.AreEqual(2, minMemberPlan.Diagnostics.Single().UnresolvedMemberCount);
+
+        // (c) Merged synthetic override creating minor > major is rejected!
+        var badMergeScenario = new DeepSkySyntheticScenario("bad-merge-v1",
+            Overrides: [new DeepSkySyntheticSourceOverride("NEB-MIN16", MinorAxisArcminutes: 50)]);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [resolvedNebula], null, opts,
+                CreateSettings(opts, req, syntheticScenario: badMergeScenario)));
+
+        // (d) Unclosed synthetic outline ring is rejected at validation!
+        var unclosedOutline = new DeepSkyOutline("NEB-MIN16", 1,
+        [
+            new DeepSkyOutlineRing([new(10, 10), new(11, 10), new(11, 11), new(10, 11)])
+        ]);
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DeepSkySyntheticScenario("unclosed-v1", AdditionalOutlines: [unclosedOutline]).Validate());
+
+        // (e) High-vertex-count valid synthetic outline trips MaximumOutlineEdgeVisits before rasterization!
+        const int vertices = 400;
+        var ringPts = new List<DeepSkyOutlinePoint>(vertices + 1);
+        var cosDec = Math.Max(0.2, Math.Cos(centerJ2000.DecDegrees * Math.PI / 180d));
+        for (var i = 0; i < vertices; i++)
+        {
+            var angle = 2d * Math.PI * i / vertices;
+            var raDeg = (((centerJ2000.RaHours * 15d + 0.25 * Math.Cos(angle) / cosDec) % 360d) + 360d) % 360d;
+            var decDeg = centerJ2000.DecDegrees + 0.25 * Math.Sin(angle);
+            ringPts.Add(new DeepSkyOutlinePoint(raDeg, decDeg));
+        }
+        ringPts.Add(ringPts[0]);
+        var highVertexOutline = new DeepSkyOutline("NEB-MIN16", 1, [new DeepSkyOutlineRing(ringPts)]);
+        var tightEdgeBudgetSettings = CreateSettings(opts, req) with
+        {
+            MaximumOutlineEdgeVisits = 1_000,
+            SyntheticScenario = new DeepSkySyntheticScenario("high-vert-v1", AdditionalOutlines: [highVertexOutline])
+        };
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            DeepSkyRenderPlan.Prepare(req, null, [resolvedNebula], null, opts, tightEdgeBudgetSettings));
     }
 
     private static ImageLayout Mono16Layout(int width, int height) =>

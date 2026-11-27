@@ -452,17 +452,22 @@ public sealed class VirtualSkyCameraModule(
         var predictionMilliseconds = Stopwatch.GetElapsedTime(predictionStarted).TotalMilliseconds;
         var predictionProcessCpuMilliseconds = (ReadProcessCpu() - predictionCpuStarted).TotalMilliseconds;
         DeepSkyRenderPlan? deepSkyPlan = null;
+        IDeepSkyCatalog? activeRenderDeepSkyCatalog = null;
+        var deepSkyCandidateSelectMilliseconds = 0d;
         var deepSkyPrepareMilliseconds = 0d;
         var deepSkyPrepareProcessCpuMilliseconds = 0d;
         if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRender)
         {
-            var deepSkyCatalog = (catalog as IDeepSkyCatalogSource)?.DeepSky;
-            if (deepSkyCatalog is null && deepSkyRender.SyntheticScenario is not { AdditionalObjects.Count: > 0 })
+            var dsoCpuStarted = ReadProcessCpu();
+            var dsoStarted = Stopwatch.GetTimestamp();
+            activeRenderDeepSkyCatalog = (catalog as IDeepSkyCatalogSource)?.DeepSky;
+            if (activeRenderDeepSkyCatalog is null && deepSkyRender.SyntheticScenario is not { AdditionalObjects.Count: > 0 })
             {
                 throw new InvalidOperationException(
                     "Extended deep-sky rendering requires an installed deep-sky catalog or declared synthetic scenario.");
             }
-            var dsoCandidates = SelectDeepSkyRenderCandidates(deepSkyCatalog, deepSkyRender, sceneRequest);
+            var dsoCandidates = SelectDeepSkyRenderCandidates(activeRenderDeepSkyCatalog, deepSkyRender, sceneRequest);
+            deepSkyCandidateSelectMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
             var dsoSettings = new DeepSkyRenderSettings(
                 MinimumSignalToNoise: deepSkyRender.MinimumSignalToNoise,
                 MaximumCandidates: deepSkyRender.MaximumCandidates,
@@ -479,12 +484,15 @@ public sealed class VirtualSkyCameraModule(
                 DigitalBinX: useNativeReadout ? _resolvedReadout!.Geometry.BinX : 1,
                 DigitalBinY: useNativeReadout ? _resolvedReadout!.Geometry.BinY : 1,
                 DigitalAverage: !useNativeReadout || _resolvedReadout!.Profile.BinningAlgorithm != FrameBinningAlgorithm.DigitalSumV1,
-                SyntheticScenario: deepSkyRender.SyntheticScenario);
-            var dsoCpuStarted = ReadProcessCpu();
-            var dsoStarted = Stopwatch.GetTimestamp();
+                SyntheticScenario: deepSkyRender.SyntheticScenario,
+                ExposureStartUtc: virtualExposure.CelestialStartUtc,
+                MaximumTemporalSamples: _options.MaximumStellarSamples,
+                MaximumTemporalStepPixels: Math.Min(_options.MaximumStellarStepPixels,
+                    TemporalPointSpreadRaster.MaximumTemporalStepPixels(psfSigmaPixels, psfRadiusPixels)),
+                MinimumTemporalSamples: _cloudField?.Definition.TemporalSampleCount ?? 1);
             deepSkyPlan = DeepSkyRenderPlan.Prepare(
                 sceneRequest,
-                deepSkyCatalog,
+                activeRenderDeepSkyCatalog,
                 dsoCandidates,
                 stellarPlan.Sources.Select(static source => source.Source.Source),
                 initialRenderOptions,
@@ -542,6 +550,28 @@ public sealed class VirtualSkyCameraModule(
                 sceneId,
                 "\n",
                 CaptureContractJson.ComputeCanonicalJsonSha256(config.Rig.Readout)))));
+        }
+        if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRenderIdentity)
+        {
+            var renderCatalogIdentity = activeRenderDeepSkyCatalog is null
+                ? "none"
+                : CaptureContractJson.ComputeCanonicalJsonSha256(
+                    activeRenderDeepSkyCatalog.Semantics with
+                    {
+                        SnapshotIdentity = activeRenderDeepSkyCatalog.Semantics.SnapshotIdentity is { } snapshot
+                            ? snapshot with { DatabaseSha256 = snapshot.DatabaseSha256.ToUpperInvariant() }
+                            : null
+                    });
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
+                sceneId,
+                "\ndeep-sky-render-v1\n",
+                DeepSkyRenderPlan.AlgorithmVersion,
+                "\n",
+                DeepSkySimulationParameters.CurrentSchemaVersion,
+                "\n",
+                CaptureContractJson.ComputeCanonicalJsonSha256(deepSkyRenderIdentity),
+                "\n",
+                renderCatalogIdentity))));
         }
         // The full identity binds both logical clocks. Controlled fixed-field realizations use
         // a separate celestial identity so advancing transient time does not redraw quiet noise.
@@ -698,7 +728,7 @@ public sealed class VirtualSkyCameraModule(
             ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
             CatalogId: catalogIdentity.CatalogId,
             CatalogPackageVersion: catalogIdentity.PackageVersion,
-            DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity,
+            DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity ?? activeRenderDeepSkyCatalog?.Semantics.SnapshotIdentity,
             CaptureGraphRevisionId: captureGraph?.RevisionId);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -784,22 +814,35 @@ public sealed class VirtualSkyCameraModule(
         }
         if (deepSkyPlan is not null)
         {
+            var deliveredDiagnostics = render.DeepSkyDiagnostics ?? deepSkyPlan.Diagnostics;
+            var deliveredStatistics = render.DeepSkyStatistics ?? deepSkyPlan.Statistics;
+            var serializeStarted = Stopwatch.GetTimestamp();
+            var serializedDiagnostics = JsonSerializer.Serialize(deliveredDiagnostics, SerializerOptions);
+            var deepSkyDiagnosticsSerializeMilliseconds = Stopwatch.GetElapsedTime(serializeStarted).TotalMilliseconds;
+
             extra["deepSkyRenderAlgorithm"] = DeepSkyRenderPlan.AlgorithmVersion;
             extra["deepSkyProfileSchemaVersion"] = DeepSkySimulationParameters.CurrentSchemaVersion;
             extra["deepSkyDiagnosticIdentityVersion"] = DeepSkyRenderPlan.DiagnosticIdentityVersion;
-            extra["deepSkyDiagnosticsSha256"] = deepSkyPlan.Statistics.DiagnosticsSha256;
-            extra["deepSkyCandidateCount"] = deepSkyPlan.Statistics.CandidateCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyEligibleCount"] = deepSkyPlan.Statistics.EligibleCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyAdmittedCount"] = deepSkyPlan.Statistics.AdmittedCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyAnnotationOnlyCount"] = deepSkyPlan.Statistics.AnnotationOnlyCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyUnresolvedPsfCount"] = deepSkyPlan.Statistics.UnresolvedPsfCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyDarkAttenuationCount"] = deepSkyPlan.Statistics.DarkAttenuationCount.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkySampledPoints"] = deepSkyPlan.Statistics.TotalSampledPoints.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyRasterizedPixels"] = deepSkyPlan.Statistics.TotalRasterizedPixels.ToString(CultureInfo.InvariantCulture);
-            extra["deepSkyKernelCellVisits"] = deepSkyPlan.Statistics.TotalKernelCellVisits.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnosticsSha256"] = deliveredStatistics.DiagnosticsSha256;
+            if (!string.Equals(deliveredStatistics.DiagnosticsSha256, deepSkyPlan.Statistics.DiagnosticsSha256, StringComparison.Ordinal))
+            {
+                extra["deepSkyNativeDiagnosticsSha256"] = deepSkyPlan.Statistics.DiagnosticsSha256;
+            }
+            extra["deepSkyCandidateCount"] = deliveredStatistics.CandidateCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyEligibleCount"] = deliveredStatistics.EligibleCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAdmittedCount"] = deliveredStatistics.AdmittedCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAnnotationOnlyCount"] = deliveredStatistics.AnnotationOnlyCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyUnresolvedPsfCount"] = deliveredStatistics.UnresolvedPsfCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDarkAttenuationCount"] = deliveredStatistics.DarkAttenuationCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkySampledPoints"] = deliveredStatistics.TotalSampledPoints.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyRasterizedPixels"] = deliveredStatistics.TotalRasterizedPixels.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyKernelCellVisits"] = deliveredStatistics.TotalKernelCellVisits.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyCandidateSelectMilliseconds"] = deepSkyCandidateSelectMilliseconds.ToString("R", CultureInfo.InvariantCulture);
             extra["deepSkyPrepareMilliseconds"] = deepSkyPrepareMilliseconds.ToString("R", CultureInfo.InvariantCulture);
             extra["deepSkyPrepareProcessCpuMilliseconds"] = deepSkyPrepareProcessCpuMilliseconds.ToString("R", CultureInfo.InvariantCulture);
-            extra["deepSkyDiagnostics"] = JsonSerializer.Serialize(render.DeepSkyDiagnostics ?? deepSkyPlan.Diagnostics, SerializerOptions);
+            extra["deepSkyDiagnosticsSerializeMilliseconds"] = deepSkyDiagnosticsSerializeMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnosticsBytes"] = Encoding.UTF8.GetByteCount(serializedDiagnostics).ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnostics"] = serializedDiagnostics;
         }
         if (cloudProvenance is not null)
         {
@@ -1577,6 +1620,7 @@ public sealed class VirtualSkyCameraModule(
             {
                 nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations),
                 nameof(VirtualSkyCameraModuleOptions.DeepSky),
+                nameof(VirtualSkyCameraModuleOptions.RenderDeepSkySources),
                 nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection),
                 // Bind package content to the named capture identity without using the file path to seed sensor noise.
                 nameof(VirtualSkyCameraModuleOptions.NamedOrbitalPass)
@@ -1648,6 +1692,8 @@ public sealed class VirtualSkyCameraModule(
             parameters);
     }
 
+    internal const int MaximumDeepSkyCatalogQueryResults = 16_384;
+
     private static DeepSkyObject[]? SelectDeepSkyRenderCandidates(
         IDeepSkyCatalog? catalog,
         VirtualSkyDeepSkyRenderOptions options,
@@ -1669,17 +1715,15 @@ public sealed class VirtualSkyCameraModule(
             boresightJ2000.DeclinationDegrees,
             searchRadiusDegrees);
 
+        var queryLimit = Math.Max(options.MaximumCandidates, MaximumDeepSkyCatalogQueryResults);
         var baseQuery = options.Query is { } query
-            ? query.ToQuery(int.MaxValue) with { Region = cap }
-            : new DeepSkyQuery(int.MaxValue, Region: cap);
-        var matches = catalog.Query(baseQuery).Objects;
-        return matches
-            .OrderBy(static item => item.MessierNumber ?? int.MaxValue)
-            .ThenBy(static item => item.VMagnitude ?? double.PositiveInfinity)
-            .ThenByDescending(static item => item.MajorAxisArcminutes ?? 0d)
-            .ThenBy(static item => item.Id, StringComparer.Ordinal)
-            .Take(options.MaximumCandidates)
-            .ToArray();
+            ? query.ToQuery(queryLimit) with { Region = cap }
+            : new DeepSkyQuery(queryLimit, Region: cap);
+        var matches = catalog.Query(baseQuery).Objects.ToArray();
+        Array.Sort(matches, DeepSkyRenderPlan.CompareCandidatePriority);
+        return matches.Length <= options.MaximumCandidates
+            ? matches
+            : matches[..options.MaximumCandidates];
     }
 
     private static SolarSystemBody[] ParseSolarSystemBodies(IEnumerable<string> names)

@@ -180,6 +180,9 @@ public sealed record DeepSkySyntheticScenario(
     double CelestialDiffuseBackgroundElectronsPerSecond = 0)
 {
     public const string CurrentSchemaVersion = "deep-sky-synthetic-scenario-v1";
+    public const int MaximumOutlineRingsPerOutline = 64;
+    public const int MaximumOutlineVerticesPerOutline = 4_096;
+    public const int MaximumTotalOutlineVertices = 16_384;
 
     public void Validate()
     {
@@ -208,12 +211,65 @@ public sealed record DeepSkySyntheticScenario(
         foreach (var item in AdditionalObjects ?? [])
         {
             ArgumentNullException.ThrowIfNull(item);
-            if (string.IsNullOrWhiteSpace(item.Id) || !DeepSkyObjectTypes.IsSupported(item.ObjectType) ||
+            if (string.IsNullOrWhiteSpace(item.Id) ||
+                string.IsNullOrWhiteSpace(item.Designation) ||
+                string.IsNullOrWhiteSpace(item.DisplayName) ||
+                string.IsNullOrWhiteSpace(item.Constellation) ||
+                !DeepSkyObjectTypes.IsSupported(item.ObjectType) ||
                 !double.IsFinite(item.RightAscensionHours) || item.RightAscensionHours is < 0 or >= 24 ||
                 !double.IsFinite(item.DeclinationDegrees) || item.DeclinationDegrees is < -90 or > 90 ||
+                item.MajorAxisArcminutes is { } maj && (!double.IsFinite(maj) || maj is <= 0 or > 1200) ||
+                item.MinorAxisArcminutes is { } min && (item.MajorAxisArcminutes is not { } maj2 || !double.IsFinite(min) || min <= 0 || min > maj2) ||
+                item.PositionAngleDegrees is { } pa && (!double.IsFinite(pa) || pa is < 0 or >= 180) ||
+                item.VMagnitude is { } vMag && (!double.IsFinite(vMag) || vMag is < -30 or > 30) ||
+                item.BMagnitude is { } bMag && (!double.IsFinite(bMag) || bMag is < -30 or > 30) ||
+                item.SurfaceBrightness is { } sb && (!double.IsFinite(sb) || sb is < -30 or > 40) ||
+                item.MessierNumber is < 1 or > 110 ||
+                item.CaldwellNumber is < 1 or > 109 ||
                 !seenObjectIds.Add(item.Id))
             {
                 throw new ArgumentException($"Synthetic deep-sky object '{item.Id}' is invalid or duplicated.", nameof(AdditionalObjects));
+            }
+        }
+        var seenOutlineKeys = new HashSet<(string ObjectId, int Level)>();
+        var totalOutlineVertices = 0;
+        foreach (var outline in AdditionalOutlines ?? [])
+        {
+            ArgumentNullException.ThrowIfNull(outline);
+            if (string.IsNullOrWhiteSpace(outline.ObjectId) ||
+                outline.Level is < DeepSkyOutline.WidestLevel or > DeepSkyOutline.NarrowestLevel ||
+                !seenOutlineKeys.Add((outline.ObjectId, outline.Level)) ||
+                outline.Rings is not { Count: >= 1 and <= MaximumOutlineRingsPerOutline })
+            {
+                throw new ArgumentException($"Synthetic deep-sky outline '{outline.ObjectId}' is invalid or duplicated.", nameof(AdditionalOutlines));
+            }
+            var outlineVertices = 0;
+            foreach (var ring in outline.Rings)
+            {
+                ArgumentNullException.ThrowIfNull(ring);
+                if (ring.Points is not { Count: >= DeepSkyCatalog.MinimumRingPointCount } points || points[0] != points[^1])
+                {
+                    throw new ArgumentException($"Synthetic deep-sky outline ring for '{outline.ObjectId}' must be closed with at least {DeepSkyCatalog.MinimumRingPointCount} points.", nameof(AdditionalOutlines));
+                }
+                outlineVertices += points.Count;
+                totalOutlineVertices += points.Count;
+                if (outlineVertices > MaximumOutlineVerticesPerOutline || totalOutlineVertices > MaximumTotalOutlineVertices)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(AdditionalOutlines), "Synthetic deep-sky outline exceeds vertex structural bounds.");
+                }
+                for (var idx = 0; idx < points.Count; idx++)
+                {
+                    var pt = points[idx];
+                    if (!double.IsFinite(pt.RightAscensionDegrees) || pt.RightAscensionDegrees is < 0 or >= 360 ||
+                        !double.IsFinite(pt.DeclinationDegrees) || pt.DeclinationDegrees is < -90 or > 90)
+                    {
+                        throw new ArgumentException($"Synthetic deep-sky outline vertex for '{outline.ObjectId}' is out of range.", nameof(AdditionalOutlines));
+                    }
+                    if (idx > 0 && pt == points[idx - 1])
+                    {
+                        throw new ArgumentException($"Synthetic deep-sky outline ring for '{outline.ObjectId}' repeats consecutive vertices.", nameof(AdditionalOutlines));
+                    }
+                }
             }
         }
     }

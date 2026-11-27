@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy.Tests.IndependentOracle;
 
@@ -51,10 +52,32 @@ public sealed class DeepSkyClippingReferenceTests
         var metrics = IndependentAnalyticClippingOracle.ComparePolylines(bridgedActual, referenceArcs, cam, transform);
         Assert.IsTrue(metrics.ForwardHausdorffPixels > 50d,
             $"Negative control must catch extra connecting stroke across exterior gap; got {metrics.ForwardHausdorffPixels:F3} px.");
+        Assert.IsFalse(metrics.TopologyMatches, "Bridging two open reference arcs into one must fail topology matching.");
+
+        // Negative control 1b (F6 exact probe): segment [0, 1] bridging [0, 0.17] and [0.73, 1] has true midpoint
+        // distance 0.28 px (> 0.27 px budget) at x = 0.45, missing interior endpoints 0.17 & 0.73, and part count mismatch.
+        var narrowGapReference = new[]
+        {
+            new OracleVisibleArc(false, [new OraclePoint(0, 0), new OraclePoint(0.17, 0)]),
+            new OracleVisibleArc(false, [new OraclePoint(0.73, 0), new OraclePoint(1.0, 0)])
+        };
+        var narrowGapBridged = new[]
+        {
+            (false, new[] { new OraclePoint(0, 0), new OraclePoint(1.0, 0) })
+        };
+        var narrowGapMetrics = IndependentAnalyticClippingOracle.ComparePolylines(narrowGapBridged, narrowGapReference, cam, transform);
+        Assert.IsTrue(narrowGapMetrics.ForwardHausdorffPixels >= 0.2799 &&
+                      narrowGapMetrics.ForwardHausdorffPixels > IndependentAnalyticClippingOracle.ContinuousHausdorffBudgetPixels,
+            $"Sub-pixel bridged gap [0,1] vs [0,0.17]+[0.73,1] must measure ~0.28 px (> 0.27 px budget); got {narrowGapMetrics.ForwardHausdorffPixels:F6} px.");
+        Assert.IsFalse(narrowGapMetrics.TopologyMatches,
+            "Sub-pixel bridged gap must fail topology matching (1 part vs 2 reference arcs).");
+        Assert.IsTrue(narrowGapMetrics.MaxEndpointBoundaryResidualPixels >= 0.26,
+            $"Bidirectional open-endpoint residual must catch omitted interior endpoints 0.17 and 0.73; got {narrowGapMetrics.MaxEndpointBoundaryResidualPixels:F6} px.");
 
         // Negative control 2: empty output vs non-empty reference MUST FAIL!
         var emptyMetrics = IndependentAnalyticClippingOracle.ComparePolylines([], referenceArcs, cam, transform);
         Assert.IsTrue(double.IsPositiveInfinity(emptyMetrics.SymmetricHausdorffPixels));
+        Assert.IsFalse(emptyMetrics.TopologyMatches);
 
         // Negative control 3: shifted polyline MUST FAIL budget!
         var shifted = new[]
@@ -64,6 +87,88 @@ public sealed class DeepSkyClippingReferenceTests
         };
         var shiftedMetrics = IndependentAnalyticClippingOracle.ComparePolylines(shifted, referenceArcs, cam, transform);
         Assert.IsTrue(shiftedMetrics.SymmetricHausdorffPixels > 1.5d);
+    }
+
+    [TestMethod]
+    public void LegacyV2MoonFootprintMatchesBaseFrozenBytes()
+    {
+        // Exact F3 clipped-Moon probe: 160x160 perspective (f = 1400 px, boresight alt 60 deg),
+        // Moon radius 0.25 deg centered at alt 63.22 deg -> must preserve frozen v2 sampler output byte-for-byte.
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 80, 80, 1400, 1400, 160, 160,
+            ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 60, BoresightAzimuthDegrees: 180);
+        var request = new VisibleSceneRequest(ReferenceUtc, Site, projection, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1",
+            solarSystemBodies: [SolarSystemBody.Moon]);
+        var moonDisk = new SolarDiskAppearance(
+            SolarSystemBody.Moon, ReferenceUtc, new AltAzPoint(63.22, 180), 0.25, -12.1, 0.75, 90, 384_400);
+        var visible = new VisibleScene(
+                request,
+                [],
+                computationProvenance: new("astronomy-v1", null, null, "astronomy-engine-2.1.19-eqj-v1"))
+            .WithResolvedBodies([moonDisk]);
+        var source = new ProjectedSceneSource(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            new string('B', 64));
+
+        var v2 = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(160, 160), source, "cal-v1", "cal-v1");
+        var v2Bytes = ProjectedSceneJson.Serialize(v2);
+
+        Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, v2.SchemaVersion);
+        Assert.IsNull(v2.DeepSky);
+        var footprint = v2.ResolvedFootprints!.Single();
+        Assert.AreEqual(ResolvedFootprintSampler.AlgorithmVersion, footprint.SamplingAlgorithmVersion);
+        Assert.IsTrue(footprint.Clipped);
+        var vertexCount = footprint.Parts.Sum(static p => p.Points.Count);
+        Assert.AreEqual(39, vertexCount,
+            $"Legacy v2 clipped Moon must preserve exact frozen 39-vertex output from base; got {vertexCount}.");
+        CollectionAssert.AreEqual(v2Bytes, ProjectedSceneJson.Serialize(ProjectedSceneJson.Parse(v2Bytes).Scene!));
+    }
+
+    [TestMethod]
+    public void HorizonGrazingEllipseMatchesIndependentOracleWithoutDroppingVisibleArc()
+    {
+        // Exact F4 probe: J2000 noon, lat/lon 0 deg, 640x480 perspective pointed due east at geometric horizon
+        // (f = 100,000 px), ellipse centered at alt = -0.9999999 deg with semi-axes 1 deg and 0.999999999 deg,
+        // PA = 89.912109375 deg reaches positive altitude and projects near (320, 239.99983).
+        var j2000Noon = new DateTimeOffset(2000, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var equatorSite = new ObserverLocation(0, 0, 0);
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 320, 240, 100_000, 100_000, 640, 480,
+            ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 0, BoresightAzimuthDegrees: 90);
+        var request = new VisibleSceneRequest(j2000Noon, equatorSite, projection, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(false), HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
+        var centerGeom = new AltAzPoint(-0.9999999, 90);
+        const double semiMajorDeg = 1.0;
+        const double semiMinorDeg = 0.999999999;
+        const double paDeg = 89.912109375;
+
+        var actual = ResolvedFootprintSampler.SampleBoundarySafe(
+            request,
+            "deep-sky:HORIZON_GRAZE",
+            "HorizonGraze",
+            ResolvedFootprintSourceKind.DeepSkyObject,
+            new ResolvedFootprintExtent(ResolvedFootprintShape.Ellipse, semiMajorDeg, semiMinorDeg, paDeg, null, null, null, "fixture"),
+            centerGeom,
+            null);
+        Assert.IsNotNull(actual, "Boundary-safe sampler must preserve a visible horizon-grazing arc.");
+        Assert.AreEqual(ResolvedFootprintSampler.BoundarySafeAlgorithmVersion, actual.SamplingAlgorithmVersion);
+        Assert.IsTrue(actual.Clipped);
+        Assert.HasCount(1, actual.Parts);
+        Assert.IsFalse(actual.Parts[0].Closed);
+        Assert.IsTrue(actual.Parts[0].Points.Any(static p => Math.Abs(p.X - 320d) < 1.0 && p.Y <= 240d && p.Y >= 239.999),
+            $"Expected visible arc grazing near (320, 239.99983); bounds=({actual.Bounds.MinX:F4},{actual.Bounds.MinY:F6})..({actual.Bounds.MaxX:F4},{actual.Bounds.MaxY:F6}).");
+
+        var (raHours, decDeg) = HorizontalToJ2000(centerGeom, j2000Noon, equatorSite);
+        var oracleCam = ToOracleCamera(request);
+        var oracleArcs = IndependentAnalyticClippingOracle.ClipEllipse(
+            oracleCam, OracleTransform.Identity(640, 480),
+            raHours, decDeg, semiMajorDeg, semiMinorDeg, paDeg,
+            j2000Noon, equatorSite.LatitudeDegrees, equatorSite.LongitudeDegrees);
+        Assert.HasCount(1, oracleArcs, "Independent analytic oracle must also preserve the visible horizon-grazing arc.");
+        AssertHasAgreedGeometry(actual.Parts, oracleArcs, oracleCam, OracleTransform.Identity(640, 480));
     }
 
     [TestMethod]
@@ -96,7 +201,7 @@ public sealed class DeepSkyClippingReferenceTests
         var paOfDate = DeepSkyOutlineSampler.PositionAngleOfDate(raHours, decDeg, 35, ReferenceUtc);
         var extent = new ResolvedFootprintExtent(ResolvedFootprintShape.Ellipse, 1.5, 0.6, paOfDate, null, null, null, "fixture");
 
-        var actual = ResolvedFootprintSampler.Sample(request, "deep-sky:NGC0224", "M31",
+        var actual = ResolvedFootprintSampler.SampleBoundarySafe(request, "deep-sky:NGC0224", "M31",
             ResolvedFootprintSourceKind.DeepSkyObject, extent, centerGeom, null);
         Assert.IsNotNull(actual);
         Assert.IsFalse(actual.Clipped);
@@ -125,7 +230,7 @@ public sealed class DeepSkyClippingReferenceTests
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(raHours, decDeg), ReferenceUtc),
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
         var paOfDate = DeepSkyOutlineSampler.PositionAngleOfDate(raHours, decDeg, 50, ReferenceUtc);
-        var actual = ResolvedFootprintSampler.Sample(request, "deep-sky:HORIZON", "HorizonTarget",
+        var actual = ResolvedFootprintSampler.SampleBoundarySafe(request, "deep-sky:HORIZON", "HorizonTarget",
             ResolvedFootprintSourceKind.DeepSkyObject,
             new ResolvedFootprintExtent(ResolvedFootprintShape.Ellipse, 2.5, 1.5, paOfDate, null, null, null, "fixture"),
             centerGeom, null);
@@ -160,7 +265,7 @@ public sealed class DeepSkyClippingReferenceTests
         var crossGeom = CoordinateTransforms.EquatorialToHorizontal(
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(raCross, decCross), ReferenceUtc),
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
-        var crossFootprint = ResolvedFootprintSampler.Sample(request, "deep-sky:CROSS", "Cross",
+        var crossFootprint = ResolvedFootprintSampler.SampleBoundarySafe(request, "deep-sky:CROSS", "Cross",
             ResolvedFootprintSourceKind.DeepSkyObject, ResolvedFootprintExtent.Circle(4.0, "fixture"), crossGeom, null);
         Assert.IsNotNull(crossFootprint);
         Assert.IsTrue(crossFootprint.Clipped);
@@ -174,7 +279,7 @@ public sealed class DeepSkyClippingReferenceTests
         var extGeom = CoordinateTransforms.EquatorialToHorizontal(
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(raExt, decExt), ReferenceUtc),
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
-        var extFootprint = ResolvedFootprintSampler.Sample(request, "deep-sky:EXTTANGENT", "ExtTangent",
+        var extFootprint = ResolvedFootprintSampler.SampleBoundarySafe(request, "deep-sky:EXTTANGENT", "ExtTangent",
             ResolvedFootprintSourceKind.DeepSkyObject, ResolvedFootprintExtent.Circle(4.0, "fixture"), extGeom, null);
         Assert.IsNull(extFootprint, "An outline strictly outside the aperture must not fabricate a clipped chord stroke.");
 
@@ -183,7 +288,7 @@ public sealed class DeepSkyClippingReferenceTests
         var encGeom = CoordinateTransforms.EquatorialToHorizontal(
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(raEnc, decEnc), ReferenceUtc),
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
-        var encFootprint = ResolvedFootprintSampler.Sample(request, "deep-sky:ENCLOSE", "Enclose",
+        var encFootprint = ResolvedFootprintSampler.SampleBoundarySafe(request, "deep-sky:ENCLOSE", "Enclose",
             ResolvedFootprintSourceKind.DeepSkyObject, ResolvedFootprintExtent.Circle(50.0, "fixture"), encGeom, null);
         Assert.IsNull(encFootprint, "An enclosing outline outside the aperture must emit no spurious interior chords.");
     }
@@ -191,14 +296,13 @@ public sealed class DeepSkyClippingReferenceTests
     [TestMethod]
     public void SensorAndDomainBoundaries_PerspectiveHemisphereAndOrthographicHorizonMatchOracle()
     {
-        // Perspective camera tilted toward edge so part of a large great-circle outline crosses sensor edges.
+        // 1. Perspective camera tilted toward edge so a great-circle outline crosses sensor edges.
         var persp = new ProjectionContext(
             ProjectionModel.Perspective, 200, 150, 500, 500, 400, 300,
             ProjectionAperture.Rectangular, null, BoresightAltitudeDegrees: 45, BoresightAzimuthDegrees: 210);
         var perspRequest = new VisibleSceneRequest(ReferenceUtc, Site, persp, new CatalogQuery(6, 10), Metadata,
             new RefractionOptions(false), HorizonPolicy.GeometricHorizon, projectionVersion: "cal-v1");
 
-        // Build a great-circle polygon crossing the sensor right/top edge.
         var corners = new[]
         {
             HorizontalToJ2000(new AltAzPoint(48, 222), ReferenceUtc, Site),
@@ -222,6 +326,35 @@ public sealed class DeepSkyClippingReferenceTests
             ringPoints.Select(static p => (p.RightAscensionDegrees, p.DeclinationDegrees)).ToArray(),
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
         AssertHasAgreedGeometry(sampled.Outline.Parts, oracleArcs, oracleCam, OracleTransform.Identity(400, 300));
+
+        // 2. Orthographic fisheye camera crossing its theta = 90 deg optical hemisphere domain boundary (ProjectionOnly).
+        var ortho = new ProjectionContext(
+            ProjectionModel.OrthographicFisheye, 250, 250, 200, 200, 500, 500,
+            ProjectionAperture.Circular, 200, BoresightAltitudeDegrees: 90, BoresightAzimuthDegrees: 0);
+        var orthoRequest = new VisibleSceneRequest(ReferenceUtc, Site, ortho, new CatalogQuery(6, 10), Metadata,
+            new RefractionOptions(false), HorizonPolicy.ProjectionOnly, projectionVersion: "cal-v1");
+        var orthoCorners = new[]
+        {
+            HorizontalToJ2000(new AltAzPoint(25, 160), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(-20, 160), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(-20, 210), ReferenceUtc, Site),
+            HorizontalToJ2000(new AltAzPoint(25, 210), ReferenceUtc, Site)
+        };
+        var orthoRingPoints = orthoCorners
+            .Concat([orthoCorners[0]])
+            .Select(static p => new DeepSkyOutlinePoint(p.RaHours * 15d, p.DecDeg))
+            .ToArray();
+        var orthoOutline = new DeepSkyOutline("TEST_ORTHO_DOMAIN", 1, [new DeepSkyOutlineRing(orthoRingPoints)]);
+        var orthoSampled = DeepSkyOutlineSampler.Sample(orthoRequest, orthoOutline);
+        Assert.AreEqual(DeepSkyOutlineSampleStatus.Valid, orthoSampled.Status);
+        Assert.IsNotNull(orthoSampled.Outline);
+        Assert.IsTrue(orthoSampled.Outline.Clipped);
+        var orthoOracleCam = ToOracleCamera(orthoRequest);
+        var orthoOracleArcs = IndependentAnalyticClippingOracle.ClipGreatCircleRing(
+            orthoOracleCam, OracleTransform.Identity(500, 500),
+            orthoRingPoints.Select(static p => (p.RightAscensionDegrees, p.DeclinationDegrees)).ToArray(),
+            ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
+        AssertHasAgreedGeometry(orthoSampled.Outline.Parts, orthoOracleArcs, orthoOracleCam, OracleTransform.Identity(500, 500));
     }
 
     [TestMethod]
@@ -290,7 +423,7 @@ public sealed class DeepSkyClippingReferenceTests
             EquatorialPrecession.PrecessJ2000(new EquatorialPoint(raNearZenith, 80), ReferenceUtc),
             ReferenceUtc, highDecSite.LatitudeDegrees, highDecSite.LongitudeDegrees);
         var hiPa = DeepSkyOutlineSampler.PositionAngleOfDate(raNearZenith, 80, 42, ReferenceUtc);
-        var hiFp = ResolvedFootprintSampler.Sample(highDecReq, "deep-sky:POLE_PA", "PolePA",
+        var hiFp = ResolvedFootprintSampler.SampleBoundarySafe(highDecReq, "deep-sky:POLE_PA", "PolePA",
             ResolvedFootprintSourceKind.DeepSkyObject,
             new ResolvedFootprintExtent(ResolvedFootprintShape.Ellipse, 2.0, 0.7, hiPa, null, null, null, "fixture"),
             hiGeom, null)!;
@@ -314,14 +447,20 @@ public sealed class DeepSkyClippingReferenceTests
         [
             new DeepSkyOutlineRing([new(0, 0), new(180, 0), new(90, 45), new(0, 0)])
         ]);
-        // Catalog-valid ring containing a near-antipodal edge: (0, 89.9999) -> (180, -89.9999) (separation 179.9998 deg).
-        var nearAntipodal = new DeepSkyOutline("ANTIPODAL_NEAR", 1,
+        // Genuinely near-antipodal (NOT exact 180 deg) inside 1e-5 rad (~0.000573 deg) rejection margin:
+        // (0, 0) -> (179.9999, 0) has exact separation 179.9999 deg -> must be REJECTED.
+        var nearAntipodalRejected = new DeepSkyOutline("ANTIPODAL_NEAR_REJECTED", 1,
         [
-            new DeepSkyOutlineRing([new(0, 89.9999), new(180, -89.9999), new(45, 0), new(0, 89.9999)])
+            new DeepSkyOutlineRing([new(0, 0), new(179.9999, 0), new(45, 30), new(0, 0)])
+        ]);
+        // Genuinely near-antipodal just OUTSIDE 1e-5 rad (~0.000573 deg) rejection margin:
+        // (0, 0) -> (179.999, 0) has exact separation 179.999 deg -> unique great circle, must be ACCEPTED.
+        var nearAntipodalAccepted = new DeepSkyOutline("ANTIPODAL_NEAR_ACCEPTED", 1,
+        [
+            new DeepSkyOutlineRing([new(0, 0), new(179.999, 0), new(45, 30), new(0, 0)])
         ]);
 
-        // Both rings are accepted by DeepSkyCatalog validation (no point repeats its predecessor, >=4 pts, closed),
-        // yet DeepSkyOutlineSampler must refuse them cleanly without throwing or inventing an ambiguous route.
+        // All rings are accepted by DeepSkyCatalog validation, while DeepSkyOutlineSampler enforces the exact 1e-5 rad margin.
         var badObj = new DeepSkyObject("ANTIPODAL_EXACT", "ANTIPODAL_EXACT", "ANTIPODAL_EXACT", "Neb",
             0, 0, "Psc", null, null, null, null, null, null, null, null, null, null, null);
         var (sibRa, sibDec) = HorizontalToJ2000(new AltAzPoint(80, 0), ReferenceUtc, Site);
@@ -344,16 +483,24 @@ public sealed class DeepSkyClippingReferenceTests
         Assert.IsNotEmpty(exactResult.RejectedEdges);
         Assert.AreEqual(180d, exactResult.RejectedEdges[0].SeparationDegrees, 1e-6);
 
-        var nearResult = DeepSkyOutlineSampler.Sample(request, nearAntipodal);
-        Assert.AreEqual(DeepSkyOutlineSampleStatus.InvalidAntipodalEdge, nearResult.Status);
-        Assert.IsNull(nearResult.Outline);
-        Assert.IsNotEmpty(nearResult.RejectedEdges);
+        var nearRejectedResult = DeepSkyOutlineSampler.Sample(request, nearAntipodalRejected);
+        Assert.AreEqual(DeepSkyOutlineSampleStatus.InvalidAntipodalEdge, nearRejectedResult.Status);
+        Assert.IsNull(nearRejectedResult.Outline);
+        Assert.IsNotEmpty(nearRejectedResult.RejectedEdges);
+        Assert.AreEqual(179.9999, nearRejectedResult.RejectedEdges[0].SeparationDegrees, 1e-6);
+
+        var nearAcceptedResult = DeepSkyOutlineSampler.Sample(request, nearAntipodalAccepted);
+        Assert.AreEqual(DeepSkyOutlineSampleStatus.Valid, nearAcceptedResult.Status);
+        Assert.IsEmpty(nearAcceptedResult.RejectedEdges);
 
         // Tangent-plane builder also refuses antipodal outlines honestly without throwing.
         var frame = ResolvedSourceFrame.Create(new AltAzPoint(80, 0), Site.LatitudeDegrees);
         Assert.IsFalse(DeepSkyOutlineSampler.TryProjectToGnomonicTangentPlane(
             exactAntipodal, frame, ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees, out _, out var tanStatus));
         Assert.AreEqual(DeepSkyOutlineSampleStatus.InvalidAntipodalEdge, tanStatus);
+        Assert.IsFalse(DeepSkyOutlineSampler.TryProjectToGnomonicTangentPlane(
+            nearAntipodalRejected, frame, ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees, out _, out var nearTanStatus));
+        Assert.AreEqual(DeepSkyOutlineSampleStatus.InvalidAntipodalEdge, nearTanStatus);
 
         // Sibling scene projection succeeds cleanly alongside the antipodal catalog entry!
         var visible = new VisibleScene(request, []).WithCuratedDeepSky(catalog, ProjectedSceneDeepSkySelection.Default);
@@ -431,11 +578,7 @@ public sealed class DeepSkyClippingReferenceTests
         Assert.IsNotNull(snapshot.ResolvedFootprints);
         var fp = snapshot.ResolvedFootprints.Single();
 
-        // Also apply preview scaling to output footprint parts.
-        var scaledParts = fp.Parts
-            .Select(p => (p.Closed, p.Points.Select(pt => new OraclePoint(pt.X * previewScaleX, pt.Y * previewScaleY)).ToArray()))
-            .ToArray();
-
+        // Verify exact <= 1e-8 px emitted-image transform parity between production ProjectedSceneImageTransform and oracle!
         var rotDeg = rotation switch
         {
             ProjectedSceneQuarterRotation.Degrees0 => 0,
@@ -444,14 +587,35 @@ public sealed class DeepSkyClippingReferenceTests
             ProjectedSceneQuarterRotation.Degrees270 => 270,
             _ => throw new ArgumentOutOfRangeException(nameof(rotation))
         };
+        var oracleTransformNoPreview = new OracleTransform(640, 480, cropX, cropY, cropW, cropH, binX, binY,
+            hMirror, vMirror, rotDeg, 1.0, 1.0);
+        foreach (var nativePt in visible.ResolvedFootprints.Single().Parts.SelectMany(static p => p.Points))
+        {
+            if (nativePt.X < cropX || nativePt.X > cropX + cropW || nativePt.Y < cropY || nativePt.Y > cropY + cropH)
+            {
+                continue;
+            }
+            var prodPt = ProjectedSceneImageTransform.Apply(imgTransform, nativePt);
+            var oraclePt = IndependentAnalyticClippingOracle.ApplyTransform(oracleTransformNoPreview, new OraclePoint(nativePt.X, nativePt.Y));
+            var err = double.Hypot(prodPt.X - oraclePt.X, prodPt.Y - oraclePt.Y);
+            Assert.IsTrue(err <= IndependentAnalyticClippingOracle.TransformParityBudgetPixels,
+                $"ProjectedSceneImageTransform parity exceeded 1e-8 px budget: err={err:E3} px.");
+        }
+
+        // Also apply preview scaling to output footprint parts (real PreviewTransform.Apply parity is verified in Processing.Tests).
+        var scaledParts = fp.Parts
+            .Select(p => (p.Closed, p.Points.Select(pt => new OraclePoint(pt.X * previewScaleX, pt.Y * previewScaleY)).ToArray()))
+            .ToArray();
+
         var oracleCam = ToOracleCamera(request);
-        var oracleTransform = new OracleTransform(640, 480, cropX, cropY, cropW, cropH, binX, binY,
-            hMirror, vMirror, rotDeg, previewScaleX, previewScaleY);
+        var oracleTransform = oracleTransformNoPreview with { PreviewScaleX = previewScaleX, PreviewScaleY = previewScaleY };
         var oracleArcs = IndependentAnalyticClippingOracle.ClipEllipse(
             oracleCam, oracleTransform, raHours, decDeg, 2.0, 1.0, 40,
             ReferenceUtc, Site.LatitudeDegrees, Site.LongitudeDegrees);
 
         var metrics = IndependentAnalyticClippingOracle.ComparePolylines(scaledParts, oracleArcs, oracleCam, oracleTransform);
+        Assert.IsTrue(metrics.TopologyMatches,
+            $"Transformed footprint topology mismatch: actualParts={metrics.ActualPartCount} (closed={metrics.ActualClosedCount}), refParts={metrics.ReferencePartCount} (closed={metrics.ReferenceClosedCount}).");
         Assert.IsTrue(metrics.SymmetricHausdorffPixels <= IndependentAnalyticClippingOracle.ContinuousHausdorffBudgetPixels,
             $"Transformed footprint exceeded Hausdorff budget: sym={metrics.SymmetricHausdorffPixels:F4} px (fwd={metrics.ForwardHausdorffPixels:F4}, rev={metrics.ReverseHausdorffPixels:F4}).");
     }
@@ -519,6 +683,8 @@ public sealed class DeepSkyClippingReferenceTests
             .Select(static p => (p.Closed, p.Points.Select(static pt => new OraclePoint(pt.X, pt.Y)).ToArray()))
             .ToArray();
         var metrics = IndependentAnalyticClippingOracle.ComparePolylines(mapped, oracleArcs, cam, transform);
+        Assert.IsTrue(metrics.TopologyMatches,
+            $"Topology mismatch: actualParts={metrics.ActualPartCount} (closed={metrics.ActualClosedCount}), refParts={metrics.ReferencePartCount} (closed={metrics.ReferenceClosedCount}).");
         Assert.IsTrue(metrics.MaxVertexToReferencePixels <= IndependentAnalyticClippingOracle.VertexOnCurveTolerancePixels,
             $"Vertex error {metrics.MaxVertexToReferencePixels:F6} px exceeded budget {IndependentAnalyticClippingOracle.VertexOnCurveTolerancePixels:F6} px.");
         Assert.IsTrue(metrics.SymmetricHausdorffPixels <= IndependentAnalyticClippingOracle.ContinuousHausdorffBudgetPixels,

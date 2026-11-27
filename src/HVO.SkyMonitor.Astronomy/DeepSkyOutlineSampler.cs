@@ -162,6 +162,10 @@ public static class DeepSkyOutlineSampler
 
             var ringChords = new List<(PixelPoint From, PixelPoint To)>();
             var ringClipped = false;
+            var boresight = CameraBasis.FromHorizontal(new AltAzPoint(
+                request.Projection.BoresightAltitudeDegrees,
+                request.Projection.BoresightAzimuthDegrees));
+            var minDomainCosine = ResolvedFootprintSampler.ComputeMinimumDomainCosine(request.Projection);
             for (var edgeIndex = 0; edgeIndex < directions.Length - 1; edgeIndex++)
             {
                 var start = directions[edgeIndex];
@@ -177,19 +181,21 @@ public static class DeepSkyOutlineSampler
 
                 var steps = Math.Max(1, (int)Math.Ceiling(angle / baseStepRadians));
                 EnuVector Arc(double t) => SafeSlerp(start, end, angle, t);
-                for (var step = 0; step < steps; step++)
+                var horizonHints = request.HorizonPolicy == HorizonPolicy.GeometricHorizon
+                    ? ResolvedFootprintSampler.SolveGreatCirclePlaneRoots(start, end, new EnuVector(0, 0, 1), 0d)
+                    : null;
+                var domainHints = !request.Refraction.Enabled && minDomainCosine > -1d + 1e-12
+                    ? ResolvedFootprintSampler.SolveGreatCirclePlaneRoots(start, end, boresight, minDomainCosine)
+                    : null;
+                ResolvedFootprintSampler.AppendBoundarySafeCurve(
+                    request, basis, Arc, 0d, 1d, steps, angle, horizonHints, domainHints,
+                    MaximumSubdivisionDepth, ringChords, ref ringClipped);
+                if (ringChords.Count > ProjectedDeepSkyOutline.MaximumPointCount * 2)
                 {
-                    var fromT = (double)step / steps;
-                    var toT = (double)(step + 1) / steps;
-                    ResolvedFootprintSampler.AppendCurveChord(
-                        request, basis, Arc, fromT, toT, 0, MaximumSubdivisionDepth, ringChords, ref ringClipped);
-                    if (ringChords.Count > ProjectedDeepSkyOutline.MaximumPointCount * 2)
-                    {
-                        return new DeepSkyOutlineSampleResult(
-                            DeepSkyOutlineSampleStatus.InvalidGeometry,
-                            null,
-                            Array.Empty<DeepSkyOutlineEdgeDiagnostic>());
-                    }
+                    return new DeepSkyOutlineSampleResult(
+                        DeepSkyOutlineSampleStatus.InvalidGeometry,
+                        null,
+                        Array.Empty<DeepSkyOutlineEdgeDiagnostic>());
                 }
             }
 
