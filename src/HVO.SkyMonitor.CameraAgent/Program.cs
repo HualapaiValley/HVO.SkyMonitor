@@ -415,7 +415,11 @@ public class Program
         healthChecks.AddCheck<OrbitalElementsHealthCheck>("orbital-elements", tags: ["dependency"]);
         healthChecks.AddCheck<SpaceWeatherHealthCheck>("space-weather", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
-
+        healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
+        healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
+        healthChecks.AddCheck<ClockHealthCheck>("clock", tags: ["dependency"]);
+        healthChecks.AddCheck<OperatorNotificationsHealthCheck>("operator-notifications", tags: ["dependency"]);
+        AddCameraModules(builder.Services);
 
         var app = builder.Build();
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();

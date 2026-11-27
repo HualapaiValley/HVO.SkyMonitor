@@ -111,7 +111,6 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Catalog:Root"] = catalog.Root,
                 ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
                 ["Catalog:RequiredPackageKind"] = "Fixture",
-                ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = string.Empty,
                 ["Logging:LogLevel:Default"] = "Warning",
                 ["Serilog:MinimumLevel:Default"] = "Warning"
@@ -187,7 +186,6 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["Catalog:Root"] = Path.GetFullPath(catalogRoot),
                 ["Catalog:RequiredCatalogId"] = "hyg-v42-production",
                 ["Catalog:RequiredPackageKind"] = "Production",
-                ["SkyMonitor:BaseUrl"] = "http://central-forbidden.invalid",
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = string.Empty,
                 ["Logging:LogLevel:Default"] = "Warning",
                 ["Serilog:MinimumLevel:Default"] = "Warning"
