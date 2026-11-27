@@ -84,7 +84,7 @@ internal sealed class SiloHarness : IDisposable
     public Guid InstanceId { get; }
     public InstallationPaths Paths { get; }
     public SiloInstallationIdentity Identity { get; set; }
-    public byte[] Marker { get; }
+    public byte[] Marker { get; set; }
     public byte[] Fence { get; set; }
     public string DataRoot => SiloRuntimeProfile.DataRoot(Paths);
     public string Bucket => SiloRuntimeProfile.BucketFor(InstanceId);

@@ -102,11 +102,33 @@ public sealed partial class SiloStockStoreTests
         var leftover = Path.Combine(rawRoot, ".silo", SiloStateRoot.SpoolDirectoryName, "unclaimed.tmp");
         await File.WriteAllTextAsync(leftover, "still present after refusal", token).ConfigureAwait(false);
         var before = SnapshotFixtureState(rawRoot);
-        using var unrelated = await RunFixtureCommandAsync(
-            [SiloFixtureImportCommand.Argument, "publish", source, "other.selection.json", dataRoot, SiloHash.Sha256(alternateSelection)],
-            configuration, token, expectedExitCode: 2).ConfigureAwait(false);
+        var unrelatedCommand = new[]
+        {
+            SiloFixtureImportCommand.Argument, "publish", source, "other.selection.json", dataRoot, SiloHash.Sha256(alternateSelection)
+        };
+        using var unrelated = await RunFixtureCommandAsync(unrelatedCommand, configuration, token, expectedExitCode: 2).ConfigureAwait(false);
         Assert.AreEqual("fixture-target-has-other-history", unrelated.RootElement.GetProperty("reason").GetString());
         CollectionAssert.AreEqual(before, SnapshotFixtureState(rawRoot));
+
+        // A reset State has no writer history, while the same authenticated endpoint still holds the first import's journal.
+        var resetRoot = Directory.CreateDirectory(Path.Combine(root, "reset-raw")).FullName;
+        var resetConfiguration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        resetConfiguration["CameraAgent:RawIngressRoot"] = resetRoot;
+        await FirstBootStateInitializer.InitializeAsync(resetRoot, 1, new(pause), token).ConfigureAwait(false);
+        var resetSiloState = Path.Combine(resetRoot, ".silo");
+        Assert.IsFalse(Directory.Exists(resetSiloState));
+        var resetBefore = SnapshotFixtureState(resetRoot);
+        var bucketPath = Path.Combine(dataRoot, binding.Bucket);
+        var bucketBefore = SnapshotFixtureState(bucketPath);
+        var sourceBefore = SnapshotFixtureState(source);
+        using var remoteHistory = await RunFixtureCommandAsync(unrelatedCommand, resetConfiguration, token, expectedExitCode: 2)
+            .ConfigureAwait(false);
+        Assert.AreEqual("refused", remoteHistory.RootElement.GetProperty("status").GetString());
+        Assert.AreEqual("fixture-target-has-other-history", remoteHistory.RootElement.GetProperty("reason").GetString());
+        Assert.IsFalse(Directory.Exists(resetSiloState), "Remote history must be refused before creating writer State, lock, or spool.");
+        CollectionAssert.AreEqual(resetBefore, SnapshotFixtureState(resetRoot), "The reset State must remain unchanged.");
+        CollectionAssert.AreEqual(bucketBefore, SnapshotFixtureState(bucketPath), "The Silo bucket must remain unchanged.");
+        CollectionAssert.AreEqual(sourceBefore, SnapshotFixtureState(source), "The source snapshot must remain unchanged.");
 
         var options = configuration.GetSection("CameraAgent").Get<CameraAgentHostOptions>()!;
         using var storage = new SiloInstalledStorage(SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo")),
@@ -132,10 +154,10 @@ public sealed partial class SiloStockStoreTests
     }
 
     private static string[] SnapshotFixtureState(string stateRoot) =>
-        Directory.EnumerateFileSystemEntries(stateRoot, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
+        Directory.EnumerateFileSystemEntries(stateRoot, "*", SearchOption.AllDirectories).Prepend(stateRoot).Order(StringComparer.Ordinal)
             .Select(static path => File.Exists(path)
                 ? $"{path}|{File.GetLastWriteTimeUtc(path):O}|{SiloHash.Sha256(File.ReadAllBytes(path))}"
-                : path)
+                : $"{path}|{Directory.GetLastWriteTimeUtc(path):O}")
             .ToArray();
 
     private static async Task<JsonDocument> RunFixtureCommandAsync(string[] args, IConfiguration configuration, CancellationToken token,

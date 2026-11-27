@@ -240,6 +240,55 @@ public sealed partial class LifecycleContractTests
         }
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task SiloInstallation_RecordsAndVerifiesTheDataRootIdentityInTheMarker()
+    {
+        using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
+        using var harness = new SiloHarness(fixture.Paths, fixture.InstanceId).Defaults();
+        harness.CameraAgentExists = false;
+        harness.NetworkMembers.Remove(harness.CameraAgentId);
+        harness.SiloImage = harness.Identity.ImageId;
+        harness.CameraAgentImageId = fixture.Manifest.Image.ImageId;
+        var bootstrap = SiloRuntimeProfile.BootstrapDirectory(fixture.Paths);
+        harness.Store = _ => ScriptedDocker.Ok(Bound(harness, bootstrap));
+        var docker = harness.Docker(out var runner);
+        var compose = new ComposeFiles(Path.Combine(fixture.Paths.DeploymentStateRoot, "compose.yaml"),
+            Path.Combine(fixture.Paths.DeploymentStateRoot, "compose.env"), harness.Project, harness.Project, string.Empty, string.Empty,
+            string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, null);
+        var image = new SiloImageIdentity(SiloImagePin.Reference, harness.SiloImage, "amd64", SiloHarness.Amd64.ManifestDigest,
+            SiloImagePin.Release, SiloImagePin.SourceRevision);
+
+        var installation = await SiloInstallation.BootstrapAsync(docker, compose, fixture.Paths, fixture.InstanceId, Guid.NewGuid(), image,
+            (harness.Identity.DataRootFileSystem, harness.Identity.DataRootDevice), CancellationToken.None);
+
+        harness.Marker = await File.ReadAllBytesAsync(Path.Combine(bootstrap, "instance.v1.json"), CancellationToken.None);
+        harness.Fence = await File.ReadAllBytesAsync(Path.Combine(bootstrap, "fence.json"), CancellationToken.None);
+        using var marker = JsonDocument.Parse(harness.Marker);
+        var node = NativeLinux.GetNodeIdentity(harness.DataRoot);
+        var identity = CameraAgentSiloBinding.LinuxDataRootIdentity(node.DeviceMajor, node.DeviceMinor, node.Inode);
+        Assert.AreEqual(identity, marker.RootElement.GetProperty(CameraAgentSiloBinding.DataRootIdentityProperty).GetString());
+        Assert.AreEqual(SiloHarness.Sha(harness.Marker), installation.MarkerSha256);
+        var binding = runner.Calls.Single(call => call.Input?.Contains("create_only", StringComparison.Ordinal) == true);
+        Assert.IsTrue(binding.Input!.Contains(Convert.ToBase64String(harness.Marker), StringComparison.Ordinal),
+            "Bootstrap sends the marker bytes that carry the data root identity.");
+
+        harness.CameraAgentExists = true;
+        harness.NetworkMembers.Add(harness.CameraAgentId);
+        Task<SiloVerification> VerifyAsync() => SiloInstallation.VerifyAsync(
+            docker, fixture.Paths, fixture.InstanceId, installation, fixture.Manifest.Image, CancellationToken.None);
+        await VerifyAsync();
+
+        // Preserve the instance binding and change only the volume identity returned by the store.
+        var differentVolume = CameraAgentSiloBinding.LinuxDataRootIdentity(node.DeviceMajor, node.DeviceMinor, node.Inode + 1);
+        harness.Marker = SiloRuntimeProfile.Marker(fixture.InstanceId, marker.RootElement.GetProperty("createdUtc").GetDateTimeOffset(),
+            differentVolume);
+        Assert.IsTrue(SiloRuntimeProfile.MarkerBinds(harness.Marker, fixture.InstanceId));
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => VerifyAsync());
+        Assert.IsTrue(refusal.IsRefusal);
+        StringAssert.Contains(refusal.Message, "instance marker does not bind this instance", StringComparison.Ordinal);
+    }
+
     private static void AssertCredential(string bootstrap, string accessPath, string secretPath, string access, string secret)
     {
         Assert.AreEqual(access, File.ReadAllText(accessPath));

@@ -311,7 +311,7 @@ public sealed class SiloFixtureHistoryTests
     [DataRow("trailer")]
     [DataRow("no-image-data")]
     [DataRow("invalid-image-data")]
-    public async Task InventorySkipsNonPngAndCorruptPngFraming(string defect)
+    public async Task InventorySkipsMalformedOrUndecodablePngs(string defect)
     {
         using var fixture = new Fixture();
         var entry = fixture.WritePair("frame", "art-1");
@@ -322,7 +322,16 @@ public sealed class SiloFixtureHistoryTests
             case "header": image[12] ^= 1; break;
             case "trailer": image[^1] ^= 1; break;
             case "no-image-data": image = [.. image.AsSpan(0, 33), .. image.AsSpan(image.Length - 12)]; break;
-            case "invalid-image-data": image[41] ^= 0xff; break;
+            case "invalid-image-data":
+                // Replace IDAT with a valid CRC and zlib header followed by a reserved DEFLATE block type.
+                Convert.FromHexString("0000000A49444154789C0768000000820081236CDCF7").CopyTo(image, 33);
+                using (var data = SKData.CreateCopy(image))
+                using (var codec = SKCodec.Create(data))
+                {
+                    codec.Should().NotBeNull("the PNG headers can still be read");
+                    codec!.EncodedFormat.Should().Be(SKEncodedImageFormat.Png);
+                }
+                break;
         }
         await File.WriteAllBytesAsync(fixture.PathFor("frame.png"), image, Token).ConfigureAwait(false);
         fixture.Select([entry with { ImageSha256 = SiloHash.Sha256(image) }]);
