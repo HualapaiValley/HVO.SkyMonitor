@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -541,6 +543,475 @@ public sealed class ReleaseAcquirerTests
         Assert.IsFalse(Directory.Exists(root.FullName), "Fixture directory should be removed even when the PID file is absent or partial.");
     }
 
+    private static readonly string[] ExpectedSignalSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "read-cmdline",
+        $"send-signal:42:{PosixSigKill}",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedReusedAfterOpenSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "close-pidfd:42"
+    ];
+
+    private static readonly string[] ExpectedRefusedSignalSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "read-cmdline",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedOpenEsrchSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedInitialReadOnlySequence = ["read-stat"];
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_OpensPidFdBeforeIdentityVerificationSignalsViaPidFdAndClosesInFinally()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-order-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount <= 2
+                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
+                    : null;
+            },
+            ReadProcessCmdline: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations);
+
+        CollectionAssert.AreEqual(ExpectedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenPidReusedAfterOpeningPidFd_ClosesPidFdWithoutSignalingAndSucceeds()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-reused-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
+                    : new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedReusedAfterOpenSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineMismatchesAfterOpeningPidFdAndFixtureRemainsAlive_ClosesPidFdWithoutSignalingAndFails()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-mismatch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "/usr/bin/dotnet\0test\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        StringAssert.Contains(failure.Message, "cmdline did not match", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineUnreadableAndFixtureRemainsAlive_RefusesToSignalClosesPidFdAndFails(
+        bool allowZombieAsTerminated)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cmdline-null-alive-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return null;
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "cmdline could not be read", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineUnreadableBecauseFixtureExited_RefusesToSignalClosesPidFdAndSucceeds()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cmdline-null-exited-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount <= 2
+                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
+                    : null;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return null;
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenOpenPidFdReturnsEsrchAndProcessExited_SucceedsWithoutSignalingOrClosing()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-open-esrch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks)
+                    : null;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Failure(PosixNoSuchProcess);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedOpenEsrchSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenSendPidFdSignalReturnsEsrchAndProcessGoneOrReused_ClosesPidFdAndSucceeds(
+        bool pidReused)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-signal-esrch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStat(fixturePid, 'S', startTimeTicks);
+                }
+
+                return pidReused ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 10) : null;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixNoSuchProcess);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenAlreadyExitedOrPidReused_SucceedsWithoutOpeningPidFd(bool pidReused)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-already-gone-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return pidReused ? new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1) : null;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedInitialReadOnlySequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenPidFdOperationFailsWithNonEsrchAndFixtureRemainsAlive_FailsExplicitly(
+        bool failOnOpen)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-err-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var closedPidFd = false;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ => new LinuxProcessStat(fixturePid, 'S', startTimeTicks),
+            ReadProcessCmdline: _ => "sleep\030\0",
+            OpenPidFd: _ => failOnOpen
+                ? PidFdOpenResult.Failure(PosixOperationNotPermitted)
+                : PidFdOpenResult.Success(42),
+            SendPidFdSignal: (_, _) => PidFdSignalResult.Failure(PosixOperationNotPermitted),
+            ClosePidFd: pidfd =>
+            {
+                Assert.AreEqual(42, pidfd);
+                closedPidFd = true;
+            },
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            failOnOpen ? "pidfd_open failed with errno 1" : "pidfd_send_signal(SIGKILL) failed with errno 1",
+            StringComparison.Ordinal);
+        Assert.AreEqual(!failOnOpen, closedPidFd);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenSignalThrows_StillClosesPidFdInFinally()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-throw-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var closedPidFd = -1;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ => new LinuxProcessStat(fixturePid, 'S', startTimeTicks),
+            ReadProcessCmdline: _ => "sleep\030\0",
+            OpenPidFd: _ => PidFdOpenResult.Success(99),
+            SendPidFdSignal: (_, _) => throw new InvalidOperationException("injected signal fault"),
+            ClosePidFd: pidfd => closedPidFd = pidfd,
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        Assert.AreEqual(99, closedPidFd);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
     [TestMethod]
     [DataRow(1, true)]
     [DataRow(2, true)]
@@ -584,7 +1055,13 @@ public sealed class ReleaseAcquirerTests
 
     private const int PosixOperationNotPermitted = 1;
     private const int PosixNoSuchFileOrDirectory = 2;
+    private const int PosixNoSuchProcess = 3;
+    private const int PosixInterruptedSystemCall = 4;
     private const int PosixPermissionDenied = 13;
+    private const int PosixSigKill = 9;
+    // Unified Linux syscall numbers across x86_64 and arm64 (since Linux 5.1 / 5.3).
+    private const nint LinuxSysPidfdSendSignal = 424;
+    private const nint LinuxSysPidfdOpen = 434;
     private static readonly TimeSpan DefaultFifoCommandTimeout = TimeSpan.FromSeconds(10);
 
     private static async Task CreateFifoOrInconclusiveAsync(
@@ -746,6 +1223,69 @@ public sealed class ReleaseAcquirerTests
     private readonly record struct LinuxProcessStat(int Pid, char State, ulong StartTimeTicks);
 
     private readonly record struct FixtureProcessIdentity(int Pid, ulong StartTimeTicks);
+
+    private readonly record struct PidFdOpenResult(int FileDescriptor, int ErrorCode)
+    {
+        public bool Succeeded => FileDescriptor >= 0;
+        public bool IsProcessGone => FileDescriptor < 0 && ErrorCode == PosixNoSuchProcess;
+
+        public static PidFdOpenResult Success(int fileDescriptor) => new(fileDescriptor, 0);
+        public static PidFdOpenResult Failure(int errorCode) => new(-1, errorCode);
+    }
+
+    private readonly record struct PidFdSignalResult(bool Succeeded, int ErrorCode)
+    {
+        public bool IsProcessGone => !Succeeded && ErrorCode == PosixNoSuchProcess;
+
+        public static PidFdSignalResult Success() => new(true, 0);
+        public static PidFdSignalResult Failure(int errorCode) => new(false, errorCode);
+    }
+
+    private sealed record FifoFixtureCleanupOperations(
+        Func<int, LinuxProcessStat?> ReadProcessStat,
+        Func<int, string?> ReadProcessCmdline,
+        Func<int, PidFdOpenResult> OpenPidFd,
+        Func<int, int, PidFdSignalResult> SendPidFdSignal,
+        Action<int> ClosePidFd,
+        TimeSpan TerminationTimeout,
+        TimeSpan PollInterval)
+    {
+        public static FifoFixtureCleanupOperations DefaultLinux { get; } = new(
+            TryReadLinuxProcessStat,
+            TryReadLinuxProcessCmdline,
+            TryOpenLinuxPidFd,
+            TrySendLinuxPidFdSignal,
+            CloseLinuxPidFd,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(20));
+    }
+
+    [SuppressMessage(
+        "Interoperability",
+        "SYSLIB1054:Use LibraryImportAttribute instead of DllImportAttribute",
+        Justification = "Test assembly does not enable unsafe blocks for LibraryImport source generation.")]
+    private static class LinuxPidFdInterop
+    {
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "syscall", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern nint SyscallPidfdOpen(nint number, nint pid, nint flags);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "syscall", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern nint SyscallPidfdSendSignal(nint number, nint pidfd, nint signal, nint info, nint flags);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "close", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int CloseFileDescriptor(int fd);
+    }
+
+    private static Task WriteFixturePidFileAsync(string pidFile, int pid, ulong startTimeTicks)
+    {
+        var pidText = pid.ToString(CultureInfo.InvariantCulture);
+        var ticksText = startTimeTicks.ToString(CultureInfo.InvariantCulture);
+        var statLine = $"{pidText} (sleep) S 1 {pidText} {pidText} 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 {ticksText} 4096 128\n";
+        return File.WriteAllTextAsync(pidFile, $"{pidText}\n{statLine}");
+    }
 
     private static async Task<FixtureProcessIdentity> ReadFixtureProcessIdentityAsync(string pidFile)
     {
@@ -986,11 +1526,87 @@ public sealed class ReleaseAcquirerTests
         }
     }
 
-    private static async Task CleanUpFifoFixtureAsync(
+    private static PidFdOpenResult TryOpenLinuxPidFd(int pid)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Linux pidfd_open is only supported on Linux.");
+        }
+
+        while (true)
+        {
+            var result = LinuxPidFdInterop.SyscallPidfdOpen(LinuxSysPidfdOpen, pid, 0);
+            if (result >= 0)
+            {
+                return PidFdOpenResult.Success(checked((int)result));
+            }
+
+            var errorCode = Marshal.GetLastPInvokeError();
+            if (errorCode == PosixInterruptedSystemCall)
+            {
+                continue;
+            }
+
+            return PidFdOpenResult.Failure(errorCode);
+        }
+    }
+
+    private static PidFdSignalResult TrySendLinuxPidFdSignal(int pidfd, int signal)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Linux pidfd_send_signal is only supported on Linux.");
+        }
+
+        while (true)
+        {
+            var result = LinuxPidFdInterop.SyscallPidfdSendSignal(
+                LinuxSysPidfdSendSignal,
+                pidfd,
+                signal,
+                IntPtr.Zero,
+                0);
+            if (result == 0)
+            {
+                return PidFdSignalResult.Success();
+            }
+
+            var errorCode = Marshal.GetLastPInvokeError();
+            if (errorCode == PosixInterruptedSystemCall)
+            {
+                continue;
+            }
+
+            return PidFdSignalResult.Failure(errorCode);
+        }
+    }
+
+    private static void CloseLinuxPidFd(int pidfd)
+    {
+        if (pidfd >= 0 && OperatingSystem.IsLinux())
+        {
+            _ = LinuxPidFdInterop.CloseFileDescriptor(pidfd);
+        }
+    }
+
+    private static Task CleanUpFifoFixtureAsync(
         DirectoryInfo root,
         string pidFile,
         string? expectedScriptPath = null,
         bool allowZombieAsTerminated = false)
+        => CleanUpFifoFixtureAsync(
+            root,
+            pidFile,
+            expectedScriptPath,
+            allowZombieAsTerminated,
+            FifoFixtureCleanupOperations.DefaultLinux);
+
+    private static async Task CleanUpFifoFixtureAsync(
+        DirectoryInfo root,
+        string pidFile,
+        string? expectedScriptPath,
+        bool allowZombieAsTerminated,
+        FifoFixtureCleanupOperations operations)
     {
         try
         {
@@ -1000,73 +1616,86 @@ public sealed class ReleaseAcquirerTests
                 return;
             }
 
-            var currentStat = TryReadLinuxProcessStat(identity.Value.Pid);
+            var currentStat = operations.ReadProcessStat(identity.Value.Pid);
             if (IsFixtureProcessTerminated(identity.Value, currentStat, allowZombieAsTerminated))
             {
                 return;
             }
 
+            string? signalFailureReason = null;
             if (currentStat!.Value.State != 'Z')
             {
-                var currentCmdline = TryReadLinuxProcessCmdline(identity.Value.Pid);
-                if (!ShouldKillFixtureProcess(identity.Value, currentStat, currentCmdline, expectedScriptPath))
-                {
-                    // Re-check /proc/{pid}/stat in case the process exited or became a zombie while reading cmdline.
-                    currentStat = TryReadLinuxProcessStat(identity.Value.Pid);
-                    if (IsFixtureProcessTerminated(identity.Value, currentStat, allowZombieAsTerminated)
-                        || currentStat is { State: not 'Z' })
-                    {
-                        return;
-                    }
-                }
-                else
+                // Open the process-instance pidfd BEFORE verifying /proc/{pid}/stat and /proc/{pid}/cmdline so that
+                // signaling cannot race with PID reuse: if the verified (pid, starttime) process still exists while
+                // pidfd is open, pidfd is guaranteed to refer to that exact process instance, and pidfd_send_signal
+                // will return ESRCH rather than hitting a newly reused PID.
+                var openResult = operations.OpenPidFd(identity.Value.Pid);
+                if (openResult.Succeeded)
                 {
                     try
                     {
-                        using var process = Process.GetProcessById(identity.Value.Pid);
-                        var preKillStat = TryReadLinuxProcessStat(identity.Value.Pid);
-                        var preKillCmdline = preKillStat is { State: not 'Z' }
-                            ? TryReadLinuxProcessCmdline(identity.Value.Pid)
+                        var verifiedStat = operations.ReadProcessStat(identity.Value.Pid);
+                        var verifiedCmdline = verifiedStat is { State: not 'Z' }
+                            && IsSameFixtureProcess(identity.Value, verifiedStat.Value)
+                            ? operations.ReadProcessCmdline(identity.Value.Pid)
                             : null;
-                        if (ShouldKillFixtureProcess(identity.Value, preKillStat, preKillCmdline, expectedScriptPath))
+                        if (ShouldKillFixtureProcess(identity.Value, verifiedStat, verifiedCmdline, expectedScriptPath))
                         {
-                            process.Kill();
+                            var signalResult = operations.SendPidFdSignal(openResult.FileDescriptor, PosixSigKill);
+                            if (!signalResult.Succeeded && !signalResult.IsProcessGone)
+                            {
+                                signalFailureReason = $"pidfd_send_signal(SIGKILL) failed with errno {signalResult.ErrorCode}";
+                            }
                         }
-                        else if (IsFixtureProcessTerminated(identity.Value, preKillStat, allowZombieAsTerminated)
-                            || preKillStat is { State: not 'Z' })
+                        else if (IsFixtureProcessTerminated(identity.Value, verifiedStat, allowZombieAsTerminated))
                         {
                             return;
                         }
+                        else if (verifiedStat is { State: not 'Z' })
+                        {
+                            signalFailureReason = verifiedCmdline is null
+                                ? "refused to signal because /proc cmdline could not be read"
+                                : "refused to signal because /proc cmdline did not match the fixture";
+                        }
                     }
-                    catch (ArgumentException)
+                    finally
                     {
-                        // Process exited before or during signaling; verify final state below.
+                        operations.ClosePidFd(openResult.FileDescriptor);
                     }
-                    catch (InvalidOperationException)
-                    {
-                        // Process exited before or during signaling; verify final state below.
-                    }
-                    catch (Win32Exception) when (IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated))
-                    {
-                        return;
-                    }
+                }
+                else if (!openResult.IsProcessGone)
+                {
+                    signalFailureReason = $"pidfd_open failed with errno {openResult.ErrorCode}";
                 }
             }
 
             // A zombie still has a /proc entry until its parent reaps it; reparented pipe-holders may remain 'Z'
             // on minimal containers whose PID 1 does not reap adopted orphans.
+            // Even when signaling was refused or failed, require positive evidence that the fixture process
+            // terminated (disappeared, PID reused by a different start time, or 'Z' when allowed) before returning.
             var stopwatch = Stopwatch.StartNew();
-            while (!IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated)
-                && stopwatch.Elapsed < TimeSpan.FromSeconds(5))
+            var finalStat = operations.ReadProcessStat(identity.Value.Pid);
+            while (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated)
+                && stopwatch.Elapsed < operations.TerminationTimeout)
             {
-                await Task.Delay(20);
+                if (operations.PollInterval > TimeSpan.Zero)
+                {
+                    await Task.Delay(operations.PollInterval);
+                }
+
+                finalStat = operations.ReadProcessStat(identity.Value.Pid);
             }
 
-            Assert.IsTrue(
-                IsFixtureProcessTerminated(identity.Value, TryReadLinuxProcessStat(identity.Value.Pid), allowZombieAsTerminated),
-                allowZombieAsTerminated
-                    ? $"FIFO fixture PID {identity.Value.Pid} did not terminate during cleanup."
-                    : $"FIFO fixture PID {identity.Value.Pid} was not reaped during cleanup.");
+            if (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated))
+            {
+                var detail = signalFailureReason is null
+                    ? string.Empty
+                    : $" ({signalFailureReason})";
+                Assert.Fail(
+                    allowZombieAsTerminated
+                        ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) did not terminate during cleanup{detail}."
+                        : $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) was not reaped during cleanup{detail}.");
+            }
         }
         finally
         {
