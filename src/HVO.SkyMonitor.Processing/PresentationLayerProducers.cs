@@ -734,8 +734,6 @@ public static class PresentationLayerProducers
 
         if (associations.PointSourcePlanets is { } planetEvidence &&
             (!AreEpochsCompatibleForScene(planetEvidence.EffectiveUtc, scene.EffectiveUtc, scene) ||
-             (planetEvidence.EffectiveUtc != scene.EffectiveUtc &&
-              !IsBoundedPlanetEphemeris(planetEvidence.EphemerisModelVersion)) ||
              !planetEvidence.ProjectionMappingVersion.StartsWith(
                  $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal)))
             return false;
@@ -764,9 +762,18 @@ public static class PresentationLayerProducers
         }
         if (associations.PointSourcePlanets is { } planets)
         {
+            // When a planet is present in scene.Objects, its actual displacement between epochs is verified directly
+            // below; only unobserved/absent planets at non-zero epoch skew rely on the analytical ephemeris motion bound.
+            var boundedPlanetEphemeris =
+                planets.EffectiveUtc == scene.EffectiveUtc || IsBoundedPlanetEphemeris(planets.EphemerisModelVersion);
             foreach (var planet in planets.Associations)
             {
-                if (!sceneObjects.TryGetValue(planet.ObjectId, out var obj)) continue;
+                if (!sceneObjects.TryGetValue(planet.ObjectId, out var obj))
+                {
+                    if (!boundedPlanetEphemeris)
+                        return false;
+                    continue;
+                }
                 var planetWindowLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
                     associations.Method.Settings, planet.PropagatedPredictionSigmaPixels) + CompatibleSceneCoordinateTolerancePixels;
                 if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
@@ -776,7 +783,12 @@ public static class PresentationLayerProducers
             }
             foreach (var unmatched in planets.UnmatchedPredictions)
             {
-                if (!sceneObjects.TryGetValue(unmatched.ObjectId, out var obj)) continue;
+                if (!sceneObjects.TryGetValue(unmatched.ObjectId, out var obj))
+                {
+                    if (!boundedPlanetEphemeris)
+                        return false;
+                    continue;
+                }
                 if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
                     double.Hypot(obj.Pixel.X - unmatched.ExpectedX, obj.Pixel.Y - unmatched.ExpectedY) > CompatibleSceneCoordinateTolerancePixels)
                     return false;

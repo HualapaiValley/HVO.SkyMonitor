@@ -533,7 +533,7 @@ public sealed class ExposureMeasurementTests
     }
 
     private static async Task<(LinearExposureLookup Lookup, ProcessingArtifact Raw, LinearExposureInputV1 Borrowed)>
-        BindToAdmission(ProcessingArtifact light)
+        BindToAdmission(ProcessingArtifact light, Guid? runId = null, Guid? linearExecutionId = null)
     {
         var layout = light.Layout!;
         var checksum = Convert.ToHexString(SHA256.HashData(light.Payload.Span));
@@ -544,10 +544,10 @@ public sealed class ExposureMeasurementTests
             new(identity, identity, identity, identity, identity), layout,
             new(light.ArtifactId, light.Role, "raw", light.Variant, ExposureTime, [], RawRecipe, light.MediaType, checksum));
         var raw = light with { DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
-        var key = new ExposureKey(new("agent", "virtual"), Guid.NewGuid(), descriptor.Capture.CaptureId);
+        var key = new ExposureKey(new("agent", "virtual"), runId ?? Guid.NewGuid(), descriptor.Capture.CaptureId);
         var exposure = new ExposureInputV1(key, descriptor, new(layout, new(90, 0, 0), identity.Sha256, "optics-1", 1320));
         var linear = await Normalize(raw);
-        var linearRef = new ExposureProductRef(key, new(Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
+        var linearRef = new ExposureProductRef(key, new(linearExecutionId ?? Guid.NewGuid(), "linear", "linear-v1", linear.Variant),
             linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
         var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
             raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
@@ -709,10 +709,20 @@ public sealed class ExposureMeasurementTests
     [TestMethod]
     public async Task OccupancyUpgradeHasDistinctIdentityReplaysLegacyV2BitForBitAndRejectsImpossibleOccupancy()
     {
-        // H1 + M7: verify that (a) new runs emit linear-stellar-local-v3 with occupancy and a distinct output identity,
-        // (b) replaying a frozen legacy linear-stellar-local-v2 EligibleFirst identity reproduces exact legacy bytes,
-        // checksum, and algorithms bit-for-bit, and (c) ExposureMeasurementProducts.Read rejects internally impossible
-        // occupancy (1 sample with multiple occupied cells, peak outside occupied mask, legacy product with occupancy).
+        // H1 + M7 + D8-M4: verify that (a) new runs emit linear-stellar-local-v3 with occupancy and a distinct output
+        // identity, (b) replaying the frozen delta6 (commit 6a631e5e9) legacy linear-stellar-local-v2 EligibleFirst
+        // identity reproduces the exact independently anchored delta6 golden bytes, SHA-256, and algorithms bit-for-bit,
+        // and (c) ExposureMeasurementProducts.Read rejects internally impossible or stripped occupancy/subgrids.
+        var frozenCaptureId = Guid.Parse("52600001-0000-4000-8000-000000000001");
+        var frozenRawArtifactId = Guid.Parse("52600002-0000-4000-8000-000000000002");
+        var frozenRunId = Guid.Parse("52600003-0000-4000-8000-000000000003");
+        var frozenLinearExecutionId = Guid.Parse("52600004-0000-4000-8000-000000000004");
+        // Golden legacy v2 constants independently produced from delta6 commit 6a631e5e9b20be79abc57c581bce053c5e642904:
+        const string frozenDelta6OutputIdentitySha256 = "DB85B1889BE4E40D96C543EEBCA500CE7ACDC39FC8279F6C38B08630C102894A";
+        const string frozenDelta6PayloadSha256 = "8D3F47589477D7CB3143A5365404A8C55770008DCCCC0EA7AF0E45A3B7514A61";
+        const int frozenDelta6PayloadByteLength = 3577;
+        const string frozenDelta6SettingsSha256 = "CF2E401B3525B134C66F5BB170D3053675156E9864D0F76A53E024220F5ECBB7";
+
         const int size = 160;
         var layout = Layout(size, size);
         var center = new PixelPoint(80.5, 80.5);
@@ -723,8 +733,11 @@ public sealed class ExposureMeasurementTests
             if (r is >= 14.0 and <= 30.0)
                 value += 1400.0;
             return (ushort)Math.Clamp(Math.Round(value), 0, 4095);
-        }));
-        var (lookup, raw, borrowed) = await BindToAdmission(light);
+        }), frozenCaptureId) with
+        {
+            ArtifactId = frozenRawArtifactId
+        };
+        var (lookup, raw, borrowed) = await BindToAdmission(light, frozenRunId, frozenLinearExecutionId);
         var currentRequest = ExposureMeasurementBindings.Request(lookup, raw, borrowed);
         var currentProduct = await Produce(currentRequest);
         var currentMeasurement = ExposureMeasurementProducts.Read(currentProduct);
@@ -736,8 +749,11 @@ public sealed class ExposureMeasurementTests
         var legacyV2Measurement = ExposureMeasurementProducts.Read(legacyV2Product);
 
         // (a) Distinct output identity, algorithm identity, settings identity, and occupancy presence:
-        Assert.AreNotEqual(legacyV2Product.OutputIdentitySha256, currentProduct.OutputIdentitySha256);
-        Assert.AreNotEqual(legacyV2Product.ChecksumSha256, currentProduct.ChecksumSha256);
+        Assert.AreNotEqual(frozenDelta6OutputIdentitySha256, currentProduct.OutputIdentitySha256);
+        Assert.AreNotEqual(frozenDelta6PayloadSha256, currentProduct.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6OutputIdentitySha256, legacyV2Product.OutputIdentitySha256);
+        Assert.AreEqual(frozenDelta6PayloadSha256, legacyV2Product.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6PayloadByteLength, legacyV2Product.Payload.Length);
         Assert.IsTrue(currentProduct.Algorithms.Contains(
             new ProcessingAlgorithmIdentity("stellar-source-measurer", StellarSourceMeasurer.AlgorithmVersion)));
         Assert.IsTrue(legacyV2Product.Algorithms.Contains(
@@ -746,27 +762,26 @@ public sealed class ExposureMeasurementTests
             StellarSourceMeasurer.SettingsIdentity(MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16),
                 StellarSourceMeasurer.AlgorithmVersion).ToUpperInvariant(),
             currentMeasurement.Sources.SettingsSha256);
-        Assert.AreEqual(
-            StellarSourceMeasurer.SettingsIdentity(MeasuredStellarAssociationRecipe.MeasurementOptions(CameraPixelFormat.Mono16),
-                StellarSourceMeasurer.V2AlgorithmVersion).ToUpperInvariant(),
-            legacyV2Measurement.Sources.SettingsSha256);
+        Assert.AreEqual(frozenDelta6SettingsSha256, legacyV2Measurement.Sources.SettingsSha256);
         var v3Ring = currentMeasurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
         var v2Ring = legacyV2Measurement.Sources.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
         Assert.IsNotNull(v3Ring.Occupancy);
+        Assert.IsNotNull(v3Ring.Occupancy.Subgrid);
         Assert.IsNull(v2Ring.Occupancy);
         ProcessingRecipeTests.AssertProductMatchesContract(currentRequest, currentProduct);
         ProcessingRecipeTests.AssertProductMatchesContract(legacyV2Request, legacyV2Product);
 
-        // (b) Replaying the frozen v2 output identity reproduces exact legacy bytes, checksum, and algorithms bit-for-bit:
+        // (b) Replaying using the checked-in frozen delta6 output identity reproduces exact delta6 bytes bit-for-bit:
         var replayRequest = ExposureMeasurementBindings.Request(
-            lookup, raw, borrowed, null, null, legacyV2Product.OutputIdentitySha256);
+            lookup, raw, borrowed, null, null, frozenDelta6OutputIdentitySha256);
         var replayed = await Produce(replayRequest);
-        Assert.AreEqual(legacyV2Product.OutputIdentitySha256, replayed.OutputIdentitySha256);
-        Assert.AreEqual(legacyV2Product.ChecksumSha256, replayed.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6OutputIdentitySha256, replayed.OutputIdentitySha256);
+        Assert.AreEqual(frozenDelta6PayloadSha256, replayed.ChecksumSha256);
+        Assert.AreEqual(frozenDelta6PayloadByteLength, replayed.Payload.Length);
         CollectionAssert.AreEqual(legacyV2Product.Payload.ToArray(), replayed.Payload.ToArray());
         CollectionAssert.AreEqual(legacyV2Product.Algorithms.ToArray(), replayed.Algorithms.ToArray());
 
-        // (c) M7 negative tests on canonical, rehashed ExposureMeasurementV1 products:
+        // (c) M7 + D8-M3 negative tests on canonical, rehashed ExposureMeasurementV1 products:
         // 1. SampleCount = 1 with multiple occupied cells (coarse 1x1 grid):
         var smallFp = new StellarFootprintBounds(10, 10, 13, 13);
         var multiCellOcc = StellarFootprintOccupancy.Create(smallFp, static (x, y) => (x == 10 && y == 10) || (x == 13 && y == 13));
@@ -834,6 +849,85 @@ public sealed class ExposureMeasurementTests
             {
                 Sources = legacyV2Measurement.Sources with { Exclusions = [v2Ring with { Occupancy = v3Ring.Occupancy }] }
             })));
+
+        // 8. v3 product tampered to strip Subgrid or Occupancy from the non-solid ring:
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with
+                {
+                    Exclusions = [v3Ring with { Occupancy = v3Ring.Occupancy! with { Subgrid = null } }]
+                }
+            })));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(currentProduct, currentMeasurement with
+            {
+                Sources = currentMeasurement.Sources with { Exclusions = [v3Ring with { Occupancy = null }] }
+            })));
+    }
+
+    [TestMethod]
+    public async Task ParallelDiagonalBandsOnThreeThousandPixelFrameStayWithinEnvelopeAndRoundTrip()
+    {
+        // D8-H1: A supported 3072x3072 Mono16 frame with >= 1,000 parallel diagonal-band exclusions must enforce the
+        // whole-product subgrid budget so Step 4 never emits an unreadable > 4 MiB product, and ExposureMeasurementProducts.Read
+        // round-trips it cleanly while still rejecting tampered stripped subgrids.
+        const int size = 3072;
+        var layout = Layout(size, size);
+        var rawBytes = new byte[checked((int)layout.ByteLength)];
+        for (var y = 0; y < size; y++)
+        {
+            var rowSpan = rawBytes.AsSpan(y * layout.StrideBytes, size * 2);
+            var inY = y is >= 16 and < size - 16;
+            for (var x = 0; x < size; x++)
+            {
+                ushort code = 180;
+                if (inY && x is >= 16 and < size - 16 && ((x + y) % 6) <= 1)
+                    code = 2200;
+                BinaryPrimitives.WriteUInt16LittleEndian(rowSpan[(x * 2)..], code);
+            }
+        }
+
+        var raw = CreateRaw(layout, rawBytes);
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var request = ExposureMeasurementProducts.Request(input, raw, linear);
+        var product = await Produce(request);
+
+        Assert.IsLessThanOrEqualTo(StructuredProcessingProductDescriptorV1.MaximumPayloadBytes, product.Payload.Length,
+            $"3072x3072 parallel diagonal bands must stay within the 4 MiB envelope (got {product.Payload.Length} bytes).");
+
+        var read = ExposureMeasurementProducts.Read(product);
+        var artifact = ProductArtifact(product, raw);
+        var verified = ExposureMeasurementProducts.Read(artifact, input);
+        Assert.AreEqual(read.Sources.Exclusions.Count, verified.Sources.Exclusions.Count);
+        Assert.IsGreaterThanOrEqualTo(1000, read.Sources.Exclusions.Count,
+            $"Expected >= 1,000 parallel diagonal-band exclusions (got {read.Sources.Exclusions.Count}).");
+
+        // Verify whole-product subgrid raw byte budget is respected and refined exclusions still reject subgrid stripping.
+        long totalSubgridBytes = 0;
+        var firstRefinedIndex = -1;
+        for (var i = 0; i < read.Sources.Exclusions.Count; i++)
+        {
+            if (read.Sources.Exclusions[i].Occupancy?.Subgrid is { } sub)
+            {
+                totalSubgridBytes += Convert.FromBase64String(sub.BitsBase64).Length;
+                if (firstRefinedIndex < 0)
+                    firstRefinedIndex = i;
+            }
+        }
+        Assert.IsGreaterThanOrEqualTo(0, firstRefinedIndex, "Expected refined subgrids under the shared whole-product budget.");
+        Assert.IsLessThanOrEqualTo(
+            StellarFootprintOccupancy.MaximumTotalSubgridBytes + read.Sources.Exclusions.Count,
+            totalSubgridBytes);
+
+        var stripped = read.Sources.Exclusions.ToArray();
+        stripped[firstRefinedIndex] = stripped[firstRefinedIndex] with
+        {
+            Occupancy = stripped[firstRefinedIndex].Occupancy! with { Subgrid = null }
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(
+            WithMeasurement(product, read with { Sources = read.Sources with { Exclusions = stripped } })));
     }
 
     private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)

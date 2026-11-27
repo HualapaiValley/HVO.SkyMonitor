@@ -106,6 +106,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var result = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
             input, rawBrightness, null, linearClipping, stars, hfd);
         var payload = ExposureMeasurementProducts.Serialize(result);
+        if (payload.Length > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure("measurement.payload-budget-exceeded"));
         var product = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,
             ExposureMeasurementProducts.Variant, ExposureMeasurementProducts.MediaType, null, payload,
             identity, Algorithms(input, policy), sources, raw.Integration, raw.Compatibility,

@@ -3131,13 +3131,41 @@ public sealed class PointSourcePlanetAssociationTests
         Assert.IsTrue(ExposureAssociationProducts.IsCompatibleWithScene(assocNoRefArt, evNoRef, renderNoRef30s),
             "Refraction-disabled +30 s control at f=132.903755 must remain compatible.");
 
-        // Unknown custom ephemeris at non-zero epoch skew must fail closed even when refraction is disabled:
+        // Unknown custom ephemeris at non-zero epoch skew must fail closed when a planet is absent from destination scene:
         var unknownEphemEvidence = evNoRef with
         {
             PointSourcePlanets = evNoRef.PointSourcePlanets! with { EphemerisModelVersion = "custom-unbounded-ephemeris-v1" }
         };
         Assert.IsFalse(PresentationLayerProducers.AreCompatibleExposureAssociations(unknownEphemEvidence, renderNoRef30s),
-            "Unbounded custom planet ephemeris must fail closed on non-zero epoch skew.");
+            "Unbounded custom planet ephemeris with an absent planet must fail closed on non-zero epoch skew.");
+
+        // D8-M2: Custom-named fixed ephemeris (e.g. "opm1-ephem-v1") with ALL planets present and verified <= 0.5 px
+        // in the destination scene across small shutter skew succeeds, while > 0.5 px displacement still fails closed.
+        var tSkew = t0.AddMilliseconds(137);
+        var fixedMercury = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>
+        {
+            [SolarSystemBody.Mercury] = ephemeris.GetPosition(SolarSystemBody.Mercury, t0)
+        }, "opm1-ephem-v1");
+        var fixedRenderVisible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([sharedStar]), null, fixedMercury)
+            .BuildAsync(new VisibleSceneRequest(tSkew, mercurySite, proj, new CatalogQuery(6.5, 100), meta,
+                refraction: refractionOff, projectionVersion: "rig-projection-v1",
+                solarSystemBodies: [SolarSystemBody.Mercury])).ConfigureAwait(false);
+        var fixedRenderScene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, fixedRenderVisible,
+            ProjectedSceneImageTransformV1.Identity(frameSize, frameSize), source, "calibration-v1", "rig-projection-v1");
+        var customNamedEvidence = evNoRef with
+        {
+            PointSourcePlanets = evNoRef.PointSourcePlanets! with { EphemerisModelVersion = "opm1-ephem-v1" }
+        };
+        Assert.IsTrue(PresentationLayerProducers.AreCompatibleExposureAssociations(customNamedEvidence, fixedRenderScene),
+            "Custom-named ephemeris with all planets directly verified <= 0.5 px in destination scene must pass small shutter skew.");
+        var displacedPlanetScene = fixedRenderScene with
+        {
+            Objects = fixedRenderScene.Objects.Select(static o =>
+                o.Id == "solar-system:Mercury" ? o with { Pixel = new(o.Pixel.X + 2.0, o.Pixel.Y) } : o).ToArray()
+        };
+        displacedPlanetScene = displacedPlanetScene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(displacedPlanetScene) };
+        Assert.IsFalse(PresentationLayerProducers.AreCompatibleExposureAssociations(customNamedEvidence, displacedPlanetScene),
+            "Custom-named ephemeris whose present planet shifts > 0.5 px must still fail closed.");
     }
 
     [TestMethod]
@@ -3281,9 +3309,36 @@ public sealed class PointSourcePlanetAssociationTests
             ApertureProjection: proj, Exposure: new(new("agent", "cam"), Guid.NewGuid(), CaptureId),
             OpticalCalibrationVersion: "calibration-v1", Step3Disposition: LinearExposureDisposition.QualifiedNormalizationOnly, Step3Revision: 1);
         var step4 = await executor.ExecuteAsync(ExposureMeasurementProducts.Request(expectedInput, raw, linear)).ConfigureAwait(false);
-        var step4Artifact = ToArtifact(step4.Products.Single(), raw);
+        var step4Product = step4.Products.Single();
+        var step4Artifact = ToArtifact(step4Product, raw);
         var roundTripped = ExposureMeasurementProducts.Read(step4Artifact, expectedInput);
         Assert.IsTrue(roundTripped.Sources.Exclusions.Any(static e => e.Occupancy?.Subgrid is not null));
+
+        // D8-M3: Stripping ONLY Subgrid from the real 2048x2048 streak v3 measurement, canonically serializing,
+        // and recomputing hashes MUST be rejected by ExposureMeasurementProducts.Read (cannot degrade Jupiter to 0 matches).
+        var strippedExclusions = roundTripped.Sources.Exclusions
+            .Select(static e => e.Occupancy is { Subgrid: not null } occ
+                ? e with { Occupancy = occ with { Subgrid = null } }
+                : e)
+            .ToArray();
+        var strippedMeasurement = roundTripped with
+        {
+            Sources = roundTripped.Sources with { Exclusions = strippedExclusions }
+        };
+        var strippedPayload = ExposureMeasurementProducts.Serialize(strippedMeasurement);
+        var strippedHash = ProcessingIdentity.ComputePayloadSha256(strippedPayload);
+        var strippedProduct = step4Product with
+        {
+            Payload = strippedPayload,
+            ChecksumSha256 = strippedHash,
+            ContentIdentitySha256 = strippedHash
+        };
+        var strippedArtifact = ToArtifact(strippedProduct, raw);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(strippedProduct),
+            "v3 reader must reject a sparse 2048x2048 streak whose fine Subgrid mask was stripped.");
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(strippedArtifact, expectedInput),
+            "v3 artifact reader must reject a sparse 2048x2048 streak whose fine Subgrid mask was stripped.");
+
         var predScene = scene with
         {
             Projection = scene.Projection with { AlgorithmVersion = "calibration-v1" },

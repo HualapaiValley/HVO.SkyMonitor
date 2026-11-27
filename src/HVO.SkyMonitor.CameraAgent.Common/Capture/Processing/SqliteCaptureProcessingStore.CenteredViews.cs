@@ -265,6 +265,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         ExposureKey key, Guid executionId, CancellationToken token)
     {
         using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        CenteredAuthoritativeAssociationWriter? nodeCandidate = null;
         using (var nodeCommand = connection.CreateCommand())
         {
             nodeCommand.CommandText = """
@@ -295,107 +296,123 @@ internal sealed partial class SqliteCaptureProcessingStore
             nodeCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
             using var reader = await nodeCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
             if (await reader.ReadAsync(token).ConfigureAwait(false))
-                return CenteredAuthoritativeAssociationResolution.Resolved(new(reader.GetString(0), reader.GetString(1)));
+                nodeCandidate = new(reader.GetString(0), reader.GetString(1));
         }
 
-        using var productCommand = connection.CreateCommand();
-        productCommand.CommandText = """
-            WITH candidates AS (
-                SELECT product.producer, product.variant, product.revision,
-                    CASE
-                        WHEN product.provenance_json IS NOT NULL
-                            AND json_valid(CAST(product.provenance_json AS TEXT))
-                            AND json_extract(CAST(product.provenance_json AS TEXT), '$.schemaVersion') = $semSchema
-                            AND (
-                                json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') IS NOT NULL
-                                OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') IS NOT NULL
-                            )
-                        THEN CASE
-                            WHEN (json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') = $recipe
-                                  OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') = $producer)
-                                AND NOT (
-                                    json_type(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 'array'
-                                    AND json_array_length(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 0
+        CenteredAuthoritativeAssociationResolution? productCandidate = null;
+        using (var productCommand = connection.CreateCommand())
+        {
+            productCommand.CommandText = """
+                WITH candidates AS (
+                    SELECT product.producer, product.variant, product.revision,
+                        CASE
+                            WHEN product.provenance_json IS NOT NULL
+                                AND json_valid(CAST(product.provenance_json AS TEXT))
+                                AND json_extract(CAST(product.provenance_json AS TEXT), '$.schemaVersion') = $semSchema
+                                AND (
+                                    json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') IS NOT NULL
+                                    OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') IS NOT NULL
                                 )
-                            THEN 0
+                            THEN CASE
+                                WHEN (json_extract(CAST(product.provenance_json AS TEXT), '$.recipeName') = $recipe
+                                      OR json_extract(CAST(product.provenance_json AS TEXT), '$.stepAlias') = $producer)
+                                    AND NOT (
+                                        json_type(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 'array'
+                                        AND json_array_length(CAST(product.provenance_json AS TEXT), '$.layerKinds') = 0
+                                    )
+                                THEN 0
+                                ELSE -1
+                            END
+                            WHEN output.output_identity_sha256 IS NOT NULL
+                                AND json_valid(CAST(output.descriptor_json AS TEXT))
+                                AND COALESCE(
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
+                                ) IS NOT NULL
+                            THEN CASE
+                                WHEN COALESCE(
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
+                                    json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
+                                ) = $recipe
+                                THEN 0
+                                ELSE -1
+                            END
+                            WHEN node.outputs_json IS NOT NULL
+                                AND json_valid(node.outputs_json)
+                                AND EXISTS (
+                                    SELECT 1 FROM json_each(node.outputs_json) nout
+                                    WHERE COALESCE(json_extract(nout.value, '$.variant'), json_extract(nout.value, '$.Variant')) = product.variant
+                                      AND COALESCE(json_extract(nout.value, '$.recipe.name'), json_extract(nout.value, '$.Recipe.Name')) IS NOT NULL
+                                )
+                            THEN CASE
+                                WHEN EXISTS (
+                                    SELECT 1 FROM json_each(node.outputs_json) nout
+                                    WHERE COALESCE(json_extract(nout.value, '$.variant'), json_extract(nout.value, '$.Variant')) = product.variant
+                                      AND COALESCE(json_extract(nout.value, '$.recipe.name'), json_extract(nout.value, '$.Recipe.Name')) = $recipe
+                                )
+                                THEN 0
+                                ELSE -1
+                            END
+                            WHEN product.schema_version IN ($dispV1, $dispV2) THEN 0
+                            WHEN product.producer = $producer OR product.variant = $variant THEN 1
+                            WHEN output.output_identity_sha256 IS NULL
+                                OR product.disposition <> 'Available'
+                                OR output.availability_state <> 'Available'
+                            THEN 2
                             ELSE -1
-                        END
-                        WHEN output.output_identity_sha256 IS NOT NULL
-                            AND json_valid(CAST(output.descriptor_json AS TEXT))
-                            AND COALESCE(
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
-                            ) IS NOT NULL
-                        THEN CASE
-                            WHEN COALESCE(
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.artifact.recipe.name'),
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.descriptor.artifact.recipe.name'),
-                                json_extract(CAST(output.descriptor_json AS TEXT), '$.Artifact.Recipe.Name')
-                            ) = $recipe
-                            THEN 0
-                            ELSE -1
-                        END
-                        WHEN node.outputs_json IS NOT NULL
-                            AND json_valid(node.outputs_json)
-                            AND EXISTS (
-                                SELECT 1 FROM json_each(node.outputs_json) nout
-                                WHERE COALESCE(json_extract(nout.value, '$.variant'), json_extract(nout.value, '$.Variant')) = product.variant
-                                  AND COALESCE(json_extract(nout.value, '$.recipe.name'), json_extract(nout.value, '$.Recipe.Name')) IS NOT NULL
-                            )
-                        THEN CASE
-                            WHEN EXISTS (
-                                SELECT 1 FROM json_each(node.outputs_json) nout
-                                WHERE COALESCE(json_extract(nout.value, '$.variant'), json_extract(nout.value, '$.Variant')) = product.variant
-                                  AND COALESCE(json_extract(nout.value, '$.recipe.name'), json_extract(nout.value, '$.Recipe.Name')) = $recipe
-                            )
-                            THEN 0
-                            ELSE -1
-                        END
-                        WHEN product.schema_version IN ($dispV1, $dispV2) THEN 0
-                        WHEN product.producer = $producer OR product.variant = $variant THEN 1
-                        WHEN output.output_identity_sha256 IS NULL
-                            OR product.disposition <> 'Available'
-                            OR output.availability_state <> 'Available'
-                        THEN 2
-                        ELSE -1
-                    END AS match_rank
-                FROM centered_exposure_products product
-                JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
-                JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
-                LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
-                LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
-                WHERE product.capture_id = $capture AND run.run_id = $run
-                    AND run.agent_id = $agent AND run.camera_id = $camera
-                    AND product.execution_id = $execution
-                    AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
-            )
-            -- Order by ordinal producer before match_rank so an expired higher-priority writer whose
-            -- provenance/outputs metadata was cleared fails closed (UnidentifiableExpired) rather than
-            -- promoting a surviving lower-priority writer.
-            SELECT producer, variant, match_rank
-            FROM candidates
-            WHERE match_rank >= 0
-            ORDER BY producer COLLATE BINARY, match_rank, revision, variant COLLATE BINARY
-            LIMIT 1;
-            """;
-        SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);
-        productCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        productCommand.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
-        productCommand.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
-        productCommand.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
-        productCommand.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
-        productCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
-        productCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
-        productCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
-        productCommand.Parameters.AddWithValue("$semSchema", CenteredProductSemanticProvenanceV1.CurrentSchemaVersion);
-        using var productReader = await productCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
-        if (!await productReader.ReadAsync(token).ConfigureAwait(false))
-            return CenteredAuthoritativeAssociationResolution.None;
-        var writer = new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1));
-        return productReader.GetInt32(2) == 2
-            ? CenteredAuthoritativeAssociationResolution.UnidentifiableExpired(writer)
-            : CenteredAuthoritativeAssociationResolution.Resolved(writer);
+                        END AS match_rank
+                    FROM centered_exposure_products product
+                    JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
+                    JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+                    LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+                    LEFT JOIN processing_execution_nodes node ON node.execution_id = product.execution_id AND node.node_id = product.producer
+                    WHERE product.capture_id = $capture AND run.run_id = $run
+                        AND run.agent_id = $agent AND run.camera_id = $camera
+                        AND product.execution_id = $execution
+                        AND product.schema_version IN ($v1, $v2, $dispV1, $dispV2)
+                )
+                -- Order by ordinal producer before match_rank so an expired higher-priority writer whose
+                -- provenance/outputs metadata was cleared fails closed (UnidentifiableExpired) rather than
+                -- promoting a surviving lower-priority writer.
+                SELECT producer, variant, match_rank
+                FROM candidates
+                WHERE match_rank >= 0
+                ORDER BY producer COLLATE BINARY, match_rank, revision, variant COLLATE BINARY
+                LIMIT 1;
+                """;
+            SqliteRawCaptureJournal.AddExposureParameters(productCommand, key);
+            productCommand.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+            productCommand.Parameters.AddWithValue("$v1", MeasuredStellarAssociationsV1.V1SchemaVersion);
+            productCommand.Parameters.AddWithValue("$v2", MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+            productCommand.Parameters.AddWithValue("$dispV1", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.V1SchemaVersion);
+            productCommand.Parameters.AddWithValue("$dispV2", CenteredViewLayerBindings.DispositionPrefix + MeasuredStellarAssociationsV1.CurrentSchemaVersion);
+            productCommand.Parameters.AddWithValue("$variant", ExposureAssociationProducts.Variant);
+            productCommand.Parameters.AddWithValue("$producer", ExposureAssociationProducts.StepAlias);
+            productCommand.Parameters.AddWithValue("$recipe", ExposureAssociationProducts.RecipeName);
+            productCommand.Parameters.AddWithValue("$semSchema", CenteredProductSemanticProvenanceV1.CurrentSchemaVersion);
+            using var productReader = await productCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
+            if (await productReader.ReadAsync(token).ConfigureAwait(false))
+            {
+                var writer = new CenteredAuthoritativeAssociationWriter(productReader.GetString(0), productReader.GetString(1));
+                productCandidate = productReader.GetInt32(2) == 2
+                    ? CenteredAuthoritativeAssociationResolution.UnidentifiableExpired(writer)
+                    : CenteredAuthoritativeAssociationResolution.Resolved(writer);
+            }
+        }
+
+        // Compare declared node output contracts against observed product candidates by ordinal producer so
+        // partial metadata loss on an earlier expired producer never promotes a surviving lower-priority node contract.
+        if (nodeCandidate is { } declared)
+        {
+            if (productCandidate is { Writer: { } observed } &&
+                StringComparer.Ordinal.Compare(observed.Producer, declared.Producer) < 0)
+                return productCandidate.Value;
+            return CenteredAuthoritativeAssociationResolution.Resolved(declared);
+        }
+
+        return productCandidate ?? CenteredAuthoritativeAssociationResolution.None;
     }
 
     private static async ValueTask AddCenteredViewSchemaAsync(

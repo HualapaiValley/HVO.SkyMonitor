@@ -3419,12 +3419,17 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
-    public async Task MissingGraphRecoveryDoesNotPromoteLowerPriorityAssociationWriterWhenHigherPriorityExpires()
+    [DataRow("all-node-outputs-cleared", false)]
+    [DataRow("partial-only-associated-node-outputs-cleared", true)]
+    public async Task MissingGraphRecoveryDoesNotPromoteLowerPriorityAssociationWriterWhenHigherPriorityExpires(
+        string metadataLossMode,
+        bool clearOnlyAssociatedNodeOutputs)
     {
-        // M4 (D6-M2): When higher-priority associated/custom-assoc expires and BOTH provenance_json and
-        // processing_execution_nodes.outputs_json are cleared, lookup and archive recovery must preserve the expired
-        // authority (UnidentifiableExpired) and NEVER promote surviving lower-priority z-fast/z-early-assoc.
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-d8m4-expired-higher");
+        // M4 (D6-M2) + D8-M1: When higher-priority associated/custom-assoc expires and provenance_json is cleared,
+        // BOTH full node-output loss AND partial metadata loss (clearing ONLY associated's outputs_json while leaving
+        // z-fast/z-early-assoc's node output contract intact) must preserve associated/custom-assoc as
+        // UnidentifiableExpired and NEVER promote surviving lower-priority z-fast/z-early-assoc.
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-d8m4-" + metadataLossMode);
         var token = TestContext.CancellationToken;
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
@@ -3531,10 +3536,21 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
                 using (var clr = conn.CreateCommand())
                 {
-                    clr.CommandText = """
-                        UPDATE centered_exposure_products SET provenance_json = NULL WHERE execution_id = $exec;
-                        UPDATE processing_execution_nodes SET outputs_json = '[]' WHERE execution_id = $exec;
-                        """;
+                    if (clearOnlyAssociatedNodeOutputs)
+                    {
+                        clr.CommandText = """
+                            UPDATE centered_exposure_products SET provenance_json = NULL WHERE execution_id = $exec;
+                            UPDATE processing_execution_nodes SET outputs_json = '[]'
+                            WHERE execution_id = $exec AND node_id = 'associated';
+                            """;
+                    }
+                    else
+                    {
+                        clr.CommandText = """
+                            UPDATE centered_exposure_products SET provenance_json = NULL WHERE execution_id = $exec;
+                            UPDATE processing_execution_nodes SET outputs_json = '[]' WHERE execution_id = $exec;
+                            """;
+                    }
                     clr.Parameters.AddWithValue("$exec", executionId.ToString("N"));
                     await clr.ExecuteNonQueryAsync(token).ConfigureAwait(false);
                 }

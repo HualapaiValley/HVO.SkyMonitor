@@ -468,6 +468,19 @@ public sealed class StellarSourceMeasurerTests
             }
         };
         Assert.IsFalse(zeroSub.IsValid(fp), "An occupied coarse cell with zero occupied sub-cells must be rejected.");
+
+        // D8-M3 + D8-H1: stripping Subgrid from a refinable sparse footprint must be rejected both standalone and under
+        // product budget validation, while genuinely budget-exhausted refinement accepts Subgrid == null deterministically.
+        var strippedSub = occupancy with { Subgrid = null };
+        Assert.IsFalse(strippedSub.IsValid(fp, onStreak, sampleCount: 9000),
+            "Standalone validation must reject stripping Subgrid from a sparse megapixel streak.");
+        Assert.IsTrue(occupancy.IsValid(fp, onStreak, sampleCount: 9000, StellarFootprintOccupancy.MaximumSubgridBits));
+        Assert.IsFalse(strippedSub.IsValid(fp, onStreak, sampleCount: 9000, StellarFootprintOccupancy.MaximumSubgridBits),
+            "Product-budget validation must reject stripping Subgrid when refinement fits in budget.");
+        Assert.IsTrue(strippedSub.IsValid(fp, onStreak, sampleCount: 9000, subgridBitBudget: 1),
+            "When whole-product subgrid budget is legitimately exhausted (ChooseSubgrid == null), Subgrid == null must validate.");
+        Assert.IsFalse(occupancy.IsValid(fp, onStreak, sampleCount: 9000, subgridBitBudget: 1),
+            "When whole-product subgrid budget is exhausted, an unexpected Subgrid must be rejected.");
     }
 
     private static StellarMeasurementResult Measure(double[] pixels, int width, int height, bool[]? valid = null,

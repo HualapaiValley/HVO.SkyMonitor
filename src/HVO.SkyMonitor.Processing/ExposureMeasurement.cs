@@ -442,14 +442,34 @@ public static class ExposureMeasurementProducts
                 throw Invalid("detection");
         }
         var allowOccupancy = policy == ExposureFocusSamplingPolicy.EligibleFirstWithOccupancy;
-        if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy)))
+        var subgridBitBudget = 0;
+        if (allowOccupancy)
+        {
+            var refinableCount = 0;
+            foreach (var item in sources.Exclusions)
+            {
+                if (item?.Footprint is { } fp && measuredLayout is not null &&
+                    fp.MinX >= 0 && fp.MinY >= 0 && fp.MaxX >= fp.MinX && fp.MaxY >= fp.MinY &&
+                    fp.MaxX < measuredLayout.Width && fp.MaxY < measuredLayout.Height)
+                {
+                    var fpWidth = fp.MaxX - fp.MinX + 1;
+                    var fpHeight = fp.MaxY - fp.MinY + 1;
+                    var fpArea = (long)fpWidth * fpHeight;
+                    if (item.SampleCount > 0 && item.SampleCount < fpArea &&
+                        StellarFootprintOccupancy.UsesCoarseGrid(fpWidth, fpHeight))
+                        refinableCount++;
+                }
+            }
+            subgridBitBudget = StellarFootprintOccupancy.SubgridBitBudgetPerExclusion(refinableCount);
+        }
+        if (sources.Exclusions.Any(item => !IsValidExclusion(item, measuredLayout, allowOccupancy, subgridBitBudget)))
             throw Invalid("exclusion");
 
         ValidateFocus(sources, hfd, measuredLayout, policy);
     }
 
     private static bool IsValidExclusion(
-        StellarMeasurementExclusion? item, FrameLayoutDescriptor? measuredLayout, bool allowOccupancy)
+        StellarMeasurementExclusion? item, FrameLayoutDescriptor? measuredLayout, bool allowOccupancy, int subgridBitBudget)
     {
         if (item is null || measuredLayout is null || !Inside(item.Peak, measuredLayout) ||
             !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0)
@@ -466,13 +486,19 @@ public static class ExposureMeasurementProducts
             var peakY = Math.Floor(item.Peak.Y);
             if (peakX < fp.MinX || peakX > fp.MaxX || peakY < fp.MinY || peakY > fp.MaxY)
                 return false;
+            if (allowOccupancy)
+            {
+                if (item.SampleCount == fpArea)
+                    return item.Occupancy is null;
+                return item.Occupancy is not null &&
+                    item.Occupancy.IsValid(fp, item.Peak, item.SampleCount, subgridBitBudget);
+            }
         }
-        if (item.Occupancy is { } occ)
+        else if (allowOccupancy)
         {
-            if (!allowOccupancy || item.Footprint is not { } occFp || !occ.IsValid(occFp, item.Peak, item.SampleCount))
-                return false;
+            return false;
         }
-        return true;
+        return item.Occupancy is null;
     }
 
     private static void ValidateFocus(ExposureSourcesV1 sources, ExposureHfdV1 hfd, FrameLayoutDescriptor? layout,

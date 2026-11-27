@@ -135,6 +135,30 @@ public sealed record StellarFootprintOccupancy(
     public const int MaximumSubgridBits = 65536;
     public const int MaximumSubgridBytes = (MaximumSubgridBits + 7) / 8;
 
+    /// <summary>
+    /// Whole-product subgrid bit budget shared deterministically across all refinable coarse-grid exclusions in a
+    /// measurement product (512 KiB total raw subgrid bytes), keeping even worst-case 4,096-candidate frames below
+    /// the 4 MiB structured processing product envelope.
+    /// </summary>
+    public const int MaximumTotalSubgridBits = 4_194_304;
+    public const int MaximumTotalSubgridBytes = (MaximumTotalSubgridBits + 7) / 8;
+
+    /// <summary>
+    /// Returns the deterministic per-exclusion subgrid bit budget shared across
+    /// <paramref name="refinableExclusionCount"/> non-solid coarse-grid exclusions in one measurement product.
+    /// </summary>
+    public static int SubgridBitBudgetPerExclusion(int refinableExclusionCount) =>
+        refinableExclusionCount <= 0
+            ? 0
+            : Math.Min(MaximumSubgridBits, MaximumTotalSubgridBits / refinableExclusionCount);
+
+    /// <summary>
+    /// Returns whether a non-solid footprint of <paramref name="width"/> by <paramref name="height"/> samples requires
+    /// a coarse (&gt; 1x1) occupancy grid eligible for fine subgrid refinement.
+    /// </summary>
+    public static bool UsesCoarseGrid(int width, int height) =>
+        width > 0 && height > 0 && (long)width * height > MaximumCells;
+
     /// <summary>Optional fine sub-cell occupancy over the occupied coarse cells; omitted for 1x1 coarse grids.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public StellarFootprintSubgridOccupancy? Subgrid { get; init; }
@@ -214,11 +238,13 @@ public sealed record StellarFootprintOccupancy(
     }
 
     internal static (int SubCellWidth, int SubCellHeight, int SubColumns, int SubRows)? ChooseSubgrid(
-        int coarseCellWidth, int coarseCellHeight, int occupiedCoarseCount)
+        int coarseCellWidth, int coarseCellHeight, int occupiedCoarseCount,
+        int maximumSubgridBits = MaximumSubgridBits)
     {
-        if (occupiedCoarseCount <= 0 || (coarseCellWidth <= 1 && coarseCellHeight <= 1))
+        if (occupiedCoarseCount <= 0 || maximumSubgridBits <= 0 || (coarseCellWidth <= 1 && coarseCellHeight <= 1))
             return null;
-        var maxBitsPerCell = MaximumSubgridBits / occupiedCoarseCount;
+        var effectiveBudget = Math.Min(maximumSubgridBits, MaximumSubgridBits);
+        var maxBitsPerCell = effectiveBudget / occupiedCoarseCount;
         if (maxBitsPerCell < 2)
             return null;
         long cw = coarseCellWidth;
@@ -263,26 +289,37 @@ public sealed record StellarFootprintOccupancy(
     }
 
     /// <summary>Validates dimensions, grid partition, canonical Base64 encoding, zero trailing padding bits, subgrid integrity, and non-emptiness.</summary>
-    public bool IsValid(StellarFootprintBounds footprint) => ValidateCore(footprint, peak: null, sampleCount: null);
+    public bool IsValid(StellarFootprintBounds footprint) =>
+        ValidateCore(footprint, peak: null, sampleCount: null, subgridBitBudget: null);
 
     /// <summary>
     /// Validates occupancy geometry and encoding together with physical consistency against the recorded exclusion
     /// <paramref name="peak"/> and segmented <paramref name="sampleCount"/>.
     /// </summary>
     public bool IsValid(StellarFootprintBounds footprint, PixelPoint peak, int sampleCount) =>
-        ValidateCore(footprint, peak, sampleCount);
+        ValidateCore(footprint, peak, sampleCount, subgridBitBudget: null);
 
-    private bool ValidateCore(StellarFootprintBounds footprint, PixelPoint? peak, int? sampleCount)
+    /// <summary>
+    /// Validates occupancy geometry, encoding, physical consistency, and exact deterministic coarse/subgrid refinement
+    /// compliance against the whole-product <paramref name="subgridBitBudget"/>.
+    /// </summary>
+    public bool IsValid(StellarFootprintBounds footprint, PixelPoint peak, int sampleCount, int subgridBitBudget) =>
+        subgridBitBudget >= 0 && ValidateCore(footprint, peak, sampleCount, subgridBitBudget);
+
+    private bool ValidateCore(
+        StellarFootprintBounds footprint, PixelPoint? peak, int? sampleCount, int? subgridBitBudget)
     {
         var fpWidth = (long)footprint.MaxX - footprint.MinX + 1;
         var fpHeight = (long)footprint.MaxY - footprint.MinY + 1;
-        if (fpWidth <= 0 || fpHeight <= 0 || Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
+        if (fpWidth <= 0 || fpHeight <= 0 || fpWidth > int.MaxValue || fpHeight > int.MaxValue ||
+            Columns <= 0 || Rows <= 0 || CellWidth <= 0 || CellHeight <= 0 ||
             CellWidth > fpWidth || CellHeight > fpHeight)
             return false;
+        var (expectedCols, expectedRows, expectedCellW, expectedCellH) = ChooseGrid((int)fpWidth, (int)fpHeight);
         var cellCount = (long)Columns * Rows;
         if (cellCount > MaximumCells ||
-            Columns != (fpWidth + CellWidth - 1) / CellWidth ||
-            Rows != (fpHeight + CellHeight - 1) / CellHeight ||
+            Columns != expectedCols || Rows != expectedRows ||
+            CellWidth != expectedCellW || CellHeight != expectedCellH ||
             string.IsNullOrEmpty(BitsBase64))
             return false;
         var expectedBytes = (int)((cellCount + 7) / 8);
@@ -324,6 +361,28 @@ public sealed record StellarFootprintOccupancy(
         {
             if (samples <= 0 || samples > fpWidth * fpHeight || occupiedCoarse > samples)
                 return false;
+        }
+
+        if (subgridBitBudget is { } budget)
+        {
+            var expectedSub = ChooseSubgrid(CellWidth, CellHeight, occupiedCoarse, budget);
+            if (expectedSub is null)
+            {
+                if (Subgrid is not null)
+                    return false;
+            }
+            else if (Subgrid is not { } actualSub ||
+                     actualSub.CellWidth != expectedSub.Value.SubCellWidth ||
+                     actualSub.CellHeight != expectedSub.Value.SubCellHeight)
+            {
+                return false;
+            }
+        }
+        else if (Subgrid is null &&
+                 ChooseSubgrid(CellWidth, CellHeight, occupiedCoarse,
+                     SubgridBitBudgetPerExclusion(StellarDetector.MaximumSupportedCandidates)) is not null)
+        {
+            return false;
         }
 
         if (Subgrid is null)
@@ -855,14 +914,24 @@ public static class StellarSourceMeasurer
                 }
             }
 
-            // Refine coarse (> 1x1) occupied cells with a bounded sparse fine subgrid in one bounded pass.
+            // Refine coarse (> 1x1) occupied cells with a whole-product bounded sparse fine subgrid in one bounded pass.
+            var refinableCount = 0;
+            for (var p = 0; p < pending.Count; p++)
+            {
+                var item = pending[p];
+                if (item.CellWidth > 1 || item.CellHeight > 1)
+                    refinableCount++;
+            }
+            var subgridBitBudget = StellarFootprintOccupancy.SubgridBitBudgetPerExclusion(refinableCount);
             var pendingSubgrids = new List<PendingSubgrid>();
             long totalSubBoxArea = 0;
             for (var p = 0; p < pending.Count; p++)
             {
                 var item = pending[p];
+                if (item.CellWidth <= 1 && item.CellHeight <= 1)
+                    continue;
                 var occupiedCoarse = StellarFootprintOccupancy.CountSetBits(item.Bits);
-                if (StellarFootprintOccupancy.ChooseSubgrid(item.CellWidth, item.CellHeight, occupiedCoarse) is not { } subSpec)
+                if (StellarFootprintOccupancy.ChooseSubgrid(item.CellWidth, item.CellHeight, occupiedCoarse, subgridBitBudget) is not { } subSpec)
                     continue;
                 var coarseToOrdinal = StellarFootprintOccupancy.BuildCoarseToOrdinal(item.Bits, item.Columns * item.Rows);
                 var subBits = new byte[(occupiedCoarse * subSpec.SubColumns * subSpec.SubRows + 7) / 8];
