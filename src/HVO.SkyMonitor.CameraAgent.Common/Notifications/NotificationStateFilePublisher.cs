@@ -298,15 +298,16 @@ public static class NotificationStateFilePublisher
     }
 
     public static void EnsureRestrictedDirectory(string directoryPath)
-        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null, directorySyncAction: null);
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced: null, directorySyncAction: null, beforeAnchorOpen: null);
 
     internal static void EnsureRestrictedDirectory(string directoryPath, Action<string>? onDirectorySynced)
-        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced, directorySyncAction: null);
+        => EnsureRestrictedDirectory(directoryPath, onDirectorySynced, directorySyncAction: null, beforeAnchorOpen: null);
 
     internal static void EnsureRestrictedDirectory(
         string directoryPath,
         Action<string>? onDirectorySynced,
-        Action<string>? directorySyncAction)
+        Action<string>? directorySyncAction,
+        Action<string>? beforeAnchorOpen = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
         var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
@@ -315,7 +316,7 @@ public static class NotificationStateFilePublisher
             fullDirectory = Path.GetPathRoot(Path.GetFullPath(directoryPath)) ?? directoryPath;
         }
 
-        var missingDirectories = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
+        var (missingDirectories, validatedSymlinkAncestors) = CollectMissingDirectoriesAndValidateAncestors(fullDirectory);
         var newlyCreatedDirectories = new HashSet<string>(DirectoryPathComparer);
         var chainBottomUp = GetSelfAndAncestorsBottomUp(fullDirectory);
 
@@ -332,9 +333,13 @@ public static class NotificationStateFilePublisher
 
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-            // Pin the accepted pre-existing parent directory once and walk/create/harden every protected descendant
-            // component strictly relative to its pinned parent descriptor (mkdirat + openat(O_NOFOLLOW|O_DIRECTORY)
-            // + fstat/statx + fchmod(0700)) so an ancestor replacement race can never direct fchmod outside the tree.
+            // Pin the pre-existing parent directory once (enforcing O_DIRECTORY|O_NOFOLLOW unless the anchor
+            // itself was already validated as a pre-existing symlinked ancestor such as /var/run or /tmp) and
+            // walk/create/harden every protected descendant component strictly relative to its pinned parent
+            // descriptor (mkdirat + openat(O_NOFOLLOW|O_DIRECTORY) + fstat/statx + fchmod(0700)). Once the
+            // trusted anchor descriptor is pinned, post-pin ancestor replacement or descendant symlink
+            // substitution cannot direct mkdirat or fchmod outside the pinned subtree; acquiring the initial
+            // anchor descriptor by pathname still relies on non-attacker-controlled ancestors above the anchor.
             var topProtectedIndex = 0;
             for (var i = chainBottomUp.Count - 1; i >= 0; i--)
             {
@@ -361,7 +366,11 @@ public static class NotificationStateFilePublisher
                         }
                     }
 
-                    var allowSymlinkedAnchor = TryDetectLinkTarget(anchorParent, out _);
+                    // Do NOT re-probe anchorParent by pathname here: doing so would allow a symlink substituted
+                    // after validation to disable O_NOFOLLOW. Only pre-existing symlinked ancestors validated
+                    // during the initial ancestor walk may bypass O_NOFOLLOW on anchor acquisition.
+                    var allowSymlinkedAnchor = validatedSymlinkAncestors.Contains(anchorParent);
+                    beforeAnchorOpen?.Invoke(anchorParent);
                     DurableSync.EnsureAndHardenDirectoryChain(
                         anchorParent,
                         protectedComponents,
@@ -593,10 +602,12 @@ public static class NotificationStateFilePublisher
         }
     }
 
-    private static List<string> CollectMissingDirectoriesAndValidateAncestors(string fullDirectory)
+    private static (List<string> MissingDirectories, HashSet<string> ValidatedSymlinkAncestors)
+        CollectMissingDirectoriesAndValidateAncestors(string fullDirectory)
     {
         var ancestors = GetAncestorsTopDown(fullDirectory);
         var missingDirectories = new List<string>();
+        var validatedSymlinkAncestors = new HashSet<string>(DirectoryPathComparer);
 
         for (var i = 0; i < ancestors.Count; i++)
         {
@@ -622,7 +633,7 @@ public static class NotificationStateFilePublisher
                     missingDirectories.Add(ancestors[j]);
                 }
                 missingDirectories.Add(fullDirectory);
-                return missingDirectories;
+                return (missingDirectories, validatedSymlinkAncestors);
             }
             catch (DirectoryNotFoundException ex)
             {
@@ -647,6 +658,7 @@ public static class NotificationStateFilePublisher
                 {
                     throw new IOException("Refusing to access a symbolic link to a non-directory ancestor in the protected operator notification store.");
                 }
+                validatedSymlinkAncestors.Add(ancestor);
             }
             else if ((ancestorAttributes & FileAttributes.Directory) == 0 || (ancestorAttributes & FileAttributes.Device) != 0)
             {
@@ -676,7 +688,7 @@ public static class NotificationStateFilePublisher
             throw new IOException("Protected operator notification store directory path is not a directory.", ex);
         }
 
-        return missingDirectories;
+        return (missingDirectories, validatedSymlinkAncestors);
     }
 
     private enum DirectorySyncOutcome

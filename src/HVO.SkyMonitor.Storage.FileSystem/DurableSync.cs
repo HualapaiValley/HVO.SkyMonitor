@@ -230,12 +230,16 @@ public static class DurableSync
     }
 
     /// <summary>
-    /// Pins <paramref name="anchorParentDirectory"/> with an open directory descriptor and walks each
-    /// protected descendant component in <paramref name="descendantComponents"/> relative to its pinned
-    /// parent descriptor using <c>openat(2)</c> (<c>O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>),
+    /// Pins <paramref name="anchorParentDirectory"/> with an open directory descriptor (enforcing
+    /// <c>O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c> when <paramref name="allowSymlinkedAnchor"/> is <c>false</c>,
+    /// with an <c>O_PATH</c>/<c>O_SEARCH</c> fallback for traverse-only anchors) and walks each protected
+    /// descendant component in <paramref name="descendantComponents"/> strictly relative to its pinned parent
+    /// descriptor using <c>openat(2)</c> (<c>O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>),
     /// <c>mkdirat(2)</c> when <paramref name="createMissing"/> is <c>true</c>, descriptor directory-type
-    /// verification (<c>statx</c>/<c>fstat</c>), and <c>fchmod(2)</c>. Closing an ancestor replacement race
-    /// ensures <c>fchmod</c> never alters permissions outside the verified directory chain.
+    /// verification (<c>statx</c>/<c>fstat</c>), and <c>fchmod(2)</c>. Once the trusted anchor directory
+    /// descriptor is pinned, neither descendant symlink substitution nor post-pin ancestor replacement can direct
+    /// <c>mkdirat</c> or <c>fchmod</c> outside the pinned subtree; acquiring the initial anchor by pathname still
+    /// relies on non-attacker-controlled ancestors above <paramref name="anchorParentDirectory"/>.
     /// No-op on Windows (creates missing directories only when <paramref name="createMissing"/> is true).
     /// </summary>
     public static void EnsureAndHardenDirectoryChain(
@@ -392,11 +396,13 @@ public static class DurableSync
     }
 
     /// <summary>
-    /// Restricts a directory's Unix permissions without following symbolic links by pinning its parent
-    /// directory descriptor and opening the leaf component via <c>openat(2)</c> with
-    /// <c>O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>, verifying the descriptor is a directory,
-    /// and applying <c>fchmod(2)</c> on the authenticated file descriptor (closing both symlink and
-    /// ancestor-replacement TOCTOU windows). No-op on Windows.
+    /// Restricts a directory's Unix permissions without following a leaf symbolic link by pinning its parent
+    /// directory descriptor (allowing pre-existing symlinked system parents such as <c>/tmp</c> or <c>/var/run</c>),
+    /// opening the leaf component via <c>openat(2)</c> with <c>O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC</c>,
+    /// verifying the descriptor is a directory, and applying <c>fchmod(2)</c> on the authenticated file descriptor.
+    /// This eliminates leaf-symlink TOCTOU and post-pin ancestor-replacement races once the parent descriptor is
+    /// pinned; acquiring the parent descriptor by pathname still relies on non-attacker-controlled ancestors above
+    /// the parent. No-op on Windows.
     /// </summary>
     public static void SetDirectoryModeNoFollow(string absolutePath, UnixFileMode mode)
     {
