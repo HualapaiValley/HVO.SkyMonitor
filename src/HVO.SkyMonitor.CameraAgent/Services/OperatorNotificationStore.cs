@@ -1071,11 +1071,15 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return false;
             }
 
-            // Delivery withholds unbound host credentials when durable history is truncated. A save at the
-            // same destination must also reject those host values, even after their individual hashes are gone.
+            // Delivery withholds unbound host credentials when durable history is truncated while still
+            // using identical protected credentials bound to the current destination.
             var hostCredential = isPassword ? configSecrets.SmtpPassword : configSecrets.SmtpUsername;
+            var protectedCredential = isPassword ? existingProtected.SmtpPassword : existingProtected.SmtpUsername;
+            var preservesProtectedCredential = preserveStoredSmtpSecrets &&
+                string.Equals(candidate, protectedCredential, StringComparison.Ordinal);
             if (smtpHistoryTruncated &&
-                (smtpDestinationChanged || string.Equals(candidate, hostCredential, StringComparison.Ordinal)))
+                (smtpDestinationChanged ||
+                 (!preservesProtectedCredential && string.Equals(candidate, hostCredential, StringComparison.Ordinal))))
             {
                 return true;
             }
@@ -1112,11 +1116,13 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
 
         bool IsBlockedWebhookCredential(string candidate, int fieldKind, string? rawCandidate = null)
         {
-            var (hostField, hostCredential) = fieldKind switch
+            var (hostField, hostCredential, protectedCredential) = fieldKind switch
             {
-                0 => (HostCredentialField.WebhookAuthToken, configSecrets.WebhookAuthToken),
-                1 => (HostCredentialField.WebhookUserKey, configSecrets.WebhookUserKey),
-                _ => (HostCredentialField.WebhookNtfyTopic, OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic))
+                0 => (HostCredentialField.WebhookAuthToken, configSecrets.WebhookAuthToken, existingProtected.WebhookAuthToken),
+                1 => (HostCredentialField.WebhookUserKey, configSecrets.WebhookUserKey, existingProtected.WebhookUserKey),
+                _ => (HostCredentialField.WebhookNtfyTopic,
+                    OperatorNotificationValidation.NormalizeNtfyTopic(configSecrets.WebhookNtfyTopic),
+                    OperatorNotificationValidation.NormalizeNtfyTopic(existingProtected.WebhookNtfyTopic))
             };
 
             // M-ntfy-b / M2 (delta18): Enforce the unresolved-legacy ntfy topic history guard FIRST — BEFORE the
@@ -1136,8 +1142,11 @@ internal sealed partial class OperatorNotificationStore : IOperatorNotificationS
                 return false;
             }
 
+            var preservesProtectedCredential = preserveStoredWebhookSecrets &&
+                string.Equals(candidate, protectedCredential, StringComparison.Ordinal);
             if (webhookHistoryTruncated &&
-                (webhookDestinationChanged || string.Equals(candidate, hostCredential, StringComparison.Ordinal)))
+                (webhookDestinationChanged ||
+                 (!preservesProtectedCredential && string.Equals(candidate, hostCredential, StringComparison.Ordinal))))
             {
                 return true;
             }

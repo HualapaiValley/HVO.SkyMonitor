@@ -12914,6 +12914,104 @@ public sealed class OperatorNotificationStoreTests
     }
 
     [TestMethod]
+    public async Task VersionedSave_AfterSiblingHistoryEviction_RetainsProtectedSmtpUsernameAsync()
+    {
+        const string host = "rotation-relay.example.test";
+        const string username = "active-username";
+        const string freshPassword = "fresh-password";
+        var options = CreateSmtpOptions(host, 587, SmtpSecurityMode.StartTls);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Host"] = host,
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:Port"] = "587",
+            [OperatorNotificationsOptions.SectionKey + ":Smtp:SecurityMode"] = nameof(SmtpSecurityMode.StartTls),
+            [ConfigurationOperatorNotificationConfigProvider.SmtpUsernameConfigKey] = username
+        }).Build();
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+
+        using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: configuration))
+        {
+            var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapshot.Version, options, SmtpUsername: username, SmtpPassword: "initial-password"), "owner", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+
+            for (var i = 0; i <= OperatorNotificationStore.MaxRetiredBindingsPerChannel; i++)
+            {
+                saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    saved.Snapshot!.Version, options, SmtpPassword: $"rotated-password-{i}"), "owner", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+            }
+
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, saved.Snapshot!.Secrets.SmtpUsernameSource);
+            var (_, before) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(username, before.SmtpUsername);
+
+            var rotated = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                saved.Snapshot.Version, options, SmtpUsername: username, SmtpPassword: freshPassword), "owner", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, rotated.Outcome,
+                $"{rotated.Message} {string.Join(", ", rotated.Problems?.Keys ?? [])}");
+        }
+
+        using var restarted = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider);
+        var (deliveredOptions, delivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(host, deliveredOptions.Smtp.Host);
+        Assert.AreEqual(username, delivery.SmtpUsername);
+        Assert.AreEqual(freshPassword, delivery.SmtpPassword);
+    }
+
+    [TestMethod]
+    public async Task VersionedSave_AfterSiblingHistoryEviction_RetainsProtectedWebhookTokenAsync()
+    {
+        const string url = "https://rotation-hook.example.test/messages";
+        const string token = "active-token";
+        const string freshUserKey = "fresh-user-key";
+        var options = new OperatorNotificationsOptions
+        {
+            Enabled = true,
+            Webhook = new WebhookNotificationOptions { Enabled = true, Format = WebhookPayloadFormat.Pushover }
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [ConfigurationOperatorNotificationConfigProvider.WebhookUrlConfigKey] = url,
+            [ConfigurationOperatorNotificationConfigProvider.WebhookAuthTokenConfigKey] = token
+        }).Build();
+        using var dir = TempStateDir.Create();
+        var dpProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(dir.Path, "dp-keys")));
+
+        using (var store = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider, configuration: configuration))
+        {
+            var snapshot = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            var saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                snapshot.Version, options, WebhookUrl: url, WebhookAuthToken: token, WebhookUserKey: "initial-user-key"), "owner", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+
+            for (var i = 0; i <= OperatorNotificationStore.MaxRetiredBindingsPerChannel; i++)
+            {
+                saved = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                    saved.Snapshot!.Version, options, WebhookUserKey: $"rotated-user-key-{i}"), "owner", CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, saved.Outcome, saved.Message);
+            }
+
+            Assert.AreEqual(NotificationSecretSource.ProtectedStore, saved.Snapshot!.Secrets.WebhookAuthTokenSource);
+            var (_, before) = await store.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(token, before.WebhookAuthToken);
+
+            var rotated = await store.SaveAsync(new OperatorNotificationsUpdateRequest(
+                saved.Snapshot.Version, options, WebhookAuthToken: token, WebhookUserKey: freshUserKey), "owner", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorNotificationsSaveOutcome.Applied, rotated.Outcome,
+                $"{rotated.Message} {string.Join(", ", rotated.Problems?.Keys ?? [])}");
+        }
+
+        using var restarted = CreateStore(dir.Path, isDevelopment: false, dpProvider: dpProvider);
+        var (_, delivery) = await restarted.GetEffectiveForDeliveryAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(url, delivery.WebhookUrl);
+        Assert.AreEqual(token, delivery.WebhookAuthToken);
+        Assert.AreEqual(freshUserKey, delivery.WebhookUserKey);
+    }
+
+    [TestMethod]
     [DataRow(false, false)]
     [DataRow(true, false)]
     [DataRow(false, true)]
