@@ -64,8 +64,9 @@ before declaring recovery.
   bucket groups longer operations. Compare counts and rates before interpreting
   p95, and use median and range in controlled reports with fewer than 30 samples.
 - Workload labels are fixed operation, outcome and cache-event names. The
-  enabled HTTP view keeps only the numeric response status. Circuit views
-  remove all dimensions. Keep existing configuration and enum labels bounded.
+  enabled HTTP duration view keeps only the numeric response status. Routing
+  metrics keep only match status and fallback status. Circuit views remove
+  all dimensions. Keep existing configuration and enum labels bounded.
   Never add job, artifact, user or correlation IDs, paths, object keys, SQL,
   timestamps, query strings or payloads as metric labels. Exemplars are off.
 - If OTLP is configured, use TLS and private credentials. Enabled mode uses
@@ -181,12 +182,33 @@ native allocation profiling or `strace` and for any required ptrace/perf/BPF
 permissions. Record the expected pause, heap/RSS and headroom, disk quota,
 permission scope, OOM impact and sensitive-data risk. Prefer an isolated
 reproduction. Run only one approved command with an operator-selected
-deadline and an output quota larger than the expected artifact. Examples:
+deadline and an output quota larger than the expected artifact.
+
+On Linux, CameraAgent resolves the `dotnet-dump --output` path in its own
+mount namespace. Before attaching, verify that the exact `$bundle` path in
+the target container or process resolves to the same directory on the private,
+quota-controlled artifact volume seen by the diagnostic shell. Verify write
+access there with a create-and-remove probe in the target mount namespace as
+the CameraAgent process UID. Skip the dump if either check fails. After
+collection, verify that `$bundle/process.dmp` resolves to a file on that same
+private volume and is accessible to the authorized retention and cleanup process.
+
+Attaching `strace` only to the leader PID misses `fsync` and `fdatasync` calls
+made by background capture and storage workers. Use `-p "$worker_tid"` without
+`-f` only when you have verified the worker TID under `/proc/$pid/task` and
+can attribute the sync work to it. Otherwise obtain approval for a strictly
+time-bounded all-thread attach with `-f -p "$pid"`. It can also follow child
+processes and add substantial overhead even with a syscall filter. Stop
+the trace immediately if capture cadence or liveness degrades, backlog grows,
+or disk headroom drops below the incident limit.
+
+Examples:
 
 ```bash
 timeout --signal=INT --kill-after=5s 60s dotnet-gcdump collect --process-id "$pid" --output "$bundle/heap.gcdump"
 timeout --signal=INT --kill-after=5s 60s dotnet-dump collect --process-id "$pid" --type Heap --output "$bundle/process.dmp"
-timeout --signal=INT --kill-after=5s 40s strace -c -e trace=fsync,fdatasync -p "$pid" 2> "$bundle/sync-summary.txt"
+timeout --signal=INT --kill-after=5s 40s strace -f -c -e trace=fsync,fdatasync -p "$pid" \
+  2> "$bundle/sync-summary.txt"
 ```
 
 A dump can contain credentials, image buffers and user data even with narrow

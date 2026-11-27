@@ -40,6 +40,14 @@ internal static class ProductionProfiling
                         ? new ExplicitBucketHistogramConfiguration { Boundaries = DurationSeconds, TagKeys = ["http.response.status_code"], CardinalityLimit = MaximumPointsPerStream }
                         : MetricStreamConfiguration.Drop;
                 }
+                if (instrument.Meter.Name == "Microsoft.AspNetCore.Routing")
+                {
+                    return new MetricStreamConfiguration
+                    {
+                        TagKeys = ["aspnetcore.routing.match_status", "aspnetcore.routing.is_fallback"],
+                        CardinalityLimit = MaximumPointsPerStream
+                    };
+                }
                 if (instrument.Meter.Name == "Microsoft.AspNetCore.Components.Server.Circuits")
                 {
                     return instrument.Name switch

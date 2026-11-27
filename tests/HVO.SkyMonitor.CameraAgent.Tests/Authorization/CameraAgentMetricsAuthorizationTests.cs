@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HVO.Enterprise.Telemetry.OpenTelemetry;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
@@ -129,7 +130,11 @@ public sealed partial class CameraAgentMetricsAuthorizationTests
         var readKey = await fixture.CreateKeyAsync(ApiKeyAccessLevel.Read).ConfigureAwait(false);
         using var client = fixture.Client(readKey);
         const string privatePath = "profiling-test-private-path";
+        using var health = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+        using var parameterized = await client.GetAsync(new Uri($"/test/route/{privatePath}", UriKind.Relative)).ConfigureAwait(false);
         using var missing = await client.GetAsync(new Uri($"/{privatePath}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
+        Assert.AreEqual(HttpStatusCode.OK, parameterized.StatusCode);
         Assert.AreEqual(HttpStatusCode.NotFound, missing.StatusCode);
 
         CameraAgentWorkloadTelemetry.Record(CameraAgentWorkloadTelemetry.Start(),
@@ -159,9 +164,12 @@ public sealed partial class CameraAgentMetricsAuthorizationTests
             StringAssert.Contains(body, expected, StringComparison.Ordinal);
         }
         Assert.IsFalse(body.Contains(privatePath, StringComparison.Ordinal));
-        Assert.IsFalse(body.Contains("http_route=", StringComparison.Ordinal));
         Assert.IsFalse(body.Contains("url_path=", StringComparison.Ordinal));
         var samples = body.Split('\n');
+        Assert.IsTrue(samples.Any(line => line.StartsWith("aspnetcore_routing_match_attempts_total{", StringComparison.Ordinal) &&
+            HasSampleLabel(line, "aspnetcore_routing_match_status")), "The scrape must exercise the standard routing meter.");
+        var routeSample = samples.FirstOrDefault(line => line.Contains("http_route=", StringComparison.Ordinal));
+        Assert.IsNull(routeSample, $"The scrape exposed an HTTP route in {routeSample}");
         Assert.IsTrue(samples.Any(line => line.StartsWith("dotnet_gc_last_collection_heap_size_bytes{", StringComparison.Ordinal) &&
             HasSampleLabel(line, "gc_heap_generation")));
         var probeSamples = samples.Where(line => line.StartsWith(MetricName, StringComparison.Ordinal)).ToArray();
@@ -333,6 +341,17 @@ public sealed partial class CameraAgentMetricsAuthorizationTests
             builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
             builder.Services.AddAntiforgery();
             builder.Services.AddSkyMonitorHealthChecks();
+            if (profiling)
+            {
+                // Register the same standard meters as AddSkyMonitorObservability without exporting off-host.
+                builder.Services.AddOpenTelemetryExport(options =>
+                {
+                    options.EnableTraceExport = false;
+                    options.EnableMetricsExport = false;
+                    options.EnableLogExport = false;
+                    options.EnableStandardMeters = true;
+                });
+            }
             builder.Services.AddOpenTelemetry().WithMetrics(metrics =>
             {
                 metrics.AddPrometheusExporter();
@@ -358,6 +377,7 @@ public sealed partial class CameraAgentMetricsAuthorizationTests
                 app.UseAntiforgery();
                 CameraAgentMetricsEndpoint.Map(app);
                 app.MapSkyMonitorHealthEndpoints();
+                app.MapGet("/test/route/{value}", () => Results.Ok()).AllowAnonymous();
                 app.MapGet("/operations", () => Results.Text("operations-page"))
                     .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
                 app.MapGet("/account/probe", () => Results.Text("account-page"))
