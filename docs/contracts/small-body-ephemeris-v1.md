@@ -85,13 +85,13 @@ ephemeris queries pin `DES=<spkId>;CAP;NOFRAG` (or exact fragment `spkId` with
 | Field | JSON Type / Format | Required Semantics |
 | --- | --- | --- |
 | `solutionAuthority` | string (`"JPL"`) | Orbit producer authority from SBDB `orbit.source` |
-| `orbitId` | string (1–32 chars) | Canonical compound solution ID `"<solutionAuthority>#<sbdb.orbit.orbit_id>"` (e.g. `"JPL#659"`, `"JPL#75"`), matching Horizons header `{source: JPL#659}` |
-| `horizonsRecordNumber` | string or `null` | Horizons `Rec #:` identifier (e.g. `"433"`, `"90000030"`, `"90000740"`) |
+| `orbitId` | string (1–32 chars) | Canonical compound solution ID `"<solutionAuthority>#<sbdb.orbit.orbit_id>"` (e.g. `"JPL#1"`), matching the Horizons header `{source: JPL#<id>}` token |
+| `horizonsRecordNumber` | string or `null` | Horizons `Rec #:` identifier (e.g. `"999999"`, `"90000030"`) |
 | `solutionDateSourceRaw` | string (`"YYYY-MM-DD HH:MM:SS"`) or `null` | Verbatim JPL `orbit.soln_date` (normalized from Horizons `YYYY-Mon-DD_HH:MM:SS` when compared), recorded in JPL Pasadena local time |
 | `solutionDateSourceTimeZone` | string (`"America/Los_Angeles"`) or `null` | Explicit IANA timezone for `solutionDateSourceRaw` (`"America/Los_Angeles"` whenever `solutionDateSourceRaw` is non-null, else `null`) |
-| `solutionDateUtc` | UTC ISO-8601 string or `null` | `solutionDateSourceRaw` deterministically converted from `America/Los_Angeles` (PST/PDT) to UTC (e.g., `"2021-05-24 17:55:05"` PDT → `"2021-05-25T00:55:05Z"`). If an ambiguous DST fall-back local wall time ever occurs, `solutionDateUtc` MUST be set to `null` rather than guessing while `solutionDateSourceRaw` is preserved |
+| `solutionDateUtc` | UTC ISO-8601 string or `null` | `solutionDateSourceRaw` deterministically converted from `America/Los_Angeles` (PST/PDT) to UTC (synthetic PDT example: `"2026-06-15 17:30:00"` PDT → `"2026-06-16T00:30:00Z"`). If an ambiguous DST fall-back local wall time ever occurs, `solutionDateUtc` MUST be set to `null` rather than guessing while `solutionDateSourceRaw` is preserved |
 | `epochTdbJd` | finite number | Osculating orbit epoch in **TDB** Julian Date from matched SBDB `orbit.epoch`, explicitly labelled TDB and never treated as UTC (note: Horizons `OBJ_DATA` may report a different reference epoch for the same `JPL#<id>` solution) |
-| `firstObsDateRaw` | string (`^\d{4}-(\d{2}\|\?\?)-(\d{2}\|\?\?)$`) or `null` | Unparsed partial-or-full date string verbatim from SBDB `orbit.first_obs` (e.g., `"1893-10-29"`, `"1919-??-??"`). **Must never be parsed with strict ISO date/timestamp parsers** |
+| `firstObsDateRaw` | string (`^\d{4}-(\d{2}\|\?\?)-(\d{2}\|\?\?)$`) or `null` | Unparsed partial-or-full date string verbatim from SBDB `orbit.first_obs` (e.g., `"2020-01-15"`, `"1919-??-??"`). **Must never be parsed with strict ISO date/timestamp parsers** |
 | `lastObsDateRaw` | string (`^\d{4}-(\d{2}\|\?\?)-(\d{2}\|\?\?)$`) or `null` | Unparsed partial-or-full date string verbatim from SBDB `orbit.last_obs`. **Must never be parsed with strict ISO date/timestamp parsers** |
 | `dataArcDays` | integer $\ge 0$ or `null` | Observation arc length in days from SBDB `orbit.data_arc` |
 | `observationCount` | integer $\ge 0$ or `null` | Number of observations used (`orbit.n_obs_used`) |
@@ -104,8 +104,8 @@ ephemeris queries pin `DES=<spkId>;CAP;NOFRAG` (or exact fragment `spkId` with
 | `notValidAfterUtc` | UTC ISO-8601 string or `null` | Source-declared latest validity instant from SBDB (`not_valid_after`), else `null` |
 | `planetaryEphemeris` | string (e.g. `"DE441"`) | Planetary ephemeris model reported by Horizons header |
 | `smallBodyPerturbers` | string or `null` | Perturber model reported by Horizons header (e.g. `"SB441-N16"`) |
-| `horizonsEopFile` | string or `null` | JPL EOP file name reported by Horizons header (e.g. `"eop.261126.p270222"`) |
-| `horizonsEopCoverage` | object or `null` | Structured Horizons EOP coverage parsed from the Horizons `EOP coverage : DATA-BASED <start> TO <end>. PREDICTS-> <end>` header (`additionalProperties: false`): `{ dataBasedStartDate, dataBasedEndDate, predictsEndDate }` (each ISO calendar date `YYYY-MM-DD` or `null`, e.g., `dataBasedStartDate: "1962-01-20"`, `dataBasedEndDate: "2026-11-26"`, `predictsEndDate: "2027-02-21"`). `null` only when the Horizons header omits `EOP coverage` |
+| `horizonsEopFile` | string or `null` | JPL EOP file name reported by Horizons header (synthetic example: `"eop.260601.p260901"`) |
+| `horizonsEopCoverage` | object or `null` | Structured Horizons EOP coverage parsed from the Horizons EOP coverage header (`additionalProperties: false`): `{ dataBasedStartDate, dataBasedEndDate, predictsEndDate }` (each ISO calendar date `YYYY-MM-DD` or `null`; synthetic example: `dataBasedStartDate: "1970-01-01"`, `dataBasedEndDate: "2026-06-01"`, `predictsEndDate: "2026-09-01"`). `null` only when the Horizons header omits EOP coverage |
 
 **Mandatory Horizons ↔ SBDB solution-metadata consistency check:** Because
 Horizons `OBSERVER` ephemeris tables and SBDB orbit metadata come from two
@@ -115,11 +115,11 @@ MUST assert **all three**:
 
 1. Canonical `spkId` matches;
 2. Horizons `Target body name` header `{source: <AUTHORITY>#<ID>}` (e.g.,
-   `JPL#659`, `JPL#75`) matches `<sbdb.orbit.source>#<sbdb.orbit.orbit_id>`
+   `JPL#<id>`) matches `<sbdb.orbit.source>#<sbdb.orbit.orbit_id>`
    exactly (case-insensitive authority normalization to uppercase); and
-3. Horizons `OBJ_DATA='YES'` header `Soln.date:` (e.g., `2021-May-24_17:55:05`),
-   normalized to `"YYYY-MM-DD HH:MM:SS"`, matches SBDB `orbit.soln_date`
-   (`"2021-05-24 17:55:05"`).
+3. Horizons `OBJ_DATA='YES'` header `Soln.date:` (format `YYYY-Mon-DD_HH:MM:SS`,
+   synthetic example `2026-Jun-15_17:30:00`), normalized to `"YYYY-MM-DD HH:MM:SS"`,
+   matches SBDB `orbit.soln_date` (synthetic example `"2026-06-15 17:30:00"`).
 
 Any mismatch **fails closed** with `SolutionMetadataMismatch` for that object
 (quarantining the inconsistent candidate pair and applying the partial-refresh
@@ -268,40 +268,100 @@ The manifest binds:
 - Maximum knots per body: **1,024**
 - Maximum raw Horizons/SBDB wire response per request: **2 MiB** (decoded **4 MiB**)
 - Maximum normalized snapshot JSON payload: **16 MiB**
-- **Exact canonical JSON serialization rule (matching `.NET System.Text.Json` /
-  `CaptureContractJson` / `OrbitalCanonicalJson` and RFC 8785 JCS):**
-  - Compact UTF-8 JSON (no insignificant whitespace), object properties ordered
-    by `StringComparer.Ordinal`, uppercase 64-hex SHA-256 digests;
-  - **Canonical number encoding:** finite IEEE 754 numbers serialized in shortest
-    round-trip decimal form with `-0.0` normalized to `0` and **integer-valued
-    finite numbers serialized WITHOUT a trailing `.0`** (for example, `1000`
-    rather than `1000.0`, matching `.NET System.Text.Json` and
-    `tests/fixtures/orbital/contract-v1/pass.json`);
-  - UTC ISO-8601 `"Z"` timestamps (`yyyy-MM-ddTHH:mm:ssZ`, trimming trailing
-    fractional zeros only when sub-second);
-  - Reject `NaN`/`Infinity`, duplicate keys, unknown fields
+- **Sole normative canonical JSON byte encoding — Strict RFC 8785 (JCS):**
+  All SHA-256 digests (`observerBindingSha256`, `recordSha256`,
+  `normalizedPayloadSha256`, `manifestSha256`) and canonical payload byte
+  lengths (`normalizedPayloadBytes`) MUST be computed over exact **RFC 8785
+  (JSON Canonicalization Scheme, JCS)** UTF-8 bytes — **strict RFC 8785 (JCS)
+  is the sole normative canonical encoding** for both this contract and
+  [`meteor-shower-context-v1.md`](meteor-shower-context-v1.md):
+  - **Compact UTF-8 & property order (RFC 8785 §3.2.1, §3.2.3):** Zero
+    insignificant whitespace outside strings; object properties sorted
+    lexicographically by UTF-16 code units (equivalent to C#
+    `StringComparer.Ordinal`); SHA-256 digests formatted as 64 uppercase ASCII
+    hex characters.
+  - **Canonical number encoding (RFC 8785 §3.2.2.3 / ES2015 `Number::toString`):**
+    Finite IEEE 754 binary64 numbers serialized in shortest round-trip decimal
+    form with `-0.0` normalized to `0`:
+    - Fixed-point decimal (no exponent) for $10^{-6} \le |x| < 10^{21}$, with
+      **no trailing `.0`** on integer-valued numbers (e.g., `1000` / `1000.0` →
+      `1000`, `0.000001` → `0.000001`, `0.000031` → `0.000031`);
+    - Scientific notation with lowercase `e`, explicit `+`/`-` sign, and **no
+      leading zero** in the exponent for $|x| < 10^{-6}$ or $|x| \ge 10^{21}$
+      (e.g., `1e-7` → `1e-7`, `1e21` → `1e+21`).
+  - **Canonical string escaping (RFC 8785 §3.2.2.2):** Emit only minimal JSON
+    escapes (`\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, and lowercase `\u00xx`
+    for other control characters `U+0000..U+001F`). All other valid Unicode
+    scalar values — including `+`, `<`, `>`, `&`, `'`, `/`, and non-ASCII UTF-8
+    characters — MUST be emitted as raw unescaped UTF-8 bytes. Reject lone
+    UTF-16 surrogates.
+  - **Explicit `.NET System.Text.Json` divergence warning (DO NOT use raw
+    default `Utf8JsonWriter` / `JsonSerializer`):** Raw default .NET
+    `System.Text.Json` diverges from RFC 8785 (JCS) on valid contract inputs:
+    (1) default .NET formats `0.000001` as `1E-06` (scientific notation below
+    `1e-4` with uppercase `E` and zero-padded exponent) whereas RFC 8785 emits
+    `0.000001`; and (2) default `JavaScriptEncoder.Default` HTML-escapes ASCII
+    characters (`"A+B"` → `"A\u002BB"`) whereas RFC 8785 emits `"A+B"`. C#
+    canonicalizers MUST implement an explicit RFC 8785 number formatter
+    (shortest round-trip IEEE 754 digits formatted under RFC 8785 §3.2.2.3
+    thresholds) and minimal RFC 8785 string escaping (never
+    `JavaScriptEncoder.Default`, and normalizing `U+0000..U+001F` control
+    escapes to lowercase `\u00xx`).
+  - **UTC timestamps & structural rejection:** UTC ISO-8601 `"Z"` timestamps
+    (`yyyy-MM-ddTHH:mm:ssZ`, trimming trailing fractional zeros only when
+    sub-second); reject `NaN`/`Infinity`, duplicate keys, unknown fields
     (`additionalProperties: false`), or nesting $> 64$ levels.
 
-### 3.4 Canonical JSON Examples (`433 Eros`, Schema Verification Example)
+**Normative RFC 8785 (JCS) Canonicalization Test Vectors (mandatory Slice S0/S1 & M0/M1 gate):**
 
-The following normalized schema-verification examples use numerical values
-observed during a local 2026-11-26/27 JPL Horizons `OBSERVER` + SBDB/Lookup
-probe for `433 Eros` (`spkid="20000433"`, `object.des="433"`, Lookup
-`pdes="A898 PA"` preserved in `aliases[]`, `JPL#659`,
-`soln_date="2021-05-24 17:55:05"` `America/Los_Angeles` → `2021-05-25T00:55:05Z`,
-`EOP file: eop.261126.p270222`, `EOP coverage: DATA-BASED 1962-JAN-20 TO
-2026-NOV-26. PREDICTS-> 2027-FEB-21`). No verbatim upstream Horizons header
-text or raw wire payload is committed here; repository-committed Slice S0
-fixtures obey Gate `S0-Clearance` in
-[`sky-layers-source-decision-1396.md`](../planning/sky-layers-source-decision-1396.md).
-The recorded midpoint residual `0.000238"` (`HalfStepSample`) reflects the
-exact measured cubic unit-vector residual against the independent Horizons
-`2026-11-27 00:30 UTC` sample (`0.000237907"` astrometric ICRF, `0.000222838"`
-apparent airless). All SHA-256 hashes and byte lengths are computed under the
-exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
-(without trailing `.0` on integer-valued numbers).
+| Input JSON Value | Exact Canonical UTF-8 | Exact UTF-8 Bytes (hex) | Bytes | Uppercase SHA-256 |
+| --- | --- | --- | --- | --- |
+| `0.000001` (`1e-6`) | `0.000001` | `302e303030303031` | `8` | `159FB29A827AD04B260AA6C8AB6D8637F8F2B38AF5C4F3CB49D6A21205E040F8` |
+| `-0.0` | `0` | `30` | `1` | `5FECEB66FFC86F38D952786C6D696C79C2DBC239DD4E91B46729D73A27FB57E9` |
+| `1000` / `1000.0` | `1000` | `31303030` | `4` | `40510175845988F13F6162ED8526F0B09F73384467FA855E1E79B44A56562A58` |
+| `"A+B"` | `"A+B"` | `22412b4222` | `5` | `BF7700489FA343FC8786B38A88A4BDB4AA4647B6E74DD95A2C8932109A1600A6` |
+| `1e-7` (below $10^{-6}$) | `1e-7` | `31652d37` | `4` | `5B33E02F2C5103A05D32F6BA9CB058294452BFBF393967F68BB30C1BDCBBAB22` |
+| `{"z":-0.0,"c":1000.0,"b":"A+B","d":1e-6}` | `{"b":"A+B","c":1000,"d":0.000001,"z":0}` | `7b2262223a22412b42222c2263223a313030302c2264223a302e3030303030312c227a223a307d` | `39` | `C89E8481A4DF5DE2D520BA13BD0A91565F1705A2E10647CE86C53D69AE64C4EF` |
 
-**Normalized payload (`hvo-small-body-ephemeris-v1`):**
+### 3.4 Strictly Synthetic Canonical JSON Examples (`999999 Synthetic Demo`)
+
+Consistent with Gate **`S0-Clearance`** in
+[`sky-layers-source-decision-1396.md`](../planning/sky-layers-source-decision-1396.md),
+the following schema-verification examples are **100% HVO-authored synthetic
+data** for fictional target **`999999 Synthetic Demo`** (`spkId: "20999999"`),
+with synthetic solution dates, synthetic EOP filenames/coverage dates, and
+analytically generated knots. **Zero verbatim JPL Horizons/SBDB/Lookup headers,
+live EOP strings, live knots, or live raw payload hashes are committed here.**
+Live Horizons/SBDB verification (for example, `433 Eros` and `1P/Halley`) runs
+locally/on-demand against the operator's or developer's uncommitted local cache
+and is never committed to this repository unless/until Gate `S0-Clearance` is
+recorded.
+
+**Documented closed-form synthetic trajectory (reproducible analytically):**
+- Let $\tau = (t - \text{2026-11-27T00:00:00Z}) / 1\text{ h}$ with uniform
+  hourly knots $\tau \in \{-1, 0, 1, 2\}$ (`stepSeconds = 3600`, usable span
+  $\tau \in [0, 1]$).
+- Topocentric ICRF astrometric vector (AU):
+  $$\mathbf{r}_{\text{astrom}}(\tau) = (0.20, 0.08, 0.04) + (-0.0008, 0.0016, 0.0004)\,\tau$$
+  ($\Delta_{\min} = 0.218973605715\text{ AU} \ge 0.2\text{ AU}$, max hourly step
+  $\approx 0.479^\circ \ll 2.5^\circ$, IAU 2012 $1\text{ AU} = 149\,597\,870.7\text{ km}$).
+- Synthetic apparent airless vector (AU): fixed synthetic orthogonal frame
+  rotation $\mathbf{r}_{\text{app}}(\tau) = R_z(+0.40^\circ)\,R_x(+0.05^\circ)\,\mathbf{r}_{\text{astrom}}(\tau)$.
+- **Exact analytical midpoint verification ($\tau = 0.5$, `2026-11-27T00:30:00Z`):**
+  The 4-point centered cubic unit-vector interpolant has exact analytical
+  midpoint residual **`0.000030341575"`** (unrounded knots, identical for
+  astrometric and apparent) and **`0.000029546627"`** astrometric /
+  **`0.000029396657"`** apparent when evaluated from the 9-decimal-place JSON
+  knots below. Rounding upward to 6 decimal places gives
+  **`maxVerifiedMidpointResidualArcsec: 0.000031`** (strictly $\ge$ the exact
+  analytical midpoint residual — never understated; also exercises RFC 8785
+  fixed-point formatting `0.000031` rather than .NET `3.1E-05`).
+- All SHA-256 hashes and byte lengths below are computed under the **strict
+  RFC 8785 (JCS)** canonical serializer defined in Section 3.3 (`rawSources[0]`
+  hashes the 45-byte synthetic UTF-8 marker string
+  `hvo-synthetic-small-body-demo-raw-v1:20999999`).
+
+**Normalized payload (`hvo-small-body-ephemeris-v1` — strictly synthetic):**
 
 ```json
 {
@@ -322,135 +382,135 @@ exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
       "ephemerisProfile": "jpl-horizons-observer-airless-v1",
       "horizonsApiVersion": "1.2",
       "identity": {
-        "aliases": ["1956 PC", "2000433", "A898 PA", "I98P00A"],
+        "aliases": ["2026 AA", "2099999"],
         "authority": "jpl-spk",
         "bodyKind": "Asteroid",
         "fragmentCode": null,
-        "fullName": "433 Eros (A898 PA)",
+        "fullName": "999999 Synthetic Demo (2026 AA)",
         "isNeo": true,
         "isPha": false,
         "mpcPackedDesignation": null,
         "orbitClassCode": "AMO",
-        "primaryDesignation": "433",
-        "shortName": "433 Eros",
-        "spkId": "20000433"
+        "primaryDesignation": "999999",
+        "shortName": "999999 Synthetic Demo",
+        "spkId": "20999999"
       },
       "interpolationBoundVerified": true,
       "interpolationVerificationMethod": "HalfStepSample",
       "knots": [
         {
-          "apparentDecDeg": -25.355799762,
-          "apparentRaDeg": 274.162586305,
-          "astrometricDecDeg": -25.364016581,
-          "astrometricRaDeg": 273.749854519,
-          "dec3SigmaArcsec": 0.006,
-          "phaseAngleDeg": 15.7692,
-          "predictedNuclearOrSurface": 4.255,
-          "predictedTotalMagnitude": 14.242,
-          "ra3SigmaArcsec": 0.009,
-          "rangeAu": 2.56309135056611,
-          "rangeRateKmPerSec": 10.606327,
-          "solarElongationDeg": 29.1254,
+          "apparentDecDeg": 10.427662856,
+          "apparentRaDeg": 21.719010991,
+          "astrometricDecDeg": 10.409481357,
+          "astrometricRaDeg": 21.32757511,
+          "dec3SigmaArcsec": 0.05,
+          "phaseAngleDeg": 42.6,
+          "predictedNuclearOrSurface": null,
+          "predictedTotalMagnitude": 16.798,
+          "ra3SigmaArcsec": 0.08,
+          "rangeAu": 0.219169705936,
+          "rangeRateKmPerSec": -3.67069,
+          "solarElongationDeg": 112.35,
           "solarElongationSide": "Trailing",
           "utc": "2026-11-26T23:00:00Z"
         },
         {
-          "apparentDecDeg": -25.352960347,
-          "apparentRaDeg": 274.189520636,
-          "astrometricDecDeg": -25.361240234,
-          "astrometricRaDeg": 273.77680674,
-          "dec3SigmaArcsec": 0.006,
-          "phaseAngleDeg": 15.76,
-          "predictedNuclearOrSurface": 4.105,
-          "predictedTotalMagnitude": 14.242,
-          "ra3SigmaArcsec": 0.009,
-          "rangeAu": 2.5633474712505,
-          "rangeRateKmPerSec": 10.6775971,
-          "solarElongationDeg": 29.1079,
+          "apparentDecDeg": 10.53830093,
+          "apparentRaDeg": 22.192780755,
+          "astrometricDecDeg": 10.519734891,
+          "astrometricRaDeg": 21.801409486,
+          "dec3SigmaArcsec": 0.05,
+          "phaseAngleDeg": 42.5,
+          "predictedNuclearOrSurface": null,
+          "predictedTotalMagnitude": 16.8,
+          "ra3SigmaArcsec": 0.08,
+          "rangeAu": 0.219089023002,
+          "rangeRateKmPerSec": -3.034745,
+          "solarElongationDeg": 112.4,
           "solarElongationSide": "Trailing",
           "utc": "2026-11-27T00:00:00Z"
         },
         {
-          "apparentDecDeg": -25.350097477,
-          "apparentRaDeg": 274.216485288,
-          "astrometricDecDeg": -25.358441807,
-          "astrometricRaDeg": 273.803793706,
-          "dec3SigmaArcsec": 0.006,
-          "phaseAngleDeg": 15.7508,
-          "predictedNuclearOrSurface": 4.315,
-          "predictedTotalMagnitude": 14.242,
-          "ra3SigmaArcsec": 0.009,
-          "rangeAu": 2.5636051446178,
-          "rangeRateKmPerSec": 10.7345627,
-          "solarElongationDeg": 29.0903,
+          "apparentDecDeg": 10.648307172,
+          "apparentRaDeg": 22.667206209,
+          "astrometricDecDeg": 10.629357335,
+          "astrometricRaDeg": 22.275897848,
+          "dec3SigmaArcsec": 0.05,
+          "phaseAngleDeg": 42.4,
+          "predictedNuclearOrSurface": null,
+          "predictedTotalMagnitude": 16.802,
+          "ra3SigmaArcsec": 0.08,
+          "rangeAu": 0.219023651691,
+          "rangeRateKmPerSec": -2.398164,
+          "solarElongationDeg": 112.45,
           "solarElongationSide": "Trailing",
           "utc": "2026-11-27T01:00:00Z"
         },
         {
-          "apparentDecDeg": -25.347214993,
-          "apparentRaDeg": 274.243492038,
-          "astrometricDecDeg": -25.355625554,
-          "astrometricRaDeg": 273.830826161,
-          "dec3SigmaArcsec": 0.006,
-          "phaseAngleDeg": 15.7416,
-          "predictedNuclearOrSurface": 4.138,
-          "predictedTotalMagnitude": 14.242,
-          "ra3SigmaArcsec": 0.009,
-          "rangeAu": 2.56386397255976,
-          "rangeRateKmPerSec": 10.7729359,
-          "solarElongationDeg": 29.0726,
+          "apparentDecDeg": 10.757656937,
+          "apparentRaDeg": 23.142223534,
+          "astrometricDecDeg": 10.738324124,
+          "astrometricRaDeg": 22.750976343,
+          "dec3SigmaArcsec": 0.05,
+          "phaseAngleDeg": 42.3,
+          "predictedNuclearOrSurface": null,
+          "predictedTotalMagnitude": 16.804,
+          "ra3SigmaArcsec": 0.08,
+          "rangeAu": 0.218973605715,
+          "rangeRateKmPerSec": -1.76108,
+          "solarElongationDeg": 112.5,
           "solarElongationSide": "Trailing",
           "utc": "2026-11-27T02:00:00Z"
         }
       ],
       "lookupApiVersion": "1.1",
-      "maxVerifiedMidpointResidualArcsec": 0.000238,
-      "minimumRangeAu": 2.56309135056611,
+      "maxVerifiedMidpointResidualArcsec": 0.000031,
+      "minimumRangeAu": 0.218973605715,
       "normalizerVersion": "small-body-normalizer-v1",
       "originManifestSha256": null,
       "paddedEndUtc": "2026-11-27T02:00:00Z",
       "paddedStartUtc": "2026-11-26T23:00:00Z",
       "parserVersion": "jpl-horizons-csv-v1",
-      "recordSha256": "E536448B4F827DB627B9E7E4613357BF8AB57CABBF0716B76C107087C12D3377",
+      "recordSha256": "CE6602F995222FEE74F2FDF461E02704D0FBD95DEC6AF678B22DFFA181C394A7",
       "refractionApplied": false,
       "sbdbApiVersion": "1.3",
-      "seriesRetrievedUtc": "2026-11-26T23:47:29Z",
+      "seriesRetrievedUtc": "2026-11-26T23:45:00Z",
       "solution": {
-        "conditionCode": 0,
-        "dataArcDays": 46582,
+        "conditionCode": 1,
+        "dataArcDays": 2338,
         "epochTdbJd": 2461200.5,
-        "firstObsDateRaw": "1893-10-29",
+        "firstObsDateRaw": "2020-01-15",
         "hasCovariance": true,
         "horizonsEopCoverage": {
-          "dataBasedEndDate": "2026-11-26",
-          "dataBasedStartDate": "1962-01-20",
-          "predictsEndDate": "2027-02-21"
+          "dataBasedEndDate": "2026-06-01",
+          "dataBasedStartDate": "1970-01-01",
+          "predictsEndDate": "2026-09-01"
         },
-        "horizonsEopFile": "eop.261126.p270222",
-        "horizonsRecordNumber": "433",
-        "lastObsDateRaw": "2021-05-13",
+        "horizonsEopFile": "eop.260601.p260901",
+        "horizonsRecordNumber": "999999",
+        "lastObsDateRaw": "2026-06-10",
         "magnitudeModel": {
-          "absoluteMagnitudeH": 10.4,
+          "absoluteMagnitudeH": 15.2,
           "kind": "AsteroidHG",
           "nuclearMagnitudeM2": null,
           "nuclearSlopeK2": null,
           "phaseCoefficient": null,
-          "slopeParameterG": 0.46,
+          "slopeParameterG": 0.15,
           "totalMagnitudeM1": null,
           "totalSlopeK1": null
         },
         "nonGravitationalModel": null,
         "notValidAfterUtc": null,
         "notValidBeforeUtc": null,
-        "observationCount": 9130,
-        "orbitId": "JPL#659",
+        "observationCount": 150,
+        "orbitId": "JPL#1",
         "planetaryEphemeris": "DE441",
-        "residualRmsArcsec": 0.3,
+        "residualRmsArcsec": 0.4,
         "smallBodyPerturbers": "SB441-N16",
         "solutionAuthority": "JPL",
-        "solutionDateSourceRaw": "2021-05-24 17:55:05",
+        "solutionDateSourceRaw": "2026-06-15 17:30:00",
         "solutionDateSourceTimeZone": "America/Los_Angeles",
-        "solutionDateUtc": "2021-05-25T00:55:05Z"
+        "solutionDateUtc": "2026-06-16T00:30:00Z"
       },
       "stepSeconds": 3600,
       "validFromUtc": "2026-11-27T00:00:00Z",
@@ -460,7 +520,7 @@ exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
 }
 ```
 
-**Matching manifest (`hvo-small-body-manifest-v1`):**
+**Matching manifest (`hvo-small-body-manifest-v1` — strictly synthetic):**
 
 ```json
 {
@@ -469,9 +529,9 @@ exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
   "failedRefreshObjects": [],
   "horizonsApiVersion": "1.2",
   "lookupApiVersion": "1.1",
-  "manifestSha256": "0F6ACCBA929C3245602B46B74362F9D6BB28C10EEFAAB971D3FFE02EF744728B",
-  "normalizedPayloadBytes": 4039,
-  "normalizedPayloadSha256": "0F4E39DB0A64DE1ACB764FA54E240522EDACC65D2FD41ECF4B38D6FDA85C68F7",
+  "manifestSha256": "C38A43FF112173D5716334D0F15EA7FB687FBE150A218DC8CDEB41A64B23D532",
+  "normalizedPayloadBytes": 3987,
+  "normalizedPayloadSha256": "4F3BFEBB2E1C514736E06966A8594CC6D44CD1081BA5077154D2107787ECA45B",
   "normalizerVersion": "small-body-normalizer-v1",
   "observerBinding": {
     "deploymentLocationId": "loc-hvo-primary",
@@ -489,14 +549,14 @@ exact Section 3.3 `.NET System.Text.Json` / RFC 8785 JCS canonical serializer
   "rawSources": [
     {
       "httpStatus": 200,
-      "querySummary": "horizons.api OBSERVER DES=20000433; coord@399 AIRLESS Q=1,2,9,20,23,24,36 step=3600s",
-      "rawBytes": 14239,
-      "rawSha256": "328B71E9AC42D134E0AB6B0086E868586885443878195B08046636403560965A",
-      "spkId": "20000433"
+      "querySummary": "synthetic-fixture OBSERVER DES=20999999; coord@399 AIRLESS Q=1,2,9,20,23,24,36 step=3600s",
+      "rawBytes": 45,
+      "rawSha256": "E11B4655FF56F065F810C223883EA3C7B7FBA21CC7C87A23F67B1D87681D8138",
+      "spkId": "20999999"
     }
   ],
   "refreshedCount": 1,
-  "retrievedUtc": "2026-11-26T23:47:29Z",
+  "retrievedUtc": "2026-11-26T23:45:00Z",
   "sbdbApiVersion": "1.3",
   "schemaVersion": "hvo-small-body-manifest-v1",
   "termsReference": "https://ssd-api.jpl.nasa.gov/doc/",
@@ -577,20 +637,43 @@ ValueTask<SmallBodySnapshotReadResult> ReadExactAsync(string manifestSha256, Can
        exceeds `1.0"` at `60 s` MUST be withheld (`interpolationBoundVerified = false`,
        failing closed with `InterpolationBoundExceeded`).
    - **Verified benchmarks (mandatory Slice S0/S1 tests):**
-     - *Rectilinear fast flyby ($\Delta_{\min}=0.002\text{ AU}$, $v_\perp=75\text{ km/s}$):*
-       At `h = 300 s`, half-step midpoint max error is `1.115471"` (continuous
-       max `1.115644"` — rejected as `> 1.0"`). Under $\omega_{\max} h \le 2.5^\circ$
-       ($\omega_{\max}=51.7048''/\text{s} \implies h \le 174.1\text{ s}$), the
-       contract selects **`h = 120 s`**, yielding **`0.028812"`** half-step
-       midpoint max error (continuous max `0.028818"`), well under `1.0"`.
+     - *Rectilinear fast flyby ($\Delta_{\min}=0.002\text{ AU} = 299\,195.7414\text{ km}$
+       using IAU 2012 $1\text{ AU} = 149\,597\,870.7\text{ km}$, $v_\perp=75\text{ km/s}$,
+       closest approach at $t = 0$, fixed aligned knot grid $t_k = k \cdot h$ for
+       $k \in \mathbb{Z}$, evaluated symmetrically across all intervals around
+       closest approach):*
+       - At **`h = 300 s`**: aligned-grid midpoint max ($u = 0.5$, $k \in \{4, -5\}$)
+         is **`1.115471"`** (`1.115470651063"`) and aligned-grid continuous max
+         ($u \in [0, 1]$ on fixed aligned grid $t_k = k \cdot h$, $k = 4$ at
+         $u = 0.497432$ and symmetric $k = -5$) is **`1.115503"`**
+         (`1.115503350545"`). Shifting the knot-grid phase off $t = 0$
+         ($t_k = (k + \phi)h, \phi \in [0, 1)$) reaches a slightly higher
+         all-phase supremum of **`1.115682"`** (`1.115681943033"` at
+         $t_k \approx 4.059673\,h, u \approx 0.497405$; for example,
+         `1.115680"` / `1.115680183332"` at $t_k = 4.06\,h, u = 0.498$). Thus
+         `h = 300 s` exceeds `1.0"` across all phases and is rejected.
+       - Under $\omega_{\max} h \le 2.5^\circ$
+         ($\omega_{\max}=51.7048''/\text{s} \implies h \le 174.07\text{ s}$),
+         the contract selects **`h = 120 s`**: aligned-grid midpoint max
+         ($u = 0.5$, $k \in \{11, -12\}$) is **`0.028812"`**
+         (`0.028812363400"`), aligned-grid continuous max ($u \in [0, 1]$ on
+         fixed aligned grid $t_k = k \cdot h$, $k = 11$ at $u = 0.498955$ and
+         symmetric $k = -12$) is **`0.028813"`** (`0.028812503371"`), and the
+         all-phase supremum over $\phi \in [0, 1), u \in [0, 1]$ is
+         **`0.028818"`** (`0.028817857363"` at $t_k \approx 10.839060\,h,
+         u \approx 0.498966$) — remaining well under `1.0"` across all phases.
      - *Oscillatory counterexample ($2'' \sin(\pi t/h)$ on 7 knots):*
        Integer-knot `2h`-stride at `k = 3` reports `0.000000"`, whereas Method A
        half-step verification at $t = 1.5h$ measures **`2.000000"`** and
        rejects/withholds the interval.
-     - *`433 Eros` Section 3.4 example (1 h knots vs independent Horizons
-       `2026-11-27 00:30 UTC` sample):* **`0.000237907"`** astrometric ICRF and
-       **`0.000222838"`** apparent airless → recorded conservatively as
-       **`0.000238"`**.
+     - *Synthetic `999999 Synthetic Demo` Section 3.4 example (1 h analytical
+       knots vs exact midpoint at `2026-11-27T00:30:00Z`):* exact analytical
+       midpoint residual **`0.000030341575"`** (`0.000029546627"` astrometric
+       ICRF / `0.000029396657"` apparent airless from the stored 9-decimal-place
+       JSON knots) → recorded conservatively rounded upward as **`0.000031"`**.
+       Live Horizons/SBDB parity checks (e.g., `433 Eros`) run locally against
+       the operator's or developer's uncommitted cache (never committed unless/until
+       Gate `S0-Clearance` is recorded).
 3. **4-point centered cubic Lagrange on unit vectors:**
    - Locate knot index $k$ such that $t_k \le t \le t_{k+1}$ with stencil
      $\{k-1, k, k+1, k+2\}$ (always in-bounds because of the 1-knot padding).

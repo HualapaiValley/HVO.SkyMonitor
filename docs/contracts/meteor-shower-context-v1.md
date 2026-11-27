@@ -95,22 +95,61 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 | `snapshotSha256` | 64-char uppercase hex | SHA-256 of canonical snapshot JSON with `snapshotSha256` excluded |
 | `generatedUtc` | UTC ISO-8601 string | Curation/build timestamp |
 | `identitySource` | object | IAU MDC provenance: `providerName`, `sourceUrl`, `mdcExportDate`, `mdcSourceReference`, `mdcRawSha256` (nullable), `redistributionApprovalRef` (required non-null for release-bundled snapshots under Gate `M2`; `null` for local operator imports), `citationText` |
-| `activitySource` | object or `null` | Annual calendar/activity provenance (`null` when snapshot contains IAU MDC identity/radiant data only): `providerName`, `editionYear` (integer), `sourceUrl`, `attributionText`, `termsUrl`, `redistributionApprovalRef` (required non-null for release-bundled third-party data under Gate `M1`; `null` for local operator imports), `validFromUtc`, `validUntilUtc` |
+| `activitySource` | object or `null` | Annual calendar/activity provenance (`null` when snapshot contains IAU MDC identity/radiant data only): `providerName`, `editionId` (non-empty string 1–64 chars, e.g. `"imo-calendar-2027"`), `editionYear` (integer), `sourceUrl`, `attributionText`, `termsUrl`, `redistributionApprovalRef` (required non-null for release-bundled third-party data under Gate `M1`; `null` for local operator imports), `validFromUtc`, `validUntilUtc` |
 | `showers` | array of `MeteorShowerRecord` ($\le 1,500$ entries, sorted by `iauNumber` ascending) | Active/established/working shower definitions |
 | `removedShowers` | array of `RemovedMeteorShowerTombstone` ($\le 1,500$ entries, sorted by `iauNumber` ascending) | Tombstones for IAU MDC Removed showers |
 
-**Hard validation & canonical serialization ceilings (Proposed defaults):**
+**Hard validation, import-time consistency invariants, & sole canonical JSON encoding (Proposed defaults):**
 - Maximum snapshot JSON file size: **2 MiB**; `provenance.json` $\le 64\text{ KiB}$.
-- **Exact canonical JSON serialization rule (matching `.NET System.Text.Json` /
-  `CaptureContractJson` / `OrbitalCanonicalJson` and RFC 8785 JCS):**
-  - Compact UTF-8 JSON (no insignificant whitespace), `StringComparer.Ordinal`
-    property order, uppercase 64-hex SHA-256 digests;
-  - Finite IEEE 754 numbers serialized in shortest round-trip decimal form with
-    `-0.0` normalized to `0` and **integer-valued finite numbers serialized
-    WITHOUT a trailing `.0`** (for example, `41`, `49`, `230`, `276`, `292`
-    rather than `41.0`, matching `.NET System.Text.Json` and
-    `tests/fixtures/orbital/contract-v1/pass.json`);
+- **Sole normative canonical JSON byte encoding — Strict RFC 8785 (JCS):**
+  `snapshotSha256` MUST be computed over exact **RFC 8785 (JSON Canonicalization
+  Scheme, JCS)** UTF-8 bytes (excluding `snapshotSha256`) — **strict RFC 8785
+  (JCS) is the sole normative canonical encoding** across both this contract and
+  [`small-body-ephemeris-v1.md`](small-body-ephemeris-v1.md#33-manifest-hvo-small-body-manifest-v1-and-hard-ceilings):
+  - Compact UTF-8 JSON (zero insignificant whitespace), object keys sorted by
+    UTF-16 code units (C# `StringComparer.Ordinal`), uppercase 64-hex SHA-256;
+  - Finite IEEE 754 binary64 numbers in RFC 8785 §3.2.2.3 / ES2015 shortest
+    round-trip form: `-0.0` → `0`; fixed-point decimal without trailing `.0`
+    for $10^{-6} \le |x| < 10^{21}$ (e.g., `41`, `1000`, `0.000001`); lowercase
+    `e` with explicit sign and no leading exponent zero for $|x| < 10^{-6}$ or
+    $|x| \ge 10^{21}$ (e.g., `1e-7`);
+  - Minimal RFC 8785 §3.2.2.2 string escaping (`\"`, `\\`, `\b`, `\t`, `\n`,
+    `\f`, `\r`, lowercase `\u00xx` for other `U+0000..U+001F`; all other valid
+    Unicode scalar values including `+`, `<`, `>`, `&`, `'`, `/`, and non-ASCII
+    UTF-8 emitted unescaped); reject lone surrogates;
+  - **Explicit `.NET System.Text.Json` divergence warning (DO NOT use raw
+    default `Utf8JsonWriter` / `JsonSerializer`):** Default .NET formats
+    `0.000001` as `1E-06` (vs `0.000001` in RFC 8785) and default
+    `JavaScriptEncoder.Default` escapes `"A+B"` as `"A\u002BB"` (vs `"A+B"` in
+    RFC 8785). C# canonicalizers MUST implement explicit RFC 8785 number and
+    string serialization rules;
   - UTC ISO-8601 `"Z"` timestamps.
+
+  **Normative RFC 8785 (JCS) Canonicalization Test Vectors (shared with `small-body-ephemeris-v1.md`):**
+
+  | Input JSON Value | Exact Canonical UTF-8 | Exact UTF-8 Bytes (hex) | Bytes | Uppercase SHA-256 |
+  | --- | --- | --- | --- | --- |
+  | `0.000001` (`1e-6`) | `0.000001` | `302e303030303031` | `8` | `159FB29A827AD04B260AA6C8AB6D8637F8F2B38AF5C4F3CB49D6A21205E040F8` |
+  | `-0.0` | `0` | `30` | `1` | `5FECEB66FFC86F38D952786C6D696C79C2DBC239DD4E91B46729D73A27FB57E9` |
+  | `1000` / `1000.0` | `1000` | `31303030` | `4` | `40510175845988F13F6162ED8526F0B09F73384467FA855E1E79B44A56562A58` |
+  | `"A+B"` | `"A+B"` | `22412b4222` | `5` | `BF7700489FA343FC8786B38A88A4BDB4AA4647B6E74DD95A2C8932109A1600A6` |
+  | `1e-7` (below $10^{-6}$) | `1e-7` | `31652d37` | `4` | `5B33E02F2C5103A05D32F6BA9CB058294452BFBF393967F68BB30C1BDCBBAB22` |
+  | `{"z":-0.0,"c":1000.0,"b":"A+B","d":1e-6}` | `{"b":"A+B","c":1000,"d":0.000001,"z":0}` | `7b2262223a22412b42222c2263223a313030302c2264223a302e3030303030312c227a223a307d` | `39` | `C89E8481A4DF5DE2D520BA13BD0A91565F1705A2E10647CE86C53D69AE64C4EF` |
+
+- **Mandatory import-time `activitySource` vs `annualForecasts[]` consistency invariants:**
+  1. If `activitySource == null`, EVERY shower's `annualForecasts` MUST be
+     empty (`[]`). Reject any snapshot carrying non-empty `annualForecasts`
+     without an `activitySource`.
+  2. If `activitySource != null`, EVERY `forecast` in EVERY shower's
+     `annualForecasts[]` MUST satisfy **all three**:
+     - `forecast.editionId == activitySource.editionId` (exact ordinal equality);
+     - `forecast.editionYear == activitySource.editionYear`; and
+     - `[forecast.validFromUtc, forecast.validUntilUtc)` is a subset of
+       `[activitySource.validFromUtc, activitySource.validUntilUtc)` — i.e.,
+       `activitySource.validFromUtc <= forecast.validFromUtc < forecast.validUntilUtc <= activitySource.validUntilUtc`.
+     Any snapshot violating these invariants MUST be rejected at import/load
+     time (failing closed without overwriting an intact last-known-good
+     snapshot).
 - Reject duplicate `iauNumber`, duplicate active `iauCode`, nonfinite numbers,
   `NaN`/`Infinity`, out-of-range coordinates (`raDeg` $\notin [0, 360)$, `decDeg`
   $\notin [-90, 90]$, $\lambda_\odot \notin [0, 360)$), invalid occurrence
@@ -133,7 +172,7 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 | `geocentricVelocityKmPerSec` | finite number $> 0$ or `null` | Mean geocentric velocity $V_g$ (km/s) |
 | `parentBodyName` | string or `null` | Informational parent-body text only (e.g. `"(196256) 2003 EH1"`); never used for orbit computation |
 | `nominalActivity` | object or `null` | **Optional/nullable** J2000.0 solar-longitude activity metadata so MDC-only records never fabricate bounds:<br>• `source`: enum (`"IAU-MDC"`, `"AnnualActivitySource"`, `"OperatorCurated"`)<br>• `peakSolarLonDeg`: finite number `[0, 360)` or `null`<br>• `activeStartSolarLonDeg`: finite number `[0, 360)` or `null` (**must stay `null` if source omits active start**)<br>• `activeEndSolarLonDeg`: finite number `[0, 360)` or `null` (**must stay `null` if source omits active end**)<br>If both start and end are non-null, handles circular wrap where `start > end` (e.g. `355° → 15°`). If either is `null`, both must be `null` (no one-sided fabricated interval) |
-| `annualForecasts` | array of `MeteorShowerAnnualForecast` (0–2 entries, sorted by `occurrenceYear` ascending then `windowStartUtc` ascending; `[]` when `activitySource` is `null` or does not cover this shower) | Each entry binds one specific shower occurrence:<br>• `editionYear` (integer, e.g., `2026`, `2027`)<br>• `occurrenceYear` (integer, calendar year of the occurrence's nominal peak)<br>• `windowStartUtc` (UTC ISO-8601 start of this occurrence's active window)<br>• `peakUtc` (UTC ISO-8601 or `null`)<br>• `windowEndUtc` (UTC ISO-8601 exclusive end of this occurrence's active window, strictly `> windowStartUtc`)<br>• `validFromUtc` / `validUntilUtc` (edition validity, half-open `validFromUtc <= queryUtc < validUntilUtc`; typically `(editionYear-1)-12-01T00:00:00Z` to `(editionYear+1)-01-15T00:00:00Z`)<br>• `peakTimeSource` (`"SourceCalendarUtc"` or `"DerivedFromSolarLongitudeUtc"`)<br>• `peakWindowStartUtc` / `peakWindowEndUtc` (nullable UTC bounds)<br>• `peakUncertaintyHours` (finite number $\ge 0$ or `null`)<br>• `peakUncertaintySolarLongitudeDeg` (finite number $\ge 0$ or `null`)<br>• `peakProfile` (`"Sharp"`, `"Broad"`, `"Variable"`, `"OutburstSuspected"`, `"Unknown"`)<br>• `activityConfidence` (`"NominalAnnual"`, `"VariableOrUncertain"`, `"ModelPrediction"`, `"Unknown"`)<br>• `idealizedZhrNominal` (nullable integer $\ge 0$, source nominal idealized ZHR when published, e.g. `80`)<br>• `idealizedZhrMin` / `idealizedZhrMax` (nullable integers $\ge 0$, observed/published variation bounds when supplied, e.g. `60`–`200`, or `null` when unavailable)<br>• `idealizedZhrQualifier` (string, e.g. `"Nominal"`, `"NominalWithObservedVariation"`, `"Variable"`, `"OutburstModel"`)<br>• `populationIndexR` (finite number or `null`)<br>• `notes` (short plain-text non-HTML observing note $\le 280$ chars or `null`) |
+| `annualForecasts` | array of `MeteorShowerAnnualForecast` (0–2 entries, sorted by `occurrenceYear` ascending then `windowStartUtc` ascending; `[]` when `activitySource` is `null` or does not cover this shower) | Each entry binds one specific shower occurrence:<br>• `editionId` (non-empty string 1–64 chars, e.g., `"imo-calendar-2027"`; MUST equal `activitySource.editionId`)<br>• `editionYear` (integer, e.g., `2026`, `2027`; MUST equal `activitySource.editionYear`)<br>• `occurrenceYear` (integer, calendar year of the occurrence's nominal peak)<br>• `windowStartUtc` (UTC ISO-8601 start of this occurrence's active window)<br>• `peakUtc` (UTC ISO-8601 or `null`)<br>• `windowEndUtc` (UTC ISO-8601 exclusive end of this occurrence's active window, strictly `> windowStartUtc`)<br>• `validFromUtc` / `validUntilUtc` (edition validity, half-open `validFromUtc <= queryUtc < validUntilUtc`, MUST satisfy `activitySource.validFromUtc <= validFromUtc < validUntilUtc <= activitySource.validUntilUtc`; typically `(editionYear-1)-12-01T00:00:00Z` to `(editionYear+1)-01-15T00:00:00Z`)<br>• `peakTimeSource` (`"SourceCalendarUtc"` or `"DerivedFromSolarLongitudeUtc"`)<br>• `peakWindowStartUtc` / `peakWindowEndUtc` (nullable UTC bounds)<br>• `peakUncertaintyHours` (finite number $\ge 0$ or `null`)<br>• `peakUncertaintySolarLongitudeDeg` (finite number $\ge 0$ or `null`)<br>• `peakProfile` (`"Sharp"`, `"Broad"`, `"Variable"`, `"OutburstSuspected"`, `"Unknown"`)<br>• `activityConfidence` (`"NominalAnnual"`, `"VariableOrUncertain"`, `"ModelPrediction"`, `"Unknown"`)<br>• `idealizedZhrNominal` (nullable integer $\ge 0$, source nominal idealized ZHR when published, e.g. `80`)<br>• `idealizedZhrMin` / `idealizedZhrMax` (nullable integers $\ge 0$, observed/published variation bounds when supplied, e.g. `60`–`200`, or `null` when unavailable)<br>• `idealizedZhrQualifier` (string, e.g. `"Nominal"`, `"NominalWithObservedVariation"`, `"Variable"`, `"OutburstModel"`)<br>• `populationIndexR` (finite number or `null`)<br>• `notes` (short plain-text non-HTML observing note $\le 280$ chars or `null`) |
 
 ### 3.3 `RemovedMeteorShowerTombstone`
 
@@ -143,9 +182,10 @@ All objects in `hvo-meteor-showers-v1` enforce strict JSON schema semantics
 
 ### 3.4 Canonical JSON Examples
 
-All SHA-256 hashes below are computed under the exact Section 3.1
-`.NET System.Text.Json` / RFC 8785 JCS canonical serializer (compact
-ordinal-sorted JSON, integer-valued finite numbers without trailing `.0`, with
+All SHA-256 hashes below are computed under the **strict RFC 8785 (JCS)**
+canonical serializer defined in Section 3.1 (compact UTF-8 JSON, UTF-16
+code-unit / `StringComparer.Ordinal` property order, RFC 8785 §3.2.2.3
+shortest round-trip numbers and §3.2.2.2 minimal string escaping, with
 `snapshotSha256` excluded).
 
 #### Example A: Annual Activity + IAU MDC (Local Operator Import, 2027 Quadrantids Occurrence — Verified Against IMO 2027 Calendar `cal2027.pdf#page=4`)
@@ -159,6 +199,7 @@ maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
 {
   "activitySource": {
     "attributionText": "Source: International Meteor Organization (IMO) - www.imo.net (IMO Meteor Shower Calendar 2027). Displayed by HVO SkyMonitor; not endorsed by the IMO. Site altitude, darkness, Moon, and solar-longitude UTC conversions are computed locally by HVO SkyMonitor.",
+    "editionId": "imo-calendar-2027",
     "editionYear": 2027,
     "providerName": "OperatorImportedAnnualActivity",
     "redistributionApprovalRef": null,
@@ -192,6 +233,7 @@ maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
       "annualForecasts": [
         {
           "activityConfidence": "NominalAnnual",
+          "editionId": "imo-calendar-2027",
           "editionYear": 2027,
           "idealizedZhrMax": 200,
           "idealizedZhrMin": 60,
@@ -240,7 +282,7 @@ maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
     }
   ],
   "snapshotId": "local-mdc-2026-activity-2027-r1",
-  "snapshotSha256": "5196D5290715CE913E210E8265AC789F1F096FC2BA71310E4934AA5F1DAB618F"
+  "snapshotSha256": "DEF8EB26514F6D87C98D5BF675B3233DD49340CA2B5E2D511B427E2C6171DD8E"
 }
 ```
 
@@ -316,40 +358,50 @@ maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
 2. **Freshness, Occurrence-Window Binding, Overlapping Editions, and Exclusive Expiry:**
    - **Identity freshness:** Static IAU MDC identity/radiant records remain
      usable offline with their recorded `mdcExportDate`.
-   - **Stage 1 — Edition validity gate (applied FIRST, before occurrence selection
-     and before overlapping-edition precedence):** An annual forecast entry's
-     edition is eligible at `queryUtc` **iff**
-     **`validFromUtc <= queryUtc < validUntilUtc`**. Any entry with
-     `queryUtc < validFromUtc` (`NotYetValid`) or `queryUtc >= validUntilUtc`
-     (`Expired`) is strictly excluded before Stage 2 runs; expired or
-     not-yet-valid editions are **never** surfaced as active or upcoming and
-     expired peak times/ZHRs are **never** silently recycled.
+   - **Stage 1 — Edition identity & intersected-validity gate (applied FIRST,
+     before occurrence selection and before overlapping-edition precedence):**
+     In addition to the mandatory import-time snapshot invariants in Section 3.1,
+     runtime evaluation defensively verifies for every forecast entry paired
+     with its parent snapshot's `activitySource`:
+     1. `activitySource != null`, `forecast.editionId == activitySource.editionId`,
+        and `forecast.editionYear == activitySource.editionYear`; and
+     2. The intersected edition validity window
+        `effectiveValidFromUtc = max(activitySource.validFromUtc, forecast.validFromUtc)`,
+        `effectiveValidUntilUtc = min(activitySource.validUntilUtc, forecast.validUntilUtc)`
+        is non-empty (`effectiveValidFromUtc < effectiveValidUntilUtc`) and
+        satisfies **`effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`**.
+     Any entry with mismatched edition identity, `queryUtc < effectiveValidFromUtc`
+     (`NotYetValid`), or `queryUtc >= effectiveValidUntilUtc` (`Expired`) is
+     strictly excluded before Stage 2 runs; expired or not-yet-valid editions
+     are **never** surfaced as active or upcoming and expired peak times/ZHRs
+     are **never** silently recycled.
    - **Stage 2 — Occurrence-window binding & overlapping-edition precedence
      (applied ONLY to Stage-1-valid entries):**
      - **Past occurrence exclusion:** Any forecast with
        **`windowEndUtc <= queryUtc`** is strictly excluded from active and
-       upcoming lists even while `validFromUtc <= queryUtc < validUntilUtc`.
+       upcoming lists even while `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`.
      - **Overlapping-edition precedence:** Among remaining Stage-1-valid,
        non-past entries for the same `(iauNumber, occurrenceYear)`, select the
        entry with the **highest `editionYear`** (breaking ties by `generatedUtc`
        descending, then `snapshotId` ordinal).
      - **Active:** `windowStartUtc <= queryUtc < windowEndUtc` (with Stage 1
-       already enforcing `validFromUtc <= queryUtc < validUntilUtc`).
+       already enforcing `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc`).
      - **Upcoming (lookahead duration $L$, Proposed default `30 days`):**
        `queryUtc < windowStartUtc < queryUtc + L` (with Stage 1 already
-       enforcing `validFromUtc <= queryUtc < validUntilUtc` — an edition whose
-       `validFromUtc > queryUtc` is **never** admitted into `Upcoming` merely
-       because `windowStartUtc` falls inside `queryUtc + L`).
+       enforcing `effectiveValidFromUtc <= queryUtc < effectiveValidUntilUtc` —
+       an edition whose `effectiveValidFromUtc > queryUtc` is **never** admitted
+       into `Upcoming` merely because `windowStartUtc` falls inside `queryUtc + L`).
    - **Verified boundary cases (mandatory Slice M0/M1 tests):**
      - **Case (a) — `2027-01-03T12:00:00Z` with only a 2026 edition present**
-       (`QUA` entry: `editionYear = 2026`, `occurrenceYear = 2026`,
-       `windowStartUtc = 2025-12-28T00:00:00Z`, `peakUtc = 2026-01-03T21:00:00Z`,
-       `windowEndUtc = 2026-01-13T00:00:00Z`, `validUntilUtc = 2027-01-15T00:00:00Z`):
-       Because `windowEndUtc (2026-01-13) <= queryUtc (2027-01-03)`, the January
-       2026 Quadrantids entry is **NOT** surfaced as active or upcoming.
-       Quadrantids instead reports `NoForecastForOccurrence` (optional
-       HVO-derived solar-longitude estimate only when `nominalActivity.peakSolarLonDeg`
-       is present, with `idealizedZhr = null`).
+       (`QUA` entry: `editionId = "imo-calendar-2026"`, `editionYear = 2026`,
+       `occurrenceYear = 2026`, `windowStartUtc = 2025-12-28T00:00:00Z`,
+       `peakUtc = 2026-01-03T21:00:00Z`, `windowEndUtc = 2026-01-13T00:00:00Z`,
+       `validUntilUtc = 2027-01-15T00:00:00Z`): Because `windowEndUtc
+       (2026-01-13) <= queryUtc (2027-01-03)`, the January 2026 Quadrantids
+       entry is **NOT** surfaced as active or upcoming. Quadrantids instead
+       reports `NoForecastForOccurrence` (optional HVO-derived solar-longitude
+       estimate only when `nominalActivity.peakSolarLonDeg` is present, with
+       `idealizedZhr = null`).
      - **Case (b) — `2026-12-28T00:00:00Z` with 30-day lookahead and both 2026
        and 2027 editions present:** Both editions pass Stage 1 at `2026-12-28`.
        The 2026 edition's `occurrenceYear = 2026` entry is excluded
@@ -361,12 +413,23 @@ maximum January 4 `03:25 UTC` ($\lambda_\odot = 283.15^\circ$), nominal
        (`2027-01-15T00:00:00Z` for a 2026 edition): excluded by Stage 1 as
        strictly `Expired`.
      - **Case (d) — Pre-validity lookahead boundary `queryUtc = 2026-11-30T00:00:00Z`
-       with 30-day lookahead ($L = 30\text{ d}$) against the canonical 2027 edition**
-       (`validFromUtc = 2026-12-01T00:00:00Z`, `windowStartUtc = 2026-12-28T00:00:00Z`,
+       and inclusive lower boundary `2026-12-01T00:00:00Z` with 30-day lookahead
+       ($L = 30\text{ d}$) against the canonical 2027 edition** (`validFromUtc =
+       2026-12-01T00:00:00Z`, `windowStartUtc = 2026-12-28T00:00:00Z`,
        `validUntilUtc = 2028-01-15T00:00:00Z`): Even though `windowStartUtc`
        (`2026-12-28`) lies within `queryUtc + 30 d` (`2026-12-30`), Stage 1
-       strictly excludes the 2027 edition because `queryUtc < validFromUtc`.
-       The 2027 edition becomes eligible starting at `2026-12-01T00:00:00Z`.
+       strictly excludes the 2027 edition on `2026-11-30T00:00:00Z` because
+       `queryUtc < effectiveValidFromUtc`. The 2027 edition becomes eligible
+       starting at the inclusive lower boundary `2026-12-01T00:00:00Z`.
+     - **Case (e) — Mismatched `activitySource` vs forecast validity/edition**
+       (`forecast.validFromUtc = 2026-11-01T00:00:00Z` under
+       `activitySource.validFromUtc = 2026-12-01T00:00:00Z` at
+       `queryUtc = 2026-11-30T00:00:00Z`, or `forecast.editionId != activitySource.editionId`):
+       Strictly rejected at **import/load time** by Section 3.1 (not a subset of
+       `activitySource` validity / mismatched `editionId`), AND defensively
+       rejected at **Stage 1 runtime** because
+       `max(2026-12-01, 2026-11-01) = 2026-12-01 > 2026-11-30` (`NotYetValid`)
+       and `editionId` mismatch fails closed.
    - **Fallback when annual activity is absent or expired (no peak date from
      radiant reference longitude alone):** If `activitySource` is `null` or no
      Stage-1/Stage-2 valid occurrence forecast exists, the evaluator may compute
