@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -9,9 +10,8 @@ using HVO.SkyMonitor.Imaging;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
-/// Issue #1168 renderer capacity boundary evidence. The rectilinear 6 mm full-frame views exhaust the renderer's 64
-/// temporal slots between 56 s and 57 s; every frozen refusal is exercised by its exact type and message, and every
-/// supported 60 s native view renders. A refusal that is not predeclared, or a predeclared one that does not occur, fails.
+/// Renderer capacity boundary evidence for #1168 and #1179. Rectilinear 6 mm full-frame views exhaust the renderer's
+/// 64 temporal slots between 56 s and 57 s. Cloud probes exercise the identity-readout boundary from #1004.
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
@@ -40,6 +40,7 @@ public sealed class VirtualLongExposureCapacityTests
             VirtualAstrometryFixture.Profiles(VirtualAstrometryFixture.Seed(110220, variant), family, variant).Single(p => p.Name == name);
         var budget = new VirtualRenderRefusal("capture", typeof(InvalidOperationException).FullName!, TemporalBudgetExceeded);
         var rectilinearNative = View(rectilinear, none, "mono-native");
+        var cloudMono = View(equidistant, clouds, "mono-native");
         var renderer = new VirtualSkyCameraModuleOptions();
         // The renderer's step: its configured bound, tightened only by a PSF too narrow to resolve it.
         var stepPixels = Math.Min(renderer.MaximumStellarStepPixels,
@@ -54,11 +55,16 @@ public sealed class VirtualLongExposureCapacityTests
                     VirtualAstrometryFixture.DeclaredRefusal(rectilinear, profile, 60, none))),
             new("equidistant-60s-mono-native", equidistant, View(equidistant, none, "mono-native"), 60, none, null),
             new("equidistant-60s-cfa-native", equidistant, View(equidistant, none, "cfa-native"), 60, none, null),
-            new("equidistant-clouds-mono-native", equidistant, View(equidistant, clouds, "mono-native"), 60, clouds,
-                VirtualAstrometryFixture.DeclaredRefusal(equidistant, View(equidistant, clouds, "mono-native"), 60, clouds)),
+            new("equidistant-clouds-mono-native", equidistant, cloudMono, 60, clouds, null),
             new("equidistant-clouds-cfa-native", equidistant, View(equidistant, clouds, "cfa-native"), 60, clouds, null)
         ];
-        Assert.IsNotNull(probes.Single(p => p.Name == "equidistant-clouds-mono-native").Expected, "Mono clouds must be a declared refusal.");
+        foreach (var readout in new[] { "roi", "bin2" })
+        {
+            var rig = VirtualOpticalCalibrationQualificationTests.WithReadout(cloudMono.Config.Rig, readout);
+            var profile = new VirtualAstrometryProfile($"mono-{readout}", cloudMono.Config with { Rig = rig });
+            var refusal = new VirtualRenderRefusal("initialize", typeof(NotSupportedException).FullName!, VirtualRenderRefusal.NonIdentityCloudReadout);
+            probes.Add(new($"equidistant-clouds-{profile.Name}", equidistant, profile, 60, clouds, refusal));
+        }
         Assert.IsTrue(probes.Any(p => p.Name.StartsWith("rectilinear-60s-", StringComparison.Ordinal) && p.Expected is null),
             "The rectilinear ROI views must remain supported at 60 s.");
         var rows = new List<object>(); var failures = new List<string>(); var outcomes = new Dictionary<string, (bool Refused, double? Motion)>();
@@ -91,7 +97,7 @@ public sealed class VirtualLongExposureCapacityTests
         var path = Path.Combine(resultRoot, "virtual-long-exposure-capacity.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            schema = "virtual-long-exposure-capacity-v1",
+            schema = "virtual-long-exposure-capacity-v2",
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             snapshot.DatabaseSha256,
             snapshot.RowCount,
@@ -155,7 +161,14 @@ public sealed class VirtualLongExposureCapacityTests
         var elapsedMs = clock.Elapsed.TotalMilliseconds;
         if (probe.Expected is not null && refused is null)
             failures.Add($"{probe.Name}: declared {probe.Expected.Stage} refusal did not occur");
-        var extra = captured?.Frame?.Metadata.Extra;
+        var frame = captured?.Frame;
+        if (refused is null && frame is null)
+            failures.Add($"{probe.Name}: renderer returned no frame");
+        var cloudScenario = frame?.Metadata.Scene?.CloudScenario?.ScenarioId;
+        if (frame is not null && probe.Variant.CloudScenario is { } scenario &&
+            cloudScenario != scenario.ComputeCanonicalScenarioId())
+            failures.Add($"{probe.Name}: rendered frame did not retain the declared cloud scenario");
+        var extra = frame?.Metadata.Extra;
         string? Value(string key) => extra is not null && extra.TryGetValue(key, out var value) ? value : null;
         var motion = Value("stellarMaximumSampleMotionPixels") is { } text ? double.Parse(text, CultureInfo.InvariantCulture) : (double?)null;
         if (captured is not null && motion is null) failures.Add($"{probe.Name}: rendered frame reports no stellar sample motion");
@@ -171,6 +184,8 @@ public sealed class VirtualLongExposureCapacityTests
             expected = probe.Expected,
             outcome = refused is not null ? "refused" : "rendered",
             refusal = refused is null ? null : new { stage, type = refused.GetType().FullName, refused.Message },
+            rawSha256 = frame is null ? null : Convert.ToHexString(SHA256.HashData(frame.PixelData.Span)),
+            cloudScenario,
             maximumTemporalSamples = Value("stellarMaximumTemporalSamples"),
             maximumSampleMotionPixels = Value("stellarMaximumSampleMotionPixels"),
             totalTemporalSamples = Value("stellarTemporalSamples"),
