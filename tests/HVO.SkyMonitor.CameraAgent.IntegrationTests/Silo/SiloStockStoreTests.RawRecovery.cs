@@ -331,7 +331,7 @@ public sealed partial class SiloStockStoreTests
         {
             Pipeline = new(
                 requireRawFrame
-                    ? [new("Preview", "preview", DependsOn: ["$raw"])]
+                    ? [new("Preview", "preview", DependsOn: ["$raw"]), new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false)]
                     : [new("ProjectedScene", "scene", DependsOn: ["$raw"])],
                 CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };

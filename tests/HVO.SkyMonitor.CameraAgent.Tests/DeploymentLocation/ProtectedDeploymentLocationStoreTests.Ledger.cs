@@ -134,6 +134,112 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(false, false)]
+    [DataRow(true, true)]
+    [DataRow(true, false)]
+    public async Task StartupMigrationInterruptionBeforeQuarantineDirectorySyncKeepsIntentRecoverable(
+        bool matchingDuplicateRawExists, bool directoryRevertsOnPowerLoss)
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var token = CancellationToken.None;
+        var orbitalRoot = Path.Combine(_options.Value.RawIngressRoot, ".orbital-elements");
+        var quarantine = Path.Combine(orbitalRoot, "quarantine");
+        var clock = new OrbitalElementsStoreTestData.Clock(Now);
+        var malformedJson = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var malformedSha = CelesTrakGpTestData.Sha256(malformedJson);
+        var legacyJsonPath = Path.Combine(quarantine, malformedSha + ".json");
+        var migratedRawPath = Path.Combine(quarantine, malformedSha + ".raw");
+        var expectedKey = RetainedIntegrityLedger.FileKey(_options.Value.RawIngressRoot, legacyJsonPath);
+        var ledgerPath = Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName);
+        DeploymentLocationSnapshot active;
+
+        using (var locations = CreateStore())
+        {
+            active = await locations.InitializeAsync(seed, token).ConfigureAwait(false);
+            using (var orbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+            {
+                var attempt = await OrbitalElementsStoreTestData.AdmitAsync(orbital).ConfigureAwait(false);
+                await orbital.RecordQuarantineAsync(attempt, malformedJson, malformedSha,
+                    "orbital.json-syntax", "legacy malformed JSON body", token).ConfigureAwait(false);
+                RetainedFileMutations.Move(migratedRawPath, legacyJsonPath);
+                if (matchingDuplicateRawExists)
+                {
+                    await File.WriteAllBytesAsync(migratedRawPath, malformedJson, token).ConfigureAwait(false);
+                }
+            }
+        }
+
+        // Interrupt startup migration after the filesystem rename/delete and before the quarantine directory fsync.
+        using (var interruptedLocations = CreateStore())
+        {
+            Assert.AreEqual(active, await interruptedLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+            var faults = new OrbitalElementsStoreTestData.Faults
+            {
+                ArmedPoint = OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync,
+                Throw = static () => new InvalidOperationException("simulated power loss before quarantine directory sync")
+            };
+            using var interruptedOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+                OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4), faults);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                interruptedOrbital.InitializeAsync(token).AsTask()).ConfigureAwait(false);
+        }
+
+        // The pending intent must remain open and the legacy entry must not have been tombstoned before directory sync.
+        using (var connection = new SqliteConnection($"Data Source={ledgerPath};Pooling=False"))
+        {
+            await connection.OpenAsync(token).ConfigureAwait(false);
+            using var pendingCommand = connection.CreateCommand();
+            pendingCommand.CommandText = "SELECT COUNT(*) FROM pending WHERE key = $key AND planned IS NULL AND denied = 0;";
+            pendingCommand.Parameters.AddWithValue("$key", expectedKey);
+            Assert.AreEqual(1L, (long)(await pendingCommand.ExecuteScalarAsync(token).ConfigureAwait(false))!,
+                "Pending delete/publication intent must remain in the ledger until quarantine directory sync succeeds.");
+
+            using var entryCommand = connection.CreateCommand();
+            entryCommand.CommandText = "SELECT kind FROM entries WHERE key = $key;";
+            entryCommand.Parameters.AddWithValue("$key", expectedKey);
+            Assert.AreNotEqual(0L, (long)(await entryCommand.ExecuteScalarAsync(token).ConfigureAwait(false))!,
+                "Legacy quarantine JSON entry must not be tombstoned before quarantine directory sync succeeds.");
+        }
+
+        if (directoryRevertsOnPowerLoss)
+        {
+            // Simulate the directory entry reverting on power loss so the intact legacy .json reappears.
+            if (matchingDuplicateRawExists)
+            {
+                await File.WriteAllBytesAsync(legacyJsonPath, malformedJson, token).ConfigureAwait(false);
+            }
+            else
+            {
+                File.Move(migratedRawPath, legacyJsonPath, overwrite: false);
+            }
+            Assert.IsTrue(File.Exists(legacyJsonPath));
+        }
+        else
+        {
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+        }
+
+        // Restarting after power loss must recover cleanly and qualify installation verification.
+        using var recoveredLocations = CreateStore();
+        Assert.AreEqual(active, await recoveredLocations.InitializeAsync(seed, token).ConfigureAwait(false));
+        using (var recoveredOrbital = OrbitalElementsStoreTestData.Open(orbitalRoot, clock,
+            OrbitalElementsStoreTestData.Settings(orbitalRoot, maximumQuarantined: 4)))
+        {
+            await recoveredOrbital.InitializeAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(legacyJsonPath));
+            Assert.IsTrue(File.Exists(migratedRawPath));
+            CollectionAssert.AreEqual(malformedJson, await File.ReadAllBytesAsync(migratedRawPath, token).ConfigureAwait(false));
+        }
+
+        Assert.AreEqual(active, await recoveredLocations.FullVerifyAsync(seed, token).ConfigureAwait(false));
+        Assert.AreEqual(active, await recoveredLocations.VerifyInstallationAsync(seed, token).ConfigureAwait(false));
+        Assert.IsFalse(recoveredLocations.RequiresRetainedIntegrityScrub);
+    }
+
+    [TestMethod]
     public async Task QualifiedProtectedReadNeverTraversesRetainedEvidenceAndConcurrentReadsAgree()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");

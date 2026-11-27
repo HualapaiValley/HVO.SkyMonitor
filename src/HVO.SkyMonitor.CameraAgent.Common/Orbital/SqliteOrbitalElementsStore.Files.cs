@@ -289,7 +289,6 @@ public sealed partial class SqliteOrbitalElementsStore
     {
         var root = RequireRoot();
         var quarantineDirectory = root.Resolve(QuarantineDirectoryName);
-        var migrated = false;
         foreach (var source in EnumerateBounded(quarantineDirectory, "*" + JsonExtension))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -322,14 +321,8 @@ public sealed partial class SqliteOrbitalElementsStore
                     DurableSync.RequireRegularFile(destination);
                     if (await FileMatchesSha256Async(destination, name, cancellationToken).ConfigureAwait(false))
                     {
-                        if (TryDeleteRegular(source) == DeleteOutcome.Deleted)
-                        {
-                            migrated = true;
-                        }
-                        else
-                        {
-                            AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
-                        }
+                        DurableSync.File(destination);
+                        DeleteAndSyncQuarantineFile(source, quarantineDirectory);
                     }
                     else
                     {
@@ -337,18 +330,55 @@ public sealed partial class SqliteOrbitalElementsStore
                     }
                     continue;
                 }
-                RetainedFileMutations.Move(source, destination);
-                DurableSync.File(destination);
-                migrated = true;
+                MoveAndSyncQuarantineFile(source, destination, quarantineDirectory);
             }
             catch (FileSystemFaultException fault) when (fault.Kind == FileSystemFaultKind.Containment)
             {
                 AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
             }
         }
-        if (migrated)
+    }
+
+    private void DeleteAndSyncQuarantineFile(string source, string quarantineDirectory)
+    {
+        // Keep the ledger delete intent pending until the directory entry removal is durable.
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginDelete(source);
+        var synced = false;
+        try
         {
-            SyncDirectories(QuarantineDirectoryName);
+            File.Delete(source);
+            _faults.Inject(OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync);
+            DurableSync.Directory(quarantineDirectory);
+            synced = true;
+        }
+        finally
+        {
+            if (!synced)
+            {
+                DeploymentLocation.RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+        }
+    }
+
+    private void MoveAndSyncQuarantineFile(string source, string destination, string quarantineDirectory)
+    {
+        // Keep the ledger publication intent pending until the renamed file and directory entry are durable.
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginPublication(source, destination);
+        var synced = false;
+        try
+        {
+            File.Move(source, destination, overwrite: false);
+            DurableSync.File(destination);
+            _faults.Inject(OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync);
+            DurableSync.Directory(quarantineDirectory);
+            synced = true;
+        }
+        finally
+        {
+            if (!synced)
+            {
+                DeploymentLocation.RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
         }
     }
 

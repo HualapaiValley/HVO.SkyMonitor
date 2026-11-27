@@ -457,12 +457,20 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
     }
 
+    internal static void AbandonCurrentMutation() => Current.Value?.Abandon();
+
     private sealed class Mutation(RetainedIntegrityLedger owner, Mutation? parent) : IDisposable
     {
         private readonly Dictionary<string, Intent> _intents = new(StringComparer.Ordinal);
         private int _depth = 1;
+        private bool _abandoned;
         internal RetainedIntegrityLedger Owner => owner;
         internal bool Active => _depth > 0;
+        internal void Abandon()
+        {
+            _abandoned = true;
+            owner.Invalidate();
+        }
         internal Mutation? Find(RetainedIntegrityLedger candidate)
             => Active && Owner == candidate ? this : parent?.Find(candidate);
         internal void Add(IEnumerable<Intent> intents)
@@ -493,14 +501,21 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             if (Interlocked.Decrement(ref _depth) != 0) return;
             try
             {
-                using var transaction = owner._database.BeginTransaction();
-                owner.ValidateLiveMetadata(transaction);
-                foreach (var intent in _intents.Values) owner.Apply(intent, transaction);
-                foreach (var intent in _intents.Values) owner.RemoveIntent(intent, transaction);
-                owner.WriteMetadata(transaction);
-                transaction.Commit();
-                owner.ValidatePathMetadata();
-                owner.WriteCheckpoint();
+                if (_abandoned)
+                {
+                    owner.Invalidate();
+                }
+                else
+                {
+                    using var transaction = owner._database.BeginTransaction();
+                    owner.ValidateLiveMetadata(transaction);
+                    foreach (var intent in _intents.Values) owner.Apply(intent, transaction);
+                    foreach (var intent in _intents.Values) owner.RemoveIntent(intent, transaction);
+                    owner.WriteMetadata(transaction);
+                    transaction.Commit();
+                    owner.ValidatePathMetadata();
+                    owner.WriteCheckpoint();
+                }
             }
             catch (Exception exception) when (OptionalIo(exception))
             {

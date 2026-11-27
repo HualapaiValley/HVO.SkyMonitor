@@ -139,8 +139,9 @@ public sealed class MotorFocusSessionTests
             InitialPosition: 106, BacklashSteps: 12));
         using var owner = Coordinator(fixture, motor);
 
-        await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
+        var exception = await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
             () => owner.StartAsync(Sweep, "alice", CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual("Five sweep positions and backlash take-up must fit inside the focuser limits.", exception.Message);
 
         Assert.AreEqual(106, motor.State.Position);
         Assert.IsFalse(motor.State.IsMoving);
@@ -160,8 +161,30 @@ public sealed class MotorFocusSessionTests
         var motor = new FixedCapabilitiesFocuser(new(minimumPosition, maximumPosition, backlashSteps), position: 500);
         using var owner = Coordinator(fixture, motor);
 
-        await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
+        var exception = await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
             () => owner.StartAsync(Sweep, "alice", CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual("Five sweep positions and backlash take-up must fit inside the focuser limits.", exception.Message);
+
+        Assert.AreEqual(0, motor.Moves);
+        Assert.AreEqual(0, motor.Aborts);
+        Assert.AreEqual(500, motor.State.Position);
+        Assert.IsFalse(motor.State.IsMoving);
+        Assert.AreEqual(0, camera.Previews);
+        Assert.IsTrue(await fixture.CaptureAdmittedWithinAsync(Timeout).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Sweep_RejectsNonVirtualFocuserAgainstSimulatedCameraBeforeMoving()
+    {
+        var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
+        await using var scope = fixture.ConfigureAwait(false);
+        var camera = await fixture.PublishScriptedAsync().ConfigureAwait(false);
+        var motor = new FixedCapabilitiesFocuser(new(0, 1000, 0), position: 500);
+        using var owner = Coordinator(fixture, motor);
+
+        var exception = await Assert.ThrowsExactlyAsync<ManualFocusSessionValidationException>(
+            () => owner.StartAsync(Sweep, "alice", CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual("Simulated autofocus requires a virtual motor and a position-dependent preview model.", exception.Message);
 
         Assert.AreEqual(0, motor.Moves);
         Assert.AreEqual(0, motor.Aborts);
