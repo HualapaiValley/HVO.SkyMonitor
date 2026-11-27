@@ -167,8 +167,9 @@ public static class ResolvedFootprintSampler
     public const int BaseSampleCount = 64;
     public const int MaximumSubdivisionDepth = 7;
     public const double MaximumChordErrorPixels = 0.25;
-    private const int BoundaryBisectionIterations = 32;
+    private const int BoundaryBisectionIterations = 40;
     internal const double JoinTolerancePixels = 1e-9;
+    private const double BoundaryInsideTolerance = 1e-9;
 
     /// <summary>
     /// Samples a source outline for a visible-scene request. Returns null when no part of the
@@ -210,7 +211,7 @@ public static class ResolvedFootprintSampler
         var step = 2 * Math.PI / BaseSampleCount;
         for (var index = 0; index < BaseSampleCount; index++)
         {
-            AppendLimbChord(request, basis, Limb, index * step, (index + 1) * step, 0, chords, ref clipped);
+            AppendCurveChord(request, basis, Limb, index * step, (index + 1) * step, 0, MaximumSubdivisionDepth, chords, ref clipped);
         }
         var parts = Stitch(chords, closedCandidate: !clipped);
         if (parts.Count == 0) return null;
@@ -283,92 +284,234 @@ public static class ResolvedFootprintSampler
             .ToList();
     }
 
-    private static void AppendLimbChord(
+    internal static bool IsInsideProjection(ProjectionContext projection, PixelPoint pixel)
+    {
+        if (!double.IsFinite(pixel.X) || !double.IsFinite(pixel.Y))
+            return false;
+        if (projection.EnforceSensorBounds &&
+            (pixel.X < -BoundaryInsideTolerance || pixel.X > projection.WidthPixels + BoundaryInsideTolerance ||
+             pixel.Y < -BoundaryInsideTolerance || pixel.Y > projection.HeightPixels + BoundaryInsideTolerance))
+            return false;
+        if (projection.Aperture == ProjectionAperture.Circular)
+        {
+            var dx = pixel.X - projection.PrincipalPointX;
+            var dy = pixel.Y - projection.PrincipalPointY;
+            var radius = projection.ImageCircleRadiusPixels!.Value;
+            if (dx * dx + dy * dy > radius * radius + Math.Max(1d, radius) * 2e-9)
+                return false;
+        }
+        return true;
+    }
+
+    internal static PixelPoint ClampToProjection(ProjectionContext projection, PixelPoint pixel)
+    {
+        var x = pixel.X;
+        var y = pixel.Y;
+        if (projection.EnforceSensorBounds)
+        {
+            x = Math.Clamp(x, 0d, projection.WidthPixels);
+            y = Math.Clamp(y, 0d, projection.HeightPixels);
+        }
+        if (projection.Aperture == ProjectionAperture.Circular)
+        {
+            var dx = x - projection.PrincipalPointX;
+            var dy = y - projection.PrincipalPointY;
+            var radius = projection.ImageCircleRadiusPixels!.Value;
+            var distSq = dx * dx + dy * dy;
+            if (distSq > radius * radius && distSq > 0)
+            {
+                var scale = radius / Math.Sqrt(distSq);
+                x = projection.PrincipalPointX + dx * scale;
+                y = projection.PrincipalPointY + dy * scale;
+            }
+        }
+        return new PixelPoint(x, y);
+    }
+
+    internal static bool TryProjectVisible(
         VisibleSceneRequest request,
         CameraBasis basis,
-        Func<double, EnuVector> limb,
+        EnuVector direction,
+        out PixelPoint pixel)
+    {
+        if (VisibleSceneBuilder.TryProjectGeometry(request, basis, direction, out pixel) &&
+            IsInsideProjection(request.Projection, pixel))
+        {
+            pixel = ClampToProjection(request.Projection, pixel);
+            return true;
+        }
+        return false;
+    }
+
+    internal static void AppendCurveChord(
+        VisibleSceneRequest request,
+        CameraBasis basis,
+        Func<double, EnuVector> curve,
         double from,
         double to,
         int depth,
+        int maxDepth,
         List<(PixelPoint From, PixelPoint To)> output,
         ref bool clipped)
     {
-        var fromValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(from), out var fromPixel);
-        var toValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(to), out var toPixel);
+        var fromValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(from), out var fromPixel);
+        var toValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(to), out var toPixel);
+        var fromIn = fromValid && IsInsideProjection(request.Projection, fromPixel);
+        var toIn = toValid && IsInsideProjection(request.Projection, toPixel);
         var middle = (from + to) / 2;
-        if (fromValid && toValid)
+
+        if (fromIn && toIn)
         {
-            var middleValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(middle), out var middlePixel);
-            if (!middleValid ||
-                Distance(middlePixel, new PixelPoint((fromPixel.X + toPixel.X) / 2, (fromPixel.Y + toPixel.Y) / 2)) > MaximumChordErrorPixels)
+            var middleIn = TryProjectVisible(request, basis, curve(middle), out var middlePixel);
+            var clampedFrom = ClampToProjection(request.Projection, fromPixel);
+            var clampedTo = ClampToProjection(request.Projection, toPixel);
+            if (!middleIn ||
+                Distance(middlePixel, new PixelPoint((clampedFrom.X + clampedTo.X) / 2, (clampedFrom.Y + clampedTo.Y) / 2)) > MaximumChordErrorPixels)
             {
-                if (depth < MaximumSubdivisionDepth)
+                if (depth < maxDepth)
                 {
-                    AppendLimbChord(request, basis, limb, from, middle, depth + 1, output, ref clipped);
-                    AppendLimbChord(request, basis, limb, middle, to, depth + 1, output, ref clipped);
+                    AppendCurveChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+                    AppendCurveChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                }
+                else if (!middleIn)
+                {
+                    // A bounded sampler cannot join across an unresolved dip outside the visible domain.
+                    clipped = true;
                 }
                 else
                 {
-                    // A bounded sampler cannot join across an unresolved projection discontinuity.
-                    clipped = true;
+                    output.Add((clampedFrom, clampedTo));
                 }
                 return;
             }
-            AddClipped(request.Projection, fromPixel, toPixel, output, ref clipped);
+            output.Add((clampedFrom, clampedTo));
             return;
         }
 
-        if (depth < MaximumSubdivisionDepth)
+        if (fromIn != toIn)
         {
-            AppendLimbChord(request, basis, limb, from, middle, depth + 1, output, ref clipped);
-            AppendLimbChord(request, basis, limb, middle, to, depth + 1, output, ref clipped);
-            return;
-        }
-
-        clipped = true;
-        if (fromValid == toValid) return;
-        var validParameter = fromValid ? from : to;
-        var invalidParameter = fromValid ? to : from;
-        var boundaryPixel = fromValid ? fromPixel : toPixel;
-        for (var iteration = 0; iteration < BoundaryBisectionIterations; iteration++)
-        {
-            var candidate = (validParameter + invalidParameter) / 2;
-            if (VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(candidate), out var candidatePixel))
+            if (depth < maxDepth)
             {
-                validParameter = candidate;
-                boundaryPixel = candidatePixel;
+                AppendCurveChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+                AppendCurveChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+                return;
             }
+
+            clipped = true;
+            var insideParam = fromIn ? from : to;
+            var outsideParam = fromIn ? to : from;
+            var insidePixel = ClampToProjection(request.Projection, fromIn ? fromPixel : toPixel);
+            var boundaryPixel = insidePixel;
+            for (var iteration = 0; iteration < BoundaryBisectionIterations; iteration++)
+            {
+                var candidate = (insideParam + outsideParam) / 2;
+                if (TryProjectVisible(request, basis, curve(candidate), out var candidatePixel))
+                {
+                    insideParam = candidate;
+                    boundaryPixel = candidatePixel;
+                }
+                else
+                {
+                    outsideParam = candidate;
+                }
+            }
+            var boundaryMiddle = (insideParam + (fromIn ? from : to)) / 2;
+            if (!TryProjectVisible(request, basis, curve(boundaryMiddle), out var boundaryMiddlePixel))
+            {
+                return;
+            }
+            if (Distance(boundaryMiddlePixel, new PixelPoint((insidePixel.X + boundaryPixel.X) / 2, (insidePixel.Y + boundaryPixel.Y) / 2)) > MaximumChordErrorPixels)
+            {
+                // Split once at the verified interior midpoint rather than dropping a valid boundary approach or
+                // emitting an inaccurate chord.
+                if (fromIn)
+                {
+                    output.Add((insidePixel, boundaryMiddlePixel));
+                    output.Add((boundaryMiddlePixel, boundaryPixel));
+                }
+                else
+                {
+                    output.Add((boundaryPixel, boundaryMiddlePixel));
+                    output.Add((boundaryMiddlePixel, insidePixel));
+                }
+                return;
+            }
+            if (fromIn)
+                output.Add((insidePixel, boundaryPixel));
             else
-            {
-                invalidParameter = candidate;
-            }
-        }
-        var boundaryMiddle = (validParameter + (fromValid ? from : to)) / 2;
-        var endpoint = fromValid ? fromPixel : toPixel;
-        if (!VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(boundaryMiddle), out var boundaryMiddlePixel) ||
-            Distance(boundaryMiddlePixel, new PixelPoint((endpoint.X + boundaryPixel.X) / 2, (endpoint.Y + boundaryPixel.Y) / 2)) > MaximumChordErrorPixels)
+                output.Add((boundaryPixel, insidePixel));
             return;
-        if (fromValid)
-            AddClipped(request.Projection, fromPixel, boundaryPixel, output, ref clipped);
-        else
-            AddClipped(request.Projection, boundaryPixel, toPixel, output, ref clipped);
+        }
+
+        // Both endpoints are outside the visible domain (horizon, projection domain, sensor, or aperture).
+        clipped = true;
+        if (depth >= maxDepth)
+        {
+            // Never fabricate a chord stroke between two exterior endpoints at leaf depth.
+            return;
+        }
+
+        var midValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, curve(middle), out var midPixel);
+        var midIn = midValid && IsInsideProjection(request.Projection, midPixel);
+        if (midIn || fromValid != toValid || fromValid != midValid)
+        {
+            AppendCurveChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+            AppendCurveChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+            return;
+        }
+
+        if (!fromValid)
+        {
+            // All three samples are outside the geometric horizon or projection domain. Still probe early levels
+            // in case a large limb dips briefly above the horizon or into the hemisphere between base samples.
+            if (depth < 3)
+            {
+                AppendCurveChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+                AppendCurveChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+            }
+            return;
+        }
+
+        // All three samples project to finite pixels outside sensor/aperture. Subdivide only when the chord or
+        // its curvature envelope can approach or intersect the projection bounds (catching short incursions while
+        // rejecting exterior tangency without fabricating chords).
+        var sagitta = Distance(midPixel, new PixelPoint((fromPixel.X + toPixel.X) / 2, (fromPixel.Y + toPixel.Y) / 2));
+        var margin = 2 * sagitta + 1d;
+        if (VisibleSceneBuilder.TryClipToProjection(request.Projection, fromPixel, toPixel, out _, out _) ||
+            CanApproachProjection(request.Projection, fromPixel, midPixel, toPixel, margin))
+        {
+            AppendCurveChord(request, basis, curve, from, middle, depth + 1, maxDepth, output, ref clipped);
+            AppendCurveChord(request, basis, curve, middle, to, depth + 1, maxDepth, output, ref clipped);
+        }
     }
 
-    private static void AddClipped(
+    private static bool CanApproachProjection(
         ProjectionContext projection,
         PixelPoint from,
+        PixelPoint mid,
         PixelPoint to,
-        List<(PixelPoint From, PixelPoint To)> output,
-        ref bool clipped)
+        double margin)
     {
-        if (!VisibleSceneBuilder.TryClipToProjection(projection, from, to, out var clippedFrom, out var clippedTo))
+        var minX = Math.Min(from.X, Math.Min(mid.X, to.X)) - margin;
+        var maxX = Math.Max(from.X, Math.Max(mid.X, to.X)) + margin;
+        var minY = Math.Min(from.Y, Math.Min(mid.Y, to.Y)) - margin;
+        var maxY = Math.Max(from.Y, Math.Max(mid.Y, to.Y)) + margin;
+        if (projection.EnforceSensorBounds &&
+            (maxX < 0 || minX > projection.WidthPixels || maxY < 0 || minY > projection.HeightPixels))
+            return false;
+        if (projection.Aperture == ProjectionAperture.Circular)
         {
-            clipped = true;
-            return;
+            var cx = projection.PrincipalPointX;
+            var cy = projection.PrincipalPointY;
+            var closestX = Math.Clamp(cx, minX, maxX);
+            var closestY = Math.Clamp(cy, minY, maxY);
+            var dx = closestX - cx;
+            var dy = closestY - cy;
+            var limit = projection.ImageCircleRadiusPixels!.Value + margin;
+            if (dx * dx + dy * dy > limit * limit)
+                return false;
         }
-        if (Distance(clippedFrom, from) > JoinTolerancePixels || Distance(clippedTo, to) > JoinTolerancePixels)
-            clipped = true;
-        output.Add((clippedFrom, clippedTo));
+        return true;
     }
 
     internal static double Distance(PixelPoint left, PixelPoint right) =>

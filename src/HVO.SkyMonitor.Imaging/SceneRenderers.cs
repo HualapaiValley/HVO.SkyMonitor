@@ -31,6 +31,8 @@ public record LinearSceneRenderOptions
     public VirtualTransientRenderContext? Transient { get; init; }
     /// <summary>Optional camera-aware temporal stellar admission; null retains instantaneous legacy rendering.</summary>
     public StellarExposureRenderPlan? StellarExposure { get; init; }
+    /// <summary>Optional bounded parametric extended deep-sky sources, integrated through the same optical/sensor path.</summary>
+    public DeepSkyRenderPlan? DeepSkySources { get; init; }
 
     internal double BackgroundRate(int x, int y, int channel)
     {
@@ -42,6 +44,9 @@ public record LinearSceneRenderOptions
     }
 
     internal double DiskRate(int x, int y, int channel) => SolarDisks is null ? 0 : SolarDisks.ElectronRate(x, y) *
+        (this is BayerRggb16RenderOptions bayer ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1);
+
+    internal double DeepSkyRate(int x, int y, int channel) => DeepSkySources is null ? 0 : DeepSkySources.ElectronRate(x, y, channel) *
         (this is BayerRggb16RenderOptions bayer ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1);
 
     private double MaximumChannelResponse => this is BayerRggb16RenderOptions bayer
@@ -86,6 +91,9 @@ public record LinearSceneRenderOptions
         if ((SkyIllumination is not null || SolarDisks is not null) && (!double.IsFinite(MaximumBackgroundRate) || MaximumSkyRate > 1e12 ||
             !double.IsFinite(MaximumBackgroundRate * ExposureSeconds * Gain)))
             throw new ArgumentOutOfRangeException(nameof(BackgroundElectronsPerSecond));
+        if (DeepSkySources is not null && (!double.IsFinite(DeepSkySources.MaximumElectronRate) ||
+            !double.IsFinite(DeepSkySources.MaximumElectronRate * ExposureSeconds * Gain)))
+            throw new ArgumentOutOfRangeException(nameof(DeepSkySources));
         if (Transient is not null && MagnitudeZeroElectronsPerSecond > 1_000_000_000_000)
         {
             throw new ArgumentOutOfRangeException(nameof(MagnitudeZeroElectronsPerSecond),
@@ -380,6 +388,13 @@ public sealed record SceneRenderResult(
     /// before digital readout and noise. It must not be treated as image detections.
     /// </summary>
     public IReadOnlyList<StellarExposurePrediction>? StellarPredictions { get; init; }
+    /// <summary>Gets aggregate work and admission counters when extended deep-sky rendering is enabled.</summary>
+    public DeepSkyRenderStatistics? DeepSkyStatistics { get; init; }
+    /// <summary>
+    /// Gets conditional per-source extended deep-sky diagnostics in the native projection used for integration.
+    /// These diagnostics support scoring and verification and are never treated as measured detections.
+    /// </summary>
+    public IReadOnlyList<DeepSkySourceDiagnostic>? DeepSkyDiagnostics { get; init; }
 }
 
 /// <summary>Deterministic linear Mono16 rendering from frozen visible-scene geometry.</summary>
@@ -429,7 +444,9 @@ public static class Mono16SceneRenderer
             geometry)
         {
             StellarStatistics = options.StellarExposure?.Statistics(1, stellarVisits),
-            StellarPredictions = options.StellarExposure?.Predictions
+            StellarPredictions = options.StellarExposure?.Predictions,
+            DeepSkyStatistics = options.DeepSkySources?.Statistics,
+            DeepSkyDiagnostics = options.DeepSkySources?.Diagnostics
         };
     }
 
@@ -461,7 +478,9 @@ public static class Mono16SceneRenderer
             {
                 if (InsideAperture(x, y, projection))
                 {
-                    rates[y * layout.Width + x] = options.BackgroundRate(x, y, skyChannel) + options.DiskRate(x, y, skyChannel);
+                    rates[y * layout.Width + x] = options.BackgroundRate(x, y, skyChannel) +
+                        options.DiskRate(x, y, skyChannel) +
+                        options.DeepSkyRate(x, y, skyChannel);
                 }
             }
         }
@@ -867,6 +886,14 @@ public static class Mono16SceneRenderer
             bound.Settings.PsfRadiusPixels != options.PsfRadiusPixels ||
             bound.Settings.HorizonPolicy != scene.Request.HorizonPolicy || bound.Settings.Refraction != scene.Request.Refraction))
             throw new ArgumentException("Solar disks must bind the rendered PSF, horizon policy and refraction.", nameof(options));
+        if (options.DeepSkySources is { } deepSky && (deepSky.Projection != projection ||
+            deepSky.Utc != scene.Request.Utc ||
+            deepSky.Observer != scene.Request.Observer ||
+            deepSky.Settings.PsfSigmaPixels != options.PsfSigmaPixels ||
+            deepSky.Settings.PsfRadiusPixels != options.PsfRadiusPixels ||
+            deepSky.Settings.HorizonPolicy != scene.Request.HorizonPolicy ||
+            deepSky.Settings.Refraction != scene.Request.Refraction))
+            throw new ArgumentException("Deep-sky sources must bind the rendered projection, instant, observer, PSF, horizon policy and refraction.", nameof(options));
     }
 
     internal static bool InsideAperture(int x, int y, ProjectionContext projection)
@@ -876,6 +903,7 @@ public static class Mono16SceneRenderer
     {
         if (options.SkyIllumination is not null) algorithmVersion += "+" + SolarSkyIllumination.AlgorithmVersion;
         if (options.SolarDisks is not null) algorithmVersion += "+" + SolarDiskRenderPlan.AlgorithmVersion;
+        if (options.DeepSkySources is not null) algorithmVersion += "+" + DeepSkyRenderPlan.AlgorithmVersion;
         if (options.StellarExposure is not null) algorithmVersion += "+" + StellarExposureRenderPlan.AlgorithmVersion;
         if (options.Cloud is not null)
         {
@@ -966,7 +994,9 @@ public static class Rgb24CompatibilityRenderer
         return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!)
         {
             StellarStatistics = options.StellarExposure?.Statistics(3, stellarVisits),
-            StellarPredictions = options.StellarExposure?.Predictions
+            StellarPredictions = options.StellarExposure?.Predictions,
+            DeepSkyStatistics = options.DeepSkySources?.Statistics,
+            DeepSkyDiagnostics = options.DeepSkySources?.Diagnostics
         };
     }
 
@@ -1088,7 +1118,9 @@ public static class BayerRggb16Renderer
         return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!)
         {
             StellarStatistics = options.StellarExposure?.Statistics(3, stellarVisits),
-            StellarPredictions = options.StellarExposure?.Predictions
+            StellarPredictions = options.StellarExposure?.Predictions,
+            DeepSkyStatistics = options.DeepSkySources?.Statistics,
+            DeepSkyDiagnostics = options.DeepSkySources?.Diagnostics
         };
     }
 }

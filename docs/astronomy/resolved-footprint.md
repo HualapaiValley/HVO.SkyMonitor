@@ -60,7 +60,12 @@ when it does not.
   therefore lifts the lower limb more than the upper limb, and the disc flattens as it would in the sky.
 - Sampling starts from 64 equal parameter steps. It subdivides any chord whose midpoint deviates more than
   0.25 px from the straight chord, or whose midpoint fails to project, up to depth 7. It then bisects the
-  horizon or aperture boundary for 32 iterations.
+  horizon or aperture boundary for 40 iterations without emitting exterior connecting chords at leaf depth.
+- Great-circle catalog outlines share the same adaptive curve subdivision and clipping rules through
+  `DeepSkyOutlineSampler`, rejecting antipodal or near-antipodal edges honestly without inventing ambiguous
+  great-circle routes or aborting sibling objects in a scene. See
+  [`docs/astronomy/deep-sky-rendering-v1.md`](deep-sky-rendering-v1.md) for the independent analytic clipping
+  reference, numerical error budget, and parametric extended deep-sky rendering specification.
 - A footprint with no visible part is omitted. A footprint can therefore exist while its centre is off-frame or below
   the horizon. In that case `centerPixel` is `null`.
 

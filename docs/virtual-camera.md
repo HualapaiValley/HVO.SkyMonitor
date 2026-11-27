@@ -618,6 +618,44 @@ the following agreement:
 | Angular diameter | within 0.1% |
 | Range | within 0.02% |
 | Illuminated fraction | within 0.009: the analytic bound ½·sin(i)·π_max with the Moon's maximum horizontal parallax π_max ≈ 61.5′ (≈ 0.0089), because Horizons is topocentric and the engine fraction is geocentric. A physical bound, not a fitted value. |
+
+### Extended deep-sky source rendering (#524)
+
+Opt-in `RenderDeepSkySources` (`VirtualSkyDeepSkyRenderOptions`) renders
+bounded, deterministic parametric extended deep-sky sources
+(`deep-sky-parametric-v1`, profile schema `deep-sky-parametric-profile-v1`) in
+`Mono16`, `Rgb24`, and `BayerRggb16` captures. Leaving `RenderDeepSkySources`
+unset or disabled preserves previous `SceneId` identities and raw pixel bytes.
+
+- **Pipeline order:** `DeepSkyRenderPlan` normalizes each source's compatible
+  integrated flux over its full angular profile before horizon, projection, PSF,
+  aperture, or sensor clipping (exterior energy is lost and never renormalized).
+  Unresolved sources (`<= 0.5 * PsfSigmaPixels`) converge smoothly to the
+  stellar Gaussian PSF path; larger sources convolve on a PSF-padded grid with
+  the same stellar PSF kernel before clipping. Incident rates enter
+  `RenderCore` alongside sky background and solar-system disks — before cloud
+  attenuation, vignetting, exposure/gain, noise, saturation, CFA sampling,
+  defects, readout binning, and quantization.
+- **Catalog separation and honesty:** Parametric morphology and default class
+  spectra are labeled `IsSimulationParameter = true` and never mutate catalog
+  facts. Missing photometry or incomplete geometry stays annotation-only unless
+  an explicit `DeepSkySyntheticScenario` supplies overrides. Open clusters and
+  `Cl+N` composites deduct matched HYG star flux to prevent double-counting.
+  Dark nebulae (`DrkN`) attenuate only compatible celestial diffuse background
+  and never attenuate foreground terrestrial skyglow. Antipodal/near-antipodal
+  outline edges are refused honestly without aborting sibling objects.
+- **Diagnostics vs measured associations:** Frame metadata records bounded
+  `deepSky*` statistics, canonical `deepSkyDiagnosticsSha256`, and
+  `deepSkyDiagnostics` for scoring, while `StellarSourceMeasurer` continues to
+  measure associations solely from final pixels and canonical presentation
+  outlines (`projected-scene-v3`) remain strictly separate from raw imagery.
+- **Specification, limits, and measured resources:** See
+  [`docs/astronomy/deep-sky-rendering-v1.md`](astronomy/deep-sky-rendering-v1.md)
+  for the full profile table, morphology/photometry limits, independent analytic
+  clipping error budget, and representative `1936 × 1216` measured counts,
+  latency, CPU, allocations, and working set (`7` candidates / `6` admitted,
+  `1,586` sampled points, `1,064` rasterized pixels, `3.29 ms` median plan
+  preparation, `95.63 ms` median capture wall time).
 | Bennett refraction against the Horizons refracted elevation | within 5″, at 22–68° |
 
 They also check the perihelion/aphelion and perigee/apogee size ordering and

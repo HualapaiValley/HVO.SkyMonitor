@@ -106,6 +106,18 @@ public static class MonoDigitalReadoutRenderer
                 MinimumY = item.MinimumY / readout.BinY,
                 MaximumX = item.MaximumX / readout.BinX,
                 MaximumY = item.MaximumY / readout.BinY
+            }).ToArray(),
+            DeepSkyDiagnostics = native.DeepSkyDiagnostics?.Select(item => item.Footprint is null ? item : item with
+            {
+                Footprint = item.Footprint with
+                {
+                    SourcePixel = Scale(item.Footprint.SourcePixel, readout.BinX, readout.BinY),
+                    DepositedCentroid = Scale(item.Footprint.DepositedCentroid, readout.BinX, readout.BinY),
+                    MinimumX = item.Footprint.MinimumX / readout.BinX,
+                    MinimumY = item.Footprint.MinimumY / readout.BinY,
+                    MaximumX = item.Footprint.MaximumX / readout.BinX,
+                    MaximumY = item.Footprint.MaximumY / readout.BinY
+                }
             }).ToArray()
         };
     }

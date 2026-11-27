@@ -3,6 +3,13 @@ namespace HVO.SkyMonitor.Astronomy;
 /// <summary>Conservative angular-to-pixel sampling bounds over a spherical cap and calibrated aperture.</summary>
 public static class ProjectionSamplingBounds
 {
+    /// <summary>Returns the conservative maximum angular radius in degrees of the calibrated aperture or sensor.</summary>
+    public static double OpticalRadiusDegrees(ProjectionContext projection)
+    {
+        projection.Validate();
+        return VisibleSceneBuilder.OpticalRadiusDegrees(projection);
+    }
+
     /// <summary>
     /// Bounds the projection Jacobian in pixels per radian. Returns zero when the cap cannot intersect
     /// the aperture's enclosing cone, and infinity at a projection singularity. Includes radial distortion.

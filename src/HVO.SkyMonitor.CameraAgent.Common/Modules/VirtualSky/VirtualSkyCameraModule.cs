@@ -451,6 +451,48 @@ public sealed class VirtualSkyCameraModule(
         var stellarPlan = StellarExposureRenderPlan.Prepare(stellarGeometry, initialRenderOptions, stellarSettings, cancellationToken);
         var predictionMilliseconds = Stopwatch.GetElapsedTime(predictionStarted).TotalMilliseconds;
         var predictionProcessCpuMilliseconds = (ReadProcessCpu() - predictionCpuStarted).TotalMilliseconds;
+        DeepSkyRenderPlan? deepSkyPlan = null;
+        var deepSkyPrepareMilliseconds = 0d;
+        var deepSkyPrepareProcessCpuMilliseconds = 0d;
+        if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRender)
+        {
+            var deepSkyCatalog = (catalog as IDeepSkyCatalogSource)?.DeepSky;
+            if (deepSkyCatalog is null && deepSkyRender.SyntheticScenario is not { AdditionalObjects.Count: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "Extended deep-sky rendering requires an installed deep-sky catalog or declared synthetic scenario.");
+            }
+            var dsoCandidates = SelectDeepSkyRenderCandidates(deepSkyCatalog, deepSkyRender, sceneRequest);
+            var dsoSettings = new DeepSkyRenderSettings(
+                MinimumSignalToNoise: deepSkyRender.MinimumSignalToNoise,
+                MaximumCandidates: deepSkyRender.MaximumCandidates,
+                MaximumRenderedSources: deepSkyRender.MaximumRenderedSources,
+                SamplesPerProjectedPixel: deepSkyRender.SamplesPerProjectedPixel,
+                PsfSigmaPixels: initialRenderOptions.PsfSigmaPixels,
+                PsfRadiusPixels: initialRenderOptions.PsfRadiusPixels,
+                HorizonPolicy: sceneRequest.HorizonPolicy,
+                Refraction: sceneRequest.Refraction,
+                PreferCatalogOutlines: deepSkyRender.PreferCatalogOutlines,
+                PreferredOutlineLevel: deepSkyRender.PreferredOutlineLevel,
+                AllowSurfaceBrightnessB25Fallback: deepSkyRender.AllowSurfaceBrightnessB25Fallback,
+                CelestialDiffuseBackgroundElectronsPerSecond: deepSkyRender.CelestialDiffuseBackgroundElectronsPerSecond,
+                DigitalBinX: useNativeReadout ? _resolvedReadout!.Geometry.BinX : 1,
+                DigitalBinY: useNativeReadout ? _resolvedReadout!.Geometry.BinY : 1,
+                DigitalAverage: !useNativeReadout || _resolvedReadout!.Profile.BinningAlgorithm != FrameBinningAlgorithm.DigitalSumV1,
+                SyntheticScenario: deepSkyRender.SyntheticScenario);
+            var dsoCpuStarted = ReadProcessCpu();
+            var dsoStarted = Stopwatch.GetTimestamp();
+            deepSkyPlan = DeepSkyRenderPlan.Prepare(
+                sceneRequest,
+                deepSkyCatalog,
+                dsoCandidates,
+                stellarPlan.Sources.Select(static source => source.Source.Source),
+                initialRenderOptions,
+                dsoSettings,
+                cancellationToken);
+            deepSkyPrepareMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
+            deepSkyPrepareProcessCpuMilliseconds = (ReadProcessCpu() - dsoCpuStarted).TotalMilliseconds;
+        }
         var referenceCpuStarted = ReadProcessCpu();
         var referenceStarted = Stopwatch.GetTimestamp();
         var renderScene = (await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
@@ -541,6 +583,7 @@ public sealed class VirtualSkyCameraModule(
         var finalRenderOptions = initialRenderOptions with
         {
             StellarExposure = stellarPlan,
+            DeepSkySources = deepSkyPlan,
             Seed = unchecked((namedPass?.Definition.Seed ?? 0) + (sensor.PixelFormat switch
             {
                 CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, captureSequence, renderProjection, cloud, transient).Seed,
@@ -738,6 +781,25 @@ public sealed class VirtualSkyCameraModule(
             extra["solarDiskEphemeris"] = SolarDiskEphemeris.AlgorithmVersion;
             extra["solarDiskAlgorithm"] = SolarDiskRenderPlan.AlgorithmVersion;
             extra["solarDiskAppearance"] = JsonSerializer.Serialize(diskPlan.Disks);
+        }
+        if (deepSkyPlan is not null)
+        {
+            extra["deepSkyRenderAlgorithm"] = DeepSkyRenderPlan.AlgorithmVersion;
+            extra["deepSkyProfileSchemaVersion"] = DeepSkySimulationParameters.CurrentSchemaVersion;
+            extra["deepSkyDiagnosticIdentityVersion"] = DeepSkyRenderPlan.DiagnosticIdentityVersion;
+            extra["deepSkyDiagnosticsSha256"] = deepSkyPlan.Statistics.DiagnosticsSha256;
+            extra["deepSkyCandidateCount"] = deepSkyPlan.Statistics.CandidateCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyEligibleCount"] = deepSkyPlan.Statistics.EligibleCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAdmittedCount"] = deepSkyPlan.Statistics.AdmittedCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAnnotationOnlyCount"] = deepSkyPlan.Statistics.AnnotationOnlyCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyUnresolvedPsfCount"] = deepSkyPlan.Statistics.UnresolvedPsfCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDarkAttenuationCount"] = deepSkyPlan.Statistics.DarkAttenuationCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkySampledPoints"] = deepSkyPlan.Statistics.TotalSampledPoints.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyRasterizedPixels"] = deepSkyPlan.Statistics.TotalRasterizedPixels.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyKernelCellVisits"] = deepSkyPlan.Statistics.TotalKernelCellVisits.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyPrepareMilliseconds"] = deepSkyPrepareMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyPrepareProcessCpuMilliseconds"] = deepSkyPrepareProcessCpuMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnostics"] = JsonSerializer.Serialize(render.DeepSkyDiagnostics ?? deepSkyPlan.Diagnostics, SerializerOptions);
         }
         if (cloudProvenance is not null)
         {
@@ -1586,6 +1648,40 @@ public sealed class VirtualSkyCameraModule(
             parameters);
     }
 
+    private static DeepSkyObject[]? SelectDeepSkyRenderCandidates(
+        IDeepSkyCatalog? catalog,
+        VirtualSkyDeepSkyRenderOptions options,
+        VisibleSceneRequest sceneRequest)
+    {
+        if (catalog is null) return null;
+        var projection = sceneRequest.Projection;
+        var boresightHorizontal = new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees);
+        var boresightJ2000 = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(
+                boresightHorizontal,
+                sceneRequest.Utc,
+                sceneRequest.Observer.LatitudeDegrees,
+                sceneRequest.Observer.LongitudeDegrees),
+            sceneRequest.Utc);
+        var searchRadiusDegrees = Math.Min(180d, ProjectionSamplingBounds.OpticalRadiusDegrees(projection) + 15d);
+        var cap = new J2000SphericalCap(
+            boresightJ2000.RightAscensionHours,
+            boresightJ2000.DeclinationDegrees,
+            searchRadiusDegrees);
+
+        var baseQuery = options.Query is { } query
+            ? query.ToQuery(int.MaxValue) with { Region = cap }
+            : new DeepSkyQuery(int.MaxValue, Region: cap);
+        var matches = catalog.Query(baseQuery).Objects;
+        return matches
+            .OrderBy(static item => item.MessierNumber ?? int.MaxValue)
+            .ThenBy(static item => item.VMagnitude ?? double.PositiveInfinity)
+            .ThenByDescending(static item => item.MajorAxisArcminutes ?? 0d)
+            .ThenBy(static item => item.Id, StringComparer.Ordinal)
+            .Take(options.MaximumCandidates)
+            .ToArray();
+    }
+
     private static SolarSystemBody[] ParseSolarSystemBodies(IEnumerable<string> names)
         => names.Select(name => Enum.Parse<SolarSystemBody>(name, true)).Distinct().ToArray();
 }
@@ -1691,6 +1787,9 @@ public sealed class VirtualSkyCameraModuleOptions
     public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public OpenNgcDeepSkyOptions? DeepSky { get; init; }
+    /// <summary>Opt-in parametric extended deep-sky raw pixel rendering; omitted preserves existing identities and pixels.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualSkyDeepSkyRenderOptions? RenderDeepSkySources { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
     /// <summary>Manual-focus preview model; unset uses the declared defaults and never affects ordinary captures.</summary>
@@ -1702,6 +1801,7 @@ public sealed class VirtualSkyCameraModuleOptions
         SimulatedFocus?.Validate(PsfSigmaPixels);
         if (DeepSky is not null) _ = DeepSky.ToSelection();
         if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
+        RenderDeepSkySources?.Validate();
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();
         if (!Enum.IsDefined(IlluminationMode) || !Enum.IsDefined(StellarCandidateSelection) ||
@@ -1816,6 +1916,39 @@ public sealed class Asi178McSensorOptions
 
     /// <summary>Provisional RAW16 pedestal pending controlled bias characterization.</summary>
     public double BlackLevelContainerAdu { get; init; } = 64;
+}
+
+/// <summary>Opt-in configuration for deterministic parametric extended deep-sky raw pixel rendering in VirtualSky.</summary>
+public sealed record VirtualSkyDeepSkyRenderOptions(
+    bool Enabled = false,
+    double MinimumSignalToNoise = 3.0,
+    int MaximumCandidates = 128,
+    int MaximumRenderedSources = 64,
+    int SamplesPerProjectedPixel = 2,
+    bool PreferCatalogOutlines = true,
+    int PreferredOutlineLevel = DeepSkyOutline.WidestLevel,
+    bool AllowSurfaceBrightnessB25Fallback = false,
+    double CelestialDiffuseBackgroundElectronsPerSecond = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OpenNgcDeepSkyOptions? Query = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DeepSkySyntheticScenario? SyntheticScenario = null)
+{
+    public void Validate()
+    {
+        new DeepSkyRenderSettings(
+            MinimumSignalToNoise: MinimumSignalToNoise,
+            MaximumCandidates: MaximumCandidates,
+            MaximumRenderedSources: MaximumRenderedSources,
+            SamplesPerProjectedPixel: SamplesPerProjectedPixel,
+            PreferCatalogOutlines: PreferCatalogOutlines,
+            PreferredOutlineLevel: PreferredOutlineLevel,
+            AllowSurfaceBrightnessB25Fallback: AllowSurfaceBrightnessB25Fallback,
+            CelestialDiffuseBackgroundElectronsPerSecond: CelestialDiffuseBackgroundElectronsPerSecond,
+            SyntheticScenario: SyntheticScenario).Validate();
+        if (Query is not null)
+        {
+            _ = Query.ToQuery(MaximumCandidates);
+        }
+    }
 }
 
 /// <summary>Configures the provisional shared ASI676MM/MC 12-bit response in a RAW16 container.</summary>

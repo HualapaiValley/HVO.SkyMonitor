@@ -530,10 +530,19 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             var reach = (item.MajorAxisArcminutes ?? 0) / 120d;
             if (outlines.TryGetValue(item.Id, out var levels))
             {
-                foreach (var point in levels.SelectMany(static level => level.Rings).SelectMany(static ring => ring.Points))
+                foreach (var ring in levels.SelectMany(static level => level.Rings))
                 {
-                    reach = Math.Max(reach, Direction.AngleDegrees(
-                        direction, Direction.FromEquatorial(point.RightAscensionDegrees / 15d, point.DeclinationDegrees)));
+                    Direction? previous = null;
+                    foreach (var point in ring.Points)
+                    {
+                        var current = Direction.FromEquatorial(point.RightAscensionDegrees / 15d, point.DeclinationDegrees);
+                        reach = Math.Max(reach, Direction.AngleDegrees(direction, current));
+                        if (previous is { } start)
+                        {
+                            reach = Math.Max(reach, Direction.MaximumEdgeAngleDegrees(direction, start, current));
+                        }
+                        previous = current;
+                    }
                 }
             }
             entries[index] = new SpatialEntry(index, item.DeclinationDegrees, direction, reach);
@@ -758,6 +767,51 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
             var z = left.X * right.Y - left.Y * right.X;
             var dot = left.X * right.X + left.Y * right.Y + left.Z * right.Z;
             return Math.Atan2(Math.Sqrt(x * x + y * y + z * z), dot) * 180d / Math.PI;
+        }
+
+        // Exact upper bound on the angular separation from center to any point on the shortest great-circle arc
+        // between start and end. An antipodal/near-antipodal edge has no unique shortest arc and gets a conservative
+        // full-sphere reach so spatial queries never silently drop it.
+        public static double MaximumEdgeAngleDegrees(Direction center, Direction start, Direction end)
+        {
+            var edgeDot = start.X * end.X + start.Y * end.Y + start.Z * end.Z;
+            if (edgeDot <= -1d + 1e-10)
+            {
+                return 180d;
+            }
+            var maxAngle = Math.Max(AngleDegrees(center, start), AngleDegrees(center, end));
+            var normalX = start.Y * end.Z - start.Z * end.Y;
+            var normalY = start.Z * end.X - start.X * end.Z;
+            var normalZ = start.X * end.Y - start.Y * end.X;
+            var normalLenSq = normalX * normalX + normalY * normalY + normalZ * normalZ;
+            if (normalLenSq <= 1e-24)
+            {
+                return maxAngle;
+            }
+            // Project -center onto the plane spanned by start and end to locate the farthest interior point.
+            var normalDot = (-center.X * normalX - center.Y * normalY - center.Z * normalZ) / normalLenSq;
+            var projX = -center.X - normalDot * normalX;
+            var projY = -center.Y - normalDot * normalY;
+            var projZ = -center.Z - normalDot * normalZ;
+            var projLen = Math.Sqrt(projX * projX + projY * projY + projZ * projZ);
+            if (projLen <= 1e-15)
+            {
+                return maxAngle;
+            }
+            var candidate = new Direction(projX / projLen, projY / projLen, projZ / projLen);
+            // candidate lies on the shortest arc iff (start x candidate) · n >= 0 and (candidate x end) · n >= 0.
+            var c1X = start.Y * candidate.Z - start.Z * candidate.Y;
+            var c1Y = start.Z * candidate.X - start.X * candidate.Z;
+            var c1Z = start.X * candidate.Y - start.Y * candidate.X;
+            var c2X = candidate.Y * end.Z - candidate.Z * end.Y;
+            var c2Y = candidate.Z * end.X - candidate.X * end.Z;
+            var c2Z = candidate.X * end.Y - candidate.Y * end.X;
+            if (c1X * normalX + c1Y * normalY + c1Z * normalZ >= 0 &&
+                c2X * normalX + c2Y * normalY + c2Z * normalZ >= 0)
+            {
+                maxAngle = Math.Max(maxAngle, AngleDegrees(center, candidate));
+            }
+            return maxAngle;
         }
     }
 }

@@ -304,8 +304,18 @@ internal static class DeepSkySceneProjector
             {
                 if (footprints.Count < footprintBudget)
                 {
-                    var footprint = ResolvedFootprintSampler.Sample(request, id, item.DisplayName,
-                        ResolvedFootprintSourceKind.DeepSkyObject, CreateExtent(item, source, request.Utc), geometric, null);
+                    ProjectedResolvedFootprint? footprint = null;
+                    try
+                    {
+                        footprint = ResolvedFootprintSampler.Sample(request, id, item.DisplayName,
+                            ResolvedFootprintSourceKind.DeepSkyObject, CreateExtent(item, source, request.Utc), geometric, null);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // A single extent that overflows structural polyline bounds degrades honestly to its glyph
+                        // without aborting sibling objects in the scene.
+                        degradation = DeepSkyDegradation.FootprintLimit;
+                    }
                     if (footprint is not null)
                     {
                         footprints.Add(footprint);
