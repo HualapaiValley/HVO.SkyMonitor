@@ -22,6 +22,15 @@ internal sealed partial class RawCaptureIngress
 
     internal Task? SiloPressureRelease => Volatile.Read(ref _siloPressureRelease)?.Task;
 
+    internal Task? SiloAdmissionPressureRelease => SiloPressureRelease ?? _silo?.DiskBudget.AdmissionRelease;
+
+    private IDisposable? ReserveSiloCaptureSpace(long bytes)
+    {
+        if (_silo is null) return null;
+        return _silo.DiskBudget.TryReserve(SiloSpacePurpose.Capture, bytes)
+            ?? throw new CaptureLaneBackpressureException("Silo physical headroom cannot admit another capture.");
+    }
+
     private sealed record SiloRawIntent(Guid ArtifactId, DateTimeOffset ExposureStartedUtc, bool Reclaim = false, bool? SiloVisible = null);
 
     private async ValueTask RecordSiloRawIntentAsync(Guid artifactId, DateTimeOffset exposureStartedUtc)

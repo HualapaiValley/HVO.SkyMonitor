@@ -136,6 +136,14 @@ internal sealed class SiloObjectSpool(PhysicalRoot root, string directoryName)
         }
     }
 
+    internal int CleanupTemporaries(int limit)
+    {
+        var directory = root.Resolve(directoryName);
+        var removed = AtomicPublisher.CleanupTemporaries(root, directory, limit);
+        if (removed > 0) DurableSync.Directory(directory);
+        return removed;
+    }
+
     public IReadOnlyList<string> Names()
     {
         var directory = root.Resolve(directoryName);

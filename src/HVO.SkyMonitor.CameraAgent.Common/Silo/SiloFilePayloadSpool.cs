@@ -240,6 +240,16 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
 
     public ValueTask ReconcileAsync(IReadOnlySet<string> claimedTokens, CancellationToken cancellationToken)
     {
+        var removed = false;
+        foreach (var path in Directory.EnumerateFiles(_directory, "*.tmp").Take(256))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsPartialName(Path.GetFileName(path))) continue;
+            _root.Verify(path, "silo-payload-spool-cleanup");
+            File.Delete(path);
+            removed = true;
+        }
+        if (removed) DurableSync.Directory(_directory);
         foreach (var token in _files.Keys.ToArray())
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -384,6 +384,12 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
 
+    internal ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSavedSiloViewHoldsAsync(CancellationToken cancellationToken) =>
+        _store.ReadSavedSiloViewHoldsAsync(cancellationToken);
+
+    internal ValueTask<IReadOnlyList<SiloSceneLineage>> ReadSiloSceneLineageAsync(CancellationToken cancellationToken) =>
+        _store.ReadSiloSceneLineageAsync(cancellationToken);
+
     public ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,

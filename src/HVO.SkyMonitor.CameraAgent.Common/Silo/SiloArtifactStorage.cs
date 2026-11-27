@@ -65,7 +65,7 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             throw new SiloStoreUnavailableException(storage.Binding.StoreId, "verify writer binding", writeMayHaveLanded: false);
         await storage.Publisher.StageAsync(draft, open, cancellationToken).ConfigureAwait(false);
         var outcome = await storage.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
-        if (outcome.BlockedCode is { } conflict && conflict != "silo.store-unavailable")
+        if (outcome.BlockedCode is { } conflict && conflict is not ("silo.store-unavailable" or "silo-retention-delete-unsettled"))
             throw new SiloConflictException(conflict, "The staged Silo artifact publication was refused.");
         if (outcome.State != SiloStagedState.Visible || outcome.CatalogState != "visible")
             throw new SiloStoreUnavailableException(storage.Binding.StoreId, "settle artifact publication", writeMayHaveLanded: true);
@@ -91,6 +91,26 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             ? storage.Index.IsArtifactRetainedAsync(artifactId.ToString("D"), cancellationToken)
             : ValueTask.FromResult(true);
 
+    internal async ValueTask<bool> VerifyRetainedLocalPayloadAsync(Guid artifactId, string sha256, CancellationToken cancellationToken)
+    {
+        if (!storage.BindingVerified) return false;
+        var expected = SiloCenteredViews.LowerHex(sha256);
+        var physical = await storage.Index.FindRetainedLocalPayloadAsync(artifactId.ToString("D"), expected, cancellationToken)
+            .ConfigureAwait(false);
+        return physical is { } found && storage.Retention.ReadUnsettledTarget() != found.Locator &&
+            (await SiloVerifier.ProbeAsync(storage.Catalog.Stores, found.Locator, found.Length, expected, clock, false, cancellationToken)
+                .ConfigureAwait(false)).Status == SiloProbeStatus.Verified;
+    }
+
+    internal async ValueTask<IReadOnlySet<string>?> ReadArchivedCaptureReferencesAsync(CancellationToken cancellationToken)
+    {
+        if (!storage.BindingVerified) return null;
+        var authority = await storage.Index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false);
+        var head = await storage.State.ReadHeadAsync(cancellationToken).ConfigureAwait(false);
+        return authority.UnknownInterval || authority.PrefixEnd != head.Position || authority.PrefixEnd is null
+            ? null : await storage.Index.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal ValueTask<bool> IsReferenceRetainedAsync(string path, CancellationToken cancellationToken)
     {
         if (!IsReference(path) || !Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var id))
@@ -98,16 +118,19 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         return IsArtifactRetainedAsync(id, cancellationToken);
     }
 
-    // Raw payload and sidecar visibility must come from one local index snapshot.
+    // Raw payload and sidecar readability must come from one local index snapshot.
     internal ValueTask<bool> HasRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken) =>
-        storage.BindingVerified
-            ? storage.Index.HasVisibleMemberPairAsync(descriptor.Artifact.ArtifactId.ToString("D"),
-                CaptureContractJson.ComputeDescriptorSha256(descriptor), RawEvidenceRevision, cancellationToken)
-            : ValueTask.FromResult(false);
+        HasReadableLocalMembersAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+            RawEvidenceRevision, cancellationToken);
 
     public ValueTask<bool> HasMemberAsync(Guid artifactId, string revision, CancellationToken cancellationToken) =>
+        HasReadableLocalMembersAsync(artifactId, revision, null, cancellationToken);
+
+    private ValueTask<bool> HasReadableLocalMembersAsync(Guid artifactId, string revision, string? evidenceRevision,
+        CancellationToken cancellationToken) =>
         storage.BindingVerified
-            ? storage.Index.HasVisibleMemberAsync(artifactId.ToString("D"), revision, cancellationToken)
+            ? storage.Index.HasReadableLocalMembersAsync(artifactId.ToString("D"), revision, evidenceRevision,
+                storage.Retention.ReadUnsettledTarget(), cancellationToken)
             : ValueTask.FromResult(false);
 
     public async ValueTask<byte[]?> ReadRawAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken) =>
@@ -220,29 +243,41 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             ?? throw new InvalidDataException("The visible Silo member is missing its exact role record.");
     }
 
-    private async ValueTask<SiloProbe> ReadMemberCoreAsync(SiloRoleStatus role, Stream? destination, CancellationToken cancellationToken)
-    {
-        foreach (var candidate in role.Locators.Where(static locator => locator.Eligible && locator.CopyState == "active"))
+    private ValueTask<SiloProbe> ReadMemberCoreAsync(SiloRoleStatus role, Stream? destination, CancellationToken cancellationToken) =>
+        storage.Publisher.WithPublicationLockAsync(async () =>
         {
-            // Custody records for other stores remain in the catalog. Installed reads use only configured routes.
-            if (!storage.Catalog.Stores.TryResolve(candidate.Locator.StoreId, candidate.Locator.Bucket, out var store))
-                continue;
-            var proof = destination is null
-                ? await SiloVerifier.ProbeAsync(store, candidate.Locator, role.Length, role.Sha256, clock,
-                    captureBytes: true, cancellationToken).ConfigureAwait(false)
-                : await SiloVerifier.CopyVerifiedAsync(store, candidate.Locator, role.Length, role.Sha256, clock, destination,
-                    cancellationToken).ConfigureAwait(false);
-            switch (proof.Status)
+            var current = await storage.Index.ReadRoleAsync(role.Role, cancellationToken).ConfigureAwait(false);
+            var fenced = storage.Retention.ReadUnsettledTarget();
+            var hasFencedCopy = false;
+            foreach (var candidate in current?.Locators ?? [])
             {
-                case SiloProbeStatus.Verified: return proof;
-                case SiloProbeStatus.Unavailable:
-                    throw new SiloStoreUnavailableException(candidate.Locator.StoreId, "read committed member", writeMayHaveLanded: false);
-                case SiloProbeStatus.Damaged:
-                    throw new InvalidDataException("The exact Silo member failed length or SHA-256 verification.");
+                if (!candidate.Eligible || candidate.CopyState != "active" ||
+                    !storage.Catalog.Stores.TryResolve(candidate.Locator.StoreId, candidate.Locator.Bucket, out var store))
+                    continue;
+                if (candidate.Locator == fenced)
+                {
+                    hasFencedCopy = true;
+                    continue;
+                }
+                var proof = destination is null
+                    ? await SiloVerifier.ProbeAsync(store, candidate.Locator, role.Length, role.Sha256, clock,
+                        captureBytes: true, cancellationToken).ConfigureAwait(false)
+                    : await SiloVerifier.CopyVerifiedAsync(store, candidate.Locator, role.Length, role.Sha256, clock, destination,
+                        cancellationToken).ConfigureAwait(false);
+                switch (proof.Status)
+                {
+                    case SiloProbeStatus.Verified: return proof;
+                    case SiloProbeStatus.Unavailable:
+                        throw new SiloStoreUnavailableException(candidate.Locator.StoreId, "read committed member", writeMayHaveLanded: false);
+                    case SiloProbeStatus.Damaged:
+                        throw new InvalidDataException("The exact Silo member failed length or SHA-256 verification.");
+                }
             }
-        }
-        throw new FileNotFoundException("The exact Silo member version is missing.");
-    }
+            if (hasFencedCopy)
+                throw new SiloStoreUnavailableException(fenced!.StoreId, "read while a version delete is unsettled",
+                    writeMayHaveLanded: false);
+            throw new FileNotFoundException("The exact Silo member version is missing.");
+        }, cancellationToken);
 
     private static string? LowerHex(string? sha256) => sha256 is null ? null : SiloCenteredViews.LowerHex(sha256);
 

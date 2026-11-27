@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IServiceProvider services, TimeProvider clock,
-    ILogger<SiloArchiveWorker> logger) : BackgroundService, ICameraAgentSiloArchive
+    ILogger<SiloArchiveWorker> logger) : BackgroundService, ICameraAgentSiloArchive, ISiloRetentionArchive
 {
     private const int DiscoverLimit = 64;
     private const int PrefixLimit = 16;
@@ -97,7 +97,10 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             var verification = new SiloArchiveVerification(archive, clock);
             var due = await index.ReadDueAsync(clock.GetUtcNow(), VerifyLimit, stoppingToken).ConfigureAwait(false);
             foreach (var work in due)
+            {
+                if (source.Retention.ReadUnsettledTarget() is not null) break;
                 await VerifyAttemptAsync(source, archive, verification, index, work, stoppingToken).ConfigureAwait(false);
+            }
 
             if (await AdvancePrefixAsync(source, archive, index, stoppingToken).ConfigureAwait(false) is { } prefix)
                 (state, reason) = (prefix.State, prefix.Reason);
@@ -144,6 +147,57 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         !string.IsNullOrEmpty(settings["AccessKey"]) || !string.IsNullOrEmpty(settings["SecretKey"]) ||
         !string.IsNullOrEmpty(settings["AuthorityPem"]);
 
+    public async ValueTask<bool> ProtectAsync(SiloObjectIdentity identity, SiloExactLocator survivor, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var archive = SiloArchiveStore.Create(Settings, clock);
+            await archive.VerifyAsync(cancellationToken).ConfigureAwait(false);
+            if (!await archive.HasLegalHoldAsync(survivor, cancellationToken).ConfigureAwait(false) &&
+                !await archive.TryPlaceLegalHoldAsync(Settings, survivor, cancellationToken).ConfigureAwait(false)) return false;
+            return await VerifyProtectedAsync(archive, identity, survivor, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is SiloArchiveException or SiloStoreUnavailableException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public async ValueTask<bool> ConfirmProtectedAsync(SiloObjectIdentity identity, SiloExactLocator survivor, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var archive = SiloArchiveStore.Create(Settings, clock);
+            return await VerifyProtectedAsync(archive, identity, survivor, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is SiloArchiveException or SiloStoreUnavailableException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static async ValueTask<bool> VerifyProtectedAsync(SiloArchiveStore archive, SiloObjectIdentity identity,
+        SiloExactLocator survivor, CancellationToken cancellationToken) =>
+        await archive.HasLegalHoldAsync(survivor, cancellationToken).ConfigureAwait(false) &&
+        !await archive.WasExpiredAsync(survivor, cancellationToken).ConfigureAwait(false) &&
+        (await archive.ProbeAsync(identity, survivor, captureBytes: false, cancellationToken).ConfigureAwait(false)).Status == SiloProbeStatus.Verified;
+
+    public async ValueTask<bool> IsAuthorityExpiredAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var archive = SiloArchiveStore.Create(Settings, clock);
+            if (locator.StoreId != archive.Marker.StoreId || locator.Bucket != archive.Marker.Bucket ||
+                !await archive.WasExpiredAsync(locator, cancellationToken).ConfigureAwait(false)) return false;
+            using var open = await archive.Objects.OpenVersionAsync(locator.Key, locator.VersionId, cancellationToken).ConfigureAwait(false);
+            return open.Status == SiloOpenStatus.NoSuchVersion;
+        }
+        catch (Exception exception) when (exception is SiloArchiveException or SiloStoreUnavailableException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     private async ValueTask<SiloArchiveIndex?> TryOpenIndexAsync(SiloInstalledStorage source, SiloArchiveMarker marker,
         bool create, CancellationToken cancellationToken)
     {
@@ -182,12 +236,16 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             deadline.CancelAfter(AttemptLimit);
             try
             {
+                var retentionEpoch = SiloRetentionState.Read(source.PhysicalState).LastSettledAttemptId;
                 var prefix = (await index.ReadPrefixAsync(deadline.Token).ConfigureAwait(false)).Sequence;
                 var position = work.Publication.Position;
                 var committed = await source.State.ReadCommittedSegmentAsync(position, deadline.Token).ConfigureAwait(false)
                     ?? throw new SiloArchiveException("failed", "archive-source-commit-missing");
                 var evidence = await verification.VerifyPublicationAsync(work.Publication, committed, source.Index, prefix, deadline.Token)
                     .ConfigureAwait(false);
+                if (work.Receipt is { } previous)
+                    await RecordArchiveDispositionsAsync(source, archive, verification, work.Publication, previous, evidence, retentionEpoch, deadline.Token)
+                        .ConfigureAwait(false);
                 if (evidence.Records.Count == 0)
                 {
                     state = "policy-expired";
@@ -196,7 +254,7 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
                 else
                 {
                     bool current;
-                    (receipt, awaitingRefresh, current) = await VerifyReceiptAsync(source, archive, verification, work, evidence, prefix, deadline.Token)
+                    (receipt, awaitingRefresh, current) = await VerifyReceiptAsync(source, archive, verification, work, evidence, prefix, retentionEpoch, deadline.Token)
                         .ConfigureAwait(false);
                     if (!current)
                         (state, reason) = ("pending", "archive-receipt-refresh-pending");
@@ -228,16 +286,52 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             .ConfigureAwait(false);
     }
 
+    private async ValueTask RecordArchiveDispositionsAsync(SiloInstalledStorage source, SiloArchiveStore archive,
+        SiloArchiveVerification verification, SiloPublicationRef publication, SiloCommittedSegment previous,
+        SiloArchivePublicationEvidence current, string? retentionEpoch, CancellationToken cancellationToken)
+    {
+        var historical = await verification.ReadReceiptAsync(previous, publication, verifyCopies: false, cancellationToken, current)
+            .ConfigureAwait(false);
+        foreach (var copy in historical.Copies.Where(copy => !current.Copies.TryGetValue(copy.Identity.Role, out var verified) ||
+            verified.Locator != copy.Locator).DistinctBy(static copy => copy.Locator))
+        {
+            var exact = copy.Locator;
+            if (!await archive.WasExpiredAsync(exact, cancellationToken).ConfigureAwait(false)) continue;
+            using var observed = await archive.Objects.OpenVersionAsync(exact.Key, exact.VersionId, cancellationToken).ConfigureAwait(false);
+            if (observed.Status != SiloOpenStatus.NoSuchVersion) continue;
+
+            var intentId = SiloHash.Sha256(SiloJson.Serialize(exact));
+            var operation = "archive-disposition:" + intentId;
+            await CommitArchiveEvidenceAsync(source, retentionEpoch, async () =>
+            {
+                await source.ArchiveJournal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
+                if (await source.State.ReadOperationAsync(operation, cancellationToken).ConfigureAwait(false) is not null) return false;
+                await source.ArchiveJournal.AppendAsync(
+                    [
+                        new SiloExpiryIntentRecord(intentId, SiloExpiryScope.Copy, copy.Identity, "archive-custody-observed",
+                            [new(exact, SiloArchiveStore.Custody)], "archive-owner-expiry", LastCopy: false),
+                        new SiloExpiryDispositionRecord(intentId, exact, SiloExpiryOutcome.AlreadyAbsent, clock.GetUtcNow(),
+                            "archive-custody-and-exact-absence")
+                    ], operation, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private static async ValueTask<(SiloCommittedSegment? Receipt, bool AwaitingRefresh, bool Current)> VerifyReceiptAsync(
         SiloInstalledStorage source, SiloArchiveStore archive, SiloArchiveVerification verification, SiloArchiveWork work,
-        SiloArchivePublicationEvidence evidence, long prefix, CancellationToken cancellationToken)
+        SiloArchivePublicationEvidence evidence, long prefix, string? retentionEpoch, CancellationToken cancellationToken)
     {
         var position = work.Publication.Position;
         var previous = work.Receipt;
         var operation = FormattableString.Invariant($"archive-copy/{archive.Marker.StoreId}/{position.Generation}/{position.Sequence}/{work.Publication.Index}");
         if (previous is not null) operation += "/" + previous.Sha256;
         if (await source.State.ReadPendingAsync(cancellationToken).ConfigureAwait(false) is { } pending && pending.OperationId == operation)
-            await source.ArchiveJournal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
+            await CommitArchiveEvidenceAsync(source, retentionEpoch, async () =>
+            {
+                await source.ArchiveJournal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
 
         var recorded = await source.State.ReadOperationAsync(operation, cancellationToken).ConfigureAwait(false);
         SiloCommittedSegment receipt;
@@ -254,7 +348,8 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
                     .ConfigureAwait(false);
                 if (!NeedsReceiptRefresh(evidence, historical)) return (previous, false, true);
             }
-            receipt = await source.ArchiveJournal.AppendAsync(evidence.Records, operation, cancellationToken).ConfigureAwait(false);
+            receipt = await CommitArchiveEvidenceAsync(source, retentionEpoch,
+                () => source.ArchiveJournal.AppendAsync(evidence.Records, operation, cancellationToken), cancellationToken).ConfigureAwait(false);
         }
 
         if (previous is not null && (receipt.Position.Generation != 1 || receipt.Position.Sequence > prefix))
@@ -270,6 +365,16 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         var needsRefresh = NeedsReceiptRefresh(evidence, candidate);
         return (receipt, needsRefresh, !needsRefresh);
     }
+
+    private static ValueTask<T> CommitArchiveEvidenceAsync<T>(SiloInstalledStorage source, string? retentionEpoch,
+        Func<ValueTask<T>> commit, CancellationToken cancellationToken) =>
+        source.Publisher.WithPublicationLockAsync(async () =>
+        {
+            var retention = SiloRetentionState.Read(source.PhysicalState);
+            if (retention.Attempt is not null || retention.LastSettledAttemptId != retentionEpoch)
+                throw new SiloArchiveException("pending", "archive-retention-evidence-changed");
+            return await commit().ConfigureAwait(false);
+        }, cancellationToken);
 
     private static bool NeedsReceiptRefresh(SiloArchivePublicationEvidence current, SiloArchiveReceiptEvidence historical)
     {

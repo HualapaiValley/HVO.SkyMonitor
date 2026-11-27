@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 /// cannot leave any multipart upload to abort. The publication layer independently reads back and hashes the version.
 /// </summary>
 internal sealed class SiloS3ObjectStore(
-    IAmazonS3 client, SiloStoreDescriptor descriptor, TimeSpan requestTimeout) : ISiloObjectStore
+    IAmazonS3 client, SiloStoreDescriptor descriptor, TimeSpan requestTimeout) : ISiloObjectStore, ISiloVersionRemoval
 {
     public const long MaximumPutBytes = 5L * 1024 * 1024 * 1024;
     private const int PageSize = 32;
@@ -132,6 +132,34 @@ internal sealed class SiloS3ObjectStore(
                 return new SiloOpenResult(exception.ErrorCode == "NoSuchVersion" ? SiloOpenStatus.NoSuchVersion : SiloOpenStatus.NoSuchKey, null);
             }
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<bool> DeleteVersionAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(locator);
+        locator.Validate();
+        if (locator.StoreId != Descriptor.StoreId || locator.Bucket != Descriptor.Bucket ||
+            !(locator.Key.StartsWith("p/", StringComparison.Ordinal) || locator.Key.StartsWith("m/", StringComparison.Ordinal)))
+            throw new ArgumentException("The version is outside this Silo's retention namespace.", nameof(locator));
+
+        return await SendAsync("delete exact version", async token =>
+        {
+            try
+            {
+                await client.DeleteObjectAsync(new DeleteObjectRequest
+                {
+                    BucketName = locator.Bucket,
+                    Key = locator.Key,
+                    VersionId = locator.VersionId
+                }, token).ConfigureAwait(false);
+                return true;
+            }
+            catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.Forbidden &&
+                exception.ErrorCode == "AccessDenied")
+            {
+                return false;
+            }
+        }, cancellationToken, writeMayHaveLanded: true).ConfigureAwait(false);
     }
 
     public async ValueTask<string?> LocateCurrentVersionAsync(string key, CancellationToken cancellationToken) =>

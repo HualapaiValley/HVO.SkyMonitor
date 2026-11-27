@@ -160,6 +160,7 @@ internal sealed record SiloCheckpointEntry(long Generation, long Sequence, int I
 [JsonDerivedType(typeof(SiloPinRecord), SiloRecordTypes.Pin)]
 [JsonDerivedType(typeof(SiloPolicyRecord), SiloRecordTypes.Policy)]
 [JsonDerivedType(typeof(SiloExpiryIntentRecord), SiloRecordTypes.ExpiryIntent)]
+[JsonDerivedType(typeof(SiloExpiryAttemptRecord), SiloRecordTypes.ExpiryAttempt)]
 [JsonDerivedType(typeof(SiloExpiryDispositionRecord), SiloRecordTypes.ExpiryDisposition)]
 [JsonDerivedType(typeof(SiloAvailabilityRecord), SiloRecordTypes.Availability)]
 [JsonDerivedType(typeof(SiloAnchorRecord), SiloRecordTypes.Anchor)]
@@ -178,6 +179,7 @@ internal static class SiloRecordTypes
     public const string Pin = "pin";
     public const string Policy = "policy";
     public const string ExpiryIntent = "expiry-intent";
+    public const string ExpiryAttempt = "expiry-attempt";
     public const string ExpiryDisposition = "expiry-disposition";
     public const string Availability = "availability";
     public const string Anchor = "anchor";
@@ -185,7 +187,7 @@ internal static class SiloRecordTypes
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.Ordinal)
     {
         GenerationOpen, Publish, LiveIssue, Copy, ArchiveReceipt, ReserveSurvivor, ReleaseSurvivor, Remap, Pin, Policy,
-        ExpiryIntent, ExpiryDisposition, Availability, Anchor
+        ExpiryIntent, ExpiryAttempt, ExpiryDisposition, Availability, Anchor
     };
 }
 
@@ -316,6 +318,10 @@ internal sealed record SiloExpiryTarget(
     string Custody,
     string? AllocationId = null,
     long? AllocatedBytes = null);
+
+/// <summary>Orders one physical request, including requests against unpublished orphan versions.</summary>
+internal sealed record SiloExpiryAttemptRecord(string AttemptId, SiloExactLocator Locator, string Phase,
+    IReadOnlyList<string> IntentIds, SiloExpiryOutcome? Outcome = null) : SiloJournalRecord;
 
 internal sealed record SiloExpiryDispositionRecord(
     string IntentId,

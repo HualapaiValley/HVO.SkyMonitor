@@ -10,6 +10,7 @@ internal sealed class SiloInstalledStore : IDisposable
     private const int MaximumBindingBytes = 4096;
     private readonly AmazonS3Client? _client;
     private readonly Func<CancellationToken, ValueTask<bool>> _hasVersioning;
+    private readonly Func<SiloExactLocator, long?>? _exactAllocation;
     private readonly SiloInstalledSettings _settings;
 
     public SiloInstalledStore(SiloInstalledSettings settings)
@@ -25,11 +26,12 @@ internal sealed class SiloInstalledStore : IDisposable
     }
 
     internal SiloInstalledStore(SiloInstalledSettings settings, ISiloObjectStore store,
-        Func<CancellationToken, ValueTask<bool>> hasVersioning)
+        Func<CancellationToken, ValueTask<bool>> hasVersioning, Func<SiloExactLocator, long?>? exactAllocation = null)
     {
         _settings = settings;
         Store = store;
         _hasVersioning = hasVersioning;
+        _exactAllocation = exactAllocation;
     }
 
     public ISiloObjectStore Store { get; }
@@ -81,6 +83,8 @@ internal sealed class SiloInstalledStore : IDisposable
         root.TryGetProperty(key, out var property) && property.ValueKind == JsonValueKind.String && property.ValueEquals(expected);
 
     private static SiloConflictException BindingRefused(string message) => new("silo.installed-binding-refused", message);
+
+    internal long? ReadExactAllocationBytes(SiloExactLocator locator) => _exactAllocation?.Invoke(locator);
 
     public void Dispose() => _client?.Dispose();
 }
