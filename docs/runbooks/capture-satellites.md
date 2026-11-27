@@ -45,6 +45,24 @@ The optional central reconstruction boundary is the portable typed products;
 this slice adds no upload policy or automatic secondary archive publication.
 
 Installed orbital storage and the existing local time source supply the inputs.
+Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained
+GP JSON snapshots. The manifest carries the source format and credits the
+US Space Force / Space-Track for public GP data distributed by CelesTrak.
+Software & Catalog displays the source credit for the installed snapshot.
+Observatory & location shows that credit alongside the retained pass provenance.
+Current Sky includes the credit in Diagnostics for ordinary and centered
+predictions. The capture input retains its own manifest independently of the
+currently installed source.
+The refresh client requests `FORMAT=CSV` and publishes `celestrak-gp-csv-v1`
+snapshots. Previously retained `celestrak-gp-json-v1` snapshots remain available
+for byte-identical replay. [Orbital refresh](orbital-elements-refresh.md#provider-policy)
+allows at most one attempt per two hours, halts on non-200 HTTP responses until
+an operator resumes, and waits at least 15 minutes after a 5xx response before
+another attempt. Prediction makes no provider requests. A supplemental
+Space-Track acquisition would require the site operator's own account and
+at most one poll per hour at a randomized minute. CameraAgent has no
+Space-Track client or shared HVO account.
+
 The source/time loader's ordinary startup/refresh warmup remains authoritative.
 This node performs any remaining local work after raw admission, on the existing
 standard lane. It never fetches a provider or starts a scheduler. Refresh may be
@@ -157,10 +175,17 @@ does not establish absence outside the requested population/exposure. Source
 retrieval/epoch age and configured geometry remain visible. Exports use the
 existing immutable manifest and selected layer identities.
 
+In **Capture satellite predictions**, turn on **Hide satellite object labels**
+and activate a new graph revision to omit optional names and catalog numbers
+from future captures. The geometry and required diagnostic caption are kept.
+Replay uses the recorded label setting from the original capture.
+
 Only samples inside each declared exposure segment are connected. The existing
 1px stroke, 2px endpoints, bounded labels and prediction/unknown/partial/stale
 captions remain. A partial query qualifies even a prefix containing complete
-child tracks. No full-pass arc is introduced into capture imagery.
+child tracks. Centered views retain one segment per eligible contributing
+exposure with its direct-to-reference transform, highlight the reference and
+leave temporal gaps. The full planning arc lives in Observatory & location.
 
 ## Restart, replay and retention
 

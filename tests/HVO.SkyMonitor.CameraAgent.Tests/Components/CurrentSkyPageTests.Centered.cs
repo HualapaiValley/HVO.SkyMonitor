@@ -300,6 +300,33 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void CenteredEmptySatellitePredictionHasItsOwnReadinessState()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var reference = CenteredExposure(103, clock.GetUtcNow().AddSeconds(-10));
+        var layers = new CenteredViewLayer[]
+        {
+            new(new("predicted-satellites", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("satellite"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty,
+                nameof(CaptureSatelliteReason.NoExposureSegments), null),
+            new(new("MeasuredTransientTrails", CenteredViewLayerScope.Contributor, reference.Capture.CaptureId), 1,
+                EvidencePin("trails"), clock.GetUtcNow(), CenteredViewReadiness.AssessedEmpty, null, null)
+        };
+        var view = CenteredSingle(reference, 1, layers);
+        service.CenteredCurrentSkyHandler = (_, _) =>
+            ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(
+                CenteredSkyView(view, reference, CenteredViewLiveState.Ready, clock.GetUtcNow())));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var prediction = cut.WaitForElement("[data-layer-kind='predicted-satellites'][data-layer-readiness='NoSegment']");
+        Assert.AreEqual("No segment", prediction.QuerySelector(".layer-readiness-tag")?.TextContent);
+        Assert.AreEqual("No predicted segment for this exposure", prediction.QuerySelector("small")?.TextContent);
+        Assert.IsTrue(prediction.QuerySelector("input")!.HasAttribute("disabled"));
+        Assert.AreEqual("No detection", cut.Find("[data-layer-kind='MeasuredTransientTrails'] .layer-readiness-tag").TextContent);
+    }
+
+    [TestMethod]
     [DataRow(OrbitalTrackPresentation.LayerKind)]
     [DataRow("predicted-satellites")]
     public void CenteredPredictedSatelliteTrackKindsRenderTheSameDiagnosticCopy(string layerKind)
@@ -323,6 +350,8 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.StartsWith(row.QuerySelector("strong")?.TextContent, "Predicted satellite tracks · #103", StringComparison.Ordinal);
             Assert.AreEqual("predicted / exact exposure segment; geometry only, not a detection or visibility claim",
                 row.QuerySelector("small")?.TextContent);
+            Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
+                cut.Find("[aria-label='Diagnostics layers'] .satellite-source-credit").TextContent, StringComparison.Ordinal);
         });
     }
 
@@ -1877,38 +1906,46 @@ public sealed partial class CurrentSkyPageTests
         };
 
         var cut = context.Render<CurrentSkyPage>();
-        cut.WaitForAssertion(() =>
+        var timeout = TimeSpan.FromSeconds(5);
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
         {
             Assert.AreEqual(1, Volatile.Read(ref presentationCalls));
             Assert.AreEqual(1, Volatile.Read(ref bindCount));
+            Assert.IsTrue(clock.HasTimer(TimeSpan.FromSeconds(15)));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
             Assert.AreEqual("Ready", cut.Find("[data-layer-kind='star-annotations'] .layer-readiness-tag").TextContent);
             Assert.IsFalse(cut.Find("[data-layer-kind='star-annotations'] input").HasAttribute("disabled"));
             Assert.AreEqual("Unavailable", cut.Find("[data-layer-kind='scene-constellations'] .layer-readiness-tag").TextContent);
             Assert.IsTrue(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("disabled"));
-        });
+        }), timeout).ConfigureAwait(false);
 
         // Recover scene-constellations on the EXACT SAME (BaseId, RevisionId) through the production deferred path
         // via either automatic poll OR manual refresh!
         if (manualRefresh)
         {
-            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await cut.InvokeAsync(() => cut.Find("button.refresh-link").ClickAsync()).ConfigureAwait(false);
         }
         else
         {
             clock.Advance(TimeSpan.FromSeconds(15));
         }
 
-        cut.WaitForAssertion(() =>
+        await cut.WaitForAssertionAsync(() => cut.InvokeAsync(() =>
         {
-            Assert.IsGreaterThanOrEqualTo(2, Volatile.Read(ref presentationCalls));
+            Assert.AreEqual(2, Volatile.Read(ref presentationCalls));
+            Assert.AreEqual(2, Volatile.Read(ref bindCount));
+            Assert.IsNotNull(cut.Find(".sky-layer-canvas--verified"));
             Assert.AreEqual("Ready", cut.Find("[data-layer-kind='scene-constellations'] .layer-readiness-tag").TextContent);
             Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("disabled"));
             Assert.IsTrue(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
-            Assert.IsGreaterThanOrEqualTo(2, Volatile.Read(ref bindCount));
-        });
+        }), timeout).ConfigureAwait(false);
 
-        await cut.Find("[data-layer-kind='scene-constellations'] input").ChangeAsync(false).ConfigureAwait(false);
-        Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
+        // Resolve the checkbox and dispatch onchange atomically on the renderer so background renders cannot retire its handler first.
+        await cut.InvokeAsync(async () =>
+        {
+            await cut.Find("[data-layer-kind='scene-constellations'] input").ChangeAsync(false).ConfigureAwait(true);
+            Assert.IsFalse(cut.Find("[data-layer-kind='scene-constellations'] input").HasAttribute("checked"));
+        }).ConfigureAwait(false);
     }
 
     [TestMethod]

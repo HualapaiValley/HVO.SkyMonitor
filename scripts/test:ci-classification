@@ -1042,6 +1042,7 @@ certificate_cases=(
   slnx-{folder,project}-{tab,cr,lf,escaped-tab,escaped-cr,escaped-lf}
   slnx-{folder,project}-xmlns-{tab,cr,lf}
   slnx-doctype slnx-doctype-entity slnx-declares-utf16 slnx-declares-utf8
+  slnx-double-bom slnx-nul
   slnx-attribute-formatting
 )
 
@@ -1107,6 +1108,8 @@ SLNX_ERRORS = dict.fromkeys(SLNX_INVALID_CASES, "unknown solution entry") | {
     for case, (_, whitespace) in SLNX_WHITESPACE_CASES.items()
 } | dict.fromkeys(SLNX_DECLARATION_CASES, "document type declarations require manual review")
 SLNX_ERRORS["slnx-declares-utf16"] = "XML declares a non-UTF-8 encoding"
+SLNX_ERRORS["slnx-double-bom"] = "build input is not UTF-8"
+SLNX_ERRORS["slnx-nul"] = "build input is not UTF-8"
 DIRECT_CHECK_CASES = SLNX_ERRORS.keys() | {
     "global-json-sdk-paths", "global-json-extra-top-key", "global-json-utf16",
 }
@@ -1319,6 +1322,15 @@ for case in cases:
                             encoding="utf-8-sig")
         if case == "slnx-declares-utf8":
             expected = "verify-restore"
+    elif case == "slnx-double-bom":
+        solution = repo / "HVO.SkyMonitor.v9.slnx"
+        solution.write_bytes(
+            b"\xef\xbb\xbf\xef\xbb\xbf" + b'<?xml version="1.0" encoding="utf-16"?>\n' + solution.read_bytes()
+        )
+    elif case == "slnx-nul":
+        (repo / "HVO.SkyMonitor.v9.slnx").write_bytes(
+            b'<Solution><Project Path="tests/Example/Example.csproj" />\x00</Solution>\n'
+        )
     elif case in SLNX_DECLARATION_CASES:
         declaration, project_path = SLNX_DECLARATION_CASES[case]
         (repo / "HVO.SkyMonitor.v9.slnx").write_text(
@@ -1607,6 +1619,74 @@ run_fast_group_3() {
   printf 'changed\n' >> "$repo/docs/runbooks/releases.md"
   git -C "$repo" commit -qam doc-change
   fast_reason_in "$repo" 'project inventory unavailable' "$encoding_decl_base" "$(git -C "$repo" rev-parse HEAD)"
+  # A double UTF-8 BOM must not let read_xml skip the XML declaration check.
+  git -C "$repo" reset -q --hard "$fast_base"
+  mkdir -p "$repo/docs/runbooks"
+  printf 'safe\n' > "$repo/docs/runbooks/releases.md"
+  python3 -I -c 'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(b"\xef\xbb\xbf\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-16\"?><Project />\n")' "$repo/tests/Example/Example.csproj"
+  git -C "$repo" add . && git -C "$repo" commit -qm double-bom-csproj
+  encoding_decl_base="$(git -C "$repo" rev-parse HEAD)"
+  if (cd "$repo" && "$classifier" --print-docs-inventory "$encoding_decl_base") > "$repo/.git/unsafe-inventory" 2> "$repo/.git/decl-error"; then
+    printf 'Double-BOM XML input was certified.\n' >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: build input is not UTF-8' "$repo/.git/decl-error"
+  printf 'changed\n' >> "$repo/docs/runbooks/releases.md"
+  git -C "$repo" commit -qam doc-change
+  fast_reason_in "$repo" 'project inventory unavailable' "$encoding_decl_base" "$(git -C "$repo" rev-parse HEAD)"
+  # Focused unit assertions for restore-imports.py XML encoding guards (double BOM and NUL byte).
+  python3 -I - "$repo_root/scripts/ci/restore-imports.py" "$repo/.git" <<'PY_RESTORE_XML'
+import importlib.util, pathlib, sys
+
+spec = importlib.util.spec_from_file_location("restore_imports", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+tmp = pathlib.Path(sys.argv[2])
+generated = tmp / "unit.nuget.g.props"
+project_xml = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" />'
+slnx_body = b'<Solution><Project Path="tests/Example/Example.csproj" /></Solution>\n'
+
+for label, bad_text in (
+    ("residual-bom-utf16", "\ufeff<?xml version='1.0' encoding='utf-16'?>\n" + project_xml),
+    ("residual-bom-plain", "\ufeff" + project_xml),
+    ("nul-byte-prefix", "\0<?xml version='1.0' encoding='utf-8'?>\n" + project_xml),
+    ("nul-byte-body", project_xml + "\0"),
+):
+    try:
+        mod.check_xml_encoding(bad_text)
+    except mod.ProofError as error:
+        if str(error) != "build input is not UTF-8":
+            raise SystemExit(f"check_xml_encoding({label}) unexpected error: {error}")
+    else:
+        raise SystemExit(f"check_xml_encoding accepted invalid input: {label}")
+
+for label, bad_slnx in (
+    ("double-bom-utf16", b"\xef\xbb\xbf\xef\xbb\xbf<?xml version='1.0' encoding='utf-16'?>\n" + slnx_body),
+    ("double-bom-plain", b"\xef\xbb\xbf\xef\xbb\xbf" + slnx_body),
+    ("nul-byte", b'<Solution><Project Path="tests/Example/Example.csproj" />\x00</Solution>\n'),
+):
+    try:
+        mod.solution_projects(bad_slnx)
+    except mod.ProofError as error:
+        if str(error) != "build input is not UTF-8":
+            raise SystemExit(f"solution_projects({label}) unexpected error: {error}")
+    else:
+        raise SystemExit(f"solution_projects accepted invalid input: {label}")
+
+for label, bad_blob in (
+    ("double-bom-utf16", b"\xef\xbb\xbf\xef\xbb\xbf<?xml version='1.0' encoding='utf-16'?>\n" + project_xml.encode("utf-8")),
+    ("nul-byte", (project_xml + "\0").encode("utf-8")),
+):
+    generated.write_bytes(bad_blob)
+    try:
+        mod.generated_imports(generated, tmp, tmp / "nuget", tmp / "sdk", set())
+    except mod.ProofError as error:
+        if str(error) != "build input is not UTF-8":
+            raise SystemExit(f"generated_imports({label}) unexpected error: {error}")
+    else:
+        raise SystemExit(f"generated_imports accepted invalid input: {label}")
+generated.unlink()
+PY_RESTORE_XML
   # UTF-8 and UTF-16 encodings of the same escaped link must both fail closed.
   for encoding in utf-8 utf-16; do
     git -C "$repo" reset -q --hard "$fast_base"

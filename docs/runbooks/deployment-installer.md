@@ -1230,18 +1230,28 @@ keeps killing its host cannot loop forever. Within its remaining attempts and
 deadline it retries on its own. When they are spent it fails terminally, as
 any replay does.
 
-Open **Quarantine → Raw evidence quarantine and releases**
-(`/operations/quarantine?kind=RawEvidence`). Review the capture identity and
-failure, then choose one of these audited actions:
-
 When the journal is valid but raw evidence is missing or corrupt, the host keeps
 the authenticated operator surface available while capture admission and lane
-processing wait for audited recovery. Configuration, schedule, named-rig and
+processing wait for evidence recovery. Configuration, schedule, named-rig and
 calibration metadata still initialize against the validated journal. Pending
 calibration-acquisition recovery waits for evidence release and preserves its
 job if the host stops meanwhile. A persisted capture pause remains paused after
 release; resume it explicitly when appropriate. Unsupported schemas and other
 integrity failures still fail startup.
+
+If Silo has durably committed the raw publication in its journal (P3), the
+publication worker can finish making the exact raw payload and sidecar visible
+(P4) even after local staging is lost or damaged. Settlement restores the raw
+record to `committed`, releases evidence-related lane quarantines, and records
+the `raw-evidence-silo-restored` audit stage in the same transaction. Standard
+work is abandoned with `raw-evidence-revalidated` and remains available for
+explicit archived replay. Other evidence-failed lanes return to their queue
+with their original age and expiry rules. Existing operator write-offs and
+unrelated quarantines retain their dispositions.
+
+For failures that still depend on local evidence, open **Quarantine → Raw
+evidence quarantine and releases** (`/operations/quarantine?kind=RawEvidence`).
+Review the capture identity and failure, then choose an audited action.
 
 - **Revalidate:** recover the exact original payload and sidecar at their
   committed paths from trusted recovery evidence. Preserve the quarantined
@@ -1256,10 +1266,11 @@ integrity failures still fail startup.
 - **Write off:** explicitly acknowledge irrecoverable evidence or approved loss.
   This records a terminal disposition with actor, controlled reason and UTC
   time, abandons that capture's pending lanes, and preserves its original
-  identity and all remaining raw files. Written-off evidence stays protected
-  from retention and cannot be reaccepted or automatically recovered on restart.
-  This action does not reclaim disk space. A capture with a leased lane must
-  settle that lease before either action can apply.
+  identity. Written-off captures cannot be reaccepted or automatically
+  recovered on restart. Local-only storage preserves remaining raw files under
+  a retention hold. In Silo installations the publisher can reclaim temporary
+  admission staging when the publication is abandoned or becomes visible. A
+  capture with a leased lane must settle that lease before either action can apply.
 
 A standard-lane quarantine whose raw capture is still `committed` is not in that list.
 It is the lane row, not missing or corrupt raw bytes. Open **Quarantine → Processing

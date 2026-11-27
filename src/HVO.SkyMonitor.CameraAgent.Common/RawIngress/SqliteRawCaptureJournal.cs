@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
@@ -25,7 +26,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     Action? inspectionSourceOpenedSeam = null,
     CenteredExposureProductChanges? centeredProductChanges = null,
     CenteredWindowWakeup? centeredWindowWakeup = null,
-    FirstBootPauseIdentity? firstBootPause = null)
+    FirstBootPauseIdentity? firstBootPause = null,
+    bool usesSilo = false)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -250,7 +252,12 @@ internal sealed partial class SqliteRawCaptureJournal(
             }
         }
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds).ConfigureAwait(false);
+        if (usesSilo)
+            await InitializeSiloAdmissionsAsync(connection, cancellationToken).ConfigureAwait(false);
+        else if (await ExecuteScalarLongAsync(connection,
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'silo_raw_admissions');", cancellationToken).ConfigureAwait(false) != 0)
+            throw new InvalidDataException("This raw admission journal belongs to an installed Silo layout.");
+        await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds, verifyDatabase: !usesSilo).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
     }
@@ -420,6 +427,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         {
             return (false, false);
         }
+        if (usesSilo)
+            return (true, reader.GetString(2) == "committed");
         var root = Path.GetDirectoryName(Path.GetDirectoryName(_databasePath)!)!;
         var payload = Path.GetFullPath(Path.Combine(
             root, reader.GetString(0).Replace('/', Path.DirectorySeparatorChar)));
@@ -573,6 +582,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         command.Parameters.AddWithValue("$committed", _utcNow().ToUniversalTime().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         var rawRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (usesSilo)
+            await TrackSiloAdmissionAsync(connection, transaction, rawRowId, entry, cancellationToken).ConfigureAwait(false);
         await InsertContextAsync(
             connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
@@ -664,11 +675,16 @@ internal sealed partial class SqliteRawCaptureJournal(
         return captures;
     }
 
-    internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The storage layout only selects between two constant queries.")]
+    internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest, long LargestAdmissionBytes)> ReadHeldTotalsAsync(
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = usesSilo ? """
+            SELECT COUNT(*), COALESCE(SUM(pending.staged_bytes), 0), MIN(raw.durable_ingress_unix_ms), COALESCE(MAX(pending.staged_bytes), 0)
+            FROM silo_raw_admissions pending JOIN raw_captures raw ON raw.raw_capture_row_id = pending.raw_capture_row_id;
+            """ : """
             SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms)
             FROM raw_captures WHERE retention_hold = 1 OR EXISTS (
                 SELECT 1 FROM raw_capture_stage_events disposition
@@ -683,7 +699,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         return (
             reader.GetInt64(0),
             reader.GetInt64(1),
-            oldest);
+            oldest,
+            usesSilo ? reader.GetInt64(3) : 0);
     }
 
     /// <summary>
@@ -1623,6 +1640,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (usesSilo)
+            await TrackSiloAdmissionAsync(connection, transaction, recoveredRowId, entry, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, recoveredRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
         if (centered is not null)
@@ -1682,7 +1701,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             SELECT
                 (SELECT COUNT(*) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
                 (SELECT COALESCE(SUM(observed_bytes), 0) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
-                (SELECT COUNT(*) FROM raw_captures raw WHERE state != 'committed'
+                (SELECT COUNT(*) FROM raw_captures raw WHERE state IN ('missing_evidence', 'quarantined')
                     AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events disposition
                         WHERE disposition.raw_capture_row_id = raw.raw_capture_row_id
                           AND disposition.stage_key = 'raw-evidence-written-off'));
@@ -1826,51 +1845,90 @@ internal sealed partial class SqliteRawCaptureJournal(
 
     internal async Task CheckpointAsync(CancellationToken cancellationToken)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Failure;
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.GetInt32(0) != 0)
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 throw new IOException("Raw ingress WAL checkpoint could not complete without a busy writer.");
             }
+            if (reader.GetInt32(0) != 0)
+            {
+                outcome = CameraAgentWorkloadTelemetry.Outcome.Busy;
+                throw new IOException("Raw ingress WAL checkpoint could not complete without a busy writer.");
+            }
+            // PASSIVE can return OK with unread WAL frames that a reader still pins.
+            outcome = reader.GetInt32(2) < reader.GetInt32(1)
+                ? CameraAgentWorkloadTelemetry.Outcome.Incomplete
+                : CameraAgentWorkloadTelemetry.Outcome.Success;
             _checkpointRecorder?.Invoke(true);
         }
-        catch
+        catch (Exception exception)
         {
             _checkpointRecorder?.Invoke(false);
+            if (outcome != CameraAgentWorkloadTelemetry.Outcome.Busy)
+                outcome = ClassifySqliteFailure(exception);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteCheckpoint, outcome);
         }
     }
 
+    internal static CameraAgentWorkloadTelemetry.Outcome ClassifySqliteFailure(Exception exception) => exception switch
+    {
+        OperationCanceledException => CameraAgentWorkloadTelemetry.Outcome.Cancelled,
+        SqliteException { SqliteErrorCode: 5 } => CameraAgentWorkloadTelemetry.Outcome.Busy,
+        SqliteException { SqliteErrorCode: 6 } => CameraAgentWorkloadTelemetry.Outcome.Locked,
+        _ => CameraAgentWorkloadTelemetry.Outcome.Failure
+    };
+
     private async Task<T> TrackTransactionAsync<T>(string operation, Func<Task<T>> transaction)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
         try
         {
             var result = await transaction().ConfigureAwait(false);
             _transactionRecorder?.Invoke(operation, true);
             return result;
         }
-        catch
+        catch (Exception exception)
         {
+            outcome = ClassifySqliteFailure(exception);
             _transactionRecorder?.Invoke(operation, false);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteWrite, outcome);
         }
     }
 
     private async Task TrackWriteAsync(string operation, Func<Task> transaction)
     {
+        var started = CameraAgentWorkloadTelemetry.Start();
+        var outcome = CameraAgentWorkloadTelemetry.Outcome.Success;
         try
         {
             await transaction().ConfigureAwait(false);
             _transactionRecorder?.Invoke(operation, true);
         }
-        catch
+        catch (Exception exception)
         {
+            outcome = ClassifySqliteFailure(exception);
             _transactionRecorder?.Invoke(operation, false);
             throw;
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.Record(started, CameraAgentWorkloadTelemetry.Operation.SqliteWrite, outcome);
         }
     }
 
@@ -1939,6 +1997,7 @@ internal sealed partial class SqliteRawCaptureJournal(
     {
         await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
         {
+            Sqlite.SqliteHashFunctions.RegisterSha256(connection);
             await ExecuteNonQueryAsync(connection, null, $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
             var journalMode = await ExecuteScalarStringAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);
@@ -2132,7 +2191,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                 !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
                 !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
             actualSchemaDefinitions.Keys.Any(name =>
-                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)) ||
+                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name) &&
+                !IsCanonicalSiloAdmissionTable(name, actualSchemaDefinitions[name], version)) ||
             (actualSchemaDefinitions.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName) &&
              version != CurrentSchemaVersion &&
              (version != PreviousEnvironmentalFenceSchemaVersion ||

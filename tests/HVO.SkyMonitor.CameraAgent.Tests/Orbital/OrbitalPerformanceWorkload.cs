@@ -45,17 +45,12 @@ internal sealed class OrbitalPerformanceWorkload
 
     private static byte[] Build(bool changed)
     {
-        var builder = new StringBuilder(RecordCount * 400);
-        builder.Append('[');
+        var builder = new StringBuilder(RecordCount * 140);
+        builder.Append(CelesTrakGpTestData.CsvHeader).Append('\n');
         for (var index = 0; index < RecordCount; index++)
         {
-            if (index > 0)
-            {
-                builder.Append(',');
-            }
             AppendRecord(builder, index, changed && index == 0);
         }
-        builder.Append(']');
         return Encoding.UTF8.GetBytes(builder.ToString());
     }
 
@@ -76,22 +71,16 @@ internal sealed class OrbitalPerformanceWorkload
         var designator = string.Create(CultureInfo.InvariantCulture,
             $"{1990 + (objectIndex % 36)}-{(objectIndex % 999) + 1:000}{(char)('A' + (objectIndex / 999 % 26))}");
         builder.Append(CultureInfo.InvariantCulture,
-            $"{{\"OBJECT_NAME\":\"HVO SYNTHETIC {catalog}\",\"OBJECT_ID\":\"{designator}\",")
-            .Append(CultureInfo.InvariantCulture,
-                $"\"EPOCH\":\"{epoch.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}\",")
-            .Append(CultureInfo.InvariantCulture, $"\"MEAN_MOTION\":{1.0027 + ((objectIndex % 16_000) / 1000.0):F8},")
-            .Append(CultureInfo.InvariantCulture, $"\"ECCENTRICITY\":{(objectIndex * 37 % 99_991) / 1_000_000.0:F7},")
-            .Append(CultureInfo.InvariantCulture, $"\"INCLINATION\":{(objectIndex * 7 % 18_001) / 100.0:F4},")
-            .Append(CultureInfo.InvariantCulture, $"\"RA_OF_ASC_NODE\":{(objectIndex * 13 % 36_000) / 100.0:F4},")
-            .Append(CultureInfo.InvariantCulture, $"\"ARG_OF_PERICENTER\":{(objectIndex * 17 % 36_000) / 100.0:F4},")
-            .Append(CultureInfo.InvariantCulture, $"\"MEAN_ANOMALY\":{meanAnomaly:F4},")
-            .Append("\"EPHEMERIS_TYPE\":0,\"CLASSIFICATION_TYPE\":\"U\",")
-            .Append(CultureInfo.InvariantCulture, $"\"NORAD_CAT_ID\":{catalog},\"ELEMENT_SET_NO\":{elementSet},")
-            .Append(CultureInfo.InvariantCulture, $"\"REV_AT_EPOCH\":{(objectIndex * 31 % 99_999) + (repeat ? 0 : 1)},")
-            .Append(CultureInfo.InvariantCulture, $"\"BSTAR\":{((index % 2_001) - 1_000) / 10_000_000.0:0.##########},")
-            .Append(CultureInfo.InvariantCulture,
-                $"\"MEAN_MOTION_DOT\":{((index % 1_001) - 500) / 100_000_000.0:0.##########},")
-            .Append("\"MEAN_MOTION_DDOT\":0}");
+            $"HVO SYNTHETIC {catalog},{designator},{epoch.UtcDateTime:yyyy-MM-dd'T'HH:mm:ss.ffffff},")
+            .Append(CultureInfo.InvariantCulture, $"{1.0027 + ((objectIndex % 16_000) / 1000.0):F8},")
+            .Append(CultureInfo.InvariantCulture, $"{(objectIndex * 37 % 99_991) / 1_000_000.0:F7},")
+            .Append(CultureInfo.InvariantCulture, $"{(objectIndex * 7 % 18_001) / 100.0:F4},")
+            .Append(CultureInfo.InvariantCulture, $"{(objectIndex * 13 % 36_000) / 100.0:F4},")
+            .Append(CultureInfo.InvariantCulture, $"{(objectIndex * 17 % 36_000) / 100.0:F4},")
+            .Append(CultureInfo.InvariantCulture, $"{meanAnomaly:F4},0,U,{catalog},{elementSet},")
+            .Append(CultureInfo.InvariantCulture, $"{(objectIndex * 31 % 99_999) + (repeat ? 0 : 1)},")
+            .Append(CultureInfo.InvariantCulture, $"{((index % 2_001) - 1_000) / 10_000_000.0:0.##########},")
+            .Append(CultureInfo.InvariantCulture, $"{((index % 1_001) - 500) / 100_000_000.0:0.##########},0\n");
     }
 
     /// <summary>Most epochs fall in the three days before retrieval; two are ahead of it and 25 are over a week old.</summary>

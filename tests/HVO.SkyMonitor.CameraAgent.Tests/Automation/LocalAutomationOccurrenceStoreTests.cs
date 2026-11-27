@@ -220,6 +220,33 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
     }
 
     [TestMethod]
+    public async Task Backfill_ValidatesExpectedWindowHashAndAcceptsDifferentHexCase()
+    {
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        var window = _planner.ResolveWindows(new DateOnly(2026, 10, 12),
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.CompletedCivilHour))[0];
+        MoveTo(window.EarliestFinalUtc);
+        var request = new LocalAutomationBackfillRequest("hourly", window.ReportingPeriod.ReportDate,
+            window.StartUtc, 1, "window-hash", "owner", "Backfill the previewed window");
+
+        foreach (var malformed in new[] { new string('a', 63), new string('g', 64) })
+        {
+            var rejected = await _store.BackfillAsync(request with { ExpectedWindowIdentitySha256 = malformed },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Invalid, rejected.Status);
+            Assert.AreEqual(LocalAutomationContract.InvalidCommandReasonCode, rejected.ReasonCode);
+            Assert.IsEmpty(rejected.State.ActiveRuns);
+        }
+
+        var differentCase = string.Concat(window.IdentitySha256.Select(char.ToLowerInvariant));
+        Assert.AreNotEqual(window.IdentitySha256, differentCase);
+        var applied = await _store.BackfillAsync(request with { ExpectedWindowIdentitySha256 = differentCase },
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, applied.Status);
+        Assert.AreEqual(window, applied.State.ActiveRuns.Single().Occurrence!.SourceWindow);
+    }
+
+    [TestMethod]
     public async Task CancellationIgnoringExecution_KeepsSoleAuthorityUntilActualDrainAndRestartMarksInterrupted()
     {
         await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
@@ -310,16 +337,20 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
         var previous = original.RunKey;
         for (var attempt = 2; attempt <= SqliteLocalAutomationStore.MaximumOccurrenceAttempts; attempt++)
         {
+            var beforeRetry = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(previous, beforeRetry.RetryableSourceWindowRunKeys.Single());
             var command = new LocalAutomationRetryRequest("hourly", previous, 1, "retry-attempt-" + attempt,
                 "owner", "retry same input");
-            Assert.AreEqual(LocalAutomationCommandStatus.Applied,
-                (await _store.RetryAsync(command, CancellationToken.None).ConfigureAwait(false)).Status);
+            var retry = await _store.RetryAsync(command, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, retry.Status);
+            Assert.IsEmpty(retry.State.RetryableSourceWindowRunKeys);
             await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
             previous = original.RunKey + ":retry" + attempt;
         }
-        Assert.AreEqual("automation.retry-limit-or-stale-attempt",
-            (await _store.RetryAsync(new("hourly", previous, 1, "retry-too-many", "owner", "bounded retry"),
-                CancellationToken.None).ConfigureAwait(false)).ReasonCode);
+        var exhausted = await _store.RetryAsync(new("hourly", previous, 1, "retry-too-many", "owner", "bounded retry"),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("automation.retry-limit-or-stale-attempt", exhausted.ReasonCode);
+        Assert.IsEmpty(exhausted.State.RetryableSourceWindowRunKeys);
         Assert.AreEqual(2, _registry.Executed.Count);
         Assert.IsTrue(_registry.Executed.All(item => item == original));
     }
@@ -347,9 +378,15 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
         var entry = (await _store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
         var windows = _planner.ResolveWindows(new DateOnly(2026, 10, 12), entry.Definition.SourceWindow!)
             .Concat(_planner.ResolveWindows(new DateOnly(2026, 10, 13), entry.Definition.SourceWindow!))
-            .Take(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition + 1).ToArray();
-        MoveTo(windows[^1].EarliestFinalUtc);
-        for (var index = 0; index < windows.Length; index++)
+            .Take(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition + 2).ToArray();
+        var failed = LocalAutomationWindowPlanner.CreateOccurrence(entry, windows[^1]);
+        MoveTo(failed.ScheduledForUtc);
+        Assert.IsTrue(await _store.TryBeginOccurrenceAsync(failed, CancellationToken.None).ConfigureAwait(false));
+        await _store.CompleteRunAsync(failed.RunKey, LocalAutomationRunOutcome.Failed, "fixture failure", CancellationToken.None)
+            .ConfigureAwait(false);
+        var beforeQueue = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(failed.RunKey, beforeQueue.RetryableSourceWindowRunKeys.Single());
+        for (var index = 0; index < windows.Length - 1; index++)
         {
             var window = windows[index];
             var result = await _store.BackfillAsync(new("hourly", window.ReportingPeriod.ReportDate,
@@ -357,6 +394,10 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
             Assert.AreEqual(index < SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition
                 ? LocalAutomationCommandStatus.Applied : LocalAutomationCommandStatus.Conflict, result.Status);
         }
+        var full = await _store.RetryAsync(new("hourly", failed.RunKey, 1, "retry-at-cap", "owner", "retained retry"),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("automation.queue-capacity", full.ReasonCode);
+        Assert.IsEmpty(full.State.RetryableSourceWindowRunKeys);
         var first = windows[0];
         Assert.AreEqual(LocalAutomationCommandStatus.Unchanged,
             (await _store.BackfillAsync(new("hourly", first.ReportingPeriod.ReportDate, first.StartUtc,

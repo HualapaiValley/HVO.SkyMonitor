@@ -44,8 +44,8 @@ A normalized record contains:
 | Elements | Mean motion rev/day; eccentricity; inclination, ascending node, argument of pericenter and mean anomaly in degrees; BStar in inverse Earth radii; original GP DOT/DDOT fields and convention; ephemeris/classification fields; optional element-set/revolution numbers |
 | Provenance | Parser/normalizer/profile version and source-asserted type/status only when supplied |
 
-Initial CelesTrak GP JSON supplies its documented omitted model constants only
-under the approved profile. Reject conflicting center/frame/time/theory,
+CelesTrak GP CSV and retained GP JSON use the documented model constants for
+omitted fields under their respective profiles. Reject conflicting center/frame/time/theory,
 nonfinite values, invalid eccentricity/inclination/mean motion, malformed
 identities, invalid intervals and unsupported ephemeris/model combinations.
 Normalize angles and negative zero consistently in typed data before hashing;
@@ -242,8 +242,13 @@ identifies and strictly round-trips separate track/pass products.
 `CameraAgent.Common/Orbital/OrbitalRefreshStatus.cs` owns operational status.
 No host DI, scheduled job, HTTP parser, propagator or UI is activated here.
 
-The manifest explicitly binds `hvo-orbital-elements-v1` and
-`celestrak-gp-json-v1`. Identity strings are uppercase SHA256, catalog text
+The manifest binds `hvo-orbital-elements-v1` and the normalized records' GP
+profile. Retained `celestrak-gp-json-v1` snapshots and `celestrak-gp-csv-v1`
+snapshots use the same OMM field units and SGP4 conventions. The CSV profile
+accepts the canonical CelesTrak active-group CSV source URL. The original
+wire format, raw digest, parser and normalizer identities travel with the
+snapshot through capture and replay. Changing the acquisition format creates
+a new snapshot identity. Identity strings are uppercase SHA256, catalog text
 is canonical decimal, and software `ImplementationSha256` identifies the
 retained implementation/source package, not a platform-specific runtime DLL.
 Canonical JSON preserves the capture canonical writer's ordinal property order,

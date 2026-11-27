@@ -3,6 +3,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -93,11 +95,13 @@ internal sealed class FocusOwnerFixture : IAsyncDisposable
     private readonly CaptureControlTelemetry _telemetry;
     private readonly List<ICameraModule> _modules = [];
 
-    private FocusOwnerFixture(string root, CaptureAdmissionCoordinator admission, CaptureControlTelemetry telemetry)
+    private FocusOwnerFixture(string root, CaptureAdmissionCoordinator admission, CaptureControlTelemetry telemetry,
+        CameraAgentControlStore controls)
     {
         Root = root;
         Admission = admission;
         _telemetry = telemetry;
+        Controls = controls;
         Source = new CameraModuleManualFocusPreviewSource(Ownership, admission, TimeProvider.System);
     }
 
@@ -105,22 +109,26 @@ internal sealed class FocusOwnerFixture : IAsyncDisposable
 
     public CaptureAdmissionCoordinator Admission { get; }
 
+    public CameraAgentControlStore Controls { get; }
+
     public CameraModuleOwnership Ownership { get; } = new();
 
     public CameraModuleManualFocusPreviewSource Source { get; }
 
-    public static async Task<FocusOwnerFixture> CreateAsync()
+    public static async Task<FocusOwnerFixture> CreateAsync(FleetRuntimeState? fleet = null)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-focus-owner-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var telemetry = new CaptureControlTelemetry();
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 });
+        var controls = new CameraAgentControlStore(options, TimeProvider.System);
         var admission = new CaptureAdmissionCoordinator(
             new JournalIngress(root),
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 }),
+            options,
             TimeProvider.System,
-            telemetry);
+            telemetry, fleet, lifecycleControls: controls);
         await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        return new FocusOwnerFixture(root, admission, telemetry);
+        return new FocusOwnerFixture(root, admission, telemetry, controls);
     }
 
     /// <summary>Initializes and publishes a VirtualSky module exactly as the capture owner does.</summary>
@@ -181,6 +189,7 @@ internal sealed class FocusOwnerFixture : IAsyncDisposable
             await module.DisposeAsync().ConfigureAwait(false);
         }
         Admission.Dispose();
+        Controls.Dispose();
         _telemetry.Dispose();
         if (Directory.Exists(Root))
         {
@@ -211,6 +220,8 @@ internal sealed class ScriptedPreviewModule(VirtualSkyCameraModule inner) : ICam
 
     /// <summary>Runs before preview <c>n</c> (1-based) renders, with the token the source passed in.</summary>
     public Func<int, CancellationToken, Task>? BeforePreview { get; set; }
+
+    public Func<int, CameraFrame, CameraFrame>? TransformFrame { get; set; }
 
     public int Previews => Volatile.Read(ref _previews);
 
@@ -252,7 +263,8 @@ internal sealed class ScriptedPreviewModule(VirtualSkyCameraModule inner) : ICam
             CancelledPreviews++;
             throw;
         }
-        return await inner.CaptureFocusPreviewAsync(request, cancellationToken).ConfigureAwait(false);
+        var result = await inner.CaptureFocusPreviewAsync(request, cancellationToken).ConfigureAwait(false);
+        return TransformFrame is { } transform ? result with { Frame = transform(number, result.Frame!) } : result;
     }
 
     public ValueTask DisposeAsync() => inner.DisposeAsync();

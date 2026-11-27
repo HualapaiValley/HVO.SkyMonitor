@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -24,7 +25,30 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapPost("/resume-owned-upgrade", ResumeOwnedUpgradeAsync);
         group.MapGet("/first-boot", ReadFirstBootAsync);
         group.MapPost("/first-resume", FirstResumeAsync);
+        group.MapPost("/silo/verify-history", VerifySiloHistoryAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> VerifySiloHistoryAsync(HttpContext context, IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        var verifier = context.RequestServices.GetService<ICameraAgentSiloVerification>();
+        if (verifier is null) return Results.NotFound();
+        try
+        {
+            var result = await verifier.VerifyAsync(cancellationToken).ConfigureAwait(false);
+            var status = result.DamagedRoles > 0 ? StatusCodes.Status409Conflict
+                : result.UnavailableRoles > 0 ? StatusCodes.Status503ServiceUnavailable
+                : result.MissingRoles > 0 ? StatusCodes.Status410Gone
+                : result.FailedRoles > 0 ? StatusCodes.Status503ServiceUnavailable
+                : StatusCodes.Status200OK;
+            return Results.Json(result, statusCode: status);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or FormatException)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
     }
 
     private static async Task<IResult> ReadStateAsync(
@@ -176,7 +200,8 @@ internal static class CameraAgentLifecycleEndpoints
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
         if (coordinator.FirstBootPause is not { } seed) return Results.NotFound();
         if (request.FirstBootId != seed.Id || request.ExpectedVersion < 1) return Results.BadRequest();
-        if (!coordinator.Snapshot.IsInitialized)
+        if (!coordinator.Snapshot.IsInitialized ||
+            context.RequestServices.GetService<ICameraAgentSiloVerification>() is { BindingVerified: false })
         {
             context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);

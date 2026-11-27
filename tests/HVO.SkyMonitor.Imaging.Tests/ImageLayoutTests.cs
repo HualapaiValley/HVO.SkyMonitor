@@ -9,6 +9,7 @@ public sealed class ImageLayoutTests
 {
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono8, 1)]
+    [DataRow(CameraPixelFormat.BayerRggb8, 1)]
     [DataRow(CameraPixelFormat.Mono16, 2)]
     [DataRow(CameraPixelFormat.Rgb24, 3)]
     [DataRow(CameraPixelFormat.BayerRggb16, 2)]

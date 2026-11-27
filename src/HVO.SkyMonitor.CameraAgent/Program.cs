@@ -159,8 +159,10 @@ public class Program
         }
 
         // The Software page reads the same informational version, so telemetry and the UI name one build identity.
+        var profiling = ProductionProfiling.ReadMode(builder.Configuration[ProductionProfiling.ConfigurationKey]);
         builder.AddSkyMonitorObservability(
-            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            enableCollection: profiling != ProductionProfilingMode.Disabled);
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
@@ -285,46 +287,57 @@ public class Program
         healthChecks.AddCheck<OwnerBootstrapHealthCheck>("owner-bootstrap", tags: ["dependency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
         healthChecks.AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["dependency"]);
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics =>
-            {
-                metrics.AddPrometheusExporter();
-                metrics.AddRuntimeInstrumentation();
-                metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
-                metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
-                metrics.AddMeter(EnvironmentalAcquisitionTelemetry.InstrumentationName);
-                metrics.AddMeter(TransientWorkerTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
-                metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
-                metrics.AddMeter(LocalAutomationTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
-                metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.MeterName);
-                metrics.AddMeter(OperatorNotificationTelemetry.MeterName);
-            })
-            .WithTracing(tracing =>
-            {
-                if (builder.Environment.IsEnvironment("StandaloneW6"))
+        if (profiling != ProductionProfilingMode.Disabled)
+        {
+            builder.Services.AddOpenTelemetry()
+                .WithMetrics(metrics =>
                 {
-                    tracing.SetSampler(new AlwaysOnSampler());
-                }
-                tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
-                    .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
-                    .AddSource(LocalAutomationTelemetry.ActivitySourceName)
-                    .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
-                    .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
-                    .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName)
-                    .AddSource(OperatorNotificationTelemetry.ActivitySourceName);
-            });
+                    metrics.AddPrometheusExporter();
+                    metrics.AddRuntimeInstrumentation();
+                    if (profiling == ProductionProfilingMode.Enabled)
+                    {
+                        ProductionProfiling.ConfigureMetrics(metrics);
+                    }
+                    metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
+                    metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
+                    metrics.AddMeter(EnvironmentalAcquisitionTelemetry.InstrumentationName);
+                    metrics.AddMeter(TransientWorkerTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
+                    metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
+                    metrics.AddMeter(LocalAutomationTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
+                    metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.MeterName);
+                    metrics.AddMeter(OperatorNotificationTelemetry.MeterName);
+                })
+                .WithTracing(tracing =>
+                {
+                    if (profiling == ProductionProfilingMode.Enabled)
+                    {
+                        tracing.SetSampler(ProductionProfiling.CreateSampler());
+                    }
+                    else if (builder.Environment.IsEnvironment("StandaloneW6"))
+                    {
+                        tracing.SetSampler(new AlwaysOnSampler());
+                    }
+                    tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
+                        .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                        .AddSource(LocalAutomationTelemetry.ActivitySourceName)
+                        .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
+                        .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
+                        .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName)
+                        .AddSource(OperatorNotificationTelemetry.ActivitySourceName);
+                });
+        }
 
         builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
         builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
@@ -593,7 +606,10 @@ public class Program
                 });
             })
             .AllowAnonymous();
-        CameraAgentMetricsEndpoint.Map(app);
+        if (profiling != ProductionProfilingMode.Disabled)
+        {
+            CameraAgentMetricsEndpoint.Map(app);
+        }
 
         app.MapSkyMonitorHealthEndpoints();
 

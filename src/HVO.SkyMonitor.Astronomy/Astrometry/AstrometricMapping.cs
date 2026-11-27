@@ -12,10 +12,13 @@ public sealed class AstrometricMapping
 {
     private readonly IImageProjector projector;
     private readonly AstrometricFrameAssessment assessment;
+    private readonly ProjectionContext measuredProjection;
     internal readonly AstrometricRotation EnuToJ2000;
     public AstrometricMapping(AstrometricCalibration calibration, AstrometricFrameAssessment assessment)
     {
-        this.assessment = assessment; projector = ProjectorFactory.Create(Projection(calibration, assessment));
+        this.assessment = assessment;
+        measuredProjection = Projection(calibration, assessment);
+        projector = ProjectorFactory.Create(measuredProjection);
         EnuVector EquatorialVector(AltAzPoint horizontal)
         {
             var eq = CoordinateTransforms.HorizontalToEquatorial(horizontal, assessment.Frame.MidpointUtc, assessment.Frame.Observer.LatitudeDegrees, assessment.Frame.Observer.LongitudeDegrees);
@@ -42,6 +45,9 @@ public sealed class AstrometricMapping
         };
         projection.Validate(); return projection;
     }
+    /// <summary>Returns a celestial WCS when standard projection keywords represent the measured optics.</summary>
+    public CelestialWcs? ToCelestialWcs() => CelestialWcs.FromMeasuredProjection(measuredProjection, EnuToJ2000);
+
     public AstrometricSkyPoint? PixelToSky(PixelPoint pixel)
     {
         if (projector.Unproject(pixel) is not { } h) return null;

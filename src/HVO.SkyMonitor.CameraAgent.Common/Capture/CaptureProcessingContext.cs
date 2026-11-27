@@ -404,11 +404,12 @@ public sealed class CaptureProcessingContext
                 schemaVersion, identitySha256, false)
         ]);
 
-    internal void RecordArchivePublication(string relativePath, string identitySha256)
+    internal void RecordArchivePublication(string relativePath, string identitySha256,
+        string schema = FileSystemFrameStorageService.ArchiveEvidenceVersion)
         => AppendInputEvidence([
             new DurableProcessingNodeInput(
                 _currentInputs.Count, "CanonicalContext", "centered-archive", null, null, relativePath, null,
-                FileSystemFrameStorageService.ArchiveEvidenceVersion, identitySha256, false)
+                schema, identitySha256, false)
         ]);
 
     internal void RecordCenteredCalibrationMasters(

@@ -42,6 +42,26 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_UsesPackedStrideForBayer8WithoutAnExplicitFrameStride()
+    {
+        using var root = new TemporaryRoot();
+        using var service = CreateService();
+        var (artifact, descriptor) = CreateArtifact([1, 2, 3, 4]);
+        descriptor = descriptor with
+        {
+            Layout = descriptor.Layout with
+            {
+                PixelFormat = CameraPixelFormat.BayerRggb8,
+                CfaPattern = ColorFilterArrayPattern.Rggb
+            }
+        };
+        var frame = artifact.Frame with { PixelFormat = CameraPixelFormat.BayerRggb8, StrideBytes = null, Layout = null };
+        var stored = await service.SaveAsync(root.Path, new FrameArtifact(artifact.ArtifactId, artifact.Role, frame),
+            descriptor, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(stored.AbsolutePath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task SaveAsync_ProducerSidecarUpgradeWhileCaptureIsPaused_FailsRetryablyWithoutRewritingTheSidecar()
     {
         // Upgrading a sidecar in place rewrites durable bytes a restored processing row may have recorded, so a

@@ -19,6 +19,24 @@ public sealed class OrbitalTrackPresentationTests
     private static readonly OrbitalSnapshot SyntheticSnapshot = CreateSyntheticSnapshot();
 
     [TestMethod]
+    public void OptionalLabelSettingOmitsALabelThatWouldFit()
+    {
+        var track = Track(pixels: [new(250, 300), new(280, 297)]);
+        var labelled = OrbitalTrackPresentation.CreatePayloadAndSourceFacts(640, 480, [track], null,
+            queryIncomplete: true, hideObjectLabels: false);
+        var hidden = OrbitalTrackPresentation.CreatePayloadAndSourceFacts(640, 480, [track], null,
+            queryIncomplete: true, hideObjectLabels: true);
+        Assert.HasCount(2, labelled.Payload.TextBlocks);
+        Assert.HasCount(1, hidden.Payload.TextBlocks);
+        CollectionAssert.Contains(hidden.Payload.TextBlocks[0].Lines.ToArray(), OrbitalTrackPresentation.PartialLegend);
+        CollectionAssert.AreEqual(labelled.Payload.Segments.ToArray(), hidden.Payload.Segments.ToArray());
+        CollectionAssert.AreEqual(labelled.Payload.Markers.ToArray(), hidden.Payload.Markers.ToArray());
+        Assert.AreNotEqual(labelled.Payload.SourceIdentitySha256, hidden.Payload.SourceIdentitySha256);
+        using var facts = JsonDocument.Parse(labelled.SourceFactsJson);
+        Assert.IsFalse(facts.RootElement.TryGetProperty("ObjectLabelsHidden", out _), "Existing default source bytes keep their shape.");
+    }
+
+    [TestMethod]
     public void SourceIdentityBytesCanBeRetainedWithExactTracksThroughExistingLayerProductLineage()
     {
         var track = Track();

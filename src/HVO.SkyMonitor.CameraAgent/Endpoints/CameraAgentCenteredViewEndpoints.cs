@@ -9,7 +9,8 @@ internal static class CameraAgentCenteredViewEndpoints
     {
         var centered = endpoints.MapGroup("/api/v1/operations/gallery/centered")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
-            .WithTags("CameraAgent Gallery");
+            .WithTags("CameraAgent Gallery")
+            .AddEndpointFilter(HandleReopenFailureAsync);
         centered.MapGet("/{baseId}/{revisionId}", GetCenteredRevisionAsync)
             .WithName("GetCameraAgentCenteredViewRevision")
             .Produces<CenteredView>()
@@ -27,18 +28,42 @@ internal static class CameraAgentCenteredViewEndpoints
 
         var exactBase = endpoints.MapGroup("/api/v1/operations/gallery/{referenceCaptureId:guid}/views/{baseId}")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
-            .WithTags("CameraAgent Gallery");
+            .WithTags("CameraAgent Gallery")
+            .AddEndpointFilter(HandleReopenFailureAsync);
         exactBase.MapMethods("/preview", [HttpMethods.Get, HttpMethods.Head], WriteBoundBasePreviewAsync);
 
         var exact = endpoints.MapGroup("/api/v1/operations/gallery/{referenceCaptureId:guid}/views/{baseId}/{revisionId}")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
-            .WithTags("CameraAgent Gallery");
+            .WithTags("CameraAgent Gallery")
+            .AddEndpointFilter(HandleReopenFailureAsync);
         exact.MapGet("", async (Guid referenceCaptureId, string baseId, string revisionId, ICenteredViewReadIndex index, CancellationToken token) =>
             await ReadBoundViewAsync(referenceCaptureId, baseId, revisionId, index, token).ConfigureAwait(false) is { } view
                 ? Results.Ok(view) : Results.NotFound());
         exact.MapMethods("/preview", [HttpMethods.Get, HttpMethods.Head], WriteBoundPreviewAsync);
         exact.MapMethods("/overlay.svg", [HttpMethods.Get, HttpMethods.Head], WriteBoundPresentationAsync);
         return endpoints;
+    }
+
+    private static async ValueTask<object?> HandleReopenFailureAsync(EndpointFilterInvocationContext context,
+        EndpointFilterDelegate next)
+    {
+        try
+        {
+            return await next(context).ConfigureAwait(false);
+        }
+        catch (CenteredViewReopenException exception)
+        {
+            if (context.HttpContext.Request.RouteValues.TryGetValue("referenceCaptureId", out var reference) &&
+                (!Guid.TryParse(reference?.ToString(), out var captureId) || captureId != exception.ReferenceCaptureId))
+                return Results.NotFound();
+
+            return Results.StatusCode(exception.Status switch
+            {
+                CameraAgentArtifactReadStatus.Conflict => StatusCodes.Status409Conflict,
+                CameraAgentArtifactReadStatus.Gone => StatusCodes.Status410Gone,
+                _ => StatusCodes.Status503ServiceUnavailable
+            });
+        }
     }
 
     private static async Task WriteBoundBasePreviewAsync(Guid referenceCaptureId, string baseId,

@@ -1,0 +1,47 @@
+@using HVO.SkyMonitor.CameraAgent.Common.Automation
+
+<details class="automation-run-control" @key="(Definition.Version, Run?.RunKey)">
+    <summary>@ActionLabel</summary>
+    <fieldset disabled="@_busy">
+        <legend class="visually-hidden">@ActionLabel for @Definition.Definition.Name</legend>
+        @if (Backfill)
+        {
+            <label class="ops-field">Product report date
+                <input type="date" value="@_dateInput" @onchange="DateChanged" />
+            </label>
+            <button type="button" class="button secondary small" @onclick="PreviewAsync">Preview eligible windows</button>
+            @if (_windows.Count > 0)
+            {
+                <label class="ops-field">Source window
+                    <select @bind="_windowInput" @bind:after="WindowChanged">
+                        <option value="">Choose a window</option>
+                        @foreach (var window in _windows)
+                        {
+                            <option value="@window.StartUtc.UtcTicks">@PeriodLabel(window)</option>
+                        }
+                    </select>
+                </label>
+                @if (SelectedWindow is { } selected)
+                {
+                    <p>Earliest final @WindowTime(selected.EarliestFinalUtc, selected). Actual coverage and publication are reported by the producer.</p>
+                }
+            }
+        }
+        else if (Run?.Occurrence?.SourceWindow is { } retained)
+        {
+            <p>Retry run @Run.RunKey with its recorded source window @PeriodLabel(retained).</p>
+        }
+        else
+        {
+            <p>Queue one run now and keep this definition's periodic schedule.</p>
+        }
+        <label class="ops-field">Reason (required)
+            <input maxlength="@LocalAutomationContract.MaximumReasonLength" @bind="_reason" @bind:event="oninput" />
+        </label>
+        <button type="button" class="button primary small" disabled="@(!CanQueue)" @onclick="QueueAsync">Queue @ActionLabel.ToLowerInvariant()</button>
+    </fieldset>
+    @if (_message is not null)
+    {
+        <p role="@(_error ? "alert" : "status")">@_message</p>
+    }
+</details>

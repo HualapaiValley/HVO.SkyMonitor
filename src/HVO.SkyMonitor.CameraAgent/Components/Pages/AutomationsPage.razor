@@ -111,13 +111,33 @@ else
                         <ol class="automation-upcoming">
                             @foreach (var entry in upcoming.OrderBy(static item => item.DueUtc))
                             {
-                                <li @key="@($"{entry.DefinitionId}-{entry.DueUtc.UtcTicks}")"><strong>@DayClock(entry.DueUtc)</strong><span>@entry.Name</span><small>@entry.TaskTarget</small></li>
+                                <li @key="@($"{entry.DefinitionId}-{entry.DueUtc.UtcTicks}")">
+                                    <strong>@DayClock(entry.DueUtc)</strong><span>@entry.Name</span><small>@entry.TaskTarget</small>
+                                    @if (entry.Occurrence?.SourceWindow is { } window)
+                                    {
+                                        <small>Revision @entry.Occurrence.DefinitionVersion · @SourceWindowLabel(window.Policy.Kind) · report date @window.ReportingPeriod.ReportDate.ToString("yyyy-MM-dd", Invariant)</small>
+                                        <small>Source @PredefinedAutomationRunControls.PeriodLabel(window) (@window.ReportingPeriod.Site.TimeZoneId)</small>
+                                        <small>Earliest final @WindowTime(window.EarliestFinalUtc, window)</small>
+                                    }
+                                </li>
                             }
                             @foreach (var item in captureRelative)
                             {
                                 <li @key="@($"{item.Definition.DefinitionId}-capture")"><strong>@DescribeNextRun(item)</strong><span>@item.Definition.Name</span><small>@item.Definition.TaskTarget</small></li>
                             }
                         </ol>
+                    }
+                    @if (automation.Definitions.Any(static state => state.Definition.Enabled && state.RegistryRejection is not null))
+                    {
+                        <details class="automation-field-hint">
+                            <summary>Unavailable schedules</summary>
+                            <ul>
+                                @foreach (var unavailable in automation.Definitions.Where(static state => state.Definition.Enabled && state.RegistryRejection is not null))
+                                {
+                                    <li>@unavailable.Definition.Name. @DefinitionUnavailableReason(unavailable)</li>
+                                }
+                            </ul>
+                        </details>
                     }
                 </section>
                 <div class="ops-grid two">
@@ -163,13 +183,14 @@ else
             break;
 
         case AutomationView.Runs:
+            var runs = DisplayRuns;
             <div class="automation-view" id="automation-runs">
                 <section class="ops-panel" aria-labelledby="automation-runs-heading">
                     <header class="ops-panel-heading">
                         <div><h3 id="automation-runs-heading">Recent retained runs</h3><p>Every occurrence is recorded once with its outcome. A retry is a new run; a recorded run is never rewritten.</p></div>
-                        <span>@Plural(DisplayRuns.Count, "run", "runs") retained or active</span>
+                        <span>@Plural(runs.Count, "run", "runs") retained or active</span>
                     </header>
-                    @if (DisplayRuns.Count == 0)
+                    @if (runs.Count == 0)
                     {
                         <p class="automation-empty">No automation run has been recorded on this CameraAgent.</p>
                     }
@@ -179,11 +200,11 @@ else
                             <table class="ops-table automation-run-table">
                                 <thead><tr><th scope="col">Run</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
                                 <tbody>
-                                    @foreach (var run in DisplayRuns)
+                                    @foreach (var run in runs)
                                     {
                                         <tr @key="run.Sequence">
                                             <td>@DayClock(run.StartedAtUtc)</td>
-                                            <td><strong>@DefinitionName(run.DefinitionId)</strong><small>@run.DefinitionId</small></td>
+                                            <td><strong>@(run.Occurrence?.Definition.Name ?? DefinitionName(run.DefinitionId))</strong><small>@run.DefinitionId</small></td>
                                             <td>@Split(run.TriggerKind.ToString())</td>
                                             <td>
                                                 @DayClock(run.ScheduledForUtc)
@@ -194,6 +215,35 @@ else
                                             </td>
                                             <td><span class="state-chip @OutcomeClass(run.Outcome)">@Split(run.Outcome.ToString())</span></td>
                                             <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)
+                                                @if (run.Occurrence is { SourceWindow: { } window } occurrence)
+                                                {
+                                                    <details class="automation-run-provenance">
+                                                        <summary>Source window and provenance</summary>
+                                                        <dl class="ops-facts">
+                                                            <div><dt>Report date</dt><dd>@window.ReportingPeriod.ReportDate.ToString("yyyy-MM-dd", Invariant)</dd></div>
+                                                            <div><dt>Site zone</dt><dd>@window.ReportingPeriod.Site.TimeZoneId</dd></div>
+                                                            <div><dt>Source period</dt><dd>@SourceWindowLabel(window.Policy.Kind) / @SelectionLabel(window.Policy.Selection)</dd></div>
+                                                            <div class="full"><dt>Source start (inclusive)</dt><dd>@WindowTime(window.StartUtc, window)</dd></div>
+                                                            <div class="full"><dt>Source end (exclusive)</dt><dd>@WindowTime(window.EndUtc, window)</dd></div>
+                                                            <div class="full"><dt>Earliest final</dt><dd>@WindowTime(window.EarliestFinalUtc, window)</dd></div>
+                                                            <div class="full"><dt>Definition revision</dt><dd>@occurrence.DefinitionVersion / @run.RevisionSha256</dd></div>
+                                                            <div class="full"><dt>Registered target</dt><dd>@occurrence.Definition.TaskTarget</dd></div>
+                                                            <div class="full"><dt>Run key and attempt</dt><dd>@run.RunKey / @run.Attempt</dd></div>
+                                                            @if (run.Preparation is { } preparation)
+                                                            {
+                                                                <div class="full"><dt>Requested by</dt><dd>@preparation.Actor / @preparation.Reason</dd></div>
+                                                            }
+                                                        </dl>
+                                                        @if (occurrence.Definition.TaskKind is LocalAutomationTaskKind.StillImageGeneration or LocalAutomationTaskKind.TimeLapseGeneration)
+                                                        {
+                                                            <AutomationRunProducts Occurrence="occurrence" />
+                                                        }
+                                                    </details>
+                                                    @if (RetryDefinition(run) is { } live)
+                                                    {
+                                                        <PredefinedAutomationRunControls @key="live.Version" Definition="live" Run="run" Changed="LoadAsync" />
+                                                    }
+                                                }
                                                 @if (run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
                                                 {
                                                     <AutomationScriptRunControls Run="run" Changed="LoadAsync" />
@@ -249,7 +299,7 @@ else
                     {
                         var item = definition.Definition;
                         var focused = IsFocusedCard(item);
-                        var unavailableReason = DefinitionUnavailableReason(item);
+                        var unavailableReason = DefinitionUnavailableReason(definition);
                         var unavailable = unavailableReason is not null;
                         <article id="@CardId(item.DefinitionId)" class="automation-card@(focused ? " focused" : null)" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")" aria-current="@(focused ? "true" : null)">
                             <header>
@@ -271,7 +321,7 @@ else
                                     }
                                 </span>
                                 <div><h3 id="@($"automation-card-{item.DefinitionId}")">@item.Name</h3><p>@TaskDescription(item)</p></div>
-                                <span class="state-chip @(item.Enabled && !unavailable ? "success" : "pending")">@(item.Enabled ? unavailable ? "Unavailable" : "Enabled" : "Disabled")</span>
+                                <span class="state-chip @(item.Enabled && !unavailable ? "success" : "pending")">@(unavailable ? "Unavailable" : item.Enabled ? "Enabled" : "Disabled")</span>
                             </header>
                             <dl>
                                 <div><dt>Trigger</dt><dd>@DescribeTrigger(item)</dd></div>
@@ -314,6 +364,22 @@ else
                             {
                                 <AutomationScriptRunControls Definition="definition" Run="@(DisplayRuns.FirstOrDefault(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript))"
                                     Available="@(!unavailable)" Pending="@(DisplayRuns.Any(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))" Changed="LoadAsync" />
+                            }
+                            else if (IsDefinitionRunnable(definition))
+                            {
+                                @if (item.SourceWindow is not null || definition.SupportsRunNow && item.TaskKind == LocalAutomationTaskKind.TimeDataRefresh)
+                                {
+                                    <PredefinedAutomationRunControls @key="definition.Version" Definition="definition"
+                                        Pending="@(item.SourceWindow is null && automation.ActiveRuns.Any(run => run.DefinitionId == item.DefinitionId))" Changed="LoadAsync" />
+                                }
+                                else if (definition.SupportsRunNow && item.TaskKind == LocalAutomationTaskKind.OrbitalElementsRefresh)
+                                {
+                                    <a href="/operations/software">Run refresh from Software &amp; Catalog</a>
+                                }
+                                else if (definition.SupportsRunNow && item.TaskKind == LocalAutomationTaskKind.SpaceWeatherRefresh)
+                                {
+                                    <a href="/operations/space-weather">Run refresh from Space Weather</a>
+                                }
                             }
                         </article>
                     }
@@ -395,10 +461,19 @@ else
                                     }
                                     @foreach (var target in Targets())
                                     {
-                                        <option value="@target">@target</option>
+                                        <option value="@target">@(ProducerPreset(target)?.Name ?? target)</option>
                                     }
                                 </select>
                             </label>
+                            @if (ProducerPreset(_targetInput) is { } preset)
+                            {
+                                <dl class="ops-facts automation-confirm-facts full" aria-label="Pinned producer parameters">
+                                    @foreach (var parameter in preset.Parameters)
+                                    {
+                                        <div><dt>@parameter.Name</dt><dd>@parameter.Value</dd></div>
+                                    }
+                                </dl>
+                            }
                             }
                             <label class="ops-field">Trigger
                                 <select id="automation-trigger" disabled="@(ReservedTaskSelected || ScriptTask)" @bind="_triggerKindInput" @bind:after="TriggerChanged">
@@ -452,10 +527,10 @@ else
                         }
                         else
                         {
-                            <p class="automation-field-hint full">@_nameInput / @Split(_taskKindInput.ToString()) / @_targetInput. Producer parameters are pinned by this registered target.</p>
+                            <p class="automation-field-hint full">@_nameInput / @(ProducerPreset(_targetInput)?.Name ?? _targetInput)</p>
                             <label class="ops-field">Source period
-                                <select id="automation-source-window" @bind="_windowKindInput" @bind:after="FormChanged">
-                                    @foreach (var kind in SourceWindows)
+                                <select id="automation-source-window" @bind="_windowKindInput" @bind:after="SourcePeriodChanged">
+                                    @foreach (var kind in _sourceChoices.Select(static choice => choice.Period).Distinct())
                                     {
                                         <option value="@kind">@SourceWindowLabel(kind)</option>
                                     }
@@ -463,7 +538,7 @@ else
                             </label>
                             <label class="ops-field">Source selection
                                 <select id="automation-source-selection" @bind="_selectionInput" @bind:after="FormChanged">
-                                    @foreach (var selection in Enum.GetValues<LocalAutomationSourceSelection>())
+                                    @foreach (var selection in SourceSelections)
                                     {
                                         <option value="@selection">@SelectionLabel(selection)</option>
                                     }
@@ -503,7 +578,7 @@ else
                         <div><dt>Identifier</dt><dd>@_idInput.Trim()</dd></div>
                         <div><dt>Name</dt><dd>@_nameInput.Trim()</dd></div>
                         <div><dt>Task</dt><dd>@Split(_taskKindInput.ToString())</dd></div>
-                        <div><dt>Target</dt><dd>@_targetInput.Trim()</dd></div>
+                        <div><dt>Target</dt><dd>@(ProducerPreset(_targetInput)?.Name ?? _targetInput.Trim())</dd></div>
                         <div><dt>Trigger</dt><dd>@(int.TryParse(_intervalInput, System.Globalization.NumberStyles.Integer, Invariant, out var interval) ? DescribeTrigger(_triggerKindInput, interval) : _intervalInput)</dd></div>
                         <div><dt>State</dt><dd>@(_enabledInput ? "Enabled" : "Disabled")</dd></div>
                         @if (WindowTask && _sourceWindowInput is { } policy)
@@ -514,6 +589,20 @@ else
                         }
                         <div class="full"><dt>Reason</dt><dd>@(TrimmedReason() ?? "None given")</dd></div>
                     </dl>
+                    @if (_schedulePreview is { } schedule)
+                    {
+                        <section aria-label="Next run preview" aria-live="polite">
+                            <p>Next run if enabled at the time of this preview (@DayClock(schedule.ReadAtUtc))</p>
+                            @if (schedule.DueUtc is { } due)
+                            {
+                                <p><strong>@DayClock(due)</strong> / UTC @due.ToString("yyyy-MM-dd HH:mm:ss", Invariant)@if (due <= schedule.ReadAtUtc) { <span> (already due)</span> }</p>
+                            }
+                            else
+                            {
+                                <p>@(schedule.CaptureSequence is { } capture ? $"At durable capture sequence {capture}." : $"The runner must observe a baseline, then count {_intervalInput} durable captures.")</p>
+                            }
+                        </section>
+                    }
                     @if (_windowPreview is { } preview)
                     {
                         <section id="automation-window-preview" aria-labelledby="automation-preview-heading" aria-live="polite">

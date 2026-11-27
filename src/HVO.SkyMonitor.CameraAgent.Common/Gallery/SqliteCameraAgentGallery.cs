@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -48,6 +49,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     private readonly IObservingDayCalendarProvider _observingDays;
     private readonly IDeploymentLocationStore? _deploymentLocation;
     private readonly LocalArchiveReader? _localArchive;
+    private readonly SiloArtifactStorage? _silo;
 
     public SqliteCameraAgentGallery(
         IOptions<CameraAgentHostOptions> options,
@@ -56,8 +58,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         IObservingDayCalendarProvider? observingDays = null,
         IDeploymentLocationStore? deploymentLocation = null,
         Microsoft.Extensions.Logging.ILogger<SqliteCameraAgentGallery>? logger = null,
-        LocalArchiveReader? localArchive = null)
+        LocalArchiveReader? localArchive = null,
+        SiloArtifactStorage? silo = null)
     {
+        _silo = silo;
         _logger = logger;
         _localArchive = localArchive;
         ArgumentNullException.ThrowIfNull(options);
@@ -298,14 +302,22 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         await StorageLifecycleLock.WaitAsync(lifecycleGate, "gallery", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
-            var path = ResolveSafePath(output.PayloadRelativePath);
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length != expectedLength.Value)
+            byte[]? payload;
+            if (_silo is not null && SiloArtifactStorage.IsReference(output.PayloadRelativePath))
             {
-                return UnavailableCloudAssessment("Unavailable");
+                payload = await _silo.ReadMemberAsync(output.Artifact.ArtifactId, output.OutputIdentitySha256, expectedLength.Value,
+                    output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
             }
-            var payload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            else
+            {
+                var path = ResolveSafePath(output.PayloadRelativePath);
+                RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
+                var info = new FileInfo(path);
+                payload = info.Exists && info.Length == expectedLength.Value
+                    ? await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false) : null;
+            }
+            if (payload is null)
+                return UnavailableCloudAssessment("Unavailable");
             if (!string.Equals(
                     PayloadChecksum.ComputeSha256(payload),
                     output.Artifact.ChecksumSha256,
@@ -329,6 +341,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                 assessment.Mask?.Width,
                 assessment.Mask?.Height,
                 assessment.Mask is null ? null : PayloadChecksum.ComputeSha256(assessment.Mask.Bits.Span));
+        }
+        catch (Exception exception) when (exception is SiloStoreUnavailableException or FileNotFoundException)
+        {
+            return UnavailableCloudAssessment("Unavailable");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
         {

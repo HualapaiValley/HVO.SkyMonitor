@@ -139,7 +139,10 @@ internal sealed class StandardCaptureLaneHandler(
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
                 _rawIngressControl?.InvalidateEvidence();
-                result = CaptureLaneHandlerResult.Terminal("evidence-unavailable");
+                result = CaptureLaneHandlerResult.Terminal("evidence-unavailable") with
+                {
+                    PublishedSiloEvidenceFailed = exception is PublishedSiloEvidenceException
+                };
             }
             return result;
         }

@@ -127,6 +127,22 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void SensorReadoutResolver_UsesOneBytePerBayer8Sample()
+    {
+        var sensor = new SensorProfile("Bayer camera", 8, 6, 5.86, SensorColorMode.Color, CameraPixelFormat.BayerRggb8);
+        var profile = new SensorReadoutProfile(new SensorCrop(0, 0, 8, 6), 1, 1, FrameBinningAlgorithm.IdentityV1,
+            CameraPixelFormat.BayerRggb8, 8, 8, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1,
+            FrameLevelCodeSpace.StoredContainer, 0, 255, CfaPattern: ColorFilterArrayPattern.Rggb, CfaOriginX: 0, CfaOriginY: 0);
+
+        var layout = SensorReadoutResolver.Resolve(sensor, profile).Layout;
+
+        Assert.AreEqual(8, layout.StrideBytes);
+        Assert.AreEqual(48L, layout.ByteLength);
+        Assert.AreEqual(FrameByteOrder.NotApplicable, layout.ByteOrder);
+        Assert.AreEqual(ColorFilterArrayPattern.Rggb, layout.CfaPattern);
+    }
+
+    [TestMethod]
     public void ManifestV2_CloudScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
     {
         var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);

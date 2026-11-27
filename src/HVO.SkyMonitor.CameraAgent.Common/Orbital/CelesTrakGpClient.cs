@@ -126,7 +126,7 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
         if (!IsAcceptedMediaType(response.Content.Headers))
         {
             return state.Complete(this, OrbitalFetchDisposition.ResponseRejected, "orbital.media-type",
-                "content-type-not-application-json");
+                "content-type-not-csv-or-plain-text");
         }
         if (!TryReadContentEncoding(response.Content.Headers, out var encoding))
         {
@@ -197,7 +197,8 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
         var request = new HttpRequestMessage(HttpMethod.Get, CelesTrakGpSource.RequestUri);
         // The constructor proved the value parses, so the exact configured text goes on the wire unaltered.
         request.Headers.TryAddWithoutValidation("User-Agent", settings.UserAgent);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/csv"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain", 0.9));
         request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
         return request;
     }
@@ -213,12 +214,15 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
         return probe.Headers.UserAgent.TryParseAdd(value);
     }
 
-    /// <summary><c>application/json</c>, optionally with exactly one <c>charset=utf-8</c> parameter.</summary>
+    /// <summary>
+    /// CSV or plain text, optionally with exactly one UTF-8 charset parameter. The CSV parser verifies the body.
+    /// </summary>
     internal static bool IsAcceptedMediaType(HttpContentHeaders headers)
     {
         var value = CelesTrakGpSource.SingleHeaderValue(headers, "Content-Type");
         if (value is null || !MediaTypeHeaderValue.TryParse(value, out var parsed) ||
-            !string.Equals(parsed.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+            !(string.Equals(parsed.MediaType, "text/csv", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(parsed.MediaType, "text/plain", StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }

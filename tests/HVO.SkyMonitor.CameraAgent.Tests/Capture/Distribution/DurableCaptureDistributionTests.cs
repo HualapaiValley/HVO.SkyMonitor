@@ -1500,7 +1500,7 @@ public sealed partial class DurableCaptureDistributionTests
             runnerTime.TimerCreationCount);
     }
 
-    private static async Task<SqliteConnection> OpenAsync(string root)
+    internal static async Task<SqliteConnection> OpenAsync(string root)
     {
         var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
         await connection.OpenAsync().ConfigureAwait(false);
@@ -1508,7 +1508,7 @@ public sealed partial class DurableCaptureDistributionTests
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only test-owned constant SQL is passed to this helper.")]
-    private static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
+    internal static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -1730,12 +1730,12 @@ public sealed partial class DurableCaptureDistributionTests
         internal void Advance(TimeSpan duration) => _now += duration;
     }
 
-    private sealed class FixedCapacityProvider : IStorageCapacityProvider
+    internal sealed class FixedCapacityProvider : IStorageCapacityProvider
     {
         public StorageCapacity GetCapacity(string root) => new(long.MaxValue, long.MaxValue);
     }
 
-    private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
+    internal sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
         public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
 

@@ -27,6 +27,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     private string? _displayName;
     private string? _moduleType;
     private bool _haveRead;
+    private bool _focuserRegistered;
     private bool _readFailed;
     private bool _unauthorized;
     private int _readVersion;
@@ -75,6 +76,7 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
 
     protected override async Task OnInitializedAsync()
     {
+        _focuserRegistered = ServiceProvider.GetService<IServiceProviderIsService>()?.IsService(typeof(AgentCore.IMotorizedFocuser)) == true;
         _spaceWeatherService = ServiceProvider.GetService<ICameraAgentSpaceWeatherUiService>();
         // The switch is restart-only, so a failed read reports against it rather than against an earlier projection.
         _spaceWeatherEnabled = ServiceProvider.GetService<IOptions<CameraAgentHostOptions>>()?.Value.SpaceWeather.Enabled ?? false;

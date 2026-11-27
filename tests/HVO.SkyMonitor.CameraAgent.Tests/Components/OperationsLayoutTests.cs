@@ -159,6 +159,18 @@ public sealed class OperationsLayoutTests
     }
 
     [TestMethod]
+    public void Render_RegisteredFocuserDescribesMotorizedCapability()
+    {
+        using var context = CreateContext(out _);
+        context.Services.AddSingleton<AgentCore.IMotorizedFocuser>(
+            new Common.Capture.Focus.VirtualMotorizedFocuser(new()));
+        var cut = context.Render<OperationsLayout>(parameters => parameters.Add(static layout => layout.Body, Body));
+        Assert.AreEqual("Motorized", Badge(cut, "focus"));
+        Assert.IsEmpty(cut.FindAll("#operations-note-focus"));
+        StringAssert.Contains(cut.Find("a[href='/operations/focus']").GetAttribute("title")!, "registered focuser", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Render_HealthyReadShowsHealthyChipScopeAndNoBadges()
     {
         using var context = CreateContext(out _);

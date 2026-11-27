@@ -288,12 +288,15 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)
         => _journal.ReadCenteredRawAsync(key, cancellationToken);
 
-    internal bool CenteredFrameFilesExist(ReconstructionDescriptor descriptor)
+    internal async ValueTask<bool> CenteredFrameEvidenceExistsAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
     {
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
-        return File.Exists(paths.SidecarAbsolutePath) && File.Exists(paths.PayloadAbsolutePath);
+        return File.Exists(paths.SidecarAbsolutePath) && File.Exists(paths.PayloadAbsolutePath) ||
+            _siloArtifacts is not null &&
+            await _siloArtifacts.HasMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<CameraFrame> ReadCenteredFrameAsync(CenteredRawEvidence evidence, CancellationToken cancellationToken)
@@ -305,12 +308,22 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
-        var sidecar = await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false);
-        if (PayloadChecksum.ComputeSha256(sidecar) != evidence.ManifestSha256 ||
-            new FileInfo(paths.PayloadAbsolutePath).Length != descriptor.Layout.ByteLength)
+        var sidecar = _siloArtifacts is null
+            ? await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false)
+            : await _siloArtifacts.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, evidence.ManifestSha256, paths.SidecarAbsolutePath,
+                cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("The centered raw source has no retained evidence.");
+        var bytes = _siloArtifacts is null
+            ? await File.ReadAllBytesAsync(paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
+            : await _siloArtifacts.ReadLiveRawAsync(descriptor, paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The centered raw source has no retained payload.");
+        if (PayloadChecksum.ComputeSha256(sidecar) != evidence.ManifestSha256 || bytes.LongLength != descriptor.Layout.ByteLength)
             throw new InvalidDataException("Centered raw frame evidence differs from its committed identity.");
 
-        var bytes = await File.ReadAllBytesAsync(paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false);
+        return ReconstructCenteredFrame(descriptor, bytes);
+    }
+
+    private static CameraFrame ReconstructCenteredFrame(ReconstructionDescriptor descriptor, byte[] bytes)
+    {
         var validation = FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame);
         return validation.IsValid && frame is not null
             ? frame

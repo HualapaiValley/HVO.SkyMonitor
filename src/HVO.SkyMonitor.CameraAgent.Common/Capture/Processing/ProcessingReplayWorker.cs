@@ -37,9 +37,17 @@ internal sealed class ProcessingReplayWorker(
             new EventId(2263, "ProcessingReplayPlanSuperseded"),
             "Processing replay {ExecutionId} for graph revision {RevisionId} was abandoned because this version no longer builds its frozen plan: {Detail}");
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
-        => Task.WhenAll(Enumerable.Range(0, _options.ReplayMaximumConcurrency)
-            .Select(index => RunWorkerAsync($"{_ownerPrefix}-{index}", stoppingToken)));
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await Task.WhenAll(Enumerable.Range(0, _options.ReplayMaximumConcurrency)
+                .Select(index => RunWorkerAsync($"{_ownerPrefix}-{index}", stoppingToken))).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Replay failures are converted to fenced durable retry state so the worker remains available.")]
     private async Task RunWorkerAsync(string owner, CancellationToken stoppingToken)

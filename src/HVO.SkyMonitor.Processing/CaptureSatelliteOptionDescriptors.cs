@@ -11,7 +11,9 @@ public static class CaptureSatelliteOptionDescriptors
             ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "Satellite prediction output variant",
                 "Prediction route, also used for the -inputs and -status products. Set the satellite layer input variant to the same value.", "capture-satellites-v1", 96, isIdentifier: true),
             ProcessingOptionDescriptor.Toggle("allowStaleDiagnostics", "allowStaleDiagnostics", "Allow stale-element diagnostics",
-                "Permit explicitly marked diagnostic predictions from stale elements. Stale status and scientific qualification remain visible.", false)
+                "Permit explicitly marked diagnostic predictions from stale elements. Stale status and scientific qualification remain visible.", false),
+            ProcessingOptionDescriptor.Toggle("hideObjectLabels", "hideObjectLabels", "Hide satellite object labels",
+                "Omit the optional satellite names and catalog numbers from new capture overlays. The prediction, source and quality captions stay visible.", false)
         ]);
 
     public static ProcessingNodeOptionsDescriptor Layer { get; } = new(

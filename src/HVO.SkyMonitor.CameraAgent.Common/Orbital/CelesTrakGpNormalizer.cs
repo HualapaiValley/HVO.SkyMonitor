@@ -12,15 +12,15 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 public sealed record OrbitalCandidateResult(OrbitalSnapshot? Snapshot, string? RejectionReasonCode, string Detail);
 
 /// <summary>
-/// Maps a retrieved CelesTrak GP JSON payload to the shared <c>hvo-orbital-elements-v1</c> contract. Any invalid record
+/// Maps a retrieved CelesTrak GP CSV payload to the shared <c>hvo-orbital-elements-v1</c> contract. Any invalid record
 /// rejects the whole candidate. Omitted EARTH/TEME/UTC/SGP4 conventions are supplied only under
-/// <see cref="OrbitalContract.CelesTrakGpProfile"/>; BSTAR is already in inverse Earth radii and DOT/DDOT retain the
+/// <see cref="OrbitalContract.CelesTrakGpCsvProfile"/>; BSTAR is already in inverse Earth radii and DOT/DDOT retain the
 /// GP/TLE field values. Object type is never inferred from names.
 /// </summary>
 public static class CelesTrakGpNormalizer
 {
-    internal const string ParserName = "hvo-celestrak-gp-json-parser";
-    internal const string NormalizerName = "hvo-celestrak-gp-normalizer";
+    internal const string ParserName = "hvo-celestrak-gp-csv-parser";
+    internal const string NormalizerName = "hvo-celestrak-gp-csv-normalizer";
     internal const string SoftwareVersion = "1";
     internal const string NoradAuthority = "norad";
     private const int MaximumContractReasonLength = 64;
@@ -50,7 +50,7 @@ public static class CelesTrakGpNormalizer
         new(NormalizerName, SoftwareVersion, Sha256Hex(RuleDescriptor));
 
     private static readonly OrbitalElementModel Model = new("EARTH", "TEME", "UTC", "SGP4",
-        OrbitalContract.GpDerivativeConvention, OrbitalContract.CelesTrakGpProfile, Parser, Normalizer);
+        OrbitalContract.GpDerivativeConvention, OrbitalContract.CelesTrakGpCsvProfile, Parser, Normalizer);
 
     private static readonly OrbitalPopulationCoverage Coverage = new(CelesTrakGpSource.RequestedPopulation,
         OrbitalPopulationCompleteness.CompleteForRequestedPopulation, KnownExclusions);
@@ -114,7 +114,7 @@ public static class CelesTrakGpNormalizer
         OrbitalSnapshot snapshot;
         try
         {
-            snapshot = OrbitalSnapshot.Create(records, [source], Coverage);
+            snapshot = OrbitalSnapshot.Create(records, [source], Coverage, OrbitalContract.CelesTrakGpCsvProfile);
         }
         catch (ArgumentException exception)
         {
@@ -149,7 +149,7 @@ public static class CelesTrakGpNormalizer
     {
         var builder = new StringBuilder();
         builder.Append("normalizer=celestrak-gp;schema=").Append(OrbitalContract.SchemaVersion)
-            .Append(";profile=").Append(OrbitalContract.CelesTrakGpProfile).Append('\n');
+            .Append(";profile=").Append(OrbitalContract.CelesTrakGpCsvProfile).Append('\n');
         builder.Append("raw=1..").Append(CelesTrakGpSource.MaximumRawBytes.ToString(CultureInfo.InvariantCulture))
             .Append(";integrity=sha256-uppercase-hex;rejection=whole-candidate\n");
         builder.Append("identity=").Append(NoradAuthority).Append(":NORAD_CAT_ID:canonical-decimal\n");

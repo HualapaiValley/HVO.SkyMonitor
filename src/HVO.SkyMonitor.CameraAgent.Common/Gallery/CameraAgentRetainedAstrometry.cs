@@ -17,6 +17,7 @@ public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availa
     [JsonIgnore] public AstrometricResidualDiagnostics? Diagnostics { get; init; }
     [JsonIgnore] public ReconstructionDescriptor? SourceDescriptor { get; init; }
     internal AstrometryLineageInvalidation? LineageInvalidation { get; init; }
+    internal bool HasMissingEvidence { get; init; }
     public string? CalibrationVersion { get; init; }
     public string? ProjectionModel { get; init; }
     public bool HorizontalFlip { get; init; }
@@ -185,7 +186,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var lineage = await ReadLineageAsync(null, null, new(captureId, artifact, solution), cancellationToken).ConfigureAwait(false);
             var state = lineage?.Result ?? RetainedAstrometryLineageState.Unknown;
             return state == RetainedAstrometryLineageState.Available
-                ? view : new(captureId, "Unavailable", IsInvalid(state) ? InvalidEvidence : TemporaryEvidenceUnavailable);
+                ? view : new(captureId, "Unavailable", IsInvalid(state) ? InvalidEvidence : TemporaryEvidenceUnavailable)
+                { HasMissingEvidence = state == RetainedAstrometryLineageState.Missing };
         }
         finally { readGate.Release(); }
     }
@@ -567,6 +569,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var state = lineage?.Result;
             if (state is null or RetainedAstrometryLineageState.Pending)
                 return Unavailable(temporary: true);
+            if (state == RetainedAstrometryLineageState.Missing)
+                return new(new(captureId, "Unavailable", TemporaryEvidenceUnavailable) { HasMissingEvidence = true }, Retry: true);
 
             // Malformed lineage is insufficient to authorize emission or cache a skip. The
             // original artifact failure still describes whether this probe should retry.

@@ -131,7 +131,11 @@ public sealed partial class SqliteOrbitalElementsStore
         string PayloadSha256,
         byte[] Manifest,
         string ManifestSha256,
-        string ManifestFileSha256);
+        string ManifestFileSha256)
+    {
+        public string RawExtension => Snapshot.Manifest.ProfileVersion == OrbitalContract.CelesTrakGpCsvProfile
+            ? CsvExtension : JsonExtension;
+    }
 
     /// <summary>Proves the candidate, its canonical bytes and the raw provider bytes bind to one identity.</summary>
     private static PreparedPublication Prepare(OrbitalSnapshot candidate, ReadOnlyMemory<byte> rawBytes)
@@ -197,7 +201,7 @@ public sealed partial class SqliteOrbitalElementsStore
         {
             await WriteIntentAsync(attemptId, prepared, cancellationToken).ConfigureAwait(false);
             await EnsureContentFileAsync(connection, RawDirectoryName, prepared.RawSha256, prepared.Raw, prepared.RawSha256,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, prepared.RawExtension).ConfigureAwait(false);
             _faults.Inject(OrbitalStorageFaultPoint.AfterRaw);
             await EnsureContentFileAsync(connection, PayloadDirectoryName, prepared.PayloadSha256, prepared.Payload,
                 prepared.PayloadSha256, cancellationToken).ConfigureAwait(false);
@@ -208,7 +212,7 @@ public sealed partial class SqliteOrbitalElementsStore
             // Read back what is about to be committed: activation never binds to bytes it has not verified.
             foreach (var (path, length, sha256) in new[]
             {
-                (RawPath(prepared.RawSha256), (long)prepared.Raw.Length, prepared.RawSha256),
+                (RawPath(prepared.RawSha256, prepared.RawExtension), (long)prepared.Raw.Length, prepared.RawSha256),
                 (PayloadPath(prepared.PayloadSha256), (long)prepared.Payload.Length, prepared.PayloadSha256),
                 (ManifestPath(prepared.ManifestSha256), (long)prepared.Manifest.Length, prepared.ManifestFileSha256)
             })

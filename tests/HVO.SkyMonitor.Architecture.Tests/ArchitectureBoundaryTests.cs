@@ -1048,6 +1048,32 @@ public sealed partial class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    public void CameraAgentProviderSdkUsageIsConfinedToSiloInfrastructure()
+    {
+        var repository = snapshot.Graph;
+        var sourceRoot = Path.Combine(repository.Root, "src");
+        var siloAdapter = Path.Combine(sourceRoot, CameraAgentCommon, "Silo", "S3") + Path.DirectorySeparatorChar;
+        var violations = Directory.EnumerateDirectories(sourceRoot, "HVO.SkyMonitor.CameraAgent*")
+            .SelectMany(static project => Directory.EnumerateFiles(project, "*.cs", SearchOption.AllDirectories))
+            .Where(path => !path.StartsWith(siloAdapter, StringComparison.Ordinal))
+            .Where(static path =>
+            {
+                var source = File.ReadAllText(path);
+                return source.Contains("Amazon.S3", StringComparison.Ordinal) ||
+                    source.Contains("Amazon.Runtime", StringComparison.Ordinal) ||
+                    source.Contains("IAmazonS3", StringComparison.Ordinal) ||
+                    source.Contains("AmazonS3Client", StringComparison.Ordinal);
+            })
+            .Select(path => Path.GetRelativePath(repository.Root, path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.IsEmpty(violations, $"CameraAgent's S3 SDK usage belongs in CameraAgent.Common/Silo/S3.{Environment.NewLine}" +
+            string.Join(Environment.NewLine, violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public void EvaluatedGraphIncludesImportedReferencesAndExcludesDisabledConditions()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-evaluation-{Guid.NewGuid():N}");

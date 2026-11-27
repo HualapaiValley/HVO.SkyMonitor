@@ -1,9 +1,9 @@
 # CameraAgent stock Silo runtime
 
 This runbook covers the stock Silo runtime that a Silo-layout CameraAgent instance installs with (#1966). The
-[CameraAgent Silo storage and cutover contract](../planning/cameraagent-silo-cutover.md) defines the layout. Until
-#1968 the CameraAgent store does not yet write to Silo; this runtime provisions, binds and verifies the store and
-holds capture paused until it is authorized.
+[CameraAgent Silo storage and cutover contract](../planning/cameraagent-silo-cutover.md) defines the layout. The
+installer provisions, binds and verifies the store and holds capture paused until it is authorized. CameraAgent
+checks the installed bucket marker and writer fence before using the scoped credential.
 
 The first Silo release uses the centered profile and launches only under the launch hold of contract section 9. Use
 this runtime for qualification and disposable installs until then.
@@ -401,9 +401,9 @@ Never disable the old key before step 6 shows the new key ready.
   `--json` also reports `headroom` (`availableBytes`, `totalBytes`, `requiredBytes`, `state`), `archive` (`state`,
   `reason`, `certificateMatchesInstall`), `writerAccessKeyId`, `writerRotated` (the fence has changed since install)
   and `fenceVersionId`.
-- **Health:** the Compose health check calls Silo's `/minio/health/live`. CameraAgent's own health is unchanged.
-- **Capacity:** the headroom reserve above is the readiness signal. Silo trash is under `.minio.sys/tmp/.trash` and is
-  purged on Silo restart (contract 7.4). Spool and reclaim budgets and the pressure pause belong to #1970 and #1973.
+- **Health** uses Silo's `/minio/health/live` in Compose and the writer binding and journal-head probe in CameraAgent.
+- **Capacity** uses the installer headroom reserve and the CameraAgent staging limits below. Silo purges
+  `.minio.sys/tmp/.trash` on Silo restart (contract 7.4). Reclaim budgets and policy are tracked in #1970 and #1973.
 
 ## Durability setting
 
@@ -414,9 +414,54 @@ Never disable the old key before step 6 shows the new key ready.
   then issues `sync(2)` before returning.
 - With it on, an acknowledged version is meant to survive power loss on ext4 that honors flush (contract 5.2). That is
   the design, not a measured guarantee. A process crash (SIGKILL) has been qualified. A physical power cut has not been
-  measured, and that proof is #1968/#1974 work.
+  measured. Physical host power-loss testing is tracked in #2126.
 - `scripts/qualify:silo-runtime` measures the cost (`osync-cost`). `sync(2)` is host-wide, so the cost depends on other
   dirty data on the host. The native ARM64 measurement on physical storage is the relevant one.
+
+### CameraAgent payload and verification limits
+
+- Each object is written in one create-only PUT with a supplied SHA-256. The ceiling is 5 GiB per object. CameraAgent
+  does not initiate multipart uploads. The installed writer policy grants no multipart cleanup authority.
+- CameraAgent checks length and SHA-256 via exact-version GET. A lost response body reports store unavailability and
+  can be retried. A completed read with the wrong bytes reports an integrity failure. A confirmed missing version is
+  reported separately.
+- Raw ingress syncs the local payload and evidence before it commits admission and the pending Silo publication row.
+  Publication advances independently. `CameraAgent:Silo:MaximumStagedBytes` and `MaximumStagedFiles` default to
+  2 GiB and 4,096 files. Pending raw admission and the publication spool each enforce those limits. The raw pressure
+  fence stops new exposures while pending admissions drain. It leaves operator and installer controls in effect.
+  Allow roughly twice the configured staging byte limit at peak while raw admission files and publication-spool copies
+  coexist. The local raw pair is reclaimed after P4 and directory synchronization.
+- The `silo-storage` health check reports the writer binding, journal-head probe, and publication recovery status. The authorized
+  `POST /api/internal/deployment/lifecycle/silo/verify-history` route checks the local admission database, verifies the
+  journal through its indexed cutoff, and reads retained roles by exact version. The response reports the cutoff and
+  counts for verified, unavailable, expired, damaged and missing roles. Damaged bytes return HTTP 409, missing
+  required versions return 410, and temporary unavailability returns 503. Full verification can take time proportional to retained
+  history.
+- Centered archive receipts bind selected output revisions and their evidence. The Silo catalog verifies those exact
+  dependencies before the receipt becomes visible. Current Sky follows the catalog's open live interval during
+  publication and recovery.
+
+### #1968 publication measurement
+
+On 2026-11-26, the `MeasureStockSiloDurabilityCost` test in `CameraAgent.IntegrationTests` ran on Linux amd64 on
+`hvo-dev-04`, using the pinned stock image, Linux Docker overlay storage and a loopback endpoint. Each setting started
+with a fresh bucket and State directory. Each serial sample staged and committed 144 groups with 288 payloads totaling
+1,017,004,032 bytes. Each direct-I/O sample transferred 24 objects of 6,996,992 bytes.
+
+| Measurement | Sync off | Sync on | #1964 Pi baseline |
+| --- | ---: | ---: | ---: |
+| Committed ingest (Mb/s) | 64.04 | 75.82 | 312 |
+| PUTs / GETs per 144 commits | 576 / 1,728 | 576 / 1,728 | 720 / 1,440 |
+| Commit latency p95 / p99 (ms) | 1,706 / 3,237 | 1,271 / 1,430 | — |
+| Direct PUT, one / eight workers (Mb/s) | 1,966 / 7,727 | 1,239 / 1,482 | 1,038 / 1,580 |
+| Exact GET + SHA-256, eight workers (Mb/s) | 4,550 | 11,416 | 1,972 direct GET |
+| Client CPU time / peak working set | 58.66 s / 421.67 MiB | 47.32 s / 443.76 MiB | — |
+
+The sync-on sample used four PUTs and twelve GETs per group. The group path adds local fsync, serialized journal and
+catalog transactions, and independent payload and manifest verification around group commit. Direct sync-on loopback
+I/O sustained enough throughput to exceed committed ingest. The higher sync-on committed rate in this single pair is
+inconclusive given the host-wide effects of `sync(2)`, the nonmatching topology and the separate #1964 import path.
+The 312 Mb/s comparison remains open for installed workload qualification. [#1964 baseline](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964)
 
 ## Uninstall, purge and unsupported operations
 
@@ -446,10 +491,9 @@ uses the same storage drain:
 
 On an installed instance, as the user that installed it, with `jq` on the host:
 
-- **No other writer.** Before the stop it records every object version in the bucket with the SHA-256 of its bytes,
-  read through the store. After the replacement it reads them again and requires the same versions with the same bytes
-  (step 4). That assumes nothing writes to the store meanwhile, which holds in this release: CameraAgent does not write
-  to Silo until #1968. Reading every version takes time in proportion to the data stored.
+- **No other writer.** Keep every additional bucket writer stopped through step 4. The procedure stops CameraAgent
+  before recording every object version and its SHA-256. It compares the full inventory after replacement, then
+  starts CameraAgent. Reading every version takes time in proportion to the data stored.
 - **Exclusivity, proved before the stop and after it.** The installer's own check makes the same proof (above), so
   `silo-verify` refuses what it refuses. Step 2 lists every other container, running or not, and refuses unless each
   of its mounts is proved apart from the data root. It runs once before the stop, so a refusal then changes nothing,
@@ -481,7 +525,8 @@ On an installed instance, as the user that installed it, with `jq` on the host:
   - A file hard-linked from inside the data root is another name for that one file, not a mount of the data root, and
     is not detected.
 - **What a stop leaves.** Any failed step stops the procedure once, names what failed, and says what the step it reached
-  leaves and how to recover. Nothing has changed before the stop. After it, Silo stays stopped, its original container
+  leaves and how to recover. The opening verification runs before stopping CameraAgent. If the replacement inventory
+  fails, CameraAgent stays stopped. Silo stays stopped, its original container
   kept, whenever its data root is not proved its own; start it only once nothing else references the data root. When
   the original container is removed, the message gives the command that starts the replacement. A completed inventory
   taken before the stop is kept, and the message names it; remove its folder when done. An inventory that did not
@@ -491,7 +536,7 @@ On an installed instance, as the user that installed it, with `jq` on the host:
 
 ```bash
 ID='<instance-id>'; P='<product-root>'; HVO=hvo-sky-install
-N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; BUCKET=hvo-$N; set -Eeuo pipefail; umask 077
+N=${ID//-/}; I=$P/cameraagents/$ID; APP=hvo-skymonitor-$N; SILO=$APP-silo; DATA=$I/silo; BUCKET=hvo-$N; set -Eeuo pipefail; umask 077
 ROOT_ENV='export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"'
 COMPOSE=(docker compose --project-name "hvo-skymonitor-$N" --env-file "$I/config/compose/instance.env"
   --file "$I/config/compose/compose.yml")
@@ -503,6 +548,8 @@ fail() {   # prints, once, what failed and what the phase reached leaves, then s
     echo "Stopped: $1"
     case $phase in
       unchanged) echo "Nothing was changed; Silo is still running." ;;
+      stopping-app) echo "CameraAgent may still run; inspect $APP. Silo was left running." ;;
+      app-stopped) echo "CameraAgent is stopped and Silo was left running. Restart CameraAgent after resolving the inventory failure." ;;
       stopping) echo "The stop did not prove Silo's process exited, and Silo may still run; check it with: docker inspect $SILO" ;;
       stopped) echo "Silo stays stopped and its original container is kept: its data root is not proved its own."
                echo "Start it only once no other container references $DATA: docker start $SILO" ;;
@@ -514,6 +561,7 @@ fail() {   # prints, once, what failed and what the phase reached leaves, then s
       started) echo "The replacement Silo started but is not healthy; read its log with: docker logs $SILO" ;;
       replaced) echo "The replacement Silo runs but did not verify as the original. Stop it (docker stop $SILO) and keep it"
                 echo "stopped until this is resolved." ;;
+      restarting-app) echo "The replacement version inventory matched. Check CameraAgent and run silo-verify again." ;;
     esac
     if [[ -s $W/before ]]; then echo "The version inventory taken before the stop is $W/before; remove $W when done."; fi
   } >&2
@@ -651,6 +699,9 @@ exclusive() {   # fails unless every mount of every other container, running or 
 opening=$("$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -er .readiness)
 if [[ $opening == not-ready ]]; then fail "silo-verify reports this instance not-ready."; fi
 exclusive                                                                            # step 2, before the stop
+phase=stopping-app; "${COMPOSE[@]}" stop cameraagent
+if [[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$APP")" != "false 0" ]]; then fail "CameraAgent still runs."; fi
+phase=app-stopped
 versions before
 if [[ ! -s $W/before ]]; then fail "the store listed no object version (the marker and fence at least)."; fi
 PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
@@ -668,6 +719,16 @@ if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" != healthy
 phase=replaced
 versions after                                                                       # step 4
 if ! diff "$W/before" "$W/after" >&2; then fail "the object versions read back differ from those before the stop."; fi
+phase=restarting-app; "${COMPOSE[@]}" start cameraagent
+app_ready=false
+for _ in $(seq 30); do
+  if docker exec "$APP" curl --max-time 2 --fail --silent http://localhost:8080/health > /dev/null; then
+    app_ready=true
+    break
+  fi
+  sleep 2
+done
+if [[ $app_ready != true ]]; then fail "CameraAgent did not report ready."; fi
 "$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json > "$W/verify.json"
 case "$(jq -er .readiness "$W/verify.json")" in
   ready) result="silo-verify ready" ;;
@@ -762,5 +823,4 @@ is removed only after a complete, empty final inventory.
   - One amd64 run was on a virtual disk, which does not establish the cost for physical storage.
 - **Trusted host.** All three hosts recorded `hostBridgeReachable`: processes on the host itself reach the instance's
   bridge address. See the topology caveat above.
-- **Power loss.** No run cut power. That an acknowledged version survives an abrupt power cut on ext4 that honors
-  flush is the contract's design (5.2), not a measured result; the physical power-cut proof is #1968/#1974.
+- **Power loss.** Physical testing of acknowledged versions on ext4 that honors flush is tracked in #2126.

@@ -12,6 +12,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.Processing;
@@ -160,7 +161,7 @@ internal sealed class FrameProcessingWorker
         }
         try
         {
-            var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
+            var context = await CreateContextAsync(item, cancellationToken, persistence?.Silo).ConfigureAwait(false);
             var rawCapture = context.RawCapture;
             var captureId = rawCapture?.Manifest.Descriptor.Capture.CaptureId;
             if (persistence is not null)
@@ -429,7 +430,7 @@ internal sealed class FrameProcessingWorker
                 {
                     throw;
                 }
-                catch (Exception caught)
+                catch (Exception caught) when (caught is not PublishedSiloEvidenceException)
                 {
                     exception = caught;
                     logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
@@ -630,6 +631,19 @@ internal sealed class FrameProcessingWorker
             }
             throw;
         }
+        catch (SiloStoreUnavailableException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-store-unavailable"));
+        }
+        catch (SiloSpoolFullException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-staging-pressure"));
+        }
+        catch (SiloConflictException exception)
+        {
+            logger.CaptureProcessingStepFailed("Silo", item.Submission.CaptureStartedUtc, exception);
+            return Finish(CaptureLaneHandlerResult.Terminal(exception.Code));
+        }
         catch
         {
             if (!graphFinished)
@@ -717,14 +731,23 @@ internal sealed class FrameProcessingWorker
 
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloArtifactStorage? silo = null)
     {
         var submission = item.Submission;
         var rawCapture = item.RawCapture;
         if (rawCapture is { } receipt)
         {
-            var sidecar = await File.ReadAllBytesAsync(
-                Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"), cancellationToken).ConfigureAwait(false);
+            var descriptor = receipt.Manifest.Descriptor;
+            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
+            var replay = item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
+            var sidecar = silo is null
+                ? await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false)
+                : (replay ? await silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
+                        null, cancellationToken).ConfigureAwait(false)
+                    : await ReadSiloLiveEvidenceAsync(silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId,
+                        receipt.CommittedManifestSha256, sidecarPath, cancellationToken)).ConfigureAwait(false))
+                    ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or staging file.");
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
             {
@@ -741,7 +764,12 @@ internal sealed class FrameProcessingWorker
             rawCapture = receipt;
             async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var payload = silo is null
+                    ? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false)
+                    : (replay ? await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
+                        : await ReadSiloLiveEvidenceAsync(silo.ReadLiveRawAsync(receipt.Manifest.Descriptor,
+                            receipt.StoredFrame.AbsolutePath, token)).ConfigureAwait(false))
+                        ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or staging file.");
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)
                 {
@@ -765,4 +793,23 @@ internal sealed class FrameProcessingWorker
         }
         return new CaptureProcessingContext(item.Config, submission, rawCapture, null, item.Execution);
     }
+
+    private static async ValueTask<byte[]?> ReadSiloLiveEvidenceAsync(ValueTask<byte[]?> read)
+    {
+        try
+        {
+            return await read.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException)
+        {
+            // The storage reader returns null for missing staging. These failures came from
+            // resolving or verifying a published exact version, even if P4 followed the claim.
+            throw new PublishedSiloEvidenceException(exception);
+        }
+    }
 }
+
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "A published evidence failure always wraps the original exact-version read failure.")]
+internal sealed class PublishedSiloEvidenceException(Exception innerException)
+    : IOException("The published Silo raw evidence was missing or invalid.", innerException);

@@ -92,6 +92,7 @@ public sealed class SiloReplacementRunbookTests
         CollectionAssert.Contains(run.DockerCalls, $"rm {Silo}");
         Assert.IsTrue(run.DockerCalls.Any(static call => call.StartsWith("compose ", StringComparison.Ordinal) && call.EndsWith(" up --detach --no-deps silo", StringComparison.Ordinal)));
         Assert.IsTrue(run.SiloRunning, "The replacement runs.");
+        Assert.IsTrue(run.CameraAgentRunning, "CameraAgent resumes after the inventories match.");
         Assert.IsEmpty(Directory.GetFileSystemEntries(run.TemporaryRoot), "The working folder is removed after a replacement.");
     }
 
@@ -268,9 +269,10 @@ public sealed class SiloReplacementRunbookTests
         AssertStoppedOnce(error);
         CollectionAssert.Contains(run.DockerCalls, $"stop --timeout 30 {Silo}", "The proof before the stop passed.");
         StringAssert.Contains(error, "Silo stays stopped and its original container is kept: its data root is not proved its own.", StringComparison.Ordinal);
-        Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("rm ", StringComparison.Ordinal) || call.StartsWith("compose ", StringComparison.Ordinal)),
+        Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("rm ", StringComparison.Ordinal)) || run.StartedService,
             "Nothing is removed or started: " + string.Join("; ", run.DockerCalls));
         Assert.IsFalse(run.SiloRunning, "Silo stays stopped.");
+        Assert.IsFalse(run.CameraAgentRunning, "CameraAgent stays stopped while Silo is unavailable.");
         Assert.IsTrue(run.OriginalSiloExists, "The original container is kept.");
         Assert.IsFalse(error.Contains("TEST_", StringComparison.Ordinal), "No mount option is shown: " + error);
         AssertInventoryKept(error);
@@ -314,18 +316,23 @@ public sealed class SiloReplacementRunbookTests
         Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("stop ", StringComparison.Ordinal) || call.StartsWith("exec ", StringComparison.Ordinal)),
             "Nothing is stopped, and no inventory is taken: " + string.Join("; ", run.DockerCalls));
         Assert.IsTrue(run.SiloRunning);
+        Assert.IsTrue(run.CameraAgentRunning);
         Assert.IsEmpty(Directory.GetFileSystemEntries(run.TemporaryRoot), "The working folder is removed.");
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("not-ready-before", "Nothing was changed; Silo is still running.")]
-    [DataRow("inventory-incomplete-before", "Nothing was changed; Silo is still running.")]
+    [DataRow("app-stop-fails", "CameraAgent may still run; inspect")]
+    [DataRow("app-still-running", "CameraAgent still runs.")]
+    [DataRow("inventory-incomplete-before", "CameraAgent is stopped and Silo was left running.")]
     [DataRow("stop-fails", "The stop did not prove Silo's process exited, and Silo may still run; check it with: docker inspect")]
     [DataRow("removal-fails", "Silo stays stopped and its data root is proved its own, but removing its original container failed.")]
     [DataRow("replacement-does-not-start", "The original Silo container is removed and no replacement runs. Start the replacement with:")]
     [DataRow("read-back-differs", "The replacement Silo runs but did not verify as the original.")]
     [DataRow("read-back-incomplete", "The replacement Silo runs but did not verify as the original.")]
+    [DataRow("app-start-fails", "The replacement version inventory matched. Check CameraAgent and run silo-verify again.")]
+    [DataRow("app-not-ready", "CameraAgent did not report ready.")]
     public async Task TheBlock_SaysWhatThePhaseItReachedLeaves(string change, string guidance)
     {
         RequireTools();
@@ -333,6 +340,7 @@ public sealed class SiloReplacementRunbookTests
         switch (change)
         {
             case "not-ready-before": run.Verify("not-ready"); break;
+            case "app-stop-fails" or "app-still-running" or "app-start-fails" or "app-not-ready": run.Flag(change); break;
             case "inventory-incomplete-before": run.ReadFails("before"); break;
             case "stop-fails": run.Flag("stop-fails"); break;
             case "removal-fails": run.Flag("rm-fails"); break;
@@ -346,24 +354,27 @@ public sealed class SiloReplacementRunbookTests
         Assert.AreEqual(1, exit, error);
         AssertStoppedOnce(error);
         StringAssert.Contains(error, guidance, StringComparison.Ordinal);
+        if (change == "app-not-ready")
+            Assert.HasCount(30, run.DockerCalls.Where(static call => call.Contains("localhost:8080/health", StringComparison.Ordinal)).ToArray());
         if (change != "removal-fails")
             Assert.IsFalse(error.Contains("docker start", StringComparison.Ordinal), "Only an original whose container is kept is ever started again: " + error);
         switch (change)
         {
-            case "not-ready-before" or "inventory-incomplete-before":
-                Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("stop ", StringComparison.Ordinal)), "Nothing is stopped.");
+            case "not-ready-before" or "app-stop-fails" or "app-still-running" or "inventory-incomplete-before":
+                Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("stop ", StringComparison.Ordinal)), "Silo is not stopped.");
                 Assert.IsTrue(run.SiloRunning);
+                Assert.AreEqual(change != "inventory-incomplete-before", run.CameraAgentRunning);
                 Assert.IsFalse(error.Contains("The version inventory", StringComparison.Ordinal), "No completed inventory exists to keep: " + error);
                 Assert.IsEmpty(Directory.GetFileSystemEntries(run.TemporaryRoot), "The working folder, and any incomplete inventory in it, is removed.");
                 return;
             case "stop-fails":
-                Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("rm ", StringComparison.Ordinal) || call.StartsWith("compose ", StringComparison.Ordinal)));
+                Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("rm ", StringComparison.Ordinal)) || run.StartedService);
                 break;
             case "removal-fails":
                 StringAssert.Contains(error, $"docker start {Silo}", StringComparison.Ordinal);
                 StringAssert.Contains(error, $"--project-name hvo-skymonitor-{Compact}", StringComparison.Ordinal);
                 Assert.IsFalse(error.Contains("is not proved its own", StringComparison.Ordinal), "The data root was proved: " + error);
-                Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("compose ", StringComparison.Ordinal)), "Nothing is started.");
+                Assert.IsFalse(run.StartedService, "Nothing is started.");
                 Assert.IsFalse(run.SiloRunning);
                 Assert.IsTrue(run.OriginalSiloExists);
                 break;
@@ -375,6 +386,7 @@ public sealed class SiloReplacementRunbookTests
                 StringAssert.Contains(error, $"docker stop {Silo}", StringComparison.Ordinal);
                 break;
         }
+        Assert.AreEqual(change == "app-not-ready", run.CameraAgentRunning);
         AssertInventoryKept(error);
     }
 
@@ -431,6 +443,7 @@ public sealed class SiloReplacementRunbookTests
             Script("docker", FakeDocker);
             Script("hvo-sky-install", FakeInstaller);
             Script("findmnt", FakeFindmnt);
+            Script("sleep", "#!/usr/bin/env bash\nexit 0\n");
         }
 
         public string Root => root.FullName;
@@ -495,6 +508,9 @@ public sealed class SiloReplacementRunbookTests
         }
 
         public string[] DockerCalls => File.Exists(Path.Combine(State, "calls")) ? File.ReadAllLines(Path.Combine(State, "calls")) : [];
+        public bool StartedService => DockerCalls.Any(static call =>
+            call.StartsWith("compose ", StringComparison.Ordinal) && !call.EndsWith(" stop cameraagent", StringComparison.Ordinal));
+        public bool CameraAgentRunning => File.ReadAllText(Path.Combine(State, "containers", "cameraagent", "running")).Trim() == "true";
         public bool OriginalSiloExists => Directory.Exists(Path.Combine(State, "containers", "silo-original"));
         public bool SiloRunning => Directory.GetDirectories(Path.Combine(State, "containers"))
             .Any(container => File.ReadAllText(Path.Combine(container, "name")).Trim() == "/" + Silo &&
@@ -715,7 +731,17 @@ public sealed class SiloReplacementRunbookTests
                 d=$(find_container "$2") || exit 1
                 rm -rf "$d"; echo "$2"; exit 0 ;;
               compose)
-                if [[ " $* " != *" up --detach --no-deps silo "* ]]; then echo "unscripted compose call" >&2; exit 2; fi
+                case " $* " in
+                  *" stop cameraagent ")
+                    if [[ -e $S/app-stop-fails ]]; then exit 1; fi
+                    if [[ ! -e $S/app-still-running ]]; then echo false > "$S/containers/cameraagent/running"; fi
+                    exit 0 ;;
+                  *" start cameraagent ")
+                    if [[ -e $S/app-start-fails ]]; then exit 1; fi
+                    echo true > "$S/containers/cameraagent/running"; exit 0 ;;
+                  *" up --detach --no-deps silo ") ;;
+                  *) echo "unscripted compose call" >&2; exit 2 ;;
+                esac
                 if [[ -e $S/up-fails ]]; then echo "compose up failed (scripted)" >&2; exit 1; fi
                 new=$S/containers/silo-replacement; mkdir -p "$new"
                 echo "/$FAKE_SILO" > "$new/name"; echo true > "$new/running"; echo healthy > "$new/health"; echo 2147483645 > "$new/pid"
@@ -723,6 +749,13 @@ public sealed class SiloReplacementRunbookTests
                 if [[ -e $S/differ-after ]]; then echo '{"format":"changed"}' > "$S/objects/meta/fence.json@v2"; fi
                 exit 0 ;;
               exec)
+                if [[ "$*" == *'curl --max-time 2 --fail --silent http://localhost:8080/health' ]]; then
+                  [[ $(cat "$S/containers/cameraagent/running") == true && ! -f $S/app-not-ready ]]
+                  exit $?
+                fi
+                if [[ $(cat "$S/containers/cameraagent/running") != false ]]; then
+                  echo "CameraAgent must be stopped during the version inventory" >&2; exit 2
+                fi
                 if [[ $2 == -i ]]; then
                   IFS=$'\t' read -r key version
                   if [[ -f $S/read-fails && $key == meta/instance.v1.json ]]; then
@@ -772,6 +805,9 @@ public sealed class SiloReplacementRunbookTests
         /// <summary><c>hvo-sky-install cameraagent silo-verify</c>: the readiness the state names; not-ready exits 3.</summary>
         private const string FakeInstaller = """
             #!/usr/bin/env bash
+            if [[ $(cat "$FAKE_STATE/containers/cameraagent/running") != true ]]; then
+              echo "CameraAgent must be running during silo-verify" >&2; exit 2
+            fi
             cat "$FAKE_STATE/verify.json"
             if [[ "$(jq -r .readiness "$FAKE_STATE/verify.json")" == not-ready ]]; then exit 3; fi
             exit 0

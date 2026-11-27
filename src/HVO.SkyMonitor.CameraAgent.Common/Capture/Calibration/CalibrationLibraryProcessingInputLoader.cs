@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
@@ -18,7 +19,7 @@ internal sealed record CalibrationLibraryProcessingInputs(
 
 internal sealed class CalibrationLibraryProcessingInputLoader(
     IOptions<CameraAgentHostOptions> options,
-    CameraAgentClearReferenceLoader referenceLoader)
+    CameraAgentClearReferenceLoader referenceLoader, SiloArtifactStorage? silo = null)
 {
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly CameraAgentClearReferenceLoader _referenceLoader = referenceLoader;
@@ -29,8 +30,12 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         var bundle = snapshot.Bundle;
-        var profileJson = await File.ReadAllBytesAsync(
-            ResolveSafePath(bundle.ProfileRelativePath), cancellationToken).ConfigureAwait(false);
+        var profileJson = silo is null
+            ? await File.ReadAllBytesAsync(ResolveSafePath(bundle.ProfileRelativePath), cancellationToken).ConfigureAwait(false)
+            : await silo.ReadMetadataAsync(CalibrationArtifactPublisher.BundleArtifactId(bundle),
+                CalibrationArtifactPublisher.SiloProfileRevision, CalibrationLibraryContractJson.MaximumBundleBytes,
+                bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The selected calibration profile has no settled Silo evidence.");
         if (!string.Equals(
                 PayloadChecksum.ComputeSha256(profileJson),
                 bundle.ProfileIdentitySha256,
@@ -52,8 +57,12 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
         {
             var envelope = masters.SingleOrDefault(artifact => artifact.Kind == kind)
                 ?? throw new InvalidDataException("The selected calibration bundle is missing a master kind.");
-            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
-                ResolveSafePath(envelope.ManifestRelativePath), cancellationToken).ConfigureAwait(false));
+            var evidence = silo is null
+                ? await File.ReadAllBytesAsync(ResolveSafePath(envelope.ManifestRelativePath), cancellationToken).ConfigureAwait(false)
+                : await silo.ReadMetadataAsync(envelope.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                    CalibrationLibraryContractJson.MaximumBundleBytes, sha256: null, cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidDataException("The selected master has no settled Silo evidence.");
+            var parsed = CaptureContractJson.ParseManifest(evidence);
             var expectedRole = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
                 ? FrameArtifactRole.Combined
                 : FrameArtifactRole.Raw;
@@ -101,7 +110,8 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
             {
                 throw new InvalidDataException("The selected calibration master conflicts with its library envelope.");
             }
-            var reference = await _referenceLoader.LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
+            var reference = silo is null ? await _referenceLoader.LoadAsync(manifest, cancellationToken).ConfigureAwait(false)
+                : await LoadSiloMasterAsync(silo, manifest.Descriptor, cancellationToken).ConfigureAwait(false);
             if (reference.ArtifactId != envelope.ArtifactId ||
                 !string.Equals(
                     PayloadChecksum.ComputeSha256(reference.Payload.Span),
@@ -144,6 +154,17 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
                 : ProcessingInputSelector.Combined(kind),
             ArtifactId: references[kind].ArtifactId)));
         return new CalibrationLibraryProcessingInputs(references, auxiliary, profile);
+    }
+
+    private static async ValueTask<ProcessingArtifact> LoadSiloMasterAsync(SiloArtifactStorage store,
+        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        var payload = await store.ReadMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+            descriptor.Layout.ByteLength, descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The selected calibration master has no settled Silo payload.");
+        if (!FrameReconstructor.TryReconstruct(descriptor, payload, out _).IsValid)
+            throw new InvalidDataException("The selected Silo calibration master is not reconstructable.");
+        return CameraAgentClearReferenceLoader.CreateArtifact(descriptor, payload);
     }
 
     private static bool RecipeMatches(RecipeIdentityDescriptor? expected, RecipeIdentityDescriptor actual)

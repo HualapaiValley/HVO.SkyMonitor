@@ -346,6 +346,10 @@ public sealed partial class ProcessingNodeConfigPage : ComponentBase, IDisposabl
         }
     }
 
+    private bool CanLinkToSourceRevision(ProcessingGraphDraftModel.NodeRow row)
+        => _resolvedRevisionId is not null &&
+           (_model.ExistsInSourceRevision(row) || (_preview is { GraphChanged: false } && _savedRevisionId is null));
+
     private bool IsStale(long generation, CancellationToken token)
         => _disposed || token.IsCancellationRequested || generation != _draftGeneration;
 

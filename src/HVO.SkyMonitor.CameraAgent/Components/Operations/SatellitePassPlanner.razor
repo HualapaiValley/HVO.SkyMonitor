@@ -1,11 +1,13 @@
 @using HVO.SkyMonitor.Astronomy
+@using HVO.SkyMonitor.CameraAgent.Common.Orbital
 
 <section class="ops-panel satellite-planner" aria-labelledby="satellite-planner-heading" aria-busy="@(_searching ? "true" : "false")">
     <header class="ops-panel-heading">
         <div><h2 id="satellite-planner-heading">Satellite pass planner</h2><p>Geometric planning from local orbital data for the selected site and rig. Nothing is captured or scheduled.</p></div>
         <span class="state-chip pending">Planning only</span>
     </header>
-    <p class="satellite-note">Satellite sunlight, shadow, brightness, optical eligibility, clouds and physical orbit uncertainty are unknown here. Selected pass details show geometric solar context separately. A predicted path does not establish detection or optical visibility. Baseline geometric horizon for pass times. Selected arcs apply the site horizon when present; terrain remains unknown without a compatible profile.</p>
+    <p class="satellite-note">Orbital data credit: @CelesTrakGpSource.UnderlyingLineage.</p>
+    <p class="satellite-note">Pass times use the geometric horizon and your minimum elevation. Selected passes show Sun and Moon context separately from satellite illumination. Satellite brightness, optical visibility, cloud conditions and physical orbit uncertainty are unknown here.</p>
     @if (ContextLoading)
     {
         <p role="status">Waiting for the selected site, rig and UTC instant.</p>
@@ -80,6 +82,7 @@
         }
         <details class="satellite-provenance"><summary>Search source and model identity</summary><dl>
             <dt>Snapshot SHA256</dt><dd>@prediction.SnapshotManifestSha256</dd>
+            <dt>Snapshot format</dt><dd>@(search.SnapshotProfileVersion ?? "Unknown")</dd>
             <dt>Search identity SHA256</dt><dd>@search.SearchIdentitySha256</dd>
             <dt>Selection policy SHA256</dt><dd>@prediction.SelectionPolicySha256</dd>
             <dt>Propagator</dt><dd>@prediction.Model.Propagator.Name / @prediction.Model.Propagator.Version / @prediction.Model.Propagator.ImplementationSha256</dd>
@@ -97,24 +100,45 @@
                 <label><input id="satellite-show-path" type="checkbox" @bind="_showPath" /> Predicted path</label>
                 <label><input id="satellite-show-labels" type="checkbox" @bind="_showLabels" /> Time labels</label>
                 <label><input id="satellite-show-rig" type="checkbox" @bind="_showRigPreview" /> Configured-rig portion</label>
+                @if (_arc?.Context.ObstructionRig?.HorizonObstruction is not null && _arc?.Obstruction?.FirstOrDefault() is not null)
+                {
+                    <label><input id="satellite-apply-horizon" type="checkbox" @bind="_applySiteHorizon" /> Apply site horizon to angular view</label>
+                }
             </div>
             <p role="status">@(_loadingArc ? "Loading the original selected pass arc…" : _arcMessage)</p>
             <details class="satellite-provenance"><summary>Selected pass provenance</summary><dl>
                 <dt>Source dataset</dt><dd>@selected.Pass.Lineage.SourceDataset</dd>
+                @if (selected.Source is { } source)
+                {
+                    <dt>Source attribution</dt><dd>@CelesTrakGpSource.DisplayLineage(source)</dd>
+                    <dt>Source retrieval UTC</dt><dd>@Timestamp(source.RetrievedUtc)</dd>
+                    <dt>Provider payload SHA256</dt><dd>@source.RawSha256</dd>
+                }
+                else
+                {
+                    <dt>Source attribution</dt><dd>Unknown for this pass</dd>
+                }
                 <dt>Element epoch</dt><dd>@Timestamp(selected.Pass.Lineage.EpochUtc)</dd>
                 <dt>Record SHA256</dt><dd>@selected.Pass.Lineage.RecordSha256</dd>
                 <dt>Pass SHA256</dt><dd>@selected.Pass.ProductSha256</dd>
             </dl></details>
             @if (_arc is { } detail)
             {
-                @if (detail.Obstruction is not null)
+                @if (detail.Context.ObstructionRig?.HorizonObstruction is { } profile && detail.Obstruction?.FirstOrDefault() is { } horizon)
                 {
-                    <p>Site horizon applied: obstructed, unknown and incompatible samples are omitted from the path. Retained orbital samples remain available; this does not establish physical visibility.</p>
+                    <p>Site horizon @profile.ProfileId revision @profile.Revision. @(_applySiteHorizon ? "The angular view omits obstructed, unknown and incompatible path segments." : "The angular view shows the full geometric arc, including portions the site horizon may block.") The configured-rig preview applies the site horizon.</p>
+                    <details class="satellite-provenance"><summary>Site horizon identity</summary><dl>
+                        <dt>Profile SHA256</dt><dd>@horizon.Binding.ProfileIdentitySha256</dd>
+                    </dl></details>
+                }
+                else
+                {
+                    <p>Site obstruction is unknown for this arc. The path uses the geometric horizon.</p>
                 }
                 <p>Arc computation: @detail.Prediction.Status / @detail.Prediction.Reason. Gaps stay disconnected; unavailable anchors stay unresolved.</p>
                 @foreach (var arc in detail.Prediction.Products.Take(1))
                 {
-                    <SatellitePassArc Arc="arc" Context="detail.Context" Obstruction="detail.Obstruction?.FirstOrDefault()" ShowPath="_showPath" ShowLabels="_showLabels" ShowRigPreview="_showRigPreview" />
+                    <SatellitePassArc Arc="arc" Context="detail.Context" Obstruction="detail.Obstruction?.FirstOrDefault()" ApplyHorizonToAngularView="_applySiteHorizon" ShowPath="_showPath" ShowLabels="_showLabels" ShowRigPreview="_showRigPreview" />
                 }
                 @if (detail.Prediction.Products.Count == 0) { <p>No angular arc is available for this selected pass.</p> }
             }

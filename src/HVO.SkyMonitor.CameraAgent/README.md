@@ -35,7 +35,7 @@ Blazor Server host for a self-contained SkyMonitor camera agent. It provides loc
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components using the local `hvo-dark` theme.
 - **Identity**: Local-only ASP.NET Core Identity with cookie auth and profile/email/password management pages. Local email delivery is not implemented.
 - **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
-- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, authenticated Prometheus scraping, and anonymous health checks.
+- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, authenticated Prometheus scraping, and anonymous health checks. See the [production profiling runbook](../../docs/runbooks/cameraagent-production-profiling.md) for standalone Linux triage.
 - **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
 
 ## Run It

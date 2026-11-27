@@ -1,0 +1,14 @@
+<button type="button" class="button secondary small" disabled="@_loading" @onclick="LoadAsync">Find products from this occurrence</button>
+@if (_products.Count > 0)
+{
+    <ul aria-label="Published products">
+        @foreach (var product in _products)
+        {
+            <li><a href="@product.Url">@product.Label</a></li>
+        }
+    </ul>
+}
+@if (_message is not null)
+{
+    <p role="status">@_message</p>
+}

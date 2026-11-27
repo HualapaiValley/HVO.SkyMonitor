@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -63,6 +64,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         return rows;
     }
+    internal ValueTask<bool> IsSiloConsumerRetainedAsync(string path, CancellationToken cancellationToken) =>
+        _silo?.IsReferenceRetainedAsync(path, cancellationToken) ??
+        throw new InvalidDataException("The retention reference requires Silo storage.");
+
     // Step options retain their original JSON; match the factory's accepted string/numeric enums.
     private static readonly JsonSerializerOptions SceneStorageOptions = new(JsonSerializerDefaults.Web)
     {
@@ -88,7 +93,10 @@ internal sealed partial class SqliteCaptureProcessingStore
             raw = parsed.IsValid && parsed.Document is not null ? parsed.Document.Manifest
                 : throw new InvalidDataException("Scene retention cannot authenticate the source raw manifest.");
         }
-        var paths = new List<string> { raw.RelativeArtifactPath };
+        var paths = new List<string>
+        {
+            _silo is null ? raw.RelativeArtifactPath : SiloArtifactStorage.RawReference(raw.Descriptor.Artifact.ArtifactId, ".bin")
+        };
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """

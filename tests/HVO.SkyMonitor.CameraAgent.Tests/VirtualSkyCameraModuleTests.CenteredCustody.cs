@@ -22,7 +22,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-full-custody");
         var token = CancellationToken.None;
         var start = new DateTimeOffset(2026, 11, 20, 22, 30, 0, TimeSpan.Zero);
-        var clock = new CenteredClock { UtcNow = start };
+        // Keep registration's deadline on the same simulated timeline as the captures.
+        var clock = new CenteredClock(new ExposureTestTimeProvider(start));
         var deviceClock = new ExposureTestTimeProvider(start, autoAdvance: true);
         var interval = TimeSpan.FromSeconds(2);
         var profile = CenteredRuntimeProfile(root, start, CameraPixelFormat.BayerRggb16);

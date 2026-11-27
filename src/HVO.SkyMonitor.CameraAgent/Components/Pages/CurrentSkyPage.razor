@@ -434,6 +434,10 @@ else
                         </div>
                         <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
                             @{ var centeredDiagnostics = GetCenteredLayerRows("Diagnostics"); }
+                            @if (centeredDiagnostics.Any(row => IsSatelliteLayer(row.Layer.Key.Kind)))
+                            {
+                                @SatelliteSourceCredit
+                            }
                             @if (centeredDiagnostics.Count == 0)
                             {
                                 <p class="scene-unavailable">No diagnostic overlay slots recorded for this base.</p>
@@ -512,6 +516,8 @@ else
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=cloud-layer#cloud-layer">Edit existing cloud layer</a>
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=environment-layer#environment-layer">Edit existing environment layer</a>
                         <a class="text-button" href="/operations/pipeline/graphs/new?section=predicted-satellite-layer#predicted-satellite-layer">Edit predicted satellite layer</a>
+                        <a class="text-button" href="/operations/pipeline/graphs/new?section=capture-satellite-tracks#capture-satellite-tracks">Hide satellite object labels</a>
+                        @SatelliteSourceCredit
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         @if (!HasLayer(AstrometricDiagnosticPresentation.ResidualsLayer))
                         {
@@ -740,6 +746,11 @@ else
     private RenderFragment LayerToggle(CameraAgentPresentationLayer layer) => __builder =>
     {
         <label><input type="checkbox" disabled="@(!ShowLayeredHero || !_layerInteractive || layer.Satellite is { Renderable: false })" checked="@_selectedLayers.Contains(layer.IdentitySha256)" @onchange="args => SelectLayer(layer.IdentitySha256, args.Value is true)" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span class="layer-swatch @layer.Kind"></span><span><strong>@LayerLabel(layer.Kind)</strong><small>@LayerDescription(layer.Kind) @SatelliteDescription(layer.Satellite)</small></span></label>
+    };
+
+    private static RenderFragment SatelliteSourceCredit => __builder =>
+    {
+        <p class="satellite-source-credit">Orbital data credit: @HVO.SkyMonitor.CameraAgent.Common.Orbital.CelesTrakGpSource.UnderlyingLineage.</p>
     };
 
     private RenderFragment CenteredLayerToggle(CenteredLayerRow row) => __builder =>

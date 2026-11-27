@@ -97,3 +97,16 @@
     .ops-table-wrap .ops-table.focus-history-table td { padding-inline: .3rem; }
     .ops-table-wrap .ops-table.focus-samples-table th, .ops-table-wrap .ops-table.focus-samples-table td { padding-inline: .3rem; font-size: .55rem; }
 }
+
+.focus-motor fieldset {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: .75rem;
+}
+
+.focus-motor input {
+    display: block;
+    width: 8rem;
+    min-height: 44px;
+}

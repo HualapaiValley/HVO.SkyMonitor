@@ -5,9 +5,11 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal enum RetainedAstrometryLineageState
 {
+    // Keep this precedence in sync with the SQL aggregation in AstrometryExactLineageState.
     Unknown,
     Available,
     Pending,
+    Missing,
     Evicted,
     Quarantined
 }
@@ -77,11 +79,11 @@ internal sealed partial class SqliteCaptureProcessingStore
     private const string AstrometryExactLineageState = $"""
         CASE
             WHEN requested.artifact IS NULL THEN 0
-            WHEN assessment.artifact_id IS NULL THEN 3
+            WHEN assessment.artifact_id IS NULL THEN 4
             WHEN assessment.capture_id IS NOT requested.capture OR assessment.role IS NOT 'Metadata'
               OR assessment.product_schema_version IS NOT 'measured-astrometry-solution-v1'
               OR assessment.content_identity_sha256 IS NOT requested.solution COLLATE NOCASE THEN 0
-            WHEN assessment.availability_state = 'Quarantined' THEN 4
+            WHEN assessment.availability_state = 'Quarantined' THEN 5
             ELSE (
                 WITH lineage(ordinal, artifact) AS (
                     SELECT -1, assessment.artifact_id
@@ -91,11 +93,18 @@ internal sealed partial class SqliteCaptureProcessingStore
                     WHERE output_identity_sha256 = assessment.output_identity_sha256
                 )
                 SELECT CASE WHEN COUNT(*) <> 5 THEN 0 ELSE MAX(CASE
-                    WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
-                    WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
+                    WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 5
+                    WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 4
                     WHEN raw.raw_artifact_id IS NOT NULL THEN CASE WHEN raw.state = 'committed' THEN 1 ELSE 2 END
-                    ELSE MAX({AstrometryOutputPublication},
-                        CASE WHEN output.availability_state = 'Available' THEN 1 ELSE 2 END) END)
+                    ELSE CASE ({AstrometryOutputPublication})
+                        WHEN 3 THEN 4
+                        WHEN 2 THEN 2
+                        ELSE CASE output.availability_state
+                            WHEN 'Available' THEN 1
+                            WHEN 'Missing' THEN 3
+                            ELSE 2
+                        END
+                    END END)
                 END
                 FROM lineage
                 LEFT JOIN processing_outputs output ON (lineage.ordinal = -1 OR lineage.ordinal BETWEEN 1 AND 3)
