@@ -43,8 +43,10 @@ public sealed partial class SiloStockStoreTests
         await CheckStockVersionsAsync(container, client, store, descriptor, accessKey, secretKey, token).ConfigureAwait(false);
     }
 
-    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync) =>
-        new ContainerBuilder(StockImage)
+    private static IContainer BuildStockContainer(string accessKey, string secretKey, string sync,
+        string? dataRoot = null, string? user = null)
+    {
+        var builder = new ContainerBuilder(StockImage)
             .WithEnvironment("MINIO_ROOT_USER", accessKey)
             .WithEnvironment("MINIO_ROOT_PASSWORD", secretKey)
             .WithEnvironment("MINIO_BROWSER", "off")
@@ -53,6 +55,8 @@ public sealed partial class SiloStockStoreTests
             .WithPortBinding(Port, assignRandomHostPort: true)
             .WithCreateParameterModifier(parameters =>
             {
+                if (user is not null)
+                    parameters.User = user;
                 var bindings = parameters.HostConfig?.PortBindings ?? throw new InvalidOperationException("The fixture requires a loopback binding.");
                 foreach (var binding in bindings.Values.SelectMany(static bindings => bindings))
                 {
@@ -60,8 +64,9 @@ public sealed partial class SiloStockStoreTests
                 }
             })
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
-                request => request.ForPort(Port).ForPath("/minio/health/ready")))
-            .Build();
+                request => request.ForPort(Port).ForPath("/minio/health/ready")));
+        return (dataRoot is null ? builder : builder.WithBindMount(dataRoot, "/data").WithEnvironment("MC_CONFIG_DIR", "/tmp/mcli")).Build();
+    }
 
     private static Uri Endpoint(IContainer container) => new UriBuilder("http", container.Hostname, container.GetMappedPublicPort(Port)).Uri;
 

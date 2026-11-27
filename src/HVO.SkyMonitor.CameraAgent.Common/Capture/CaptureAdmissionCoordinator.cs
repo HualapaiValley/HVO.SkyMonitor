@@ -1064,10 +1064,17 @@ internal sealed class SqliteCaptureControlStore(
             "completed", CaptureAdmissionState.Paused, 1, true, now, now, cancellationToken).ConfigureAwait(false);
     }
 
-    internal async Task<FirstBootPauseStatus> ReadFirstBootPauseAsync(FirstBootPauseIdentity seed, CancellationToken cancellationToken)
+    internal async Task<FirstBootPauseStatus> ReadFirstBootPauseAsync(FirstBootPauseIdentity seed, CancellationToken cancellationToken,
+        bool readOnly = false)
     {
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = readOnly
+            ? await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false)
+            : await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes deferred transactions only through the synchronous overload.
+        using var transaction = readOnly
+            ? connection.BeginTransaction(deferred: true)
+            : (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning restore CA1849
         var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         var latest = await ReadLatestCommandKeyAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
@@ -1339,6 +1346,27 @@ internal sealed class SqliteCaptureControlStore(
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
         return connection;
+    }
+
+    private async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+            DefaultTimeout = _busyTimeoutSeconds
+        }.ToString());
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static SqliteTransaction BeginImmediate(SqliteConnection connection)

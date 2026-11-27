@@ -528,9 +528,9 @@ public sealed partial class ArchitectureBoundaryTests
             }
         }
 
-        // Six importers: the remaining authenticated CameraAgent callers, deployment CLI, SQLite catalog
-        // resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher.
-        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Seven importers: the authenticated CameraAgent callers, deployment CLI, SQLite catalog resolver,
+        // and Storage.FileSystem's DurableSync, HardLinkPublisher and ConfinedReadDirectory.
+        Assert.AreEqual(7, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 

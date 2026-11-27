@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -99,6 +100,8 @@ public sealed class SiloPublicationOwnershipTests
     [TestCategory("Unit")]
     public async Task OneVisibleGroupCannotReleaseAnotherGroupsStagedBytes()
     {
+        if (!DurableSync.SupportsDirectorySync)
+            Assert.Inconclusive("The durable payload spool requires Linux directory fsync.");
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.Evidence(silo.Payloads, "shared");
@@ -132,6 +135,8 @@ public sealed class SiloPublicationOwnershipTests
     [TestCategory("Unit")]
     public async Task RegisteredStackStaysHiddenUntilRestartCommitsAllRequiredFiles()
     {
+        if (!DurableSync.SupportsDirectorySync)
+            Assert.Inconclusive("The durable payload spool requires Linux directory fsync.");
         var token = TestContext.CancellationToken;
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.View(silo.Payloads, "registered", null, 1, [], [], publishPreview: true);

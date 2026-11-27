@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.CameraAgent.Extensions;
@@ -115,6 +116,18 @@ public class Program
 
     public static async Task Main(string[] args)
     {
+        ArgumentNullException.ThrowIfNull(args);
+        if (args.Length > 0 && args[0] == SiloFixtureImportCommand.Argument)
+        {
+            Environment.ExitCode = await SiloFixtureImportCommand.RunAsync(args, () =>
+            {
+                var target = WebApplication.CreateBuilder();
+                DeploymentLocalSettings.AddConfiguredFile(target.Configuration, target.Environment.ContentRootPath);
+                DeploymentKeyPerFile.AddConfiguredDirectory(target.Configuration);
+                return target.Configuration;
+            }, Console.Out, CancellationToken.None).ConfigureAwait(false);
+            return;
+        }
         if (args.Contains(HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.Argument, StringComparer.Ordinal))
         {
             Environment.ExitCode = await InitializeFirstBootStateAsync(

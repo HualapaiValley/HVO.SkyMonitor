@@ -292,6 +292,9 @@ internal sealed class SiloPublisher(
                     case SiloStagedState.Recorded:
                         await IndexAsync(group, new SiloFreshEvidence(), cancellationToken).ConfigureAwait(false);
                         return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
+                    case SiloStagedState.Visible:
+                        await ReleaseAsync(group, cancellationToken).ConfigureAwait(false);
+                        return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
                     default:
                         return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
                 }

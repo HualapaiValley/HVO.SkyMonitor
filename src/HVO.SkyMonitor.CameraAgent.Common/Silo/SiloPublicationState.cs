@@ -341,6 +341,19 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
 
     // ----- Journal writer head, pending segment and committed operations ---------------------------------------
 
+    internal async ValueTask RequireFixtureTargetAsync(IReadOnlySet<string> selectedGroups, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, "SELECT group_id, revision_id FROM staged_groups LIMIT $limit;",
+            ("$limit", SiloFixtureInventory.MaximumRecords + 1));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (reader.GetString(1) != SiloFixtureInventory.GroupRevision || !selectedGroups.Contains(reader.GetString(0)))
+                throw new SiloConflictException("fixture-target-has-other-history", "The target contains work outside the selected fixtures.");
+        }
+    }
+
     public async ValueTask<SiloJournalHead> ReadHeadAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
