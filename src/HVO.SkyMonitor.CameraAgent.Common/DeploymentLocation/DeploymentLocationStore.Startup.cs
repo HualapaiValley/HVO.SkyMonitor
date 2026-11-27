@@ -15,17 +15,17 @@ public sealed partial class ProtectedDeploymentLocationStore
 
     private bool HasAnyRetainedStateBounded(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         if (!Directory.Exists(root)) return false;
         var count = 0;
-        if (File.Exists(Path.Combine(root, ".location", RetainedIntegrityLedger.DatabaseName)) ||
-            File.Exists(Path.Combine(root, ".location", RetainedIntegrityLedger.CheckpointName))) return true;
+        if (RetainedIntegrityLedger.HasEstablishedAuthorityAtRoot(root, cancellationToken)) return true;
         foreach (var entry in Directory.EnumerateFileSystemEntries(root))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (++count > 64) return true;
+            if (++count > RetainedIntegrityLedger.BoundedAuthorityEntryLimit) return true;
             RawIngressFileStore.EnsureNoSymbolicLinks(root, entry);
-            if (Path.GetFileName(entry) == ".location") continue;
+            if (Path.GetFileName(entry) == RetainedIntegrityLedger.LocationDirectoryName) continue;
             if (!Directory.Exists(entry) || Directory.EnumerateFileSystemEntries(entry).Any()) return true;
         }
         return false;

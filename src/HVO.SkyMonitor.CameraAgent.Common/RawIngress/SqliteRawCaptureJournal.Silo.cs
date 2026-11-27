@@ -167,16 +167,16 @@ internal sealed partial class SqliteRawCaptureJournal
                 evidenceRestored = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
                 lanesReleased = await RestoreEvidenceLanesAsync(command, leasedWorkId: null, cancellationToken)
                     .ConfigureAwait(false);
-                if (lanesReleased)
+                if (evidenceRestored || lanesReleased)
                 {
                     var hasExecutionPins = await HasExecutionPinsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                     await SqliteCaptureLaneStore.RecomputeRetentionHoldAsync(
                         connection, transaction, rowId, hasExecutionPins, cancellationToken).ConfigureAwait(false);
-                    await SqliteCaptureLaneStore.RecomputeRequiredPressureAsync(
-                        connection, transaction, _distributionOptions, now, cancellationToken).ConfigureAwait(false);
-                }
-                if (evidenceRestored || lanesReleased)
-                {
+                    if (lanesReleased)
+                    {
+                        await SqliteCaptureLaneStore.RecomputeRequiredPressureAsync(
+                            connection, transaction, _distributionOptions, now, cancellationToken).ConfigureAwait(false);
+                    }
                     await RecordSiloEvidenceRestorationAsync(command, cancellationToken).ConfigureAwait(false);
                 }
             }

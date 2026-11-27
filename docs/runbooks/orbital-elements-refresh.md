@@ -675,9 +675,21 @@ at most 32 MiB each.
 1. Read its `reason`, the precise parser, normalizer or response code, and its
    `rawSha256`.
 2. If the body was retained, `quarantine/<rawSha256>.raw` holds the exact decoded
-   response bytes. Older evidence may still be at `quarantine/<rawSha256>.json`.
+   response bytes. Legacy `quarantine/<rawSha256>.json` files from earlier releases
+   are migrated to `.raw` automatically on startup through the ledger-aware move.
 3. Inspect a copy. Do not edit, rename or delete files in the store.
 4. Keep the copy local, because the provider terms forbid redistribution.
+
+**Legacy malformed JSON quarantine upgrade note (`v0.9.1-rc.2`).** An earlier release
+that quarantined a malformed `orbital.json-syntax` body wrote it to
+`quarantine/<rawSha256>.json`. While that `.json` file remains on disk, installation
+manifest verification (`VerifyInstallationAsync` / full retained-integrity scrub)
+rejects it even under a healthy CSV feed. Restarting on the upgraded CameraAgent
+migrates retained `quarantine/<rawSha256>.json` files to `.raw` safely and idempotently
+during startup reconciliation while preserving retention, containment and permissions.
+If an ambiguous entry (such as a pre-existing mismatched `.raw` file or link) prevents
+automatic migration, follow [Integrity Failure And Store Replacement](#integrity-failure-and-store-replacement)
+instead of editing or renaming files inside a running store.
 
 Response-level rejections have no raw body. A status line outside 100–599 is a halt,
 not a quarantine. The newest `MaximumQuarantinedPayloads` bodies are kept and older
@@ -699,7 +711,9 @@ On every start, before the automation runner starts, the store:
     is already in force. An existing halt is never replaced;
 - settles staging intents and deletes partially written staging files;
 - removes publisher temporaries;
-- prunes quarantine bodies that no retained attempt names;
+- prunes quarantine bodies that no retained attempt names and migrates retained legacy
+  `quarantine/<rawSha256>.json` files to `quarantine/<rawSha256>.raw` through the
+  ledger-aware move;
 - leaves anything ambiguous where it is and logs it. That covers a directory or link
   where a file is expected, and a name that is not a SHA-256.
 

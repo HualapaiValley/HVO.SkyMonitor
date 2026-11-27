@@ -1,10 +1,13 @@
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
-
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -290,6 +293,122 @@ public sealed class SiloRawEvidenceRecoveryTests
             .ConfigureAwait(false));
     }
 
+    [TestMethod]
+    public async Task SiloAdmissionSettlementRecomputesRetentionHoldWhenEvidenceRestoredWithoutLaneRelease()
+    {
+        using var fixture = CreateFixture(new());
+        var token = CancellationToken.None;
+        var (settings, store, _) = await CreateRecoverySiloWithStoreAsync().ConfigureAwait(false);
+        var faults = new SiloTestFaults();
+        using var storage = new SiloInstalledStorage(settings, fixture.Options, fixture.Time, faults,
+            decorateReadStore: null, store, new SiloTestPayloads());
+        var artifacts = new SiloArtifactStorage(storage, fixture.Time);
+        var state = new RawIngressState(fixture.Time);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var ingress = new RawCaptureIngress(fixture.Options, new FixedCapacityProvider(), state, fixture.Time,
+            telemetry, NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector(), fixture.Policy,
+            laneState: fixture.LaneState, silo: storage, siloSettings: settings, siloArtifacts: artifacts);
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+
+        var capture = await ingress.AcceptAsync(fixture.Configuration, fixture.CreateSubmission(0), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        var captureId = capture.Manifest.Descriptor.Capture.CaptureId;
+        var standardLane = fixture.Policy.Definitions.Single(static lane => lane.Name == "standard");
+        var standardLease = await ingress.ClaimAsync(standardLane, "test", fixture.Configuration, token).ConfigureAwait(false);
+        Assert.IsNotNull(standardLease);
+        await ingress.CompleteAsync(standardLease, token).ConfigureAwait(false);
+
+        // Interrupt after P3 so Silo has the committed segment while P4 settlement has not run yet.
+        faults.Armed = SiloFaultPoint.AfterSegmentCommitted;
+        Assert.AreEqual("silo-raw-admission-failed",
+            (await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+
+        // Lose local staging after standard already acknowledged: raw_captures becomes missing_evidence with retention_hold = 1,
+        // while no lane is quarantined (so settlement restores evidence with evidenceRestored=true, lanesReleased=false).
+        File.Delete(capture.StoredFrame.AbsolutePath);
+        ingress.InvalidateEvidence();
+        Assert.IsFalse(await ((IRawCaptureIngress)ingress).InitializeForOperationsAsync(token).ConfigureAwait(false));
+
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM raw_captures WHERE state = 'missing_evidence' AND retention_hold = 1;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND state = 'completed';").ConfigureAwait(false));
+
+        Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed' AND failure_reason IS NULL AND retention_hold = 0;")
+            .ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection, """
+            SELECT COUNT(*) FROM raw_capture_stage_events
+            WHERE stage_key GLOB 'raw-evidence-silo-restored.*' AND state = 'evidence-restored' AND source = 'silo-publication';
+            """).ConfigureAwait(false));
+        var journal = new SqliteRawCaptureJournal(Path.Combine(fixture.Root, "journal", "raw-ingress.db"), 5, usesSilo: true);
+        var holds = await journal.ReadRetentionHoldsAsync(token).ConfigureAwait(false);
+        Assert.IsFalse(holds.Any(hold => hold.ArtifactId == capture.Manifest.Descriptor.Artifact.ArtifactId),
+            $"Capture {captureId} should not remain retention-held after evidence restoration with no remaining holds.");
+    }
+
+    [TestMethod]
+    public async Task ProcessingStepCallingEnsureRawFramePropagatesPublishedSiloEvidenceFailure()
+    {
+        using var fixture = CreateFixture(new());
+        var token = CancellationToken.None;
+        var (settings, installedStore, testStore) = await CreateRecoverySiloWithStoreAsync().ConfigureAwait(false);
+        using var storage = new SiloInstalledStorage(settings, fixture.Options, fixture.Time, new SiloTestFaults(),
+            decorateReadStore: null, installedStore, new SiloTestPayloads());
+        var artifacts = new SiloArtifactStorage(storage, fixture.Time);
+        var state = new RawIngressState(fixture.Time);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var ingress = new RawCaptureIngress(fixture.Options, new FixedCapacityProvider(), state, fixture.Time,
+            telemetry, NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector(), fixture.Policy,
+            laneState: fixture.LaneState, silo: storage, siloSettings: settings, siloArtifacts: artifacts);
+        await storage.VerifyReadinessAsync(token).ConfigureAwait(false);
+
+        var capture = await ingress.AcceptAsync(fixture.Configuration, fixture.CreateSubmission(0), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        Assert.IsNull((await ingress.PublishSiloAdmissionsAsync(16, token).ConfigureAwait(false)).Status);
+        Assert.IsFalse(File.Exists(capture.StoredFrame.AbsolutePath));
+
+        var descriptor = capture.Manifest.Descriptor;
+        var payloadMember = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member,
+            descriptor.Artifact.ArtifactId.ToString("D"),
+            CaptureContractJson.ComputeDescriptorSha256(descriptor)), token).ConfigureAwait(false);
+        Assert.IsNotNull(payloadMember);
+        testStore.Delete(payloadMember.Locators.Single(static copy => copy.Eligible && copy.CopyState == "active").Locator);
+
+        var standard = fixture.Policy.Definitions.Single(static lane => lane.Name == "standard");
+        var lease = await ingress.ClaimAsync(standard, "test", fixture.Configuration, token).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+
+        using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
+        using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        using var processingTelemetry = new CaptureProcessingTelemetry();
+        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, frameStorage,
+            processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: artifacts);
+
+        var step = new DescriptorOnlyEnsureRawFrameStep();
+        var graph = new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("raw-reader", step, [], Required: true, RecipeName: null,
+                OutputRole: null, OutputVariant: null, PlanSha256: new string('A', 64))
+        ]);
+        var item = new FrameProcessingItem(lease.Context.Configuration, lease.Context.Submission,
+            lease.Context.RawCapture, lease.Context.WorkId, lease.Context.LeaseToken, lease.Context.Execution);
+
+        await Assert.ThrowsExactlyAsync<PublishedSiloEvidenceException>(() =>
+            FrameProcessingWorker.ProcessGraphItemAsync(item, graph, persistence, processingTelemetry,
+                lease.Attempt, NullLogger.Instance, token).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual(1, step.Invocations);
+
+        using var handler = new StandardCaptureLaneHandler(new SingleGraphPipelineFactory(graph), persistence,
+            processingTelemetry, NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+        var result = await handler.HandleAsync(lease.Context, token).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, result.Outcome);
+        Assert.AreEqual("evidence-unavailable", result.Reason);
+        Assert.IsTrue(result.PublishedSiloEvidenceFailed);
+    }
+
     private static TransientDetectionOptions RequiredTransient() => new() { Mode = TransientOperatingMode.Edge, Required = true };
 
     private sealed class InterruptReclaim : IRawIngressFaultInjector
@@ -314,6 +433,12 @@ public sealed class SiloRawEvidenceRecoveryTests
     }
 
     private static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store)> CreateRecoverySiloAsync()
+    {
+        var (settings, installed, _) = await CreateRecoverySiloWithStoreAsync().ConfigureAwait(false);
+        return (settings, installed);
+    }
+
+    private static async Task<(SiloInstalledSettings Settings, SiloInstalledStore Store, SiloTestStore TestStore)> CreateRecoverySiloWithStoreAsync()
     {
         var instance = Guid.NewGuid();
         var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
@@ -347,7 +472,7 @@ public sealed class SiloRawEvidenceRecoveryTests
             writerGeneration = 1,
             writerAccessKeyId = accessKey
         })).ConfigureAwait(false);
-        return (settings, new SiloInstalledStore(settings, store, _ => ValueTask.FromResult(true)));
+        return (settings, new SiloInstalledStore(settings, store, _ => ValueTask.FromResult(true)), store);
 
         async Task PutBindingAsync(string key, byte[] bytes)
         {
@@ -355,6 +480,32 @@ public sealed class SiloRawEvidenceRecoveryTests
                 _ => ValueTask.FromResult<Stream>(new MemoryStream(bytes, writable: false)), new Dictionary<string, string>());
             Assert.IsTrue((await store.PutCreateOnlyAsync(put, CancellationToken.None).ConfigureAwait(false)).Created);
         }
+    }
+
+    private sealed class DescriptorOnlyEnsureRawFrameStep : IDescriptorOnlyCaptureProcessingStep
+    {
+        public string Name => "raw-reader";
+        public int Order => 1;
+        public int Invocations { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        async ValueTask ICaptureProcessingStep.ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            Invocations++;
+            await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class SingleGraphPipelineFactory(CaptureProcessingGraph graph) : ICaptureProcessingPipelineFactory
+    {
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => graph;
+
+        public CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config) => graph;
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config) =>
+            throw new NotSupportedException();
     }
 
     private sealed class SecondaryEvidenceReader(SiloArtifactStorage artifacts) : ICaptureLaneHandler

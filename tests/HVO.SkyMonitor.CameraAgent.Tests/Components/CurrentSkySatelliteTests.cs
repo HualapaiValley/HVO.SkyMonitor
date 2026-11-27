@@ -66,7 +66,7 @@ public sealed partial class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>();
 
         var link = cut.Find("a[href='/operations/pipeline/graphs/new?section=capture-satellite-tracks#capture-satellite-tracks']");
-        Assert.AreEqual("Hide satellite object labels", link.TextContent);
+        Assert.AreEqual("Edit satellite object labels", link.TextContent);
         Assert.AreEqual("Diagnostics layers", link.ParentElement!.GetAttribute("aria-label"));
     }
 

@@ -1344,6 +1344,7 @@ internal sealed partial class RawCaptureIngress :
         }
         try
         {
+            _faultInjector.BeforeLaneStateRefresh();
             var prior = _laneState.Snapshot;
             _laneState.Update(await _laneStore.ReadBacklogsAsync(cancellationToken).ConfigureAwait(false));
             _laneState.ClearUnhealthy("lane-state-unavailable");
