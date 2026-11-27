@@ -20,11 +20,13 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     internal const string HistoryFileName = "deployment-location.v1.protected";
     internal const string ManualFileName = "manual-deployment-location.v1.protected";
     internal const string IdentityMarkerName = ".deployment-location.v1.identity";
+    internal const int BoundedAuthorityEntryLimit = 64;
     private static readonly ConcurrentDictionary<string, RetainedIntegrityLedger> Roots = new(StringComparer.Ordinal);
     private static readonly AsyncLocal<Mutation?> Current = new();
     internal static Action? BeforeNestedMutationForTest { get; set; }
     internal static Action? RegistrationBlockedForTest { get; set; }
     internal static Action<string>? BeforePendingDirectorySyncForTest { get; set; }
+    internal static Action<string>? BeforeAuthorityScanEntryForTest { get; set; }
     private readonly string _root;
     private readonly string _directory;
     private readonly string _checkpoint;
@@ -525,8 +527,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
     }
 
-    internal static bool HasEstablishedAuthorityAtRoot(string rootDirectory)
+    internal static bool HasEstablishedAuthorityAtRoot(string rootDirectory, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Detect the durable root-level deployment-location identity marker even if .location
         // is offline, missing, or recreated empty during recovery startup.
         if (PathExistsOrInaccessible(Path.Combine(rootDirectory, IdentityMarkerName)))
@@ -563,10 +567,26 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             return false;
         }
 
+        foreach (var marker in EstablishedLedgerMarkerNames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (PathExistsOrInaccessible(Path.Combine(locationDirectory, marker)))
+            {
+                return true;
+            }
+        }
+
         try
         {
+            var count = 0;
             foreach (var entry in Directory.EnumerateFileSystemEntries(locationDirectory))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (++count > BoundedAuthorityEntryLimit)
+                {
+                    return true;
+                }
+                BeforeAuthorityScanEntryForTest?.Invoke(entry);
                 if (IsEstablishedLedgerMarkerName(Path.GetFileName(entry)))
                 {
                     return true;
@@ -576,14 +596,6 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
             return true;
-        }
-
-        foreach (var marker in EstablishedLedgerMarkerNames)
-        {
-            if (PathExistsOrInaccessible(Path.Combine(locationDirectory, marker)))
-            {
-                return true;
-            }
         }
 
         return false;

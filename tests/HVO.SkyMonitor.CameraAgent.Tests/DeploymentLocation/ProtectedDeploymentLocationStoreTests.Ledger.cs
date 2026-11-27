@@ -511,6 +511,133 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    public async Task AuthorityScanInLocationDirectoryIsBoundedFailClosedAndCancellable()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        var root = _options.Value.RawIngressRoot;
+        var locationDirectory = Path.Combine(root, RetainedIntegrityLedger.LocationDirectoryName);
+        Directory.CreateDirectory(locationDirectory);
+
+        // 1. Clean .location with <= 64 unrelated files and no authority markers returns false and allows clean startup.
+        for (var i = 0; i < RetainedIntegrityLedger.BoundedAuthorityEntryLimit; i++)
+        {
+            await File.WriteAllBytesAsync(Path.Combine(locationDirectory, $"unrelated-{i:D4}.tmp"), [], CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var inspected = 0;
+        RetainedIntegrityLedger.BeforeAuthorityScanEntryForTest = _ => inspected++;
+        try
+        {
+            Assert.IsFalse(RetainedIntegrityLedger.HasEstablishedAuthorityAtRoot(root, CancellationToken.None),
+                "At most 64 unrelated entries in .location with no authority markers must not report established authority.");
+            Assert.AreEqual(RetainedIntegrityLedger.BoundedAuthorityEntryLimit, inspected);
+
+            // 2. Exceeding 64 unrelated entries (4,096 files) fails closed at the 64-entry cap without scanning the rest.
+            for (var i = RetainedIntegrityLedger.BoundedAuthorityEntryLimit; i < 4_096; i++)
+            {
+                await File.WriteAllBytesAsync(Path.Combine(locationDirectory, $"unrelated-{i:D4}.tmp"), [], CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            inspected = 0;
+            Assert.IsTrue(RetainedIntegrityLedger.HasEstablishedAuthorityAtRoot(root, CancellationToken.None),
+                "Exceeding the bounded .location entry cap must fail closed as possibly established.");
+            Assert.AreEqual(RetainedIntegrityLedger.BoundedAuthorityEntryLimit, inspected,
+                "Authority scan must stop once the 64-entry cap is exceeded instead of enumerating all 4,096 files.");
+
+            // 3. Startup LoadCurrentAsync threads cancellation and stays bounded/fail-closed through HasAnyRetainedStateBounded.
+            inspected = 0;
+            using (var store = CreateStore())
+            {
+                _ = await store.LoadCurrentAsync(seed, verification: false, () => true, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(RetainedIntegrityLedger.BoundedAuthorityEntryLimit, inspected,
+                    "Startup LoadCurrentAsync must stop .location authority scan at the 64-entry cap.");
+                Assert.IsFalse(store.RecentRetainedEvidenceReady);
+                Assert.IsTrue(store.RequiresDeploymentLocationReconciliation);
+                Assert.IsFalse(File.Exists(Path.Combine(locationDirectory, RetainedIntegrityLedger.HistoryFileName)),
+                    "Fail-closed bounded startup must not persist provisional history over an unbounded .location directory.");
+            }
+
+            // 4. Pre-cancelled token is honored before scanning.
+            using var preCancelled = new CancellationTokenSource();
+            await preCancelled.CancelAsync().ConfigureAwait(false);
+            inspected = 0;
+            Assert.ThrowsExactly<OperationCanceledException>(() =>
+                RetainedIntegrityLedger.HasEstablishedAuthorityAtRoot(root, preCancelled.Token));
+            Assert.AreEqual(0, inspected);
+
+            using (var store = CreateStore())
+            {
+                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    _ = await store.LoadCurrentAsync(seed, verification: false, () => true, preCancelled.Token)
+                        .ConfigureAwait(false)).ConfigureAwait(false);
+                Assert.AreEqual(0, inspected);
+            }
+
+            // 5. Cancellation during enumeration stops immediately both directly and through LoadCurrentAsync.
+            using var midScanCancel = new CancellationTokenSource();
+            inspected = 0;
+            RetainedIntegrityLedger.BeforeAuthorityScanEntryForTest = _ =>
+            {
+                inspected++;
+                if (inspected == 5)
+                {
+                    midScanCancel.Cancel();
+                }
+            };
+            Assert.ThrowsExactly<OperationCanceledException>(() =>
+                RetainedIntegrityLedger.HasEstablishedAuthorityAtRoot(root, midScanCancel.Token));
+            Assert.AreEqual(5, inspected);
+
+            using var midScanLoadCancel = new CancellationTokenSource();
+            inspected = 0;
+            RetainedIntegrityLedger.BeforeAuthorityScanEntryForTest = _ =>
+            {
+                inspected++;
+                if (inspected == 5)
+                {
+                    midScanLoadCancel.Cancel();
+                }
+            };
+            using (var store = CreateStore())
+            {
+                await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                    _ = await store.LoadCurrentAsync(seed, verification: false, () => true, midScanLoadCancel.Token)
+                        .ConfigureAwait(false)).ConfigureAwait(false);
+                Assert.AreEqual(5, inspected);
+            }
+        }
+        finally
+        {
+            RetainedIntegrityLedger.BeforeAuthorityScanEntryForTest = null;
+        }
+
+        // 6. Verify clean startup succeeds end-to-end when .location contains <= 64 unrelated files and no markers.
+        var cleanRoot = Path.Combine(_root, "clean-bounded-root");
+        var cleanLocation = Path.Combine(cleanRoot, RetainedIntegrityLedger.LocationDirectoryName);
+        Directory.CreateDirectory(cleanLocation);
+        for (var i = 0; i < RetainedIntegrityLedger.BoundedAuthorityEntryLimit; i++)
+        {
+            await File.WriteAllBytesAsync(Path.Combine(cleanLocation, $"unrelated-{i:D4}.tmp"), [], CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = cleanRoot,
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        using var cleanStore = CreateStore();
+        var active = await cleanStore.LoadCurrentAsync(seed, verification: false, () => true, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(1L, active.Version);
+        Assert.IsTrue(cleanStore.RecentRetainedEvidenceReady);
+        Assert.IsFalse(cleanStore.RequiresDeploymentLocationReconciliation);
+    }
+
+    [TestMethod]
     [DataRow(false, true)]
     [DataRow(false, false)]
     [DataRow(true, true)]
