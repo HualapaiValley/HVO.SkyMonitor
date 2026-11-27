@@ -62,12 +62,13 @@ internal sealed partial class SqliteCaptureProcessingStore
         """;
 
     private static SqliteCommand CreateCommittedArchivePublicationsQuery(
-        SqliteConnection connection, Guid executionId, string nodeId)
+        SqliteConnection connection, Guid executionId, string nodeId,
+        string schema = Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion)
     {
         var command = connection.CreateCommand();
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
-        command.Parameters.AddWithValue("$schema", Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion);
+        command.Parameters.AddWithValue("$schema", schema);
         return command;
     }
 
@@ -89,11 +90,12 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     internal async ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
-        Guid executionId, string nodeId, CancellationToken cancellationToken)
+        Guid executionId, string nodeId, CancellationToken cancellationToken,
+        string schema = Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommittedArchivePublicationsQuery(connection, executionId, nodeId);
+        using var command = CreateCommittedArchivePublicationsQuery(connection, executionId, nodeId, schema);
         command.CommandText = CommittedArchivePublicationsSql + """
 
             ORDER BY input.input_ordinal;

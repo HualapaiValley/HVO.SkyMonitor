@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ReadStage = HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.DeploymentLocationReadAttribution.Stage;
@@ -107,7 +108,8 @@ public sealed partial class ProtectedDeploymentLocationStore(
     IDeploymentLocationProtector protector,
     TimeProvider timeProvider,
     ILogger<ProtectedDeploymentLocationStore> logger,
-    DeploymentLocationTelemetry? telemetry = null) : IDeploymentLocationStore, IDisposable
+    DeploymentLocationTelemetry? telemetry = null,
+    ICameraAgentSiloVerification? silo = null) : IDeploymentLocationStore, IDisposable
 {
     private const int CurrentSchemaVersion = 1;
     private const int CurrentManualSchemaVersion = 1;
@@ -140,9 +142,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
     internal Task WaitForInitialActiveAsync(CancellationToken cancellationToken)
         => _initialActive.Task.WaitAsync(cancellationToken);
 
-    public bool RequiresRetainedIntegrityScrub => _needsReconciliation || (Volatile.Read(ref _integrity)?.RequiresScrub ?? true);
+    public bool RequiresRetainedIntegrityScrub => _needsReconciliation || silo is null && (Volatile.Read(ref _integrity)?.RequiresScrub ?? true);
     public bool RecentRetainedEvidenceReady => _recentReady;
-    public bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub || (_integrity?.RefreshDue ?? true);
+    public bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub || silo is null && (_integrity?.RefreshDue ?? true);
     public DateTimeOffset? RetainedIntegrityRefreshUtc => _integrity?.RefreshUtc;
     public long RetainedIntegrityGeneration => _integrity?.Generation ?? 0;
     public string RetainedIntegrityRetryKey => FormattableString.Invariant($"{_integrity?.Nonce}:{Manual.ManualSequence}:{Staged?.CanonicalSha256}:{Active?.CanonicalSha256}");
@@ -340,7 +342,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
                     }
                     if (cold)
                     {
-                        _recentReady = ValidateRecentRetainedEvidence(history, ledgerForStartup, cancellationToken);
+                        _recentReady = silo is null
+                            ? ValidateRecentRetainedEvidence(history, ledgerForStartup, cancellationToken)
+                            : ledgerForStartup is not null;
                         if (!_recentReady) ledgerForStartup?.RequireFullVerification();
                     }
                 }
@@ -352,10 +356,12 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 // Ordinary configuration availability is not retained-integrity qualification.
                 // Keep validating fresh protected authority, but let the host coalesce a
                 // dirty ledger's scrub instead of repeating its corpus scan on every poll.
-                var qualified = ledger is not null && await ledger.VerifyAsync(RetainedIdentity(history),
-                    cancellationToken, waitForMutation: !strictRetainedValidation).ConfigureAwait(false);
+                var qualified = silo is null
+                    ? ledger is not null && await ledger.VerifyAsync(RetainedIdentity(history),
+                        cancellationToken, waitForMutation: !strictRetainedValidation).ConfigureAwait(false)
+                    : silo.BindingVerified && GetIntegrity(history) is not null;
                 if ((!qualified || _needsReconciliation || !_recentReady) && strictRetainedValidation)
-                    throw new InstallationVerificationPendingException(ledger?.RequiresScrub ?? true);
+                    throw new InstallationVerificationPendingException(silo is null ? ledger?.RequiresScrub ?? true : _needsReconciliation);
             }
             else if (history is null || !ReferenceEquals(snapshot.History, history))
             {

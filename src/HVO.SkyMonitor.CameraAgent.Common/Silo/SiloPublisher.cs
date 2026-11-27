@@ -40,7 +40,12 @@ internal sealed class SiloPublisher(
     /// artifact revision already staged or published with other bytes or other producer and sidecar facts, is a conflict
     /// and stages nothing.
     /// </summary>
-    public async ValueTask<bool> StageAsync(SiloGroupDraft draft, CancellationToken cancellationToken)
+    public ValueTask<bool> StageAsync(SiloGroupDraft draft, CancellationToken cancellationToken) =>
+        StageAsync(draft, null, cancellationToken);
+
+    /// <summary>Durably stage each source and claim all of them under the same gate used to release staged files.</summary>
+    public async ValueTask<bool> StageAsync(SiloGroupDraft draft,
+        Func<SiloDraftMember, CancellationToken, ValueTask<Stream>>? openContent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(draft);
         ValidateDraft(draft);
@@ -70,7 +75,33 @@ internal sealed class SiloPublisher(
                         $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is published with other bytes or facts; it is never replaced.");
                 }
             }
-            return await state.StageAsync(draft, json, sha, cancellationToken).ConfigureAwait(false);
+            var stagedTokens = new HashSet<string>(StringComparer.Ordinal);
+            try
+            {
+                if (openContent is not null)
+                {
+                    foreach (var member in draft.Members)
+                    {
+                        await payloads.StageAsync(member, openContent, cancellationToken).ConfigureAwait(false);
+                        stagedTokens.Add(member.SourceToken);
+                    }
+                }
+                return await state.StageAsync(draft, json, sha, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (stagedTokens.Count > 0)
+                {
+                    // State is authoritative if the staging transaction committed before reporting failure.
+                    var claimed = await state.ListClaimedPayloadTokensAsync(CancellationToken.None).ConfigureAwait(false);
+                    foreach (var token in stagedTokens)
+                    {
+                        if (!claimed.Contains(token))
+                            await payloads.ReleaseAsync(token, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                throw;
+            }
         }
         finally
         {
@@ -125,28 +156,54 @@ internal sealed class SiloPublisher(
         }
     }
 
+    internal async ValueTask PublishLiveViewAsync(SiloLiveIssueRecord record, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var operation = "centered-live:" + record.ChangeOrder.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            await journal.AppendAsync([record], operation, cancellationToken).ConfigureAwait(false);
+            var end = await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null,
+                cancellationToken).ConfigureAwait(false);
+            if (end.Reason != SiloPrefixEnd.Tail)
+                throw new SiloStoreUnavailableException(binding.StoreId, "index centered live view", writeMayHaveLanded: true);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <summary>
     /// Startup: replay any pending segment, bring the catalog to the writer's committed head with P3 recovery, finish any
     /// interrupted release, then advance staged work. The work is bounded by unreleased staged groups and the journal
     /// after the cursor (#1965 F5).
     /// </summary>
-    public async ValueTask<IReadOnlyList<SiloPublicationOutcome>> ResumeAsync(int limit, CancellationToken cancellationToken)
+    public ValueTask<IReadOnlyList<SiloPublicationOutcome>> ResumeAsync(int limit, CancellationToken cancellationToken) =>
+        ResumeAsync(limit, skipRawAdmissions: false, cancellationToken);
+
+    internal async ValueTask<IReadOnlyList<SiloPublicationOutcome>> ResumeAsync(
+        int limit, bool skipRawAdmissions, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            await payloads.ReconcileAsync(await state.ListClaimedPayloadTokensAsync(cancellationToken).ConfigureAwait(false), cancellationToken)
+                .ConfigureAwait(false);
             // A pending segment is reconciled before any cleanup or new commit.
             await journal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
             await CleanupSpoolLockedAsync(cancellationToken).ConfigureAwait(false);
-            await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null, cancellationToken)
-                .ConfigureAwait(false);
+            var end = await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null,
+                cancellationToken).ConfigureAwait(false);
+            if (end.Reason == SiloPrefixEnd.SourceUnavailable)
+                throw new SiloStoreUnavailableException(binding.StoreId, "recover committed publication", writeMayHaveLanded: false);
             foreach (var (groupId, revisionId) in await state.ListUnreleasedAsync(SweepBatch, cancellationToken).ConfigureAwait(false))
             {
                 await ReleaseAsync((await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false))!, cancellationToken)
                     .ConfigureAwait(false);
             }
             var outcomes = new List<SiloPublicationOutcome>();
-            foreach (var (groupId, revisionId) in await state.ListOpenAsync(limit, cancellationToken).ConfigureAwait(false))
+            foreach (var (groupId, revisionId) in await state.ListOpenAsync(limit, skipRawAdmissions, cancellationToken).ConfigureAwait(false))
             {
                 outcomes.Add(await AdvanceLockedAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false));
             }
@@ -162,18 +219,46 @@ internal sealed class SiloPublisher(
     /// Abandon staged work before P3 and hand the versions it created, or may have created, to retention as orphan
     /// candidates. A pending commit is replayed first, so work that reached P3 is never abandoned.
     /// </summary>
-    public async ValueTask AbandonAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken)
+    public async ValueTask AbandonAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken) =>
+        await AbandonCoreAsync(groupId, revisionId, reason, false, cancellationToken).ConfigureAwait(false);
+
+    internal ValueTask<bool> AbandonIfUncommittedAsync(string groupId, string revisionId, string reason,
+        CancellationToken cancellationToken) => AbandonCoreAsync(groupId, revisionId, reason, true, cancellationToken);
+
+    private async ValueTask<bool> AbandonCoreAsync(string groupId, string revisionId, string reason, bool allowSettledOrUnstaged,
+        CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await journal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
-            var staged = await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false)
-                ?? throw new KeyNotFoundException($"Group revision {groupId}/{revisionId} is not staged.");
+            var staged = await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
+            if (allowSettledOrUnstaged && staged?.State is SiloStagedState.Recorded or SiloStagedState.Visible)
+                return false;
+            if (allowSettledOrUnstaged && staged?.State is null or SiloStagedState.Abandoned)
+                return true;
+            if (staged is null)
+                throw new KeyNotFoundException($"Group revision {groupId}/{revisionId} is not staged.");
+
             await state.AbandonAsync(groupId, revisionId, reason, await ResolveUnresolvedAsync(staged, cancellationToken).ConfigureAwait(false),
                 cancellationToken).ConfigureAwait(false);
             var group = await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
             await ReleaseAsync(group!, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    internal async ValueTask<SiloStagedState?> ReconcileGroupStateAsync(string groupId, string revisionId, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await journal.ReconcilePendingAsync(cancellationToken).ConfigureAwait(false);
+            return (await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false))?.State;
         }
         finally
         {
@@ -210,6 +295,10 @@ internal sealed class SiloPublisher(
                     default:
                         return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
                 }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return await OutcomeAsync(groupId, revisionId, "silo-staged-evidence-missing", cancellationToken).ConfigureAwait(false);
             }
             catch (SiloStoreUnavailableException)
             {
@@ -531,7 +620,13 @@ internal sealed class SiloPublisher(
     {
         foreach (var member in group.Members.Where(static member => !member.Released))
         {
-            await payloads.ReleaseAsync(member.Draft.SourceToken, cancellationToken).ConfigureAwait(false);
+            // Staging and release share the publisher gate. Each member gives up its claim, but only the final
+            // claimant unlinks the bytes. If interrupted between unlink and mark, the unlink is safe to retry.
+            if (!await state.HasOtherPayloadOwnerAsync(group.Draft.GroupId, group.Draft.RevisionId, member, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                await payloads.ReleaseAsync(member.Draft.SourceToken, cancellationToken).ConfigureAwait(false);
+            }
             await state.MarkReleasedAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, cancellationToken).ConfigureAwait(false);
         }
         if (group.ManifestSha256 is { } sha)

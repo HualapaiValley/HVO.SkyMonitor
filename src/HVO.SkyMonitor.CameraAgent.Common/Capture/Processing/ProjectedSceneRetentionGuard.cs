@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -82,7 +83,10 @@ internal sealed class ProjectedSceneRetentionGuard(
         foreach (var relativePath in inventory.CanonicalPayloadPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (Exists(ResolvePhysicalPath(canonicalRoot, relativePath), directory: false)) return true;
+            if (SiloArtifactStorage.IsReference(relativePath)
+                ? await store.IsSiloConsumerRetainedAsync(relativePath, cancellationToken).ConfigureAwait(false)
+                : Exists(ResolvePhysicalPath(canonicalRoot, relativePath), directory: false))
+                return true;
         }
         // Every supported new live/replay publication records its graph revision before execution. Without that
         // history, retain the scene rather than infer that a removed archive destination never existed.

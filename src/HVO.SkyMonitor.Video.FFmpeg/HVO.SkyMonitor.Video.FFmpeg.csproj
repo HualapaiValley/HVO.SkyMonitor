@@ -5,5 +5,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.Processing.Tests" />
+    <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.IntegrationTests" />
   </ItemGroup>
 </Project>

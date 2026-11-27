@@ -13,7 +13,9 @@ internal sealed class RawIngressReconciler(
     Action? directorySyncRecorder = null,
     IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null,
     Func<string, Stream>? openPayload = null,
-    Func<ArtifactManifestV2, CancellationToken, Task<RecoveredCenteredAdmission>>? prepareCentered = null)
+    Func<ArtifactManifestV2, CancellationToken, Task<RecoveredCenteredAdmission>>? prepareCentered = null,
+    IReadOnlyList<(Guid ArtifactId, RawIngressPaths Paths)>? siloIntents = null,
+    int siloMaximumStagedFiles = 0)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
@@ -65,7 +67,7 @@ internal sealed class RawIngressReconciler(
         long quarantineBytes = 0;
         var framesRoot = Path.Combine(_root, "frames");
         Directory.CreateDirectory(framesRoot);
-        EnsureTreeHasNoLinks(framesRoot, inspectionToken);
+        if (siloIntents is null) EnsureTreeHasNoLinks(framesRoot, inspectionToken);
 
         foreach (var cleanup in await _journal.ReadPlannedCleanupsAsync(inspectionToken).ConfigureAwait(false))
         {
@@ -86,7 +88,7 @@ internal sealed class RawIngressReconciler(
         var plannedPaths = planned.SelectMany(static operation =>
             new[] { operation.SourceRelativePath, operation.CompanionRelativePath }).OfType<string>().ToHashSet(StringComparer.Ordinal);
 
-        foreach (var temporaryPath in EnumerateFiles(framesRoot, "*.tmp", recurse: true))
+        foreach (var temporaryPath in siloIntents is null ? EnumerateFiles(framesRoot, "*.tmp", recurse: true) : EnumerateIntentPartials())
         {
             inspectionToken.ThrowIfCancellationRequested();
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, temporaryPath);
@@ -104,7 +106,7 @@ internal sealed class RawIngressReconciler(
         Dictionary<Guid, List<string>> indexedArtifacts;
         try
         {
-            indexedArtifacts = ReadIndexedArtifactIds(inspectionToken);
+            indexedArtifacts = siloIntents is null ? ReadIndexedArtifactIds(inspectionToken) : [];
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -114,8 +116,10 @@ internal sealed class RawIngressReconciler(
         // A durable plan still owns its paths, even if a newer companion could otherwise be recovered.
         var claimedPayloads = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
         var claimedSidecars = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
-        var reportedCaptures = await _journal.ReadReportedEvidenceFailuresAsync(inspectionToken).ConfigureAwait(false);
-        await foreach (var entry in _journal.EnumerateAsync(inspectionToken).ConfigureAwait(false))
+        var reportedCaptures = siloIntents is null
+            ? await _journal.ReadReportedEvidenceFailuresAsync(inspectionToken).ConfigureAwait(false)
+            : null;
+        await foreach (var entry in EnumerateReconciliationEntriesAsync(inspectionToken).ConfigureAwait(false))
         {
             claimedPayloads.Add(entry.PayloadRelativePath);
             claimedSidecars.Add(entry.SidecarRelativePath);
@@ -136,7 +140,7 @@ internal sealed class RawIngressReconciler(
             }
             if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
             {
-                if (!entry.RetentionHold)
+                if (siloIntents is null && !entry.RetentionHold)
                 {
                     continue;
                 }
@@ -146,7 +150,7 @@ internal sealed class RawIngressReconciler(
                 continue;
             }
             if (!await MatchesCommittedEntryAsync(
-                    entry, payloadPath, sidecarPath, reportedCaptures.Contains(entry.CaptureId) ? _openPayload : null,
+                    entry, payloadPath, sidecarPath, reportedCaptures?.Contains(entry.CaptureId) != false ? _openPayload : null,
                     inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "committed-evidence-mismatch", entry.CaptureId);
@@ -157,14 +161,15 @@ internal sealed class RawIngressReconciler(
             {
                 continue;
             }
-            if (!await TryEnsureCompatibilityIndexAsync(
+            if (siloIntents is null && !await TryEnsureCompatibilityIndexAsync(
                     entry.ManifestJson, indexedArtifacts, cancellationToken).ConfigureAwait(false))
             {
                 indexProjectionFailures++;
             }
         }
 
-        foreach (var sidecarPath in EnumerateRawFiles("*.json"))
+        foreach (var sidecarPath in siloIntents is null ? EnumerateRawFiles("*.json") :
+            siloIntents.Select(static intent => intent.Paths.SidecarAbsolutePath).Where(File.Exists))
         {
             inspectionToken.ThrowIfCancellationRequested();
             var sidecarRelative = Relative(sidecarPath);
@@ -241,7 +246,7 @@ internal sealed class RawIngressReconciler(
                 Defer(payloadPath, sidecarPath, "orphan-identity-conflict");
                 continue;
             }
-            if (!await TryEnsureCompatibilityIndexAsync(sidecar, indexedArtifacts, cancellationToken).ConfigureAwait(false))
+            if (siloIntents is null && !await TryEnsureCompatibilityIndexAsync(sidecar, indexedArtifacts, cancellationToken).ConfigureAwait(false))
             {
                 indexProjectionFailures++;
             }
@@ -249,7 +254,8 @@ internal sealed class RawIngressReconciler(
             recovered++;
         }
 
-        foreach (var payloadPath in EnumerateRawFiles("*.bin"))
+        foreach (var payloadPath in siloIntents is null ? EnumerateRawFiles("*.bin") :
+            siloIntents.Select(static intent => intent.Paths.PayloadAbsolutePath).Where(File.Exists))
         {
             inspectionToken.ThrowIfCancellationRequested();
             // A sidecar due for quarantine does not protect a newer sibling: defer that sibling as its own unit.
@@ -300,6 +306,42 @@ internal sealed class RawIngressReconciler(
         return new RawIngressReconciliationSummary(
             inspected, recovered, cleaned, quarantined, missingEvidence, quarantineBytes, indexProjectionFailures,
             MaintenanceDeferred: deferred);
+    }
+
+    private async IAsyncEnumerable<RawIngressJournalEntry> EnumerateReconciliationEntriesAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (siloIntents is null)
+        {
+            await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false)) yield return entry;
+            yield break;
+        }
+        var staged = await _journal.ReadPendingSiloAdmissionsAsync(siloMaximumStagedFiles + 1, cancellationToken).ConfigureAwait(false);
+        if (staged.Count > siloMaximumStagedFiles)
+            throw new InvalidDataException("The retained Silo raw admission inventory exceeds its configured bound.");
+        var known = new HashSet<Guid>();
+        foreach (var entry in staged)
+        {
+            known.Add(entry.ArtifactId);
+            yield return entry;
+        }
+        foreach (var (artifact, _) in siloIntents)
+        {
+            if (!known.Contains(artifact) && await _journal.ReadSiloAdmissionByArtifactAsync(artifact, cancellationToken).ConfigureAwait(false) is { } entry)
+                yield return entry;
+        }
+    }
+
+    private IEnumerable<string> EnumerateIntentPartials()
+    {
+        foreach (var (_, paths) in siloIntents!)
+        {
+            var directory = Path.GetDirectoryName(paths.PayloadAbsolutePath)!;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, directory);
+            if (!Directory.Exists(directory)) continue;
+            foreach (var path in EnumerateFiles(directory, Path.GetFileNameWithoutExtension(paths.PayloadAbsolutePath) + ".*.tmp", recurse: false))
+                yield return path;
+        }
     }
 
     private IEnumerable<string> EnumerateRawFiles(string pattern)

@@ -2,6 +2,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.AgentCore;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Hosting;
@@ -19,7 +20,8 @@ public sealed class CameraAgentConfigurationInitializer(
     CalibrationLibraryReconciler? calibrationReconciler = null,
     SqliteNamedRigProfileStore? namedRigProfiles = null,
     DeploymentLocation.IDeploymentLocationStore? deploymentLocationStore = null,
-    IHostApplicationLifetime? hostLifetime = null) : IHostedService
+    IHostApplicationLifetime? hostLifetime = null,
+    ICameraAgentSiloVerification? silo = null) : IHostedService
 {
     private readonly ICameraAgentConfigurationLoader _loader = loader;
     private readonly ICameraAgentConfigurationAccessor _accessor = accessor;
@@ -76,7 +78,7 @@ public sealed class CameraAgentConfigurationInitializer(
         {
             await _calibrationLibrary.InitializeAsync(cancellationToken).ConfigureAwait(false);
         }
-        if (_calibrationReconciler is not null)
+        if (silo is null && _calibrationReconciler is not null)
         {
             _ = await _calibrationReconciler.ReconcileAsync(cancellationToken).ConfigureAwait(false);
         }

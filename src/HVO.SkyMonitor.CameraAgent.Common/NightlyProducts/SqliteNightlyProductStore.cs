@@ -9,6 +9,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -175,17 +176,19 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
 
     private readonly CameraAgentHostOptions _options;
     private readonly TimeProvider _timeProvider;
+    private readonly SiloArtifactStorage? _silo;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _connectionString;
     private string? _databasePath;
     private bool _schemaReady;
 
-    public SqliteNightlyProductStore(IOptions<CameraAgentHostOptions> options, TimeProvider timeProvider)
+    public SqliteNightlyProductStore(IOptions<CameraAgentHostOptions> options, TimeProvider timeProvider, SiloArtifactStorage? silo = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
         _options = options.Value;
         _timeProvider = timeProvider;
+        _silo = silo;
     }
 
     public void Dispose() => _gate.Dispose();
@@ -242,14 +245,35 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             if (provenance.Length > 8 * 1024 * 1024) throw new InvalidDataException("Still product provenance exceeds its byte bound.");
             var provenanceSha256 = ProcessingIdentity.ComputePayloadSha256(provenance);
 
-            var root = ResolveRoot();
-            var directory = ResolveConfinedPath(root, relativeDirectory);
-            Directory.CreateDirectory(directory);
-            RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
-            WriteDurably(root, ResolveConfinedPath(root, payloadPath), product.Payload.Span);
-            WriteDurably(root, ResolveConfinedPath(root, renditionPath), rendition);
-            WriteDurably(root, ResolveConfinedPath(root, provenancePath), provenance);
-            RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
+            if (_silo is null)
+            {
+                var root = ResolveRoot();
+                var directory = ResolveConfinedPath(root, relativeDirectory);
+                Directory.CreateDirectory(directory);
+                RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+                WriteDurably(root, ResolveConfinedPath(root, payloadPath), product.Payload.Span);
+                WriteDurably(root, ResolveConfinedPath(root, renditionPath), rendition);
+                WriteDurably(root, ResolveConfinedPath(root, provenancePath), provenance);
+                RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
+            }
+            else
+            {
+                var draft = new SiloGroupDraft("nightly-product", stem, product.OutputIdentitySha256, publication.WindowEndUtc.ToUniversalTime(),
+                    publication.WindowStartUtc.ToUniversalTime(), publication.WindowEndUtc.ToUniversalTime(),
+                    [SiloArtifactStorage.Member(productId, product.OutputIdentitySha256, "still", SiloRetentionClass.Full,
+                        product.MediaType, product.Payload.Length, payloadSha256),
+                     SiloArtifactStorage.Member(productId, "rendition-1", "rendition", SiloRetentionClass.Display,
+                         RenditionMediaType, rendition.LongLength, renditionSha256),
+                     SiloArtifactStorage.Member(productId, "provenance-1", "provenance", SiloRetentionClass.Metadata,
+                         "application/json", provenance.LongLength, provenanceSha256)], [],
+                    new(publication.Sources.Select(static source => source.OutputIdentitySha256).ToArray()));
+                await _silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(member.Role switch
+                {
+                    "still" => product.Payload,
+                    "rendition" => rendition,
+                    _ => provenance
+                }, token), cancellationToken).ConfigureAwait(false);
+            }
 
             var createdUtc = Truncate(_timeProvider.GetUtcNow());
             using (var transaction = BeginImmediate(connection))
@@ -376,7 +400,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             }
             var detail = await ReadDetailAsync(connection, null, productId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("A nightly product source is not published.");
-            var payload = await ReadVerifiedAsync(
+            var payload = await ReadProductMemberAsync(productId, detail.OutputIdentitySha256,
                 payloadPath, detail.PayloadBytes, detail.PayloadSha256, cancellationToken).ConfigureAwait(false);
             return new NightlyStoredProduct(detail, layout, compatibility, payload);
         }
@@ -605,8 +629,8 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             {
                 return null;
             }
-            var content = await ReadVerifiedAsync(
-                reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken).ConfigureAwait(false);
+            var content = await ReadProductMemberAsync(productId, "rendition-1", reader.GetString(0), reader.GetInt64(1), reader.GetString(2),
+                cancellationToken).ConfigureAwait(false);
             return new NightlyProductRendition(productId, RenditionMediaType, content, reader.GetString(2));
         }
         finally
@@ -627,12 +651,18 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             command.Parameters.AddWithValue("$id", productId.ToString("N", CultureInfo.InvariantCulture));
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
-            var content = await ReadVerifiedAsync(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
+            var content = await ReadProductMemberAsync(productId, "provenance-1", reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
                 .ConfigureAwait(false);
             return new(productId, content, reader.GetString(2));
         }
         finally { _gate.Release(); }
     }
+
+    private async ValueTask<byte[]> ReadProductMemberAsync(Guid id, string revision, string path, long length, string checksum,
+        CancellationToken cancellationToken) => _silo is null
+        ? await ReadVerifiedAsync(path, length, checksum, cancellationToken).ConfigureAwait(false)
+        : await _silo.ReadMemberAsync(id, revision, length, checksum, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The nightly product has no settled Silo publication.");
 
     internal async ValueTask VerifyPublicationAsync(Guid productId, CancellationToken cancellationToken)
     {

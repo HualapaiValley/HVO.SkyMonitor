@@ -244,6 +244,26 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         }
     }
 
+    private async Task<CalibrationLibraryBundleV1?> ReadSiloBundleAsync(CalibrationAcquisitionJobSnapshot job,
+        CancellationToken cancellationToken)
+    {
+        var bundleId = $"bundle-{job.Plan.JobId}";
+        var id = CalibrationArtifactPublisher.VirtualBundleArtifactId(bundleId);
+        var evidence = await _publisher.Silo!.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloBundleRevision,
+            CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
+        if (evidence is null)
+        {
+            if (AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("profile-published"))
+                throw new CalibrationPublicationConflictException("The committed Silo calibration profile is missing.");
+            return null;
+        }
+        var parsed = CalibrationLibraryContractJson.Parse(evidence);
+        if (!parsed.Validation.IsValid || parsed.Value is not { } bundle || bundle.BundleId != bundleId ||
+            bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1)
+            throw new CalibrationPublicationConflictException("The committed Silo calibration envelope conflicts with its job.");
+        return bundle;
+    }
+
     private async Task<CalibrationAcquisitionJobSnapshot> ResolveCancellationAsync(
         CalibrationAcquisitionJobSnapshot current)
     {
@@ -254,11 +274,10 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 return await _store.CancelAcquisitionAsync(
                     current.Plan.JobId, CancellationToken.None).ConfigureAwait(false);
             }
-            var markerCommitted = await _publisher.EnsureCommittedEvidenceIsCompleteAsync(
-                ProfilePath(current.Plan),
-                EvidencePaths(current.Plan),
-                AcquisitionPhaseRank(current.Phase) >= AcquisitionPhaseRank("profile-published"),
-                CancellationToken.None).ConfigureAwait(false);
+            var markerCommitted = _publisher.Silo is null
+                ? await _publisher.EnsureCommittedEvidenceIsCompleteAsync(ProfilePath(current.Plan), EvidencePaths(current.Plan),
+                    AcquisitionPhaseRank(current.Phase) >= AcquisitionPhaseRank("profile-published"), CancellationToken.None).ConfigureAwait(false)
+                : await ReadSiloBundleAsync(current, CancellationToken.None).ConfigureAwait(false) is not null;
             return markerCommitted
                 ? await ExecuteAsync(current, CancellationToken.None).ConfigureAwait(false)
                 : await _store.CancelAcquisitionAsync(current.Plan.JobId, CancellationToken.None).ConfigureAwait(false);
@@ -290,11 +309,15 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         await _admissionCoordinator.EnsureLifecycleCaptureAllowedAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var markerCommitted = await _publisher.EnsureCommittedEvidenceIsCompleteAsync(
-                ProfilePath(job.Plan),
-                EvidencePaths(job.Plan),
-                AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("profile-published"),
-                cancellationToken).ConfigureAwait(false);
+            if (_publisher.Silo is not null &&
+                await ReadSiloBundleAsync(job, cancellationToken).ConfigureAwait(false) is { } settled)
+            {
+                _ = await _store.AdoptPublishedBundleAsync(settled, CancellationToken.None).ConfigureAwait(false);
+                return await _store.CompleteAcquisitionAsync(job.Plan.JobId, settled.BundleId, CancellationToken.None).ConfigureAwait(false);
+            }
+            var markerCommitted = _publisher.Silo is null &&
+                await _publisher.EnsureCommittedEvidenceIsCompleteAsync(ProfilePath(job.Plan), EvidencePaths(job.Plan),
+                    AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("profile-published"), cancellationToken).ConfigureAwait(false);
             if (!markerCommitted && job.AttemptCount >= SqliteCalibrationLibraryStore.MaximumAcquisitionAttempts)
             {
                 _ = await _store.FailAcquisitionAsync(
@@ -391,7 +414,11 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 flatNormalization ?? throw new InvalidDataException("The flat master normalization is missing."));
             var profileJson = ReferenceCalibrationProfileJson.Serialize(profile);
             var profilePath = ProfilePath(job.Plan);
-            await _publisher.PublishProfileMarkerAsync(profilePath, profileJson, cancellationToken).ConfigureAwait(false);
+            var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
+            if (_publisher.Silo is null)
+                await _publisher.PublishProfileMarkerAsync(profilePath, profileJson, cancellationToken).ConfigureAwait(false);
+            else
+                await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
             if (job.State == CalibrationAcquisitionStates.Publishing &&
                 AcquisitionPhaseRank(job.Phase) < AcquisitionPhaseRank("profile-published"))
             {
@@ -400,7 +427,6 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                     .ConfigureAwait(false);
             }
 
-            var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
             _ = await _store.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
             _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, profilePath);
             return await _store.CompleteAcquisitionAsync(

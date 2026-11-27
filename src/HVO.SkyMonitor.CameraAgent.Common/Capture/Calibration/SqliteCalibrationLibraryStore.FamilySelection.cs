@@ -348,6 +348,30 @@ public sealed partial class SqliteCalibrationLibraryStore
         CancellationToken cancellationToken)
     {
         var expectedLength = master.Bundle.Bundle.Applicability.OutputLayout.ByteLength;
+        if (Silo is { } silo)
+        {
+            try
+            {
+                var id = master.Artifact.ArtifactId;
+                var bytes = await silo.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                    CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
+                if (bytes is null) return CalibrationFamilyReasonCodes.MasterMissing;
+                var parsed = CaptureContractJson.ParseManifest(bytes);
+                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+                    manifest.Descriptor.Artifact.ArtifactId != id || manifest.Descriptor.Layout.ByteLength != expectedLength ||
+                    !string.Equals(manifest.Descriptor.Artifact.ChecksumSha256, master.Artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase))
+                    return CalibrationFamilyReasonCodes.MasterCorrupt;
+                return await silo.VerifyMemberAsync(id, CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),
+                    expectedLength, master.Artifact.PayloadSha256, cancellationToken).ConfigureAwait(false)
+                    ? null : CalibrationFamilyReasonCodes.MasterMissing;
+            }
+            catch (FileNotFoundException) { return CalibrationFamilyReasonCodes.MasterMissing; }
+            catch (InvalidDataException) { return CalibrationFamilyReasonCodes.MasterCorrupt; }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return CalibrationFamilyReasonCodes.MasterUnreadable;
+            }
+        }
         var buffer = ArrayPool<byte>.Shared.Rent(FamilyMasterHashBufferBytes);
         try
         {

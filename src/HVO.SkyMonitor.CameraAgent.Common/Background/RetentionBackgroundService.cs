@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -403,8 +404,10 @@ public sealed class RetentionBackgroundService(
             foreach (var hold in holds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths);
-                AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths);
+                if (!SiloArtifactStorage.IsReference(hold.PayloadRelativePath))
+                    AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths);
+                if (!SiloArtifactStorage.IsReference(hold.SidecarRelativePath))
+                    AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths);
                 artifactIds.Add(hold.ArtifactId);
             }
         }

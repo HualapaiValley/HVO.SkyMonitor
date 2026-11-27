@@ -198,7 +198,7 @@ public sealed partial class FileSystemFrameStorageService(
             Role: artifact.Role);
     }
 
-    private static void ValidateVersionedDescriptorAgreement(
+    internal static void ValidateVersionedDescriptorAgreement(
         ReconstructionDescriptor descriptor,
         FrameArtifact artifact,
         CameraFrame frame)

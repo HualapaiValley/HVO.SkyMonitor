@@ -505,13 +505,34 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
     public async ValueTask<SiloWalkEnd> CatchUpAsync(SiloWriterEvidence writer, SiloFreshEvidence? fresh, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(writer);
+        await index.CatchUpGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await CatchUpLockedAsync(writer, fresh, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            index.CatchUpGate.Release();
+        }
+    }
+
+    private async ValueTask<SiloWalkEnd> CatchUpLockedAsync(SiloWriterEvidence writer, SiloFreshEvidence? fresh,
+        CancellationToken cancellationToken)
+    {
         var (cursor, cursorSha) = await index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         if (cursor is { } position)
         {
-            if (writer.Head is not { } head || position > head)
+            var superseded = writer.Head is { } snapshot && position > snapshot && writer.HeadSha256 is not null &&
+                writer.Records is { } records &&
+                await records.CommittedSha256Async(snapshot, cancellationToken).ConfigureAwait(false) == writer.HeadSha256 &&
+                await records.CommittedSha256Async(position, cancellationToken).ConfigureAwait(false) == cursorSha;
+            if (writer.Head is not { } head || position > head && !superseded)
             {
                 throw new SiloCatalogDivergedException($"The catalog cursor {position} is ahead of the writer's committed head; rebuild the catalog.");
             }
+            if (writer.Head == position && writer.HeadSha256 != cursorSha)
+                throw new SiloCatalogDivergedException($"The writer and catalog disagree on the exact segment at {position}.");
+
             var key = SiloObjectNamespace.SegmentKey(position);
             (string VersionId, byte[] Bytes)? found;
             try
@@ -529,6 +550,8 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
                 throw new SiloCatalogDivergedException(
                     $"The journal no longer holds the catalog cursor's segment {position} with its SHA-256; rebuild the catalog.");
             }
+            if (superseded)
+                return new(cursor, cursorSha, SiloPrefixEnd.Tail);
         }
         var walker = new SiloJournalWalker(stores.Local, index.Binding, witness);
         var end = await walker.WalkAsync(cursor, cursorSha, async segment =>

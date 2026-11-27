@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
@@ -55,12 +56,28 @@ public static class CameraAgentServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        var siloSelected = configuration.GetSection("CameraAgent:Silo").Exists();
         services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
             .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
+            .Validate(options => !siloSelected ||
+                options.CentralIntegration.Mode == CentralIntegrationMode.Disabled,
+                "The Silo storage layout requires disabled central integration.")
+            .Validate(options => !siloSelected || options.ProcessingGraphs.ReplayProfile != ReplayExecutionProfile.LocalRunner,
+                "The Silo storage layout requires in-process replay.")
             .ValidateOnStart();
+        if (siloSelected)
+        {
+            services.AddSingleton(_ => SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo")));
+            services.AddSingleton<SiloInstalledStorage>();
+            services.AddSingleton<SiloArtifactStorage>();
+            services.AddSingleton<ICameraAgentSiloVerification>(provider => provider.GetRequiredService<SiloInstalledStorage>());
+            services.AddSingleton<SiloStorageWorker>();
+            services.AddHostedService(provider => provider.GetRequiredService<SiloStorageWorker>());
+            services.AddHealthChecks().AddCheck<SiloStorageWorker>("silo-storage", tags: ["dependency"]);
+        }
 
         services.AddSingleton<ICameraAgentConfigurationAccessor, CameraAgentConfigurationAccessor>();
         services.AddSingleton<DeploymentLocationTelemetry>();
@@ -131,10 +148,15 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IOperationsQueueSnapshotRefresher>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteNamedRigProfileStore>();
-        services.AddSingleton<SqliteCalibrationLibraryStore>();
+        services.AddSingleton(provider => new SqliteCalibrationLibraryStore(
+            provider.GetRequiredService<IRawCaptureIngress>(), provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+            provider.GetRequiredService<TimeProvider>(), provider.GetService<CalibrationTelemetry>())
+        { Silo = provider.GetService<SiloArtifactStorage>() });
         services.AddSingleton<SqliteCalibrationFamilyStore>();
         services.AddSingleton<CalibrationFamilyActivationService>();
-        services.AddSingleton<CalibrationArtifactPublisher>();
+        services.AddSingleton(static provider => new CalibrationArtifactPublisher(
+            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), provider.GetRequiredService<ICalibrationPublicationFaultInjector>())
+        { Silo = provider.GetService<SiloArtifactStorage>() });
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CalibrationLibraryReconciler>();
@@ -341,12 +363,15 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton<IExecutionEvidenceTransport>(NullExecutionEvidenceTransport.Instance);
         services.TryAddSingleton<IExecutionEvidenceOriginProvider, LocalExecutionEvidenceOriginProvider>();
         services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
-        services.AddSingleton<LocalArchiveReader>(static provider => new LocalArchiveReader(
-            provider.GetRequiredService<IFrameStorageService>(),
-            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
-            // Resolve the schedule at read time, after service construction.
-            () => provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration));
+        if (!siloSelected)
+        {
+            services.AddSingleton<LocalArchiveReader>(static provider => new LocalArchiveReader(
+                provider.GetRequiredService<IFrameStorageService>(),
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+                // Resolve the schedule at read time, after service construction.
+                () => provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration));
+        }
         services.AddSingleton<SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
         services.AddSingleton<ICameraAgentArchive>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
@@ -413,7 +438,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(static provider => new TimeLapseSourceReader(
             provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), provider.GetRequiredService<RawCaptureIngress>(),
             provider.GetRequiredService<SqliteCaptureProcessingStore>(), provider.GetRequiredService<SqliteTimeLapseStore>(),
-            () => provider.GetService<IDeploymentLocationStore>(), provider.GetRequiredService<IPlanetEphemeris>()));
+            () => provider.GetService<IDeploymentLocationStore>(), provider.GetRequiredService<IPlanetEphemeris>(),
+            provider.GetService<SiloArtifactStorage>()));
         services.AddSingleton<TimeLapseGenerator>();
         services.AddSingleton<ILocalAutomationWindowTaskAdapter, TimeLapseAutomationAdapter>();
         services.AddHostedService<TimeLapseWorker>();
@@ -427,13 +453,17 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<ICameraAgentConfigurationLoader>(), provider.GetRequiredService<ILogger<RetainedIntegrityScrubService>>(),
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<CameraAgentConfigurationInitializer>(),
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), provider.GetRequiredService<IDeploymentLocationStore>(),
-            provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<CaptureLaneState>()));
+            provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<CaptureLaneState>(),
+            provider.GetService<ICameraAgentSiloVerification>()));
         services.AddSingleton<CaptureAdmissionInitializationService>();
         services.AddHostedService<AfterApplicationStartedService<CaptureAdmissionInitializationService>>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowCoordinator>());
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowRegistrationWorker>());
-        services.AddHostedService<DerivedProductReconciliationService>();
+        if (!siloSelected)
+        {
+            services.AddHostedService<DerivedProductReconciliationService>();
+        }
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(

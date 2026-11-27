@@ -147,6 +147,17 @@ public sealed record CenteredViewChange(
 public sealed record CenteredViewSavedSelection(
     Guid SelectionId, string BaseId, string RevisionId, IReadOnlyList<string> EnabledLayerIds, DateTimeOffset SavedUtc);
 
+/// <summary>The exact revision was published and its required evidence could not be reopened.</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "Every reopen failure carries a reference identity and a typed read status.")]
+public sealed class CenteredViewReopenException(Guid referenceCaptureId, CameraAgentArtifactReadStatus status)
+    : IOException("Required centered-view evidence could not be reopened.")
+{
+    public Guid ReferenceCaptureId { get; } = referenceCaptureId;
+
+    public CameraAgentArtifactReadStatus Status { get; } = status;
+}
+
 public interface ICenteredViewReadIndex
 {
     ValueTask<CenteredViewCurrent?> ReadCurrentAsync(CenteredViewStream stream, CancellationToken cancellationToken = default);

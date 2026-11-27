@@ -116,6 +116,8 @@ internal sealed record RawIngressJournalEntry(
     bool EvidenceWrittenOff = false)
 {
     public CenteredExposureBindingV1? CenteredExposure { get; init; }
+
+    internal long AdmissionRevalidationCount { get; init; }
 }
 
 internal sealed record RawIngressReconciliationSummary(

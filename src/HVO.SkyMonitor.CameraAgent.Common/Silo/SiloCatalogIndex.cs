@@ -379,7 +379,13 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
 
     private readonly SemaphoreSlim _writer = new(1, 1);
 
-    public void Dispose() => _writer.Dispose();
+    internal SemaphoreSlim CatchUpGate { get; } = new(1, 1);
+
+    public void Dispose()
+    {
+        CatchUpGate.Dispose();
+        _writer.Dispose();
+    }
 
     public string Path { get; } = path;
 

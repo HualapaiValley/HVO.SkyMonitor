@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
@@ -68,17 +69,22 @@ internal sealed partial class SqliteCaptureProcessingStore
         var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256);
         var payloadPath = ResolveReplayPath(payloadRelativePath);
         var sidecarPath = ResolveReplayPath(sidecarRelativePath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-        {
+        if (_silo is null && (!File.Exists(payloadPath) || !File.Exists(sidecarPath)))
             throw new FileNotFoundException("The replay source evidence is no longer retained.");
-        }
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var payload = _silo is null
+            ? await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false)
+            : await _silo.ReadRawAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("The replay source has no settled Silo publication.");
         if (payload.LongLength != payloadBytes ||
             !string.Equals(Convert.ToHexString(SHA256.HashData(payload)), payloadSha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("The replay source payload is invalid or altered.");
         }
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        var sidecar = _silo is null
+            ? await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false)
+            : await _silo.ReadMemberAsync(resolvedArtifactId, SiloArtifactStorage.RawEvidenceRevision, manifestJson.LongLength,
+                SiloHash.Sha256(manifestJson), cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("The replay source evidence has no settled Silo publication.");
         if (!sidecar.AsSpan().SequenceEqual(manifestJson))
         {
             throw new InvalidDataException("The replay source sidecar differs from committed evidence.");
@@ -543,6 +549,21 @@ internal sealed partial class SqliteCaptureProcessingStore
         foreach (var frozenOutput in outputInputsByNode.Values.SelectMany(static inputs => inputs).DistinctBy(
                      static input => input.OutputIdentitySha256, StringComparer.Ordinal))
         {
+            if (_silo is not null)
+            {
+                var id = ProcessingIdentity.CreateArtifactId(frozenOutput.OutputIdentitySha256);
+                var output = await ReadOutputByArtifactIdAsync(id, cancellationToken).ConfigureAwait(false);
+                if (output is not { AvailabilityState: "Available" } || output.OutputIdentitySha256 != frozenOutput.OutputIdentitySha256)
+                    throw new FileNotFoundException("A frozen derived replay input is no longer retained.");
+                var length = output.Descriptor?.Layout.ByteLength ?? output.ProductManifest!.ByteLength;
+                if (!await _silo.VerifyMemberAsync(id, output.OutputIdentitySha256, length, output.Artifact.ChecksumSha256,
+                        cancellationToken).ConfigureAwait(false) ||
+                    !await _silo.VerifyMemberAsync(id, SiloArtifactStorage.ProductEvidenceRevision, output.EvidenceJson.LongLength,
+                        SiloHash.Sha256(output.EvidenceJson), cancellationToken).ConfigureAwait(false))
+                    throw new FileNotFoundException("A frozen derived replay input has no settled Silo publication.");
+                frozenOutputBytes[frozenOutput.OutputIdentitySha256] = length;
+                continue;
+            }
             var payloadPath = ResolveReplayPath(frozenOutput.PayloadRelativePath);
             if (!File.Exists(payloadPath))
                 throw new FileNotFoundException("A frozen derived replay input is no longer retained.", payloadPath);
@@ -768,6 +789,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw new ProcessingGraphStoreConflictException("A frozen replay input changed before it could be pinned.");
+        if (_silo is not null)
+        {
+            var id = input.Descriptor.Artifact.ArtifactId;
+            if (!await _silo.HasMemberAsync(id, input.DescriptorSha256, cancellationToken).ConfigureAwait(false) ||
+                !await _silo.HasMemberAsync(id, SiloArtifactStorage.RawEvidenceRevision, cancellationToken).ConfigureAwait(false))
+                throw new ProcessingGraphStoreConflictException("A frozen replay input has no settled Silo publication.");
+            return;
+        }
         var payloadPath = ResolveReplayPath(reader.GetString(0));
         var sidecarPath = ResolveReplayPath(reader.GetString(1));
         var payloadLength = reader.GetInt64(2);
@@ -784,7 +813,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT payload_relative_path, sidecar_relative_path
+            SELECT payload_relative_path, sidecar_relative_path, artifact_id
             FROM processing_outputs
             WHERE output_identity_sha256 = $output AND availability_state = 'Available';
             """;
@@ -792,6 +821,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
+        if (_silo is not null)
+        {
+            var id = Guid.ParseExact(reader.GetString(2), "N");
+            if (!await _silo.HasMemberAsync(id, outputIdentitySha256, cancellationToken).ConfigureAwait(false) ||
+                !await _silo.HasMemberAsync(id, SiloArtifactStorage.ProductEvidenceRevision, cancellationToken).ConfigureAwait(false))
+                throw new ProcessingGraphStoreConflictException("A frozen processing window output has no settled Silo publication.");
+            return;
+        }
         var payloadPath = ResolveReplayPath(reader.GetString(0));
         var sidecarPath = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false)
             ? null
@@ -1422,6 +1459,13 @@ internal sealed partial class SqliteCaptureProcessingStore
         ProcessingFrozenRawInput input,
         CancellationToken cancellationToken)
     {
+        if (_silo is not null)
+        {
+            using var exact = await _silo.OpenMemberAsync(input.Descriptor.Artifact.ArtifactId, input.DescriptorSha256,
+                input.Descriptor.Layout.ByteLength, input.PayloadSha256, cancellationToken).ConfigureAwait(false)
+                ?? throw new ProcessingGraphStoreConflictException("An archived raw input has no settled Silo publication.");
+            return;
+        }
         var path = ResolveReplayPath(input.PayloadRelativePath);
         var info = new FileInfo(path);
         if (!info.Exists || info.Length != input.Descriptor.Layout.ByteLength)

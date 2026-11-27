@@ -1,4 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
@@ -7,7 +9,8 @@ using System.Collections.Concurrent;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOptions> options) : IProcessingRetentionHolds
+internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOptions> options,
+    SiloArtifactStorage? silo = null, SqliteCalibrationLibraryStore? calibration = null) : IProcessingRetentionHolds
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly ConcurrentDictionary<string, byte> _configuredManifests = new(
@@ -15,7 +18,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
 
     internal void RegisterRetentionHold(string? relativeManifestPath)
     {
-        if (!string.IsNullOrWhiteSpace(relativeManifestPath))
+        if (silo is null && !string.IsNullOrWhiteSpace(relativeManifestPath))
         {
             _ = ResolveSafePath(relativeManifestPath);
             _configuredManifests.TryAdd(relativeManifestPath, 0);
@@ -26,7 +29,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (!PathsEqual(_storageRoot, storageRoot))
+        if (silo is not null || !PathsEqual(_storageRoot, storageRoot))
         {
             return [];
         }
@@ -60,10 +63,24 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
 
     internal async ValueTask<ProcessingArtifact> LoadAsync(
         string relativeManifestPath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? artifactId = null)
     {
-        var manifestPath = ResolveSafePath(relativeManifestPath);
-        var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        byte[] manifestBytes;
+        if (silo is null)
+        {
+            manifestBytes = await File.ReadAllBytesAsync(ResolveSafePath(relativeManifestPath), cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            var id = artifactId ?? (calibration is null ? null :
+                await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
+            if (id is null)
+                throw new FileNotFoundException("The configured clear reference has no Silo calibration identity.");
+            manifestBytes = await silo.ReadMetadataAsync(id.Value, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("The configured clear reference has no settled Silo evidence.");
+        }
         var parsed = CaptureContractJson.ParseManifest(manifestBytes);
         if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
         {
@@ -83,8 +100,10 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         {
             throw new InvalidDataException("Configured clear reference is not a linear frame artifact.");
         }
-        var payloadPath = ResolveSafePath(manifest.RelativeArtifactPath);
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var payload = silo is null
+            ? await File.ReadAllBytesAsync(ResolveSafePath(manifest.RelativeArtifactPath), cancellationToken).ConfigureAwait(false)
+            : await silo.ReadRawAsync(descriptor, cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("The configured clear reference has no settled Silo payload.");
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out _);
         if (!reconstruction.IsValid)
         {

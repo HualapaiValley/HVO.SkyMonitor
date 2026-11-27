@@ -31,7 +31,7 @@ internal sealed partial class CenteredViewProducer
             !publication.RegistrationArtifactIds.Contains(registrationEvidenceArtifactId))
             throw new InvalidDataException("The registered preview does not name its exact frozen window and generation.");
         var retained = await views.ReadRegisteredBaseAsync(stream, publication.ReferenceCaptureId, CenteredViewKind.Stack,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, includePending: true).ConfigureAwait(false);
         if (retained is not null)
         {
             var binding = retained.Base.Definition.Window;

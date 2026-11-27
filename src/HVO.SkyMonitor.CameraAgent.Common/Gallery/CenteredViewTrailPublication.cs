@@ -100,7 +100,7 @@ internal sealed partial class CenteredViewTrailPublication(
         long after = 0;
         while (true)
         {
-            var bases = await views.ReadContributorBasesAsync(work.Exposure, after, 24, token).ConfigureAwait(false);
+            var bases = await views.ReadContributorBasesAsync(work.Exposure, after, 24, token, includePending: true).ConfigureAwait(false);
             foreach (var (viewBase, order) in bases)
             {
                 await views.PublishLayerAsync(viewBase.BaseId, UnavailableLayer(work, evidence), token).ConfigureAwait(false);

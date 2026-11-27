@@ -28,6 +28,25 @@ public sealed class SiloBoundedReadTests
     }
 
     [TestMethod]
+    public async Task VerifiedCopyPropagatesLocalScratchWriteFailure()
+    {
+        var store = new SiloTestStore("local-silo", "instance-bucket");
+        byte[] payload = [1, 2, 3];
+        var version = store.Plant(Key, payload);
+        using var scratch = new UnwritableScratch();
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await SiloVerifier.CopyVerifiedAsync(store, store.Locator(Key, version), payload.Length, SiloHash.Sha256(payload),
+                TimeProvider.System, scratch, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(payload.Length, store.BytesServed(Key));
+    }
+
+    private sealed class UnwritableScratch : MemoryStream
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new IOException("Scratch device has no available blocks."));
+    }
+
+    [TestMethod]
     public async Task InvalidMetadataBoundsAreRefusedBeforeStoreAccess()
     {
         var store = new SiloTestStore("local-silo", "instance-bucket") { Unreachable = true };

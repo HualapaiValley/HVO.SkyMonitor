@@ -1,7 +1,9 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -9,6 +11,33 @@ internal sealed partial class CaptureProcessingPersistence
 {
     private const string CenteredViewPublicationProducer = "centered-view-publication";
     private const string CenteredViewPreviewNode = CenteredViewPublicationProducer + "-preview";
+
+    internal async ValueTask PublishSiloArchiveAsync(ReconstructionDescriptor reference, Guid executionId, string nodeId,
+        CancellationToken cancellationToken)
+    {
+        var copies = await _store.ReadCommittedArchivePublicationsAsync(executionId, nodeId, cancellationToken,
+            FileStorageCaptureProcessingStep.SiloArchiveEvidenceVersion).ConfigureAwait(false);
+        if (copies.Count == 0) return;
+
+        var dependencies = new List<SiloManifestDependency>(copies.Count * 2);
+        foreach (var (artifact, identity) in copies.Distinct())
+        {
+            var id = Guid.ParseExact(artifact, "D");
+            var output = await RequireOutputAsync(id, reference.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
+            var evidenceSha = SiloHash.Sha256(output.EvidenceJson);
+            if (output.OutputIdentitySha256 != identity)
+                throw new InvalidDataException("The centered archive selection differs from its committed Silo evidence.");
+            dependencies.Add(new(artifact, identity, SiloCenteredViews.LowerHex(output.Artifact.ChecksumSha256), SiloDependencyKind.Reopen, true));
+            dependencies.Add(new(artifact, SiloArtifactStorage.ProductEvidenceRevision, evidenceSha, SiloDependencyKind.Reopen, true));
+        }
+
+        var group = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new { executionId, nodeId }));
+        var draft = new SiloGroupDraft("centered-archive", SiloCenteredViews.LowerHex(group), "1",
+            reference.Timing.DurableIngressUtc.ToUniversalTime(), reference.Timing.ExposureStartedUtc.ToUniversalTime(),
+            reference.Timing.ExposureEndedUtc.ToUniversalTime(), [], dependencies, new([]), CameraId: reference.Capture.RigId);
+        _faultInjector.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt, nodeId);
+        await Silo!.PublishAsync(draft, null, cancellationToken).ConfigureAwait(false);
+    }
 
     internal async ValueTask<ProcessingArtifact> ReadCenteredViewProductAsync(Guid captureId, CenteredViewArtifact pin,
         CancellationToken cancellationToken)
@@ -67,7 +96,9 @@ internal sealed partial class CaptureProcessingPersistence
             // A stable producer node preserves the journal's bounded per-producer retention ranking.
             var nodeId = product.Role == FrameArtifactRole.Preview ? CenteredViewPreviewNode : CenteredViewPublicationProducer + "-layer";
             var output = await PersistMetadataProductAsync(_storageRoot, reference, nodeId, product,
-                BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
+                BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken, writeLocalCopies: silo is null)
+                .ConfigureAwait(false);
+            await PersistSiloOutputsAsync(reference, [output], [product], nodeId, null, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, CenteredViewPublicationProducer);
             var node = new CaptureProcessingGraphNode(nodeId, OnDemandMaterializationStep.Instance, [], false,
                 product.Recipe.Descriptor.Name, product.Role, product.Variant, product.Recipe.IdentitySha256);
