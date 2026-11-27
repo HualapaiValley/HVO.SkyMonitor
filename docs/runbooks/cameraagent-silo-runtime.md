@@ -210,7 +210,9 @@ has a separate Silo deployment identity, failure domain, ext4 data root and cred
 Silo's `certs/CAs` directory. For an installed source on an internal Docker network, one option is an
 operator-managed TCP relay bound to the private bridge gateway. Resolve the archive's canonical name to that
 gateway inside the source Silo, forward only to the archive, and pass TLS through. CameraAgent separately needs
-direct HTTPS access to the same archive with the same authority. Keep the local Silo listener private.
+direct HTTPS access to the same archive. Its leaf certificate must match the configured name or IP in its
+subject alternative names, carry the TLS Server Authentication extended key usage, and chain to the configured
+archive CA. Keep the local Silo listener private.
 
 On the maintenance system, set `MC_HOST_source`, `MC_HOST_archive`, `MC_HOST_replica` and `MC_HOST_reader` using
 protected service credentials. Use three distinct identities at the archive. Give the stock clients the
@@ -254,8 +256,9 @@ CameraAgent publishes and opens local captures independently of the archive. The
 publication journal entry, manifest, payloads and dependencies by exact version, computes lengths and SHA-256
 from returned bytes, then appends copy receipts to the instance journal. Stock Silo preserves the source
 version ID on this qualified pairing. A current object, ETag, replication status, or replica arriving ahead of
-one of its dependencies cannot prove a copy. The verifier confirms the receipt segment and rechecks the closure
-at the archive before reporting the publication reachable. Local SQLite projects the durable journal and
+one of its required reopen dependencies cannot prove a copy. The verifier records compute and optional
+dependencies when their copies verify. Their expiry leaves the publication reachable. The verifier confirms
+the receipt segment and rechecks the required closure at the archive before reporting the publication reachable. Local SQLite projects the durable journal and
 keeps the retry and receipt index. The archive prefix check includes journal segments and any referenced
 checkpoints.
 
@@ -274,8 +277,8 @@ Use the instance lifecycle token in `X-HVO-Installation-Token` for these routes 
 `reachable` means the archive answered and the discovered backlog verified. `blocked` covers failed
 authentication, outages, and copies that remain pending through bounded retries, including a capped target.
 `failed` means the evidence or configuration was refused. Backlog bytes include known referenced logical bytes
-and can count shared data more than once. The cutoff records the verified archive prefix and never advances across
-a gap. Each receipt reports its verification time. An archive publication with a completed expiry shows
+and can count shared data more than once. The cutoff records the verified archive prefix and advances across a completed policy expiry.
+It waits at any unsettled gap. Each receipt reports its verification time. An archive publication with a completed expiry shows
 `policy-expired` and keeps its historical receipt. Retain exact receipt identities and digests with recovery
 records for selected restores.
 
@@ -857,7 +860,10 @@ rm -rf -- "$W"
 ```
 
 **Replica pairing.** The optional archive (#1969) runs a separately qualified Silo on another host over authenticated
-TLS. This installer only verifies its configuration read-only (above); replication and holds are #1969's.
+TLS. See [Provision one-way replication](#provision-one-way-replication) and
+[Archive retention and expiry](#archive-retention-and-expiry) for setup and custody operations. The
+[cutover §12 archive generation witness](../planning/cameraagent-silo-cutover.md#12-downstream-contract-slices)
+is deferred to [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972).
 
 ## Qualification
 

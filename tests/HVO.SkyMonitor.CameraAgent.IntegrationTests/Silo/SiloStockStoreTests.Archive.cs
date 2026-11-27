@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -7,10 +8,18 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -86,13 +95,16 @@ public sealed partial class SiloStockStoreTests
         settings["CameraAgent:SiloArchive:SecretKey"] = readerKeys.Secret;
         settings["CameraAgent:SiloArchive:ReplicationEnabled"] = "true";
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var sourceReadFault = new ExactReadFault();
         using var source = new SiloInstalledStorage(SiloInstalledSettings.Read(configuration.GetSection("CameraAgent:Silo")),
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.Path }), TimeProvider.System);
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.Path }), TimeProvider.System,
+            decorateReadStore: store => new FaultingReadStore(store, sourceReadFault));
         await source.VerifyReadinessAsync(token).ConfigureAwait(false);
         using var services = new ServiceCollection().AddSingleton(source).BuildServiceProvider();
         var clock = new ArchiveTestClock();
         using var archiveWorker = new SiloArchiveWorker(configuration, services, clock, NullLogger<SiloArchiveWorker>.Instance);
         using var replica = SiloS3ObjectStore.CreateClient(archiveNetworkOrigin, replicaKeys.Access, replicaKeys.Secret, transport);
+        using var reader = SiloS3ObjectStore.CreateClient(archiveNetworkOrigin, readerKeys.Access, readerKeys.Secret, transport);
 
         await lab.McAsync(token, "quota", "set", $"archive/{archiveBucket}", "--size", "64KiB").ConfigureAwait(false);
         var rawBytes = RandomNumberGenerator.GetBytes(256 * 1024);
@@ -197,8 +209,51 @@ public sealed partial class SiloStockStoreTests
             .ConfigureAwait(false))
             Assert.AreEqual("policy-expired", late.State, "The same version arriving again must respect its durable expiration.");
 
-        await AssertReplicationDeleteIsolatedAsync(sourceAdmin, archiveAdmin, replica, binding.Bucket, archiveBucket, raw.Member.Locator, token)
+        var later = await PublishArchiveFixtureAsync(source, "after-expiry", "reachable after policy expiry"u8.ToArray(), [], token)
             .ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromDays(1));
+        await WaitUntilAsync(async () =>
+        {
+            clock.AdvanceRetry();
+            var status = await caughtUp.RunCycleAsync(token).ConfigureAwait(false);
+            if (status.State == "failed") Assert.Fail(status.Reason ?? "Archive verification failed.");
+            return (await caughtUp.FindAsync(isolated.GroupId, "1", token).ConfigureAwait(false))?.State == "policy-expired" &&
+                status is { State: "reachable", BacklogCount: 0 } && status.VerifiedCutoff?.GroupId == later.GroupId;
+        }, token).ConfigureAwait(false);
+
+        var admission = new SqliteRawCaptureJournal(Path.Combine(root.Path, "journal", "raw-ingress.db"), 5, usesSilo: true);
+        await admission.InitializeAsync(token).ConfigureAwait(false);
+        await source.Catalog.CatchUpAsync(await source.State.ReadWriterEvidenceAsync(token).ConfigureAwait(false), null, token).ConfigureAwait(false);
+
+        var lifecycle = WebApplication.CreateBuilder();
+        lifecycle.WebHost.UseTestServer();
+        lifecycle.Configuration["LifecycleControl:Token"] = settings["LifecycleControl:Token"];
+        lifecycle.Services.AddSingleton<ICameraAgentSiloVerification>(source);
+        lifecycle.Services.AddSingleton<CaptureAdmissionCoordinator>(_ => null!);
+        lifecycle.Services.AddSingleton<CameraAgentOperationsSummaryProvider>(_ => null!);
+        lifecycle.Services.AddSingleton<DeploymentContinuityReader>(_ => null!);
+        lifecycle.Services.AddSingleton(Options.Create(new CameraAgentHostOptions()));
+        var lifecycleApp = lifecycle.Build();
+        await using var lifecycleLease = lifecycleApp.ConfigureAwait(false);
+        lifecycleApp.MapCameraAgentLifecycleEndpoints();
+        await lifecycleApp.StartAsync(token).ConfigureAwait(false);
+        using var verifier = lifecycleApp.GetTestClient();
+        verifier.DefaultRequestHeaders.Add("X-HVO-Installation-Token", settings["LifecycleControl:Token"]);
+        var artifacts = new SiloArtifactStorage(source, TimeProvider.System);
+        var member = raw.Member.Identity;
+
+        sourceReadFault.Set(raw.Member.Locator, ReadFault.Damaged);
+        await AssertLocalHistoryAsync(verifier, HttpStatusCode.Conflict, token).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            artifacts.OpenMemberAsync(Guid.Parse(member.Id), member.Revision, member.Length, member.Sha256, token).AsTask()).ConfigureAwait(false);
+        sourceReadFault.Clear();
+
+        await AssertReplicaPermissionsAsync(replica, reader, archiveBucket, raw.Member.Locator, token).ConfigureAwait(false);
+        await AssertReplicationDeleteIsolatedAsync(sourceAdmin, archiveAdmin, binding.Bucket, archiveBucket, raw.Member.Locator, token)
+            .ConfigureAwait(false);
+        await AssertLocalHistoryAsync(verifier, HttpStatusCode.Gone, token).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<FileNotFoundException>(() =>
+            artifacts.OpenMemberAsync(Guid.Parse(member.Id), member.Revision, member.Length, member.Sha256, token).AsTask()).ConfigureAwait(false);
         await lab.SetupAsync("disable", token).ConfigureAwait(false);
         await lab.SetupAsync("disable", token).ConfigureAwait(false);
         await lab.SetupAsync("verify-disabled", token).ConfigureAwait(false);
@@ -292,17 +347,63 @@ public sealed partial class SiloStockStoreTests
         return (group, manifest.AvailableAt, (new(SiloIdentityKind.Member, id, "1", sha, bytes.LongLength), indexed.AvailableAt));
     }
 
-    private static async Task AssertReplicationDeleteIsolatedAsync(AmazonS3Client source, AmazonS3Client archive, AmazonS3Client replica,
-        string sourceBucket, string archiveBucket, SiloExactLocator version, CancellationToken token)
+    private static async Task AssertLocalHistoryAsync(HttpClient verifier, HttpStatusCode expected, CancellationToken token)
+    {
+        using var response = await verifier.PostAsync(VerifyHistoryRoute, null, token).ConfigureAwait(false);
+        Assert.AreEqual(expected, response.StatusCode);
+        var counts = await response.Content.ReadFromJsonAsync<CameraAgentSiloVerificationResult>(token).ConfigureAwait(false);
+        Assert.IsNotNull(counts);
+        Assert.AreEqual(0L, counts.UnavailableRoles);
+        Assert.IsGreaterThan(0L, expected == HttpStatusCode.Conflict ? counts.DamagedRoles : counts.MissingRoles);
+    }
+
+    private static async Task AssertReplicaPermissionsAsync(AmazonS3Client replica, AmazonS3Client reader,
+        string bucket, SiloExactLocator version, CancellationToken token)
     {
         foreach (var id in new[] { null, version.VersionId })
         {
-            var rejected = await Assert.ThrowsExactlyAsync<AmazonS3Exception>(async () =>
-                await replica.DeleteObjectAsync(new DeleteObjectRequest { BucketName = archiveBucket, Key = version.Key, VersionId = id }, token)
-                    .ConfigureAwait(false)).ConfigureAwait(false);
-            Assert.AreEqual(HttpStatusCode.Forbidden, rejected.StatusCode);
+            foreach (var client in new[] { replica, reader })
+                await DeniedAsync(() => client.DeleteObjectAsync(new DeleteObjectRequest
+                { BucketName = bucket, Key = version.Key, VersionId = id }, token)).ConfigureAwait(false);
         }
 
+        foreach (var key in new[] { SiloArchiveStore.MarkerKey, "meta/archive-expiry/forbidden.json" })
+            await DeniedAsync(() => replica.PutObjectAsync(new PutObjectRequest
+            { BucketName = bucket, Key = key, ContentBody = "forbidden" }, token)).ConfigureAwait(false);
+        await DeniedAsync(() => reader.PutObjectAsync(new PutObjectRequest
+        { BucketName = bucket, Key = version.Key, ContentBody = "forbidden" }, token)).ConfigureAwait(false);
+        await DeniedAsync(() => SetArchiveHoldAsync(replica, bucket, version, ObjectLockLegalHoldStatus.Off, token)).ConfigureAwait(false);
+        await DeniedAsync(() => replica.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = bucket,
+            Key = version.Key,
+            VersionId = version.VersionId,
+            Retention = new ObjectLockRetention { Mode = ObjectLockRetentionMode.Governance, RetainUntilDate = DateTime.UtcNow.AddHours(1) }
+        }, token)).ConfigureAwait(false);
+        await DeniedAsync(() => replica.PutLifecycleConfigurationAsync(new PutLifecycleConfigurationRequest
+        {
+            BucketName = bucket,
+            Configuration = new LifecycleConfiguration
+            {
+                Rules = [new LifecycleRule
+                {
+                    Id = "forbidden", Status = LifecycleRuleStatus.Enabled,
+                    Filter = new LifecycleFilter { LifecycleFilterPredicate = new LifecyclePrefixPredicate { Prefix = "p/" } },
+                    Expiration = new LifecycleRuleExpiration { Days = 1 }
+                }]
+            }
+        }, token)).ConfigureAwait(false);
+
+        static async Task DeniedAsync(Func<Task> attempt)
+        {
+            var rejected = await Assert.ThrowsExactlyAsync<AmazonS3Exception>(attempt).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Forbidden, rejected.StatusCode);
+        }
+    }
+
+    private static async Task AssertReplicationDeleteIsolatedAsync(AmazonS3Client source, AmazonS3Client archive,
+        string sourceBucket, string archiveBucket, SiloExactLocator version, CancellationToken token)
+    {
         var held = await Assert.ThrowsExactlyAsync<AmazonS3Exception>(async () =>
             await archive.DeleteObjectAsync(new DeleteObjectRequest { BucketName = archiveBucket, Key = version.Key, VersionId = version.VersionId },
                 token).ConfigureAwait(false)).ConfigureAwait(false);
@@ -315,6 +416,25 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual("true", marker.DeleteMarker);
         await source.DeleteObjectAsync(new DeleteObjectRequest { BucketName = sourceBucket, Key = version.Key, VersionId = version.VersionId }, token)
             .ConfigureAwait(false);
+        var canaryKey = $"p/delete-isolation-{Guid.NewGuid():N}";
+        const string canaryBody = "published after source deletes";
+        var canary = await source.PutObjectAsync(new PutObjectRequest
+        { BucketName = sourceBucket, Key = canaryKey, ContentBody = canaryBody }, token).ConfigureAwait(false);
+        await WaitUntilAsync(async () =>
+        {
+            try
+            {
+                using var arrived = await archive.GetObjectAsync(new GetObjectRequest
+                { BucketName = archiveBucket, Key = canaryKey, VersionId = canary.VersionId }, token).ConfigureAwait(false);
+                using var body = new StreamReader(arrived.ResponseStream);
+                Assert.AreEqual(canaryBody, await body.ReadToEndAsync(token).ConfigureAwait(false));
+                return true;
+            }
+            catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+            {
+                return false;
+            }
+        }, token).ConfigureAwait(false);
         using var surviving = await archive.GetObjectAsync(new GetObjectRequest
         {
             BucketName = archiveBucket,
@@ -349,7 +469,9 @@ public sealed partial class SiloStockStoreTests
 
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.UtcNow + _offset;
 
-        internal void AdvanceRetry() => _offset += TimeSpan.FromMinutes(5);
+        internal void AdvanceRetry() => Advance(TimeSpan.FromMinutes(5));
+
+        internal void Advance(TimeSpan duration) => _offset += duration;
     }
 
     private sealed class ArchiveTestDirectory : IDisposable

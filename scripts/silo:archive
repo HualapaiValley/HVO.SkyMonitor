@@ -29,8 +29,13 @@ class Refused(Exception):
     pass
 
 
+def mc_environment():
+    return {key: value for key, value in os.environ.items()
+            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}}
+
+
 def mc(*args, data=None, allowed_error=None, raw=False):
-    result = subprocess.run(["mc", "--json", *args], input=data, capture_output=True, timeout=30, check=False)
+    result = subprocess.run(["mc", "--json", *args], input=data, capture_output=True, timeout=30, check=False, env=mc_environment())
     if raw and result.returncode == 0:
         return result.stdout
     try:
@@ -100,17 +105,25 @@ def verify_marker(args, install):
         raise Refused("The archive bucket is bound to a different store, source or retention policy.")
 
 
-def verify_servers():
-    version = subprocess.run(["mc", "--version"], capture_output=True, text=True, timeout=10, check=True).stdout
+def verify_client():
+    version = subprocess.run(["mc", "--version"], capture_output=True, text=True, timeout=10, check=True,
+                             env=mc_environment()).stdout
     if not version.startswith(f"mc version RELEASE.{CLIENT_RELEASE} ") or "Silo object storage client" not in version:
         raise Refused("Use mc from the qualified stock Silo image.")
-    deployments = []
-    for endpoint in ("source", "archive"):
-        info = one("admin", "info", endpoint)["info"]
-        if len(info["servers"]) != 1 or info["servers"][0]["version"] != RELEASE or info["mode"] != "online":
-            raise Refused("Both independent stock Silo servers must run the qualified release.")
-        deployments.append(info["deploymentID"])
-    if not all(deployments) or len(set(deployments)) != 2:
+
+
+def deployment_id(endpoint):
+    info = one("admin", "info", endpoint)["info"]
+    if len(info["servers"]) != 1 or info["servers"][0]["version"] != RELEASE or info["mode"] != "online":
+        raise Refused(f"The {endpoint} server must run the qualified stock Silo release.")
+    if not info["deploymentID"]:
+        raise Refused(f"The {endpoint} server did not report a Silo deployment identity.")
+    return info["deploymentID"]
+
+
+def verify_servers():
+    verify_client()
+    if deployment_id("source") == deployment_id("archive"):
         raise Refused("Source and archive must have different Silo deployment identities.")
 
 
@@ -151,7 +164,7 @@ def policy(bucket, replication):
         {"Effect": "Deny", "Action": DENIED, "Resource": [resource, f"{resource}/*"]},
     ]
     if replication:
-        statements.append({"Effect": "Deny", "Action": ["s3:PutObject", "s3:ReplicateObject"], "Resource": protected})
+        statements.append({"Effect": "Deny", "Action": ["s3:PutObject", "s3:ReplicateObject", "s3:ReplicateTags"], "Resource": protected})
     return {"Version": "2012-10-17", "Statement": statements}
 
 
@@ -201,7 +214,7 @@ def target_matches(rule, source, endpoint, args):
         and remote["sourcebucket"] == args.source_bucket
         and remote["targetbucket"] == args.archive_bucket
         and remote["credentials"]["accessKey"] == unquote(endpoint.username)
-        and remote["endpoint"] == endpoint.netloc.rsplit("@", 1)[-1]
+        and remote["endpoint"].lower() == endpoint.netloc.rsplit("@", 1)[-1].lower()
         and remote["secure"] == (endpoint.scheme == "https")
         and remote.get("path") == "on"
         and remote.get("disableProxy") is True
@@ -262,6 +275,8 @@ def configure(args):
 def expire(args):
     if alias("archive").scheme != "https":
         raise Refused("The independent archive origin requires HTTPS.")
+    verify_client()
+    deployment_id("archive")
     verify_marker(args, False)
     location = f"archive/{args.archive_bucket}/{args.key}"
     identity = "\n".join((args.store_id, args.archive_bucket, args.key, args.version_id)).encode()

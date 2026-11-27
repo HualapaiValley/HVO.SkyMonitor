@@ -49,7 +49,11 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
             }
             var indexed = await index.ReadRoleAsync(role, cancellationToken).ConfigureAwait(false);
             if (indexed is null)
-                throw new SiloArchiveException("pending", "archive-dependency-publication-pending");
+            {
+                if (RequiresReopenCopy(dependency))
+                    throw new SiloArchiveException("pending", "archive-dependency-publication-pending");
+                continue;
+            }
             if (indexed.Sha256 != dependency.Sha256)
                 throw new SiloArchiveException("failed", "archive-dependency-identity-mismatch");
 
@@ -73,7 +77,7 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                     absence ??= exception;
                 }
             }
-            if (!copies.ContainsKey(role))
+            if (RequiresReopenCopy(dependency) && !copies.ContainsKey(role))
                 throw absence ?? new SiloArchiveException("pending", "archive-dependency-version-pending");
         }
 
@@ -121,20 +125,36 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
                 copy.Locator != archive.ReplicaOf(member.Locator))
                 throw new SiloArchiveException("failed", "archive-receipt-members-mismatch");
         }
+        var required = new HashSet<SiloRoleKey>(publish.Members.Select(static member =>
+            new SiloRoleKey(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision)));
+        var declared = new HashSet<SiloRoleKey>(required);
         foreach (var dependency in manifest.Dependencies)
         {
-            if (!roles.TryGetValue(new(SiloIdentityKind.Member, dependency.ArtifactId, dependency.ArtifactRevision), out var copy) ||
-                copy.Identity.Sha256 != dependency.Sha256)
+            var role = new SiloRoleKey(SiloIdentityKind.Member, dependency.ArtifactId, dependency.ArtifactRevision);
+            declared.Add(role);
+            if (RequiresReopenCopy(dependency))
+                required.Add(role);
+            if (roles.TryGetValue(role, out var copy) && copy.Identity.Sha256 != dependency.Sha256)
                 throw new SiloArchiveException("failed", "archive-receipt-dependencies-mismatch");
         }
-        if (roles.Count != publish.Members.Select(static member => (member.ArtifactId, member.ArtifactRevision))
-            .Concat(manifest.Dependencies.Select(static dependency => (dependency.ArtifactId, dependency.ArtifactRevision))).Distinct().Count())
-            throw new SiloArchiveException("failed", "archive-receipt-members-mismatch");
+        if (!required.IsSubsetOf(roles.Keys) || !declared.IsSupersetOf(roles.Keys))
+            throw new SiloArchiveException("failed", "archive-receipt-dependencies-mismatch");
 
         if (verifyCopies)
         {
-            foreach (var copy in roles.Values.DistinctBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
-                await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken).ConfigureAwait(false);
+            foreach (var group in roles.Values.GroupBy(static copy => (copy.Locator, copy.Identity.Length, copy.Identity.Sha256)))
+            {
+                var copy = group.First();
+                try
+                {
+                    await RequireCopyAsync(copy.Identity, copy.Locator, captureBytes: false, cancellationToken).ConfigureAwait(false);
+                }
+                catch (SiloArchiveException exception) when (!group.Any(copy => required.Contains(copy.Identity.Role)) &&
+                    (exception.State == "pending" || exception.Reason == "archive-copy-policy-expired"))
+                {
+                    // The receipt preserves its historical evidence for optional and compute inputs.
+                }
+            }
         }
         return copies;
     }
@@ -179,6 +199,9 @@ internal sealed class SiloArchiveVerification(SiloArchiveStore archive, TimeProv
         new(identity, proof.Locator, SiloStoreClass.Archive, SiloRetrieval.Online, SiloArchiveStore.Custody, proof.ObservedUtc,
             SiloFormats.ExactGetSha256, RetentionPolicy: SiloArchiveStore.RetentionPolicy,
             ArchiveRetention: await archive.ReadRetentionAsync(proof.Locator, cancellationToken).ConfigureAwait(false));
+
+    private static bool RequiresReopenCopy(SiloManifestDependency dependency) =>
+        dependency.Kind == SiloDependencyKind.Reopen && dependency.Required;
 
     private static SiloPublishRecord GetPublication(SiloJournalSegment segment, SiloPublicationRef reference)
     {

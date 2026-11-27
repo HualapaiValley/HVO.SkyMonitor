@@ -20,6 +20,9 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
     private static readonly TimeSpan AttemptLimit = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ReadLimit = TimeSpan.FromMinutes(2);
     private int _downloadInProgress;
+    private PrefixRetry? _prefixRetry;
+
+    private sealed record PrefixRetry(SiloArchiveMarker Marker, long Sequence, int Attempts, DateTimeOffset Next, SiloArchiveException Fault);
     private SiloArchiveIndex? _index;
     private CameraAgentSiloArchiveStatus _status = new("disabled", null);
 
@@ -59,30 +62,36 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         {
             var settings = Settings;
             enabled = settings.GetValue("ReplicationEnabled", false);
-            if (!settings.Exists())
+            if (!enabled && !HasArchiveConfiguration(settings))
             {
                 Volatile.Write(ref _index, null);
+                _prefixRetry = null;
                 return Publish(new("disabled", null));
             }
-            using var archive = SiloArchiveStore.Create(settings, clock);
-            storeId = archive.Marker.StoreId;
-            bucket = archive.Marker.Bucket;
+            var marker = SiloArchiveStore.ReadMarker(settings);
+            (storeId, bucket) = (marker.StoreId, marker.Bucket);
             var source = services.GetService<SiloInstalledStorage>();
+            var bound = source is not null && source.Binding.BindingId == marker.SourceBindingId &&
+                source.Binding.Bucket != marker.Bucket;
+            if (!bound) Volatile.Write(ref _index, null);
             if (!enabled)
             {
-                if (source is not null && source.Binding.BindingId == archive.Marker.SourceBindingId)
-                    index = await TryOpenIndexAsync(source, archive.Marker, create: false, stoppingToken).ConfigureAwait(false);
+                _prefixRetry = null;
+                if (bound)
+                    index = await TryOpenIndexAsync(source!, marker, create: false, stoppingToken).ConfigureAwait(false);
                 var disabled = index is null ? null : await index.ReadBacklogAsync(stoppingToken).ConfigureAwait(false);
                 return Publish(new("disabled", null, storeId, bucket, VerifiedCutoff: disabled?.Cutoff, LatestVerifiedReceipt: disabled?.Latest));
             }
-            if (source is null || source.Binding.BindingId != archive.Marker.SourceBindingId ||
-                source.Binding.Bucket == archive.Marker.Bucket)
+            if (!bound || source is null)
                 throw new SiloArchiveException("blocked", "archive-source-binding-mismatch");
-            if (!source.BindingVerified)
+
+            var bindingVerified = source.BindingVerified;
+            index = await TryOpenIndexAsync(source, marker, create: bindingVerified, stoppingToken).ConfigureAwait(false);
+            if (!bindingVerified)
                 throw new SiloArchiveException("pending", "archive-local-publication-index-pending");
 
-            index = await TryOpenIndexAsync(source, archive.Marker, create: true, stoppingToken).ConfigureAwait(false);
             ArgumentNullException.ThrowIfNull(index);
+            using var archive = SiloArchiveStore.Create(settings, marker, clock);
             await index.DiscoverAsync(source.Index, DiscoverLimit, stoppingToken).ConfigureAwait(false);
             await archive.VerifyAsync(stoppingToken).ConfigureAwait(false);
             var verification = new SiloArchiveVerification(archive, clock);
@@ -128,6 +137,12 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             backlog?.Oldest is { } oldest ? Math.Max(0, (long)(clock.GetUtcNow() - oldest).TotalSeconds) : null,
             backlog?.Cutoff, backlog?.Latest));
     }
+
+    private static bool HasArchiveConfiguration(IConfigurationSection settings) =>
+        !string.IsNullOrEmpty(settings["Endpoint"]) || !string.IsNullOrEmpty(settings["StoreId"]) ||
+        !string.IsNullOrEmpty(settings["Bucket"]) || !string.IsNullOrEmpty(settings["SourceBindingId"]) ||
+        !string.IsNullOrEmpty(settings["AccessKey"]) || !string.IsNullOrEmpty(settings["SecretKey"]) ||
+        !string.IsNullOrEmpty(settings["AuthorityPem"]);
 
     private async ValueTask<SiloArchiveIndex?> TryOpenIndexAsync(SiloInstalledStorage source, SiloArchiveMarker marker,
         bool create, CancellationToken cancellationToken)
@@ -208,10 +223,13 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             .ConfigureAwait(false);
     }
 
-    private static async ValueTask<SiloArchiveException?> AdvancePrefixAsync(SiloInstalledStorage source, SiloArchiveStore archive,
+    private async ValueTask<SiloArchiveException?> AdvancePrefixAsync(SiloInstalledStorage source, SiloArchiveStore archive,
         SiloArchiveIndex index, CancellationToken stoppingToken)
     {
         var (sequence, sha) = await index.ReadPrefixAsync(stoppingToken).ConfigureAwait(false);
+        if (_prefixRetry is { } retry && retry.Marker == archive.Marker && retry.Sequence == sequence &&
+            clock.GetUtcNow() < retry.Next)
+            return retry.Fault;
         var head = await source.State.ReadHeadAsync(stoppingToken).ConfigureAwait(false);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         deadline.CancelAfter(AttemptLimit);
@@ -231,20 +249,41 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
                     var proof = await archive.ProbeAsync(identity, archive.ReplicaOf(anchor.Checkpoint), captureBytes: false, deadline.Token)
                         .ConfigureAwait(false);
                     if (proof.Status != SiloProbeStatus.Verified)
-                        throw new SiloArchiveException(proof.Status == SiloProbeStatus.Damaged ? "failed" : "pending",
-                            "archive-checkpoint-not-verified");
+                        throw new SiloArchiveException(proof.Status switch
+                        {
+                            SiloProbeStatus.Damaged => "failed",
+                            SiloProbeStatus.Unavailable => "blocked",
+                            _ => "pending"
+                        }, "archive-checkpoint-not-verified");
                 }
                 sequence = next.Sequence;
                 sha = committed.Sha256;
                 await index.SavePrefixAsync(sequence, sha, deadline.Token).ConfigureAwait(false);
             }
+            _prefixRetry = null;
             return head.Generation > 1 ? new("blocked", "archive-unsupported-writer-generation")
                 : sequence < head.Sequence ? new("pending", "archive-journal-verification-pending") : null;
         }
         catch (SiloArchiveException exception)
         {
-            return exception;
+            return DeferPrefix(archive.Marker, sequence, exception);
         }
+        catch (Exception exception) when (exception is IOException ||
+            exception is OperationCanceledException && !stoppingToken.IsCancellationRequested)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+            return DeferPrefix(archive.Marker, sequence, new("blocked", "archive-journal-unavailable"));
+        }
+    }
+
+    private SiloArchiveException DeferPrefix(SiloArchiveMarker marker, long sequence, SiloArchiveException fault)
+    {
+        var attempts = _prefixRetry is { } retry && retry.Marker == marker && retry.Sequence == sequence
+            ? Math.Min(retry.Attempts + 1, 7) : 0;
+        if (fault.State == "pending" && attempts >= 5)
+            fault = new("blocked", fault.Reason);
+        _prefixRetry = new(marker, sequence, attempts, clock.GetUtcNow() + TimeSpan.FromSeconds(2 << attempts), fault);
+        return fault;
     }
 
     public ValueTask<CameraAgentSiloArchivePublication?> FindAsync(string groupId, string revisionId, CancellationToken cancellationToken) =>
@@ -254,23 +293,35 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
     [SuppressMessage("Reliability", "CA2000", Justification = "The response owns the verified scratch stream; failures dispose it in finally.")]
     public async ValueTask<CameraAgentSiloArchiveContent> ReadAsync(CameraAgentSiloArchiveRead request, CancellationToken cancellationToken)
     {
-        if (!Settings.Exists()) return new("disabled");
         cancellationToken.ThrowIfCancellationRequested();
+        var receipt = request.Receipt;
+        if (receipt is null || !SiloHash.IsValid(receipt.ReceiptSha256) || !SiloText.IsToken(receipt.GroupId, 128) ||
+            !SiloText.IsToken(receipt.RevisionId, 128) || !SiloText.IsToken(receipt.StoreId, 128) ||
+            !SiloText.IsToken(receipt.Bucket, 63) || !SiloText.IsText(receipt.ReceiptVersionId, 1024) ||
+            !SiloText.IsText(request.ArtifactId, 256) || !SiloText.IsText(request.ArtifactRevision, 256) ||
+            receipt.PublicationGeneration < 1 || receipt.PublicationSequence < 1 || receipt.PublicationIndex < 0 ||
+            receipt.ReceiptGeneration < 1 || receipt.ReceiptSequence < 1 ||
+            new SiloJournalPosition(receipt.ReceiptGeneration, receipt.ReceiptSequence) <=
+                new SiloJournalPosition(receipt.PublicationGeneration, receipt.PublicationSequence))
+            return new("invalid-request");
+
+        var settings = Settings;
         if (Interlocked.CompareExchange(ref _downloadInProgress, 1, 0) != 0)
             return new("blocked");
         FileStream? scratch = null;
         var releaseSlot = true;
         try
         {
-            var receipt = request.Receipt;
-            if (receipt is null || !SiloHash.IsValid(receipt.ReceiptSha256) || !SiloText.IsToken(receipt.GroupId, 128) ||
-                !SiloText.IsToken(receipt.RevisionId, 128) || string.IsNullOrWhiteSpace(request.ArtifactId) ||
-                string.IsNullOrWhiteSpace(request.ArtifactRevision))
+            if (!HasArchiveConfiguration(settings) && !settings.GetValue("ReplicationEnabled", false))
+                return new("disabled");
+            var marker = SiloArchiveStore.ReadMarker(settings);
+            if (receipt.StoreId != marker.StoreId || receipt.Bucket != marker.Bucket)
                 return new("invalid-request");
-            SiloText.RequireText(receipt.ReceiptVersionId, nameof(receipt.ReceiptVersionId), 1024);
-            using var archive = SiloArchiveStore.Create(Settings, clock);
-            if (receipt.StoreId != archive.Marker.StoreId || receipt.Bucket != archive.Marker.Bucket)
-                return new("invalid-request");
+
+            var maximumBytes = settings.GetValue("MaximumReadBytes", 512L * 1024 * 1024);
+            if (maximumBytes is < 1 or > SiloS3ObjectStore.MaximumPutBytes)
+                return new("failed");
+            using var archive = SiloArchiveStore.Create(settings, marker, clock);
 
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(ReadLimit);
@@ -285,13 +336,13 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             if (selected is null) return new("missing");
 
             var rawRoot = services.GetService<IOptions<CameraAgentHostOptions>>()?.Value.RawIngressRoot;
-            var scratchRoot = Settings["ReadScratchRoot"] ?? rawRoot;
+            var scratchRoot = settings["ReadScratchRoot"] ?? rawRoot;
             if (OperatingSystem.IsWindows() || string.IsNullOrEmpty(scratchRoot) || !Path.IsPathFullyQualified(scratchRoot))
                 return new("blocked");
-            var maximumBytes = Settings.GetValue("MaximumReadBytes", 512L * 1024 * 1024);
-            if (maximumBytes is < 1 or > SiloS3ObjectStore.MaximumPutBytes || selected.Identity.Length > maximumBytes)
+            if (selected.Identity.Length > maximumBytes)
                 return new("blocked");
             var physical = PhysicalRoot.Open(scratchRoot);
+            PhysicalRoot.Open(Path.GetPathRoot(physical.Path)!).Verify(physical.Path, "silo-archive-read-scratch");
             scratch = new FileStream(physical.Resolve($"hvo-archive-{Guid.NewGuid():N}.tmp"),
                 new FileStreamOptions
                 {
@@ -316,11 +367,7 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
             return new(exception.Reason == "archive-copy-policy-expired" ? "policy-expired" :
                 exception.State == "pending" ? "missing" : exception.State);
         }
-        catch (ArgumentException)
-        {
-            return new("invalid-request");
-        }
-        catch (Exception exception) when (exception is SiloDataException or JsonException)
+        catch (Exception exception) when (exception is ArgumentException or FormatException or InvalidOperationException or JsonException)
         {
             return new("failed");
         }
@@ -331,8 +378,14 @@ internal sealed partial class SiloArchiveWorker(IConfiguration configuration, IS
         }
         finally
         {
-            if (scratch is not null) await scratch.DisposeAsync().ConfigureAwait(false);
-            if (releaseSlot) Volatile.Write(ref _downloadInProgress, 0);
+            try
+            {
+                if (scratch is not null) await scratch.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (releaseSlot) Volatile.Write(ref _downloadInProgress, 0);
+            }
         }
     }
 

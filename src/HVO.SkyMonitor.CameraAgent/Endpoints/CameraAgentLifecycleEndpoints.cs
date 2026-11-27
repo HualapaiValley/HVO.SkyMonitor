@@ -35,6 +35,7 @@ internal static class CameraAgentLifecycleEndpoints
     private static IResult ReadArchiveStatus(HttpContext context, IConfiguration configuration)
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        context.Response.Headers.CacheControl = "no-store";
         var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
         return Results.Ok(archive?.Status ?? new CameraAgentSiloArchiveStatus("disabled", null));
     }
@@ -44,6 +45,7 @@ internal static class CameraAgentLifecycleEndpoints
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
         if (groupId.Length is < 1 or > 128 || revisionId.Length is < 1 or > 128) return Results.BadRequest();
+        context.Response.Headers.CacheControl = "no-store";
         var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
         if (archive is null) return Results.NotFound();
         try
@@ -61,13 +63,13 @@ internal static class CameraAgentLifecycleEndpoints
         IConfiguration configuration, CancellationToken cancellationToken)
     {
         if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        context.Response.Headers.CacheControl = "no-store";
         var archive = context.RequestServices.GetService<ICameraAgentSiloArchive>();
         if (archive is null) return Results.NotFound();
         var downloaded = await archive.ReadAsync(request, cancellationToken).ConfigureAwait(false);
         context.Response.RegisterForDispose(downloaded);
         if (downloaded.Content is { } content)
         {
-            context.Response.Headers.CacheControl = "no-store";
             context.Response.Headers["X-HVO-Content-Sha256"] = downloaded.Sha256;
             return Results.Stream(content, "application/octet-stream");
         }

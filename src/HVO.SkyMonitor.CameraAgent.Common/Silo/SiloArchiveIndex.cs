@@ -46,13 +46,16 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
     internal async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
         RefuseUnsupportedHeader(path, Format);
-        using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
-        await EnsureSchemaAsync(connection, Format, new Dictionary<string, string>(StringComparer.Ordinal)
+        var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sourceBinding"] = marker.SourceBindingId,
             ["store"] = marker.StoreId,
             ["bucket"] = marker.Bucket
-        }, cancellationToken).ConfigureAwait(false);
+        };
+        if (new FileInfo(path + "-wal") is { Exists: true, Length: > 0 })
+            await InspectAsync(path, Format, metadata, Path.GetDirectoryName(path)!, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(path, cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, Format, metadata, cancellationToken).ConfigureAwait(false);
     }
 
     internal bool Matches(SiloArchiveMarker archive) => marker == archive;
@@ -169,8 +172,9 @@ internal sealed class SiloArchiveIndex(string path, SiloArchiveMarker marker)
         using var cutoff = CreateCommand(connection, transaction, """
             WITH first_gap AS (
                 SELECT generation, sequence, record_index FROM archive_work
-                WHERE state <> 'reachable' OR receipt_generation <> 1 OR
-                    receipt_sequence > (SELECT sequence FROM archive_prefix WHERE row_id = 1)
+                WHERE state <> 'policy-expired' AND (
+                    state <> 'reachable' OR receipt_generation IS NOT 1 OR receipt_sequence IS NULL OR
+                    receipt_sequence > (SELECT sequence FROM archive_prefix WHERE row_id = 1))
                 ORDER BY generation, sequence, record_index LIMIT 1
             )
             SELECT group_id, revision_id, generation, sequence, record_index, receipt_generation, receipt_sequence, receipt_version, receipt_sha256, verified_ticks
