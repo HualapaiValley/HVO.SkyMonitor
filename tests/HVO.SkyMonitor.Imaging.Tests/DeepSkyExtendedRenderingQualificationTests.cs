@@ -3228,10 +3228,39 @@ public sealed class DeepSkyExtendedRenderingQualificationTests
         StringAssert.Contains(exception.Message, "sampling point budget exceeded", StringComparison.Ordinal);
 
         // A is the target of the rejected trial and both surviving pairs.
-        const int targetSamples = 3 * ownDirections + distinctTrialRadii;
-        var belowTargetCap = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options,
-            settings with { MaximumSamplePointsPerSource = targetSamples - 1 });
-        Assert.AreEqual((long)(sceneSamples - ownDirections), belowTargetCap.Statistics.TotalSampledPoints);
+        const int tightSourceCap = 3 * ownDirections + distinctTrialRadii - 1;
+        const int tightSceneCap = sceneSamples - ownDirections;
+        var tightSettings = settings with
+        {
+            MaximumSamplePointsPerSource = tightSourceCap,
+            MaximumTotalSamplePoints = tightSceneCap
+        };
+        var beforeBackfill = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb], null, options, tightSettings);
+        var belowTargetCap = DeepSkyRenderPlan.Prepare(request, null, [strong, weak, limb, oppositeLimb], null, options, tightSettings);
+        Assert.AreEqual((long)tightSceneCap, belowTargetCap.Statistics.TotalSampledPoints);
+        // Only A receives cross-cloud evaluations; the other three clouds each use their own grid.
+        var targetEvaluations = belowTargetCap.Statistics.TotalSampledPoints - 3 * ownDirections;
+        Assert.AreEqual(2 * ownDirections + distinctTrialRadii, targetEvaluations);
+        Assert.IsLessThanOrEqualTo(tightSourceCap, targetEvaluations);
+        CollectionAssert.AreEquivalent(new[] { strong.Id, limb.Id, oppositeLimb.Id },
+            belowTargetCap.Diagnostics.Where(d => d.Admitted).Select(d => d.ObjectId).ToArray());
+        var tightRejection = belowTargetCap.Diagnostics.Single(d => d.ObjectId == weak.Id);
+        Assert.AreEqual(rejected, tightRejection);
+        Assert.IsTrue(belowTargetCap.Diagnostics.All(d =>
+            d.SampledPoints >= 0 && d.SampledPoints <= tightSourceCap && d.AttenuatedDiffuseElectronRate >= 0d));
+
+        var deliveredDeficit = 0d;
+        for (var y = 0; y < request.Projection.HeightPixels; y++)
+        {
+            for (var x = 0; x < request.Projection.WidthPixels; x++)
+            {
+                var after = belowTargetCap.ElectronRate(x, y);
+                Assert.IsLessThanOrEqualTo(beforeBackfill.ElectronRate(x, y), after, $"Pixel ({x}, {y}) brightened.");
+                deliveredDeficit += belowTargetCap.CelestialDiffuseBackgroundElectronsPerSecond - after;
+            }
+        }
+        Assert.IsGreaterThan(0d, belowTargetCap.Diagnostics.Single(d => d.ObjectId == oppositeLimb.Id).AttenuatedDiffuseElectronRate);
+        Assert.AreEqual(deliveredDeficit, belowTargetCap.Diagnostics.Sum(d => d.AttenuatedDiffuseElectronRate), 1e-8);
     }
 
     [TestMethod]

@@ -233,7 +233,14 @@ deterministic profiles (`HVO.SkyMonitor.Imaging/DeepSkySourceProfile.cs`):
    non-reused evaluation against `MaximumTotalSamplePoints`
    (`actual <= reported <= MaximumTotalSamplePoints`), and enforce strict
    per-pixel transmission monotonicity (`T_after <= T_before` everywhere) with exact reconciliation
-   between published diagnostics and delivered pixel deficits. Before committing transmission or
+   between published diagnostics and delivered pixel deficits. If a candidate passes zero-query
+   geometric screening and is rejected only after exact cross-cloud evaluation, its trial evaluations
+   remain charged against `MaximumSamplePointsPerSource` and `MaximumTotalSamplePoints` across
+   backfill retries, so surviving pairs stay exact when the remaining budget suffices (cap 1,000
+   in the opposite-limb fixture) and fall back to conditional-independence transmission when the
+   charged work leaves too little budget for an exact batch (cap 983 in that fixture), preserving
+   `T_after <= T_before` at every pixel and reconciling diagnostics with the delivered deficit.
+   Before committing transmission or
    consuming a `MaximumRenderedSources` slot, each dark nebula computes
    diffuse-only absorption deficit electrons, null-hypothesis pre-attenuation local variance
    (`CompleteBinSupport`, including prior attenuation anywhere in the output bin,
