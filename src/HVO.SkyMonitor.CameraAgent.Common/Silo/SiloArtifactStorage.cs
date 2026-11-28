@@ -117,6 +117,14 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         HasReadableLocalMembersAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
             RawEvidenceRevision, cancellationToken);
 
+    internal async ValueTask<bool> HasLiveRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var artifactId = descriptor.Artifact.ArtifactId;
+        return File.Exists(StagedAdmissionPath(artifactId, ".json")) && File.Exists(StagedAdmissionPath(artifactId, ".bin")) ||
+            await HasRawEvidenceAsync(descriptor, cancellationToken).ConfigureAwait(false);
+    }
+
     public ValueTask<bool> HasMemberAsync(Guid artifactId, string revision, CancellationToken cancellationToken) =>
         HasReadableLocalMembersAsync(artifactId, revision, null, cancellationToken);
 
