@@ -3253,7 +3253,7 @@ public sealed partial class RawCaptureIngressTests
         }
     }
 
-    private static Task WriteRawAdmissionIntentAsync(string root, Guid artifactId, DateTimeOffset exposureStartedUtc)
+    internal static Task WriteRawAdmissionIntentAsync(string root, Guid artifactId, DateTimeOffset exposureStartedUtc)
     {
         var directory = Path.Combine(root, ".silo", "raw-admission-intents");
         Directory.CreateDirectory(directory);

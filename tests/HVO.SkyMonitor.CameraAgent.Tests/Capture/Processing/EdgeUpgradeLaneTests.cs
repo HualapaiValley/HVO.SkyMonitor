@@ -431,15 +431,16 @@ public sealed class EdgeUpgradeLaneTests
         string root,
         TimeProvider clock,
         int? liveMaximumQueueAgeSeconds = null,
-        Action<IServiceCollection>? configure = null)
+        Action<IServiceCollection>? configure = null,
+        bool enableCentralIntegration = true)
     {
         var values = new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = "edge-upgrade-agent",
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
+            ["CameraAgent:CentralIntegration:Mode"] = enableCentralIntegration ? "Enabled" : "Disabled",
+            ["CameraAgent:CaptureDistribution:UploadEnabled"] = enableCentralIntegration ? "true" : "false"
         };
         if (liveMaximumQueueAgeSeconds is { } maximumAge)
         {

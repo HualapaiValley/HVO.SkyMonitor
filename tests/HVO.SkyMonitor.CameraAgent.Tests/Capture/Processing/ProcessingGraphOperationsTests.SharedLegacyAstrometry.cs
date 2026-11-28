@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -47,7 +48,6 @@ public sealed partial class ProcessingGraphOperationsTests
         var historicalPlan = consumer == "historical-storage-telemetry-plan" || retireHistoricalGeneration;
         var sharedFit = consumer == "storage" || failedFit || combined || historicalPlan;
         var fitMeasurementId = sharedAssociations ? measurementId + "-1" : measurementId;
-        var archiveRoot = Path.Combine(root, "archive");
         var requestedUtc = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
         var celestialUtc = requestedUtc.AddSeconds(1);
         var location = DeploymentLocationSnapshot.Create("legacy-shared-site", 1, "test", null,
@@ -251,10 +251,9 @@ public sealed partial class ProcessingGraphOperationsTests
                     var migrated = successor.Pipeline.Steps.Single(step => step.Id == nodeId);
                     Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(original), CaptureContractJson.ComputeCanonicalJsonSha256(migrated));
                 }
-                var rawPath = receipt.StoredFrame.AbsolutePath;
-                var rawSha = Sha256OfFile(rawPath);
+                var rawSha = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
                 await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
-                Assert.AreEqual(rawSha, Sha256OfFile(rawPath));
+                Assert.AreEqual(rawSha, await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false));
                 Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
                 if (sharedFit)
                 {
@@ -369,8 +368,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 }
 
                 async Task<byte[]> ReadPayloadAsync(string nodeId, string? recipe = null)
-                    => await File.ReadAllBytesAsync(Path.Combine(root, (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).PayloadRelativePath), token)
-                        .ConfigureAwait(false);
+                    => await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider,
+                        (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).ArtifactId, token).ConfigureAwait(false);
             }
             if (historicalPlan)
                 await UsePreviousAstrometryLookupSchemaAsync(root, token).ConfigureAwait(false);
@@ -415,10 +414,6 @@ public sealed partial class ProcessingGraphOperationsTests
                     await resumedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
                     for (var sequence = 3; sequence <= 61; sequence++)
                         await CaptureCadenceFrameAsync(restarted, resumedModule, liveId, sequence).ConfigureAwait(false);
-                    var archiveFiles = Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories);
-                    Assert.HasCount(61, archiveFiles);
-                    Assert.IsTrue(archiveFiles.All(path => Path.GetFileName(Path.GetDirectoryName(path)) == nameof(FrameArtifactRole.AnnotatedPreview)));
-                    Assert.IsFalse(Directory.Exists(Path.Combine(archiveRoot, "derived")));
                 }
                 if (occupiedPrediction)
                 {
@@ -465,7 +460,6 @@ public sealed partial class ProcessingGraphOperationsTests
                     if (combined)
                     {
                         await CheckCadenceEvidenceAsync(restarted, capture, DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
-                        Assert.HasCount(3, Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories));
                     }
                 }
             }
@@ -498,9 +492,9 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, historical.State.Name);
             Assert.AreEqual(sourceId, historical.State.Revision);
             Assert.AreEqual(historicalId, original.Manifest.CaptureGraphRevisionId);
-            var rawChecksum = Sha256OfFile(original.StoredFrame.AbsolutePath);
-            var manifestChecksum = Sha256OfFile(Path.ChangeExtension(original.StoredFrame.AbsolutePath, ".json"));
             var descriptor = original.Manifest.Descriptor;
+            var rawChecksum = descriptor.Artifact.ChecksumSha256;
+            var manifestChecksum = original.CommittedManifestSha256;
             const string retireKey = "retire-historical-generation-zero";
             long versionBeforeRetirement = 0;
             long retiredVersion = 0;
@@ -549,8 +543,12 @@ public sealed partial class ProcessingGraphOperationsTests
             var retained = await reopenedStore.ReadRevisionAsync(historicalId, token).ConfigureAwait(false);
             Assert.AreEqual(ProcessingGraphRevisionLifecycle.Retired, retained.State.Lifecycle);
             Assert.IsTrue(SqliteCaptureProcessingStore.HasSameRevisionContent(historical, retained));
-            Assert.AreEqual(rawChecksum, Sha256OfFile(original.StoredFrame.AbsolutePath));
-            Assert.AreEqual(manifestChecksum, Sha256OfFile(Path.ChangeExtension(original.StoredFrame.AbsolutePath, ".json")));
+            Assert.AreEqual(rawChecksum, await ReadArtifactShaAsync(reopened, descriptor.Artifact.ArtifactId).ConfigureAwait(false));
+            var storage = reopened.GetRequiredService<SiloArtifactStorage>();
+            var evidence = await storage.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, manifestChecksum, allowStaged: false, token)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(evidence);
+            Assert.AreEqual(manifestChecksum, CaptureContractJson.ComputeManifestSha256(evidence));
             var replay = await reopenedOperations.ReadRunManifestAsync(historicalReplayId, token).ConfigureAwait(false);
             Assert.IsNotNull(replay);
             Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, replay.Execution.Status);
@@ -620,7 +618,7 @@ public sealed partial class ProcessingGraphOperationsTests
         async Task CheckCadenceEvidenceAsync(ServiceProvider host, RawCaptureReceipt receipt, DurableProcessingNodeStatus expectedFit)
         {
             var capture = receipt.Manifest.Descriptor.Capture;
-            var rawSha = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+            var rawSha = await ReadArtifactShaAsync(host, receipt.Manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
             Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
             var store = host.GetRequiredService<SqliteCaptureProcessingStore>();
             var fit = await ReadCadenceNodeAsync("fit", expectedFit).ConfigureAwait(false);
@@ -644,7 +642,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     .ConfigureAwait(false)).Outputs.Single();
                 Assert.Contains(canonicalMeasurement.ArtifactId, annotated.Artifact.SourceArtifactIds!);
             }
-            var canonical = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, scene.PayloadRelativePath), token)
+            var canonical = ProjectedSceneJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(host, scene.ArtifactId, token)
                 .ConfigureAwait(false)).Scene!;
             Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, canonical.Kind);
             Assert.IsTrue(canonical.Objects.Any(value => value.Id == "solar-system:Moon"));
@@ -653,7 +651,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Assert.HasCount(2, fit.Outputs);
                 var solutionOutput = fit.Outputs.Single(value => value.Artifact.Recipe.Name == BuiltInProcessingRecipes.MeasuredAstrometry);
-                var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, solutionOutput.PayloadRelativePath), token)
+                var solution = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(host, solutionOutput.ArtifactId, token)
                     .ConfigureAwait(false));
                 Assert.AreEqual(prediction.ContentIdentitySha256, solution.SceneIdentitySha256);
                 Assert.AreEqual(measured.ArtifactId, solution.MeasuredArtifactId);
@@ -667,9 +665,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     .Append(scene.ArtifactId).Append(annotated.ArtifactId).ToArray();
                 Assert.IsNotNull(archive.Inputs);
                 CollectionAssert.AreEquivalent(selected, archive.Inputs.Select(input => input.ArtifactId).ToArray());
-                var image = Directory.GetFiles(archiveRoot, $"*-{annotated.ArtifactId:N}.bin", SearchOption.AllDirectories).Single();
-                Assert.AreEqual(annotated.Artifact.ChecksumSha256, Sha256OfFile(image));
-                Assert.IsTrue(File.Exists(Path.ChangeExtension(image, ".json")));
+                Assert.AreEqual(annotated.Artifact.ChecksumSha256,
+                    await ReadArtifactShaAsync(host, annotated.ArtifactId).ConfigureAwait(false));
             }
             var standard = (await host.GetRequiredService<ICaptureLaneStore>().ReadBacklogsAsync(token).ConfigureAwait(false))
                 .Single(lane => lane.Lane == "standard");

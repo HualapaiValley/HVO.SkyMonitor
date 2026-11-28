@@ -219,8 +219,12 @@ internal sealed partial class RawCaptureIngress
                 return "silo-staged-evidence-missing";
 
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
+            var paths = _files.GetPaths(entry.ExposureStartedUtc, entry.ArtifactId);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
-                CaptureContractJson.ComputeManifestSha256(entry.ManifestJson) != entry.ManifestSha256)
+                CaptureContractJson.ComputeManifestSha256(entry.ManifestJson) != entry.ManifestSha256 ||
+                manifest.Descriptor.Artifact.ArtifactId != entry.ArtifactId ||
+                manifest.RelativeArtifactPath != paths.PayloadRelativePath ||
+                entry.PayloadRelativePath != paths.PayloadRelativePath || entry.SidecarRelativePath != paths.SidecarRelativePath)
                 return "silo-admission-evidence-refused";
 
             var draft = CreateSiloDraft(entry, manifest, revision);
@@ -230,7 +234,8 @@ internal sealed partial class RawCaptureIngress
                 await silo.Publisher.StageAsync(draft, (member, token) =>
                 {
                     token.ThrowIfCancellationRequested();
-                    var path = root.Resolve(member.Role == "raw" ? entry.PayloadRelativePath : entry.SidecarRelativePath);
+                    var path = member.Role == "raw" ? paths.PayloadAbsolutePath : paths.SidecarAbsolutePath;
+                    root.Verify(path, "silo-raw-stage");
                     return ValueTask.FromResult<Stream>(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                         64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan));
                 }, cancellationToken).ConfigureAwait(false);

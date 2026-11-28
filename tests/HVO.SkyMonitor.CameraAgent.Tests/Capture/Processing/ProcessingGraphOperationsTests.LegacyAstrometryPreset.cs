@@ -136,7 +136,7 @@ public sealed partial class ProcessingGraphOperationsTests
         }
 
         Task<byte[]> ReadPayloadAsync(DurableProcessingOutput output)
-            => File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), token);
+            => SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token);
     }
 
     private static async Task VerifySharedLegacyPresetReceiptAfterRestartAsync(

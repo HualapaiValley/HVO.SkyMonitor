@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -1107,9 +1108,11 @@ public sealed partial class RawCaptureIngressTests
         var root = CreateRoot();
         try
         {
-            using var setup = new CenteredFixture(root);
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using var setup = new CenteredFixture(root, siloProvider: silo);
             var config = CenteredConfiguration("camera");
             var admitted = await setup.AdmitAsync(config, Timestamp(1)).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(setup.Ingress, CancellationToken.None).ConfigureAwait(false);
             var binding = admitted.Manifest.CenteredExposure!;
             var key = new ExposureKey(binding.Source.Camera, binding.Source.RunId, admitted.Manifest.Descriptor.Capture.CaptureId);
             var reader = new CenteredExposureProductReader(setup.Ingress, setup.Store);
@@ -1122,7 +1125,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsNull(await setup.Store.ClaimReplayAsync("centered-manual", CancellationToken.None).ConfigureAwait(false));
 
             var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
             using var standard = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                 NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options);
             var live = await setup.Ingress.ClaimAsync(setup.Policy.Definitions.Single(lane => lane.Name == "standard"),
@@ -1993,12 +1996,14 @@ public sealed partial class RawCaptureIngressTests
         internal RawCaptureIngress Ingress { get; }
         internal CaptureLanePolicy Policy { get; }
         internal RawIngressState RawState { get; }
+        internal SiloArtifactStorage? Silo { get; }
         internal SqliteCalibrationLibraryStore Calibration => _services.GetRequiredService<SqliteCalibrationLibraryStore>();
 
         internal CenteredFixture(
             string root, IRawIngressFaultInjector? fault = null, TimeProvider? timeProvider = null,
-            int? requiredMaximumPendingCount = null, CenteredWindowWakeup? wakeup = null)
+            int? requiredMaximumPendingCount = null, CenteredWindowWakeup? wakeup = null, IServiceProvider? siloProvider = null)
         {
+            Silo = siloProvider?.GetRequiredService<SiloArtifactStorage>();
             Options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
@@ -2015,7 +2020,9 @@ public sealed partial class RawCaptureIngressTests
                 .AddSingleton(new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()))
                 .AddSingleton(_ => new RawCaptureIngress(Options, new FixedCapacityProvider(long.MaxValue), RawState, clock, _rawTelemetry,
                     NullLogger<RawCaptureIngress>.Instance, fault ?? new NullRawIngressFaultInjector(),
-                    Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup))
+                    Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup,
+                    silo: siloProvider?.GetRequiredService<SiloInstalledStorage>(),
+                    siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
                 .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
                 .AddSingleton(_ => new CalibrationLibraryProcessingInputLoader(Options, new CameraAgentClearReferenceLoader(Options)))
                 .BuildServiceProvider();
@@ -2023,7 +2030,7 @@ public sealed partial class RawCaptureIngressTests
                 [new("Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, false),
                  new("CenteredProbe", typeof(CenteredProbeStep), typeof(CenteredProbeOptions), 30, false)],
                 NullLogger<CaptureProcessingPipelineFactory>.Instance, Telemetry);
-            Store = new(Options, clock, centeredProductChanges: Changes, centeredWindowWakeup: wakeup);
+            Store = new(Options, clock, centeredProductChanges: Changes, centeredWindowWakeup: wakeup, silo: Silo);
             _replayWakeup = new(Options);
             GraphOperations = new(Factory, Store, Options, clock, _replayWakeup);
             Ingress = _services.GetRequiredService<RawCaptureIngress>();

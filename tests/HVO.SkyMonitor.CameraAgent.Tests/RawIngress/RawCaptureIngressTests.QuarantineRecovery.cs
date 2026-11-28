@@ -36,6 +36,7 @@ public sealed partial class RawCaptureIngressTests
             "quarantine/existing-plan", "existing-quarantine", plannedSidecar ? sidecar.Length : payload.Length),
             CancellationToken.None).ConfigureAwait(false);
         // Bulk evidence can be newer than a restored journal: the companion appears after the durable plan.
+        await WriteRawAdmissionIntentAsync(hold.Path, ids.ArtifactId, descriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
         if (plannedSidecar)
             await files.PublishPayloadAsync(paths, payload, CancellationToken.None).ConfigureAwait(false);
         else

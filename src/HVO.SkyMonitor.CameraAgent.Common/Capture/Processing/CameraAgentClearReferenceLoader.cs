@@ -20,7 +20,10 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
     {
         if (!string.IsNullOrWhiteSpace(relativeManifestPath))
         {
-            _ = ResolveSafePath(relativeManifestPath);
+            if (silo is null)
+                _ = ResolveSafePath(relativeManifestPath);
+            else
+                ValidateSiloReference(relativeManifestPath);
             _configuredManifests.TryAdd(relativeManifestPath, 0);
         }
     }
@@ -37,7 +40,6 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         foreach (var relativeManifestPath in _configuredManifests.Keys.Order(StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var manifestPath = ResolveSafePath(relativeManifestPath);
             if (silo is not null)
             {
                 var id = ParseSiloRawReference(relativeManifestPath);
@@ -51,7 +53,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             byte[] manifestBytes;
             try
             {
-                manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+                manifestBytes = await File.ReadAllBytesAsync(ResolveSafePath(relativeManifestPath), cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
             {
@@ -80,7 +82,10 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         }
         else
         {
+            ValidateSiloReference(relativeManifestPath);
             var rawId = ParseSiloRawReference(relativeManifestPath);
+            if (artifactId is { } expected && rawId is { } named && expected != named)
+                throw new InvalidDataException("Configured clear-reference identities differ.");
             var id = artifactId ?? rawId ?? (calibration is null ? null :
                 await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
             if (id is null)
@@ -96,6 +101,14 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             throw new InvalidDataException("Configured clear-reference manifest is invalid.");
         }
         return await LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateSiloReference(string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference) || Path.IsPathRooted(reference) ||
+            reference.Contains('\\', StringComparison.Ordinal) || reference.Contains('\0', StringComparison.Ordinal) ||
+            reference.Split('/').Any(static component => component is "" or "." or ".."))
+            throw new InvalidDataException("Configured clear-reference name is not canonical.");
     }
 
     private static Guid? ParseSiloRawReference(string reference)

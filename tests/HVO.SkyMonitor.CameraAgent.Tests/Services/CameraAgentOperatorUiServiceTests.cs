@@ -676,7 +676,8 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             // The current-image read reaches the deployment location, whose protector the host registers.
             using var provider = EdgeUpgradeLaneTests.CreateProvider(
                 root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow),
-                configure: services => services.AddSingleton<IDeploymentLocationProtector>(new PassThroughLocationProtector()));
+                configure: services => services.AddSingleton<IDeploymentLocationProtector>(new PassThroughLocationProtector()),
+                enableCentralIntegration: false);
             var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
             // A running host has its camera configuration before any page reads a capture's delivery state.
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(fixture.Configuration);
@@ -688,6 +689,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
                 quarantined.Add(await fixture.AcceptAsync(index).ConfigureAwait(false));
             }
             var pending = await fixture.AcceptAsync(undisplayable + 1).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             await EdgeUpgradeLaneTests.ExecuteAsync(root, """
                 UPDATE capture_lane_work SET state = 'completed'
                 WHERE lane_name = 'standard'

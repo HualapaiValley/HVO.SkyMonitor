@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -278,7 +279,9 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var path = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "11", "10", "Raw", "torn.json");
+        var id = Guid.NewGuid();
+        var paths = RawIngressFileStore.GetPaths(_options.Value.RawIngressRoot, DateTimeOffset.UnixEpoch, id);
+        var path = paths.SidecarAbsolutePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await RetainedFileMutations.WriteAllTextAsync(path, "{").ConfigureAwait(false);
         Assert.AreEqual(active, await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
@@ -287,7 +290,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var journal = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.SqliteRawCaptureJournal(
             Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var reconciler = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressReconciler(_options.Value.RawIngressRoot, journal);
+        var reconciler = new RawIngressReconciler(_options.Value.RawIngressRoot, journal, siloIntents: [(id, paths)]);
         var result = await reconciler.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, result.Quarantined);
         Assert.IsFalse(File.Exists(path));

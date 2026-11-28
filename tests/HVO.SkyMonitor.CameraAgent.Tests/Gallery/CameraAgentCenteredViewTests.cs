@@ -45,7 +45,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var telemetry = new CaptureProcessingTelemetry();
         var failure = new CenteredLayerCommitInterruption();
         var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance, failure);
+            NullLogger<CaptureProcessingPersistence>.Instance, failure, fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);

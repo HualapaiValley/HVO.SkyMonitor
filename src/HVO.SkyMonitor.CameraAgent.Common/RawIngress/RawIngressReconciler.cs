@@ -115,8 +115,10 @@ internal sealed class RawIngressReconciler(
             }
             inspected++;
             var expectedPaths = RawIngressFileStore.GetPaths(_root, entry.ExposureStartedUtc, entry.ArtifactId);
-            var payloadPath = Resolve(entry.PayloadRelativePath);
-            var sidecarPath = Resolve(entry.SidecarRelativePath);
+            var payloadPath = expectedPaths.PayloadAbsolutePath;
+            var sidecarPath = expectedPaths.SidecarAbsolutePath;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
             if (!string.Equals(entry.PayloadRelativePath, expectedPaths.PayloadRelativePath, StringComparison.Ordinal) ||
                 !string.Equals(entry.SidecarRelativePath, expectedPaths.SidecarRelativePath, StringComparison.Ordinal))
             {
@@ -143,21 +145,22 @@ internal sealed class RawIngressReconciler(
             }
         }
 
-        foreach (var sidecarPath in (siloIntents ?? []).Select(static intent => intent.Paths.SidecarAbsolutePath).Where(File.Exists))
+        foreach (var (artifactId, paths) in siloIntents ?? [])
         {
             inspectionToken.ThrowIfCancellationRequested();
-            var sidecarRelative = Relative(sidecarPath);
-            if (claimedSidecars.Contains(sidecarRelative))
+            var sidecarPath = paths.SidecarAbsolutePath;
+            var sidecarRelative = paths.SidecarRelativePath;
+            if (claimedSidecars.Contains(sidecarRelative) || !File.Exists(sidecarPath))
             {
                 continue;
             }
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
             inspected++;
             var sidecar = await File.ReadAllBytesAsync(sidecarPath, inspectionToken).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
-                var siblingPayload = Path.ChangeExtension(sidecarPath, ".bin");
-                Defer(claimedPayloads.Contains(Relative(siblingPayload)) ? null : siblingPayload, sidecarPath, "invalid-v2-sidecar");
+                Defer(claimedPayloads.Contains(paths.PayloadRelativePath) ? null : paths.PayloadAbsolutePath, sidecarPath, "invalid-v2-sidecar");
                 continue;
             }
             if (claimedPayloads.Contains(manifest.RelativeArtifactPath))
@@ -165,23 +168,18 @@ internal sealed class RawIngressReconciler(
                 Defer(null, sidecarPath, "payload-already-claimed");
                 continue;
             }
-            var payloadPath = Resolve(manifest.RelativeArtifactPath);
-            if (!File.Exists(payloadPath) || !PathsEqual(Path.ChangeExtension(sidecarPath, ".bin"), payloadPath) ||
-                !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, _openPayload, inspectionToken).ConfigureAwait(false))
-            {
-                Defer(payloadPath, sidecarPath, "orphan-evidence-mismatch");
-                continue;
-            }
-
             var descriptor = manifest.Descriptor;
-            var expectedPaths = RawIngressFileStore.GetPaths(
-                _root,
-                descriptor.Timing.ExposureStartedUtc,
-                descriptor.Artifact.ArtifactId);
-            if (!string.Equals(manifest.RelativeArtifactPath, expectedPaths.PayloadRelativePath, StringComparison.Ordinal) ||
-                !string.Equals(sidecarRelative, expectedPaths.SidecarRelativePath, StringComparison.Ordinal))
+            var payloadPath = paths.PayloadAbsolutePath;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
+            if (descriptor.Artifact.ArtifactId != artifactId || manifest.RelativeArtifactPath != paths.PayloadRelativePath)
             {
                 Defer(payloadPath, sidecarPath, "orphan-path-mismatch");
+                continue;
+            }
+            if (!File.Exists(payloadPath) ||
+                !await PayloadMatchesAsync(payloadPath, descriptor, _openPayload, inspectionToken).ConfigureAwait(false))
+            {
+                Defer(payloadPath, sidecarPath, "orphan-evidence-mismatch");
                 continue;
             }
             var entry = new RawIngressJournalEntry(
@@ -516,9 +514,4 @@ internal sealed class RawIngressReconciler(
     private string Relative(string path)
         => Path.GetRelativePath(_root, path).Replace(Path.DirectorySeparatorChar, '/');
 
-    private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 }

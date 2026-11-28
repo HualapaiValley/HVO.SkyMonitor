@@ -80,14 +80,27 @@ public sealed partial class ProcessingGraphOperationsTests
                 services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Utc));
                 services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
             });
+            var catalog = new InMemoryCelestialCatalog(Enumerable.Range(0, 360).Select(index =>
+                new CelestialCatalogObject($"cloud-star-{index}", $"Cloud star {index}", (index % 24), -60 + (index / 24) * 10, 1 + index % 5)));
+            var firstSubmission = await CaptureSubmissionAsync(config, 0).ConfigureAwait(false);
+            if (scenario != "missing")
+            {
+                var referenceIdentity = RawCaptureDescriptorFactory.CreateStableIds(config, firstSubmission).ArtifactId;
+                config = config with
+                {
+                    Pipeline = config.Pipeline with
+                    {
+                        Steps = config.Pipeline.Steps.Select(step => step.Type == "CloudAssessment"
+                            ? step with { Options = SetReference(step.Options!.Value, referenceIdentity) } : step).ToArray()
+                    }
+                };
+            }
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
                 .EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
-            var catalog = new InMemoryCelestialCatalog(Enumerable.Range(0, 360).Select(index =>
-                new CelestialCatalogObject($"cloud-star-{index}", $"Cloud star {index}", (index % 24), -60 + (index / 24) * 10, 1 + index % 5)));
-            var reference = await CaptureAsync(config, 0).ConfigureAwait(false);
+            var reference = (await ingress.AcceptAsync(config, firstSubmission, CancellationToken.None).ConfigureAwait(false))!;
             // First frame must finish without creating a fabricated clear reference or losing the image path.
             await CompleteLiveAsync(provider, config).ConfigureAwait(false);
             var first = await provider.GetRequiredService<ICameraAgentGallery>()
@@ -120,20 +133,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 });
             }
             var currentConfig = config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options) } };
-            if (scenario != "missing")
-            {
-                currentConfig = currentConfig with
-                {
-                    Pipeline = config.Pipeline with
-                    {
-                        Steps = config.Pipeline.Steps.Select(step => step.Type == "CloudAssessment"
-                            ? step with { Options = SetReference(step.Options!.Value, referenceId) } : step).ToArray()
-                    }
-                };
-                await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
-                    .EnsureConfiguredBasicAsync(currentConfig, CancellationToken.None).ConfigureAwait(false);
-            }
-            var current = await CaptureAsync(currentConfig, 1, scenario == "incompatible").ConfigureAwait(false);
+            var currentSubmission = await CaptureSubmissionAsync(currentConfig, 1, scenario == "incompatible").ConfigureAwait(false);
+            var current = (await ingress.AcceptAsync(currentConfig, currentSubmission, CancellationToken.None).ConfigureAwait(false))!;
             var currentHash = SHA256.HashData(await File.ReadAllBytesAsync(current.StoredFrame.AbsolutePath).ConfigureAwait(false));
             var timer = Stopwatch.StartNew();
             await CompleteLiveAsync(provider, currentConfig).ConfigureAwait(false);
@@ -253,7 +254,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 return JsonSerializer.SerializeToElement(resized);
             }
 
-            async Task<RawCaptureReceipt> CaptureAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
+            async Task<CaptureLoopSubmission> CaptureSubmissionAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
             {
                 var requested = DateTimeOffset.Parse("2026-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture).AddSeconds(ordinal * 25);
                 var clock = new ExposureTestTimeProvider(requested, autoAdvance: true, elapseRealTime: true);
@@ -264,9 +265,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var request = new CaptureRequest(requested, TimeSpan.FromSeconds(25), CaptureMode.Still,
                     new CaptureSetpoint(TimeSpan.FromSeconds(differentExposure ? 10 : 20), 1, null, null));
                 var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
-                return (await ingress.AcceptAsync(cameraConfig,
-                    new CaptureLoopSubmission(request, result, requested, request.TargetInterval, TimeSpan.Zero),
-                    CancellationToken.None).ConfigureAwait(false))!;
+                return new CaptureLoopSubmission(request, result, requested, request.TargetInterval, TimeSpan.Zero);
             }
         }
         finally
