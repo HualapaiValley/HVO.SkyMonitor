@@ -59,14 +59,13 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             Assert.IsNotNull(before!.Nodes.Single(static node => node.NodeId == NodeId).MixedGainDiagnostics);
             var node = await run.ReadNodeAsync(1, NodeId).ConfigureAwait(false);
             var diagnostic = node.Outputs.Single(static output => output.Artifact.MediaType == MixedGainDiagnosticsV1.MediaType);
-            var path = Path.Combine(run.Root, diagnostic.PayloadRelativePath);
+            var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(
+                run.Provider, diagnostic.ArtifactId, diagnostic.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
+            var objects = run.Provider.GetRequiredService<SiloTestStore>();
             if (corrupt)
-            {
-                var payload = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-                payload[0] ^= 1;
-                await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
-            }
-            else File.Delete(path);
+                objects.Damage(locator.Key, locator.VersionId);
+            else
+                objects.Delete(locator);
             var after = await run.Store.ReadExecutionDetailAsync(executionId.Value, CancellationToken.None).ConfigureAwait(false);
             var state = after!.Nodes.Single(static node => node.NodeId == NodeId);
             Assert.IsNull(state.MixedGainDiagnostics);

@@ -805,7 +805,7 @@ public sealed class SqliteTimeLapseStoreTests
     }
 
     [TestMethod]
-    public async Task RestartRemovesOnlyRecordedUnpublishedFiles()
+    public async Task RestartClearsInterruptedPublicationIntentWithoutCreatingAProduct()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-publication-recovery");
         try
@@ -814,14 +814,6 @@ public sealed class SqliteTimeLapseStoreTests
             using var store = new SqliteTimeLapseStore(options, new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
             await store.InitializeAsync(CancellationToken.None);
             var id = Guid.NewGuid().ToString("N");
-            var directory = Path.Combine(root, ".time-lapses", "products");
-            Directory.CreateDirectory(directory);
-            var interrupted = Path.Combine(directory, id + ".mp4");
-            var temporary = Path.Combine(directory, id + ".json." + Guid.NewGuid().ToString("N") + ".tmp");
-            var unrelated = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".mp4");
-            await File.WriteAllTextAsync(interrupted, "interrupted");
-            await File.WriteAllTextAsync(temporary, "interrupted");
-            await File.WriteAllTextAsync(unrelated, "retained");
             using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString()))
             {
@@ -832,9 +824,13 @@ public sealed class SqliteTimeLapseStoreTests
                 await command.ExecuteNonQueryAsync();
             }
             using var worker = await store.AcquireWorkerAsync(CancellationToken.None);
-            Assert.IsFalse(File.Exists(interrupted));
-            Assert.IsFalse(File.Exists(temporary));
-            Assert.AreEqual("retained", await File.ReadAllTextAsync(unrelated));
+            Assert.IsNull(await store.GetAsync(Guid.ParseExact(id, "N"), CancellationToken.None));
+            using var recovered = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString());
+            await recovered.OpenAsync();
+            using var verify = recovered.CreateCommand();
+            verify.CommandText = "SELECT COUNT(*) FROM publications;";
+            Assert.AreEqual(0L, await verify.ExecuteScalarAsync());
         }
         finally { Directory.Delete(root, true); }
     }

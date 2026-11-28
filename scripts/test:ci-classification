@@ -2646,7 +2646,7 @@ run_work_projdirs_and_complete() {
     probe_dirs+=("$project_directory")
     probe_specs+=("$project_directory/ClassificationProbe.cs|probe $project_directory"$'\n')
   done
-  if (( project_directory_count < 36 )); then
+  if (( project_directory_count < 35 )); then
     printf 'Only %s project directories were classified; the orphan cross-check is not enumerating the repository.\n' \
       "$project_directory_count" >&2
     exit 1
@@ -3583,8 +3583,8 @@ run_workflow_shape() {
       fi
     done < <("$repo_root/scripts/coverage:component" --list-slots "$component")
   done < <("$repo_root/scripts/coverage:component" --list-components)
-  if (( slot_count != 16 )); then
-    printf 'Expected 16 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
+  if (( slot_count != 15 )); then
+    printf 'Expected 15 component coverage slots across the three active lanes, found %s.\n' "$slot_count" >&2
     exit 1
   fi
 
