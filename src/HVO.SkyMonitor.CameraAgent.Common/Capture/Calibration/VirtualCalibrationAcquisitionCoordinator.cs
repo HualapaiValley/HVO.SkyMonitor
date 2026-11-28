@@ -314,9 +314,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         await _admissionCoordinator.EnsureLifecycleCaptureAllowedAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (await ReadSiloBundleAsync(job, cancellationToken).ConfigureAwait(false) is { } settled)
+            if (await ReadSiloBundleAsync(job, cancellationToken).ConfigureAwait(false) is { } settled &&
+                job.State == CalibrationAcquisitionStates.Publishing &&
+                AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("master-defect"))
             {
                 _ = await _store.AdoptPublishedBundleAsync(settled, CancellationToken.None).ConfigureAwait(false);
+                await RecordPublishedProfileAsync(job).ConfigureAwait(false);
                 return await _store.CompleteAcquisitionAsync(job.Plan.JobId, settled.BundleId, CancellationToken.None).ConfigureAwait(false);
             }
             if (job.AttemptCount >= SqliteCalibrationLibraryStore.MaximumAcquisitionAttempts)
@@ -417,14 +420,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             var profilePath = ProfilePath(job.Plan);
             var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
             await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
-            if (job.State == CalibrationAcquisitionStates.Publishing &&
-                AcquisitionPhaseRank(job.Phase) < AcquisitionPhaseRank("profile-published"))
-            {
-                job = await _store.RecordAcquisitionProgressAsync(
-                    job.Plan.JobId, CalibrationAcquisitionStates.Publishing, "profile-published", CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
+            await RecordPublishedProfileAsync(job).ConfigureAwait(false);
             _ = await _store.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
             _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, profilePath);
             return await _store.CompleteAcquisitionAsync(
@@ -466,6 +462,15 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                     "Virtual calibration acquisition exhausted its retry limit.", exception);
             }
             throw;
+        }
+    }
+
+    private async Task RecordPublishedProfileAsync(CalibrationAcquisitionJobSnapshot job)
+    {
+        if (AcquisitionPhaseRank(job.Phase) < AcquisitionPhaseRank("profile-published"))
+        {
+            _ = await _store.RecordAcquisitionProgressAsync(job.Plan.JobId, CalibrationAcquisitionStates.Publishing,
+                "profile-published", CancellationToken.None).ConfigureAwait(false);
         }
     }
 
