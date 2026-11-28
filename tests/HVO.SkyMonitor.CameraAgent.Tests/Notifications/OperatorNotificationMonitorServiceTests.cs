@@ -1,12 +1,11 @@
 using System.Collections.Concurrent;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -15,7 +14,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.Deployment.Contracts;
-using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -34,7 +32,7 @@ public sealed class OperatorNotificationMonitorServiceTests
     {
         var clock = new MonitorClock(new DateTimeOffset(2026, 11, 26, 16, 0, 0, TimeSpan.Zero));
         var publisher = new RecordingPublisher();
-        var fleet = new FleetRuntimeState(clock);
+        var fleet = new CaptureRuntimeState(clock);
         fleet.CaptureFailed("usb disconnect", isCameraDisconnected: true);
         var storage = new StoragePressureState();
         storage.Set(new StoragePressureSnapshot("/var/secret/camera-root", new StorageCapacity(1000, 20), true, 1, clock.GetUtcNow()));
@@ -45,7 +43,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             publisher,
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = "/var/secret/camera-root" }),
             clock,
-            fleetRuntimeState: fleet,
+            captureRuntimeState: fleet,
             storagePressureState: storage,
             configurationLoader: new FakeConfigLoader(recoveryRequired: true));
 
@@ -59,7 +57,7 @@ public sealed class OperatorNotificationMonitorServiceTests
         var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
         var clock = new MonitorClock(start);
         var publisher = new RecordingPublisher();
-        var fleet = new FleetRuntimeState(clock);
+        var fleet = new CaptureRuntimeState(clock);
         fleet.ModuleAvailable();
 
         var options = EnabledOptions(captureStallMinutes: 10, disconnectedSeconds: 60, heartbeatTime: "23:59");
@@ -68,7 +66,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             publisher,
             Options.Create(new CameraAgentHostOptions { DisplayName = "North Dome" }),
             clock,
-            fleetRuntimeState: fleet);
+            captureRuntimeState: fleet);
 
         // Initial evaluation at t=0: not stalled yet.
         await monitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
@@ -107,7 +105,7 @@ public sealed class OperatorNotificationMonitorServiceTests
         try
         {
             var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, DisplayName = "Pause Resume Cam" });
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             fleet.ModuleAvailable();
             var dummyResult = new CaptureResult(
                 Frame: null,
@@ -124,7 +122,7 @@ public sealed class OperatorNotificationMonitorServiceTests
                 publisher,
                 hostOptions,
                 clock,
-                fleetRuntimeState: fleet,
+                captureRuntimeState: fleet,
                 controlStore: controlStore);
 
             // Evaluate while running at t=0 -> healthy.
@@ -187,7 +185,7 @@ public sealed class OperatorNotificationMonitorServiceTests
         var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
         var clock = new MonitorClock(start);
         var publisher = new RecordingPublisher();
-        var fleet = new FleetRuntimeState(clock);
+        var fleet = new CaptureRuntimeState(clock);
         fleet.ModuleAvailable();
 
         var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
@@ -196,7 +194,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             publisher,
             Options.Create(new CameraAgentHostOptions { DisplayName = "South Dome" }),
             clock,
-            fleetRuntimeState: fleet);
+            captureRuntimeState: fleet);
 
         foreach (var genericReason in new[] { "null-result", "InvalidOperationException", "activation-publication-failed", "TimeoutException", "SqliteException" })
         {
@@ -216,8 +214,8 @@ public sealed class OperatorNotificationMonitorServiceTests
         var start = new DateTimeOffset(2026, 11, 26, 10, 0, 0, TimeSpan.Zero);
         var clock = new MonitorClock(start);
         var publisher = new RecordingPublisher();
-        var disconnectedSnapshot = new FleetRuntimeSnapshot(
-            new FleetCaptureSummary(FleetAvailability.Unavailable, "camera-removed", null, start, null),
+        var disconnectedSnapshot = new CaptureRuntimeSnapshot(
+            new CaptureRuntimeSummary(CaptureAvailability.Unavailable, "camera-removed", null, start, null),
             []);
 
         var simulateTimeout = false;
@@ -228,7 +226,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             Options.Create(new CameraAgentHostOptions { DisplayName = "Snapshot Timeout Cam" }),
             clock)
         {
-            FleetSnapshotReader = _ => simulateTimeout ? (false, null) : (true, disconnectedSnapshot)
+            CaptureSnapshotReader = _ => simulateTimeout ? (false, null) : (true, disconnectedSnapshot)
         };
 
         // t=0: camera disconnect first observed.
@@ -490,7 +488,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             var ingress = new FailingInitRawIngress(failure);
             using var telemetry = new CaptureControlTelemetry();
             using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
             using var lifetime = new TestHostApplicationLifetime();
             var module = new FaultingCameraModule(initException: null, captureException: null);
@@ -512,12 +510,12 @@ public sealed class OperatorNotificationMonitorServiceTests
             await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
             await ingress.InitializeAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == CaptureAvailability.Unavailable, TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             // Confirm real-path preconditions: admission stays Initializing, namedRigProfiles recorded ActiveRuntimeFailure,
-            // and FleetRuntimeState classified the failure as storage (not camera disconnect).
+            // and CaptureRuntimeState classified the failure as storage (not camera disconnect).
             Assert.AreEqual(CaptureAdmissionState.Initializing, admission.Snapshot.State);
             Assert.IsFalse(string.IsNullOrWhiteSpace(namedRigs.ActiveRuntimeFailure));
             Assert.IsFalse(fleet.IsCameraDisconnected);
@@ -530,7 +528,7 @@ public sealed class OperatorNotificationMonitorServiceTests
                 publisher,
                 hostOptions,
                 clock,
-                fleetRuntimeState: fleet,
+                captureRuntimeState: fleet,
                 admissionCoordinator: admission,
                 rigProfileStore: namedRigs);
 
@@ -588,7 +586,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             var ingress = new WorkingRawIngress(root);
             using var telemetry = new CaptureControlTelemetry();
             using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
             using var lifetime = new TestHostApplicationLifetime();
             var module = new FaultingCameraModule(
@@ -612,7 +610,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
             await module.FaultThrown.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == CaptureAvailability.Unavailable, TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
@@ -626,7 +624,7 @@ public sealed class OperatorNotificationMonitorServiceTests
                 publisher,
                 hostOptions,
                 clock,
-                fleetRuntimeState: fleet,
+                captureRuntimeState: fleet,
                 admissionCoordinator: admission,
                 rigProfileStore: namedRigs);
 
@@ -662,7 +660,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             var ingress = new WorkingRawIngress(root);
             using var telemetry = new CaptureControlTelemetry();
             using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
             using var lifetime = new TestHostApplicationLifetime();
             var module = new FaultingCameraModule(
@@ -686,7 +684,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
             await module.FaultThrown.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == CaptureAvailability.Unavailable, TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
@@ -699,7 +697,7 @@ public sealed class OperatorNotificationMonitorServiceTests
                 publisher,
                 hostOptions,
                 clock,
-                fleetRuntimeState: fleet,
+                captureRuntimeState: fleet,
                 admissionCoordinator: admission,
                 rigProfileStore: namedRigs);
 
@@ -766,7 +764,7 @@ public sealed class OperatorNotificationMonitorServiceTests
             var ingress = new WorkingRawIngress(root);
             using var telemetry = new CaptureControlTelemetry();
             using var admission = new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry);
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             var namedRigs = new SqliteNamedRigProfileStore(ingress, hostOptions, clock);
             using var lifetime = new TestHostApplicationLifetime();
 
@@ -786,12 +784,12 @@ public sealed class OperatorNotificationMonitorServiceTests
 
             await captureService.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
-            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == FleetAvailability.Unavailable, TimeSpan.FromSeconds(5))
+            await WaitUntilAsync(() => fleet.Snapshot.Capture.Availability == CaptureAvailability.Unavailable, TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
             await captureService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             Assert.AreEqual(expectCameraDisconnected, fleet.IsCameraDisconnected,
-                $"Real ZwoAsiCameraModule native error {errorCode} at {stage} expected FleetRuntimeState.IsCameraDisconnected={expectCameraDisconnected}.");
+                $"Real ZwoAsiCameraModule native error {errorCode} at {stage} expected CaptureRuntimeState.IsCameraDisconnected={expectCameraDisconnected}.");
 
             var publisher = new RecordingPublisher();
             var options = EnabledOptions(captureStallMinutes: 30, disconnectedSeconds: 10, heartbeatTime: "23:59");
@@ -800,7 +798,7 @@ public sealed class OperatorNotificationMonitorServiceTests
                 publisher,
                 hostOptions,
                 clock,
-                fleetRuntimeState: fleet,
+                captureRuntimeState: fleet,
                 admissionCoordinator: admission,
                 rigProfileStore: namedRigs);
 
@@ -1347,11 +1345,11 @@ public sealed class OperatorNotificationMonitorServiceTests
             RequiresImmediateUpload: false);
 
         // 1. Pre-initialization startup storage failure alerts IMMEDIATELY on evaluation 1.
-        var startupFleet = new FleetRuntimeState(clock);
+        var startupFleet = new CaptureRuntimeState(clock);
         startupFleet.CaptureFailed("IOException", isCameraDisconnected: false, isStorageFailure: true, isStartupStorageFailure: true);
         var startupPublisher = new RecordingPublisher();
         using (var startupMonitor = new OperatorNotificationMonitorService(
-            new StaticConfigProvider(options), startupPublisher, hostOptions, clock, fleetRuntimeState: startupFleet))
+            new StaticConfigProvider(options), startupPublisher, hostOptions, clock, captureRuntimeState: startupFleet))
         {
             await startupMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(startupPublisher.Events.Any(static e =>
@@ -1361,11 +1359,11 @@ public sealed class OperatorNotificationMonitorServiceTests
         }
 
         // 2. Runtime single transient capture-storage failure (clears before 2nd evaluation) produces ZERO alert.
-        var runtimeFleet = new FleetRuntimeState(clock);
+        var runtimeFleet = new CaptureRuntimeState(clock);
         runtimeFleet.ModuleAvailable();
         var runtimePublisher = new RecordingPublisher();
         using var runtimeMonitor = new OperatorNotificationMonitorService(
-            new StaticConfigProvider(options), runtimePublisher, hostOptions, clock, fleetRuntimeState: runtimeFleet);
+            new StaticConfigProvider(options), runtimePublisher, hostOptions, clock, captureRuntimeState: runtimeFleet);
 
         runtimeFleet.CaptureFailed("IOException", isCameraDisconnected: false, isStorageFailure: true, isStartupStorageFailure: false);
         await runtimeMonitor.EvaluateOnceAsync(CancellationToken.None).ConfigureAwait(false);

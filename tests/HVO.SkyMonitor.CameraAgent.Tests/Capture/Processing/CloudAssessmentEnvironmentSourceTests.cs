@@ -318,7 +318,6 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
         const string prefix = "CameraAgent:EnvironmentalAcquisition:";
         var settings = new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         void AddNws(int index)
         {
@@ -423,7 +422,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                     // Durable-local outputs require a Storage node to own retention, as in the sample.
                     new CaptureProcessingStepConfig(
                         "Storage", "LocalStorage", Order: 100,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "Telemetry", "Telemetry", Order: 1000, DependsOn: ["Calibration", "LocalStorage"])

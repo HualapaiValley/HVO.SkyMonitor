@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 /// #1383: the overlay defaults are the ones #1035 replaced (as at 08b79fb7^), with solid constellation lines and the
 /// image circle at full opacity and their original widths. The cardinal badge and the corner-text panel from #1035 stay.
 /// #1415: star markers are the original plain circle outline again, without the #1035 crosshair.
-/// LogicHost draws these payloads with both the grouped SVG renderer and the raster compositor, so both are checked.
+/// The grouped SVG renderer and the raster compositor both consume these payloads.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]

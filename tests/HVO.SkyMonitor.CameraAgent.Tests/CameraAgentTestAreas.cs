@@ -21,7 +21,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// <c>src/HVO.SkyMonitor.CameraAgent.Common</c>. Most classes match their test folder, with dot-delimited
 /// sub-areas for <c>Capture/*</c> and <c>Modules/VirtualSky</c>. Exceptions follow the SUT:
 /// <c>Contracts/</c>, root-level classes, and specific SUT-owned tests (such as
-/// <c>ProcessingGraphDeliveryServiceTests</c> → <see cref="CaptureProcessing"/> and
 /// <c>CameraModuleOwnershipTests</c> → <see cref="Capture"/>) map to their SUT's Area; domain health checks
 /// map to their domain Area; and host authentication, authorization, data, settings, and controllers map to
 /// <see cref="Hosting"/>. The <c>CameraAgent.Common</c> folders <c>DependencyInjection</c>, <c>Frames</c>,
@@ -56,8 +55,6 @@ internal static class CameraAgentTestAreas
     internal const string DeploymentLocation = "DeploymentLocation";
     internal const string Diagnostics = "Diagnostics";
     internal const string Environmental = "Environmental";
-    internal const string Evidence = "Evidence";
-    internal const string Fleet = "Fleet";
     internal const string Gallery = "Gallery";
     internal const string ModulesVirtualSky = "Modules.VirtualSky";
     internal const string NightlyProducts = "NightlyProducts";
@@ -78,7 +75,6 @@ internal static class CameraAgentTestAreas
     internal const string TimeLapses = "TimeLapses";
     internal const string TimeSync = "TimeSync";
     internal const string Transients = "Transients";
-    internal const string Upload = "Upload";
 
     // Outside CameraAgent.Common (CameraAgent host, CLI, UI, ZWO module, shared test contracts)
     internal const string Cli = "Cli";
@@ -106,8 +102,6 @@ internal static class CameraAgentTestAreas
         Diagnostics,
         Endpoints,
         Environmental,
-        Evidence,
-        Fleet,
         Gallery,
         Hosting,
         ModulesVirtualSky,
@@ -133,7 +127,6 @@ internal static class CameraAgentTestAreas
         TimeSync,
         Transients,
         Ui,
-        Upload
     }.ToFrozenSet(StringComparer.Ordinal);
 
     private const BindingFlags InspectedMethodFlags =

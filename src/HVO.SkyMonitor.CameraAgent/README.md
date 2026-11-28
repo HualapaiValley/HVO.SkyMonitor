@@ -73,7 +73,7 @@ The app applies pending migrations automatically on startup.
 
 - `LocalIdentity` configures the seeded owner email, user name, and temporary password and the optional `DatabasePath`. Use CameraAgent User Secrets for the password in a direct run and `CAMERA_AGENT_ADMIN_PASSWORD` for Compose.
 - Data-protection keys persist under `DataProtection-Keys/` (or the path you mount in Docker) so browser sessions survive restarts.
-- Device identity and encrypted central credentials persist under `DeviceProvisioning:StateDirectory`; restore them with the matching Data Protection keys.
+- Local device identity and operator notification state persist under `DeviceProvisioning:StateDirectory`.
 
 ## Theme Usage
 

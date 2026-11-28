@@ -35,7 +35,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task AssociationsPersistFreshStaleAndMissingWithHalfOpenStaleBoundary()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         await store.CommitLocalAsync(_root!, Fact(
             Guid.Parse("10000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature,
@@ -91,7 +91,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task W6AllKindPolicyServesCloudAndPresentationSubsetsWithoutChangingPolicyIdentity()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var allKinds = new[]
         {
             EnvironmentalObservationKind.AirTemperature,
@@ -129,7 +129,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task ChangedConfiguredKindPolicyRejectsOldPersistedSet()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var oldKinds = new[]
         {
             EnvironmentalObservationKind.RainState,
@@ -150,7 +150,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task MultipleDurablePoliciesForConfiguredRainKindStillThrow()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var service = CreateService(store, [EnvironmentalObservationKind.RainState]);
         var captureId = Guid.Parse("23000000-0000-0000-0000-000000000001");
         var original = AssertSingle(await service.AssociateAsync(captureId, 9,
@@ -172,7 +172,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task RequestOutsideConfiguredKindPolicyStillThrows()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var service = CreateService(store, [EnvironmentalObservationKind.AirTemperature]);
         var exception = await Assert.ThrowsExactlyAsync<EnvironmentalObservationIdentityConflictException>(async () =>
             await service.ReadCompletedAsync(Guid.Parse("24000000-0000-0000-0000-000000000001"), 10,
@@ -213,7 +213,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task EqualTierContradictionsRemainContradictoryAndDeterministicAfterRestart()
     {
-        using (var store = new SqliteEnvironmentalObservationOutbox())
+        using (var store = new SqliteEnvironmentalObservationStore())
         {
             await store.CommitLocalAsync(_root!, Fact(
                 Guid.Parse("30000000-0000-0000-0000-000000000001"),
@@ -243,7 +243,7 @@ public sealed class EnvironmentalAssociationServiceTests
             Assert.IsTrue(association.ConflictingRecordIds.SequenceEqual(association.ConflictingRecordIds.Order()));
         }
 
-        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        using var restarted = new SqliteEnvironmentalObservationStore();
         var persisted = AssertSingle(await restarted.ReadAssociationsAsync(
             _root!, Guid.Parse("40000000-0000-0000-0000-000000000001"), CancellationToken.None)
             .ConfigureAwait(false));
@@ -254,7 +254,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task OverlappingReadingsFromOneSourceSelectNewestWithoutSelfContradiction()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         await store.CommitLocalAsync(_root!, Fact(
             Guid.Parse("41000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.CloudCover,
@@ -288,7 +288,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task CameraTemperatureAssociationCannotCrossRigScope()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         await store.CommitLocalAsync(_root!, Fact(
             Guid.Parse("50000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.CameraSensorTemperature,
@@ -322,7 +322,7 @@ public sealed class EnvironmentalAssociationServiceTests
     public async Task SubMillisecondExposureNormalizesToDurableMillisecondInterval()
     {
         var captureId = Guid.Parse("61000000-0000-0000-0000-000000000001");
-        using (var store = new SqliteEnvironmentalObservationOutbox())
+        using (var store = new SqliteEnvironmentalObservationStore())
         {
             await store.CommitLocalAsync(_root!, Fact(
                 Guid.Parse("61000000-0000-0000-0000-000000000002"),
@@ -341,7 +341,7 @@ public sealed class EnvironmentalAssociationServiceTests
             Assert.AreEqual(Epoch.AddMilliseconds(1), association.ExposureThroughUtc);
         }
 
-        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        using var restarted = new SqliteEnvironmentalObservationStore();
         var replay = AssertSingle(await CreateService(restarted).AssociateAsync(
             captureId,
             4,
@@ -357,7 +357,7 @@ public sealed class EnvironmentalAssociationServiceTests
     [TestMethod]
     public async Task RetentionPreservesEveryContradictoryAssociationReference()
     {
-        using (var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch)))
+        using (var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch)))
         {
             await store.CommitLocalAsync(_root!, Fact(
                 Guid.Parse("70000000-0000-0000-0000-000000000001"),
@@ -379,7 +379,7 @@ public sealed class EnvironmentalAssociationServiceTests
                 45,
                 null), CancellationToken.None).ConfigureAwait(false);
         }
-        using (var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddDays(20))))
+        using (var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddDays(20))))
         {
             var service = new EnvironmentalAssociationService(
                 store,
@@ -410,7 +410,7 @@ public sealed class EnvironmentalAssociationServiceTests
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
-        using var restarted = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddDays(40)));
+        using var restarted = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddDays(40)));
         var retained = await restarted.RetainLocalAsync(
             _root!, Epoch.AddDays(9), 100, CancellationToken.None).ConfigureAwait(false);
         var snapshot = await restarted.GetLocalSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false);
@@ -436,11 +436,11 @@ public sealed class EnvironmentalAssociationServiceTests
             .ConfigureAwait(false));
     }
 
-    private EnvironmentalAssociationService CreateService(SqliteEnvironmentalObservationOutbox store)
+    private EnvironmentalAssociationService CreateService(SqliteEnvironmentalObservationStore store)
         => new(store, store, Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }), new FixedTimeProvider(Epoch));
 
     private EnvironmentalAssociationService CreateService(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         IReadOnlyList<EnvironmentalObservationKind> configuredKinds)
         => new(store, store, Options.Create(new CameraAgentHostOptions
         {

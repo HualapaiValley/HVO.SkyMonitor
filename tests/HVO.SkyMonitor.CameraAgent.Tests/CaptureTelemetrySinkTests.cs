@@ -47,7 +47,6 @@ public sealed class CaptureTelemetrySinkTests
             gain,
             null,
             CaptureMode.Still,
-            RequiresImmediateUpload: false,
             frameStored,
             TimeSpan.FromMilliseconds(10),
             TimeSpan.FromMilliseconds(20),

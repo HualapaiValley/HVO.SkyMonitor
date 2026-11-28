@@ -22,7 +22,7 @@ public sealed class EnvironmentalWeatherPriorityTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-priority-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             // Each fixture source owns its own alias; cloning an adapter fact while retaining its acquisition owner
             // would describe a different configuration than the local/provider sources under test.
             var fact = EnvironmentalAdapterContractsTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);

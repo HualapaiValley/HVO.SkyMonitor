@@ -17,7 +17,7 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("Storage", "cameraagent-step-v2:Storage", "retentionDays", "0")]
     [DataRow("Storage", "cameraagent-step-v2:Storage", "retentionDays", "3651")]
     [DataRow("Storage", "cameraagent-step-v2:Storage", "storageRoot", "null")]
-    [DataRow("Storage", "cameraagent-step-v2:Storage", "queueForUpload", "1")]
+    [DataRow("Storage", "cameraagent-step-v2:Storage", "updateLatestFrame", "1")]
     public void RemainingNodeDescriptorsRejectInvalidSourceAndDoNotRewriteIt(string alias, string version, string key, string token)
     {
         var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, version).Descriptor;

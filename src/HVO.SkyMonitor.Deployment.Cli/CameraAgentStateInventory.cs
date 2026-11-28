@@ -56,6 +56,10 @@ internal static class CameraAgentStateInventory
     {
         ArgumentNullException.ThrowIfNull(paths);
         var stores = new List<string>(CameraAgentStateLayout.SqliteStores);
+        const string environmentalObservations = "raw/.environment/environmental-observations.db";
+        var environmental = CameraAgentStateSnapshot.StorePath(paths.StateRoot, environmentalObservations);
+        if (File.Exists(environmental) || CameraAgentStateLayout.SqliteSidecarSuffixes.Any(suffix => File.Exists(environmental + suffix)))
+            stores.Add(environmentalObservations);
         var integrity = CameraAgentStateSnapshot.StorePath(paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
         if (File.Exists(integrity) || CameraAgentStateLayout.SqliteSidecarSuffixes.Any(suffix => File.Exists(integrity + suffix)))
             stores.Add(CameraAgentStateSnapshot.RetainedIntegrityStore);

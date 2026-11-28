@@ -113,10 +113,7 @@ The Unit tests in `FrameFactsPresentationTests` and
 `PresentationMetadataFactsBuilderTests` cover fonts/emphasis, all corners,
 missing policies, strict source/output bounds, immutable snapshots, identities,
 legacy serialization, opt-in registration, failure isolation and the actual
-CameraAgent/shared LogicHost rendering seams. The combined Integration tests in
-`FrameFactsPresentationIngestTests` execute the actual rich and manifest nodes,
-central ingestion and presentation retrieval, including delayed delivery, retry,
-reconciliation and independent identity mismatches. `PresentationReferenceLineageTests`
+CameraAgent rendering seams. `PresentationReferenceLineageTests`
 pins the separate bindings and the legacy v1–v3 comparison. The manual measurement is:
 
 ```bash

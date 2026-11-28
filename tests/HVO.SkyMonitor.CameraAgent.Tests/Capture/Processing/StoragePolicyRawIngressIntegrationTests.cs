@@ -10,7 +10,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -59,8 +58,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
                 var rootB = Path.Combine(root, "storage-b");
                 Assert.IsTrue(Directory.EnumerateFiles(rootB, "*.json", SearchOption.AllDirectories).Any(), "Matching profile publication resumes.");
-                Assert.IsTrue((await restarted.GetRequiredService<IArtifactOutbox>().GetSnapshotAsync(rootB, CancellationToken.None).ConfigureAwait(false)).HeldCount > 0,
-                    "Matching upload-enabled profile publishes real outbox work.");
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                     await Operations(restarted).RollbackRevisionAsync(namedId,
                         (await Operations(restarted).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).StateVersion,
@@ -70,7 +67,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             using var reopened = Provider(root);
             var restored = await InitializeAsync(reopened, file).ConfigureAwait(false);
             Assert.AreEqual(90, StorageOptions(restored).RetentionDays);
-            Assert.IsTrue(StorageOptions(restored).QueueForUpload);
             var next = (await Ingress(reopened).AcceptAsync(restored, Submission(5), CancellationToken.None).ConfigureAwait(false))!;
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessNextAsync(reopened, restored).ConfigureAwait(false)).Outcome);
             AssertRawRetained(next);
@@ -193,8 +189,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
 
     internal static ServiceProvider Provider(string root) => ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-        ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
     });
 
     internal static CameraModuleConfig Profile(string root)
@@ -248,7 +242,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         {
             Steps = [.. profile.Pipeline.Steps.Select(step => step.Type == "Storage" ? step with
         { Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-        { StorageRoot = Path.Combine(Path.GetDirectoryName(StorageOptions(profile).StorageRoot)!, "storage-b"), RetentionDays = 90, QueueForUpload = true, UpdateLatestFrame = false }) } : step)]
+        { StorageRoot = Path.Combine(Path.GetDirectoryName(StorageOptions(profile).StorageRoot)!, "storage-b"), RetentionDays = 90, UpdateLatestFrame = false }) } : step)]
         };
 
     internal static async Task<CameraModuleConfig> ChangeProfileAsync(ServiceProvider provider, CameraModuleConfig profile)

@@ -119,29 +119,18 @@ public sealed partial class TransientOperationsPage : SiteTimeComponent, IAsyncD
         _showDialog = false;
     }
 
-    /// <summary>
-    /// Off and Central say plainly that this agent extracts nothing; only Edge and Hybrid report the worker, so a
-    /// disabled worker is never shown as a fault.
-    /// </summary>
     internal static (string Icon, string Title, string Detail) Banner(TransientOperationsView view)
     {
-        switch (view.Mode)
+        if (view.Mode == TransientOperatingMode.Off)
         {
-            case TransientOperatingMode.Off:
-                return ("warning", "Transient detection is off",
-                    "This agent runs no detector. Retained outcomes and candidates stay readable below.");
-            case TransientOperatingMode.Central:
-                return ("pending", "Central detection",
-                    "This agent does not extract candidates. LogicHost runs detection on the captures this agent delivers.");
+            return ("warning", "Transient detection is off",
+                "Retained outcomes and candidates stay readable below.");
         }
-        var lane = view.Mode == TransientOperatingMode.Hybrid
-            ? "Candidates are handed to LogicHost for centered assessment."
-            : "Candidates are assessed on this agent only.";
         var worker = view.Worker;
         return worker.Availability switch
         {
             TransientWorkerAvailability.Healthy => ("success", $"{view.Mode} detector healthy",
-                $"Causal extraction runs independently of display processing. {lane}"),
+                "Causal extraction runs independently of display processing. Candidates are assessed locally."),
             TransientWorkerAvailability.Starting => ("running", $"{view.Mode} detector starting",
                 "The worker is starting and will pick up queued frames."),
             TransientWorkerAvailability.Degraded => ("warning", $"{view.Mode} detector degraded",
@@ -159,7 +148,6 @@ public sealed partial class TransientOperationsPage : SiteTimeComponent, IAsyncD
     private static string NoOutcomesText(TransientOperationsView view) => view.Mode switch
     {
         TransientOperatingMode.Off => "No capture has entered the detector lane. Detection is off.",
-        TransientOperatingMode.Central => "No capture has entered the local detector lane. LogicHost detects centrally.",
         _ => "No capture has entered the detector lane yet.",
     };
 
@@ -210,40 +198,6 @@ public sealed partial class TransientOperationsPage : SiteTimeComponent, IAsyncD
         _ when outcome.FrameState == "retry_wait" => ("warning", "Retrying"),
         _ => ("pending", "Pending"),
     };
-
-    /// <summary>
-    /// Candidates reach LogicHost only in Hybrid mode. Every other mode says so rather than showing an empty queue,
-    /// and an unavailable delivery lane is never shown as "nothing to deliver".
-    /// </summary>
-    internal static (string Chip, string Icon, string Text, string? Detail) Handoff(TransientOperationsView view)
-    {
-        if (view.Mode != TransientOperatingMode.Hybrid)
-        {
-            return ("neutral", "pending", "Not exported", view.Mode switch
-            {
-                TransientOperatingMode.Edge => "Edge mode keeps candidates on this agent and assesses them locally.",
-                TransientOperatingMode.Central => "This agent delivers captures, not candidates. LogicHost detects and assesses centrally.",
-                _ => "Detection is off, so there are no candidates to hand off.",
-            });
-        }
-        var delivery = view.Delivery;
-        return delivery.Availability switch
-        {
-            TransientCandidateDeliveryAvailability.Healthy => ("success", "success", "Delivering", null),
-            TransientCandidateDeliveryAvailability.Starting => ("running", "running", "Starting",
-                "The delivery lane is starting. Queued candidates wait durably."),
-            TransientCandidateDeliveryAvailability.Degraded => ("warning", "warning", "Degraded",
-                delivery.AuthenticationBlockedCount > 0
-                    ? "LogicHost refused this agent's sign-in. Candidates wait durably until it is accepted again."
-                    : $"Delivery is degraded ({delivery.Reason}). Candidates wait durably and retry."),
-            TransientCandidateDeliveryAvailability.Unhealthy => ("failure", "failure", "Unavailable",
-                $"Delivery is unavailable ({delivery.Reason}). Candidates wait durably; none are lost."),
-            _ => ("neutral", "pending", "Disabled",
-                view.CentralIntegrationEnabled
-                    ? $"Candidate delivery is not running ({delivery.Reason})."
-                    : "Central integration is disabled, so candidates are not delivered."),
-        };
-    }
 
     private static string EventChip(string state) => state switch
     {

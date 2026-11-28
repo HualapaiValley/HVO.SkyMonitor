@@ -1110,7 +1110,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     {
         public ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Enqueued, null));
+            => ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Committed));
     }
 
     private sealed class LocationStore : IDeploymentLocationStore

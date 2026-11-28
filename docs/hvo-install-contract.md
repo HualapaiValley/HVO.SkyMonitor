@@ -386,6 +386,9 @@ it gives the newest schema a release may write, and every schema it reads:
   in the same shape. CameraAgent lifecycle admission uses the baseline identifier and the candidate's
   catalog, Identity and raw journal declarations.
 
+CameraAgent keeps the local environmental observation journal at
+`raw/.environment/environmental-observations.db` under the instance state root.
+
 ### SkyMonitor Silo layout (#1966)
 
 The CameraAgent Silo layout ([cutover contract](planning/cameraagent-silo-cutover.md)) is the default

@@ -6,14 +6,13 @@ using Installer = InstallerRuntime::HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -29,9 +28,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using Microsoft.Extensions.Options;
@@ -420,7 +417,7 @@ public sealed partial class RawCaptureIngressTests
                 return Task.FromResult(result);
             });
             await using var moduleScope = module.ConfigureAwait(false);
-            var fleet = new FleetRuntimeState(clock);
+            var fleet = new CaptureRuntimeState(clock);
             var runner = new CameraModuleRunner(module, host, clock, NullLogger.Instance, admission,
                 new AstronomyEnginePlanetEphemeris(), telemetry, fleet, runtime);
             var running = runner.RunAsync(stop.Token);
@@ -462,7 +459,7 @@ public sealed partial class RawCaptureIngressTests
                 await running.ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(502), evidence.ModuleDuration);
                 Assert.IsGreaterThan(raw.Manifest.Descriptor.Timing.RequestedStartUtc, raw.Manifest.Descriptor.Timing.ExposureStartedUtc);
-                Assert.IsTrue(fleet.Snapshot.Timings.Single(timing => timing.Segment == FleetTimingSegment.Ingress)
+                Assert.IsTrue(fleet.Snapshot.Timings.Single(timing => timing.Segment == CaptureTimingSegment.Ingress)
                     .MaximumMilliseconds > 0);
             }
             finally
@@ -488,7 +485,7 @@ public sealed partial class RawCaptureIngressTests
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var distributor = new CenteredTraceNotifier { Committed = () => done.TrySetResult() };
         using var service = new CameraCaptureService(accessor, new CenteredModuleFactory(module), setup.Ingress,
-            distributor, clock, new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock),
+            distributor, clock, new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock),
             new CenteredReadyLifetime(new CancellationToken(canceled: true)), NullLogger<CameraCaptureService>.Instance, moduleOwnership: ownership);
         await service.StartAsync(cancellationToken).ConfigureAwait(false);
         try { await done.Task.WaitAsync(cancellationToken).ConfigureAwait(false); }
@@ -1291,7 +1288,6 @@ public sealed partial class RawCaptureIngressTests
             {
                 StorageRoot = archive,
                 RetentionDays = 1,
-                QueueForUpload = false,
                 UpdateLatestFrame = false
             };
             var config = profile with
@@ -1384,8 +1380,7 @@ public sealed partial class RawCaptureIngressTests
             byte[] sidecar;
             RetentionBackgroundService CreateRetention(Action<string>? beforeUnlink = null) => new(
                 provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock,
-                provider.GetRequiredService<IArtifactOutbox>(), new FixedCapacityProvider(long.MaxValue),
+                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock, new FixedCapacityProvider(long.MaxValue),
                 new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance)
             {
                 BeforeArchiveFileUnlink = beforeUnlink
@@ -2232,7 +2227,6 @@ public sealed partial class RawCaptureIngressTests
             using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var persistence = new CaptureProcessingPersistence(processing.Options, processing.Store, storage, processing.Telemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance);
-            using var outbox = new SqliteArtifactOutbox();
             var accessor = new CameraAgentConfigurationAccessor();
             var storageConfig = config with
             {
@@ -2245,8 +2239,7 @@ public sealed partial class RawCaptureIngressTests
             accessor.SetConfiguration(storageConfig);
             var holds = new CompositeProcessingRetentionHolds(persistence,
                 new CameraAgentClearReferenceLoader(processing.Options), processing.Calibration);
-            using var retention = new RetentionBackgroundService(accessor, processing.Options, TimeProvider.System,
-                outbox, new FixedCapacityProvider(long.MaxValue), new StoragePressureState(),
+            using var retention = new RetentionBackgroundService(accessor, processing.Options, TimeProvider.System, new FixedCapacityProvider(long.MaxValue), new StoragePressureState(),
                 NullLogger<RetentionBackgroundService>.Instance, processing.Ingress, holds);
             await retention.ApplyRetentionAsync(storageConfig, token).ConfigureAwait(false);
             Assert.IsTrue(originalBundle.Artifacts.All(master => File.Exists(Path.Combine(root, master.ManifestRelativePath))));
@@ -2380,7 +2373,7 @@ public sealed partial class RawCaptureIngressTests
             var acquisitionId = Guid.NewGuid();
             ExposureKey key;
             using (var setup = new CenteredFixture(root, timeProvider: clock))
-            using (var outbox = new SqliteEnvironmentalObservationOutbox(clock))
+            using (var outbox = new SqliteEnvironmentalObservationStore(clock))
             {
                 var reservation = await setup.DispatchAsync(config).ConfigureAwait(false);
                 if (!unavailable)
@@ -2413,7 +2406,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(unavailable, evidence.EnvironmentalUnavailable);
             Assert.AreEqual("sqm", evidence.EnvironmentalBeforeCaptureSources!.Single());
             Assert.IsNull(raw.Manifest.Descriptor.CycleEvidence);
-            using var restartedOutbox = new SqliteEnvironmentalObservationOutbox(clock);
+            using var restartedOutbox = new SqliteEnvironmentalObservationStore(clock);
             var available = await restartedOutbox.ReadCaptureAvailabilityAsync(root, key.CaptureId, acquisitionId, token)
                 .ConfigureAwait(false);
             Assert.AreEqual("sqm", available.Sources.Single());

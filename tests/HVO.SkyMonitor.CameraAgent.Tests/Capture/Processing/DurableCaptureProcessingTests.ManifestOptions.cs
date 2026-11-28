@@ -86,7 +86,7 @@ public sealed partial class DurableCaptureProcessingTests
                 var changed = context.ProcessingProducts[^1];
                 Assert.AreNotEqual(original.ChecksumSha256, changed.ChecksumSha256);
                 for (var i = 0; i < upstream.Length; i++) CollectionAssert.AreEqual(upstreamBytes[i], upstream[i].Payload.ToArray());
-                // LogicHost uses this same executor over retained products and the manifest defaults.
+                // Reconstruct from retained products using the same executor and manifest defaults.
                 context.BeginNode("central-equivalent", dependencies);
                 var baseProduct = context.GetDependencyProducts().Single(static product => product.Role == FrameArtifactRole.Preview);
                 var byId = context.GetDependencyProducts().ToDictionary(static product => CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));

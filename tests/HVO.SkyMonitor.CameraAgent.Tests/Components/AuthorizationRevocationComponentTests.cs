@@ -108,8 +108,8 @@ public sealed class AuthorizationRevocationComponentTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         var cut = context.Render<QuarantinePage>();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Artifact quarantine", StringComparison.Ordinal));
-        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(Denied<OperatorOutboxPage>());
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Quarantine and retry browser", StringComparison.Ordinal));
+        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(Denied<OperatorQuarantinePage>());
 
         await cut.InvokeAsync(cut.Instance.RefreshAuthorizationAsync);
         cut.Render();

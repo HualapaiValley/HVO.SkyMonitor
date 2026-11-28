@@ -1,5 +1,8 @@
 # Heterogeneous Elastic Fleet Allocation Model
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 Decision date: 2026-09-17
 Issues: #854 discovery for #613
 

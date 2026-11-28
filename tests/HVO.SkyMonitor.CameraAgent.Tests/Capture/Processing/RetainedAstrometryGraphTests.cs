@@ -203,7 +203,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new("ProjectedScene", "scene", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal),
                         Options: JsonSerializer.SerializeToElement(new { constellationIds = (string[])["CAS"], solarSystemBodies = (string[])["Moon"] })),
                     new("Storage", "storage", DependsOn: ["$raw", "scene"], Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, UpdateLatestFrame = false }))
                 ], CapturePipelineSchemaVersions.ExplicitV2)
             };
             var prediction = new CaptureProcessingStepConfig(AstrometryPredictionCaptureProcessingStep.Alias, "prediction",
@@ -291,7 +291,7 @@ public sealed partial class DurableCaptureProcessingTests
                 new("MeasuredAstrometry", "astrometry", DependsOn: ["scene", "measured"], Required: mode == "required", Options: JsonSerializer.SerializeToElement(options),
                     Publication: mode == "memory-only" ? new(CaptureProcessingPersistenceMode.MemoryOnly) : durable),
                 new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, UpdateLatestFrame = false }))
             ], mode == "legacy" ? CapturePipelineSchemaVersions.LegacyV1 : CapturePipelineSchemaVersions.ExplicitV2)
             };
             var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();

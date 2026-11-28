@@ -21,7 +21,7 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private static readonly Dictionary<string, string[]> GroupedRoutes = new(StringComparer.Ordinal)
     {
         ["/gallery"] = ["/archive"],
-        ["/operations"] = ["/schedule", "/calibration", "/system", "/environmental", "/devices"]
+        ["/operations"] = ["/schedule", "/calibration", "/system", "/environmental"]
     };
 
     [Inject]

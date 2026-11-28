@@ -1,8 +1,9 @@
 # Environmental Observation v1, v2 and v3
 
-`EnvironmentalObservationV1` is the storage-neutral weather and sky evidence contract owned by
-`HVO.SkyMonitor.Processing`. LogicHost persists the contract in normalized SQL records; the
-contract has no EF Core, ASP.NET, worker, or host dependencies.
+CameraAgent uses targetless environmental facts from `HVO.SkyMonitor.Processing`
+and commits them to its local observation journal. The older enriched wire and
+receiver fields below describe the historical central integration. See the
+[current source adapter runbook](../runbooks/environmental-source-adapters.md).
 
 ## Identity and provenance
 
@@ -174,12 +175,10 @@ Image-derived cloud scores, masks, and confidence products are not this
 ## Persistence and retention
 
 CameraAgent publication succeeds when the canonical targetless fact commits to
-its local SQLite journal. Optional central target resolution, projection,
-delivery, or acknowledgement is an independent consumer and cannot reject or
-delete that local history. Missing, timeout, invalid, and failed source calls are
+its local SQLite journal. Missing, timeout, invalid and failed source calls are
 durable attempt outcomes and are never scalar observations.
 
-LogicHost stores immutable source versions separately from observations. Unique source identity
+The retired integration stored immutable source versions separately from observations. Unique source identity
 and `(source, observation ID)` indexes enforce idempotency. Temporal indexes begin with source and
 kind. Observation rows also snapshot immutable site/agent/rig, source-kind, and source-identity
 query keys so correlation can select one row by exact scope before loading its source and lineage

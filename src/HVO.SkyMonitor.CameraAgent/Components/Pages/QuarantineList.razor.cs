@@ -9,9 +9,9 @@ public sealed partial class QuarantineList : SiteTimeComponent
 {
     [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
 
-    [Parameter, EditorRequired] public IReadOnlyList<OperatorOutboxItem> Items { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<OperatorQuarantineItem> Items { get; set; } = [];
 
-    [Parameter, EditorRequired] public EventCallback<OperatorOutboxActionRequest> BeginAction { get; set; }
+    [Parameter, EditorRequired] public EventCallback<QuarantineActionRequest> BeginAction { get; set; }
 
     private string Age(DateTimeOffset? createdUtc)
     {
@@ -30,6 +30,6 @@ public sealed partial class QuarantineList : SiteTimeComponent
                     : FormattableString.Invariant($"{age.TotalDays:F0} d");
     }
 
-    private Task Start(OperatorOutboxItem item, OutboxOperationAction action, string triggerId) =>
-        BeginAction.InvokeAsync(new OperatorOutboxActionRequest(item, action, triggerId));
+    private Task Start(OperatorQuarantineItem item, QuarantineOperationAction action, string triggerId) =>
+        BeginAction.InvokeAsync(new QuarantineActionRequest(item, action, triggerId));
 }

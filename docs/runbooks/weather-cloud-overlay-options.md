@@ -10,8 +10,7 @@ The shared Processing catalog describes registered alias `WeatherCloudOverlay`
 at exact graph step version `weather-cloud-overlay-v1`. Both hosts resolve that
 same contract. The existing shared recipe is `weather-cloud-overlay`, semantic
 version `1.0.0`, implementation `weather-cloud-overlay-v1`; these controls do not
-introduce a new producer or style version. LogicHost does not acquire the
-CameraAgent step through a descriptor.
+introduce a new producer or style version.
 
 | Control | Current default | Existing limits and meaning |
 | --- | --- | --- |

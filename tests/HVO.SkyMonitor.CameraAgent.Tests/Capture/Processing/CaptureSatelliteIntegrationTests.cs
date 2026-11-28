@@ -276,8 +276,6 @@ public sealed partial class CaptureSatelliteIntegrationTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddSingleton<ICameraAgentOrbitalTimeSource>(new TimeSource(f, unavailable));
         services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(
@@ -311,7 +309,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
             new("SatelliteFixtureManifest", "manifest", DependsOn: ["preview", "satellite", "satellite-layer"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Storage", "storage", DependsOn: ["$raw", "preview", "satellite", "satellite-layer", "manifest"],
                 Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                { StorageRoot = root, UpdateLatestFrame = false }))
         ])
         };
 

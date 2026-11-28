@@ -83,15 +83,15 @@ public sealed partial class LifecycleContractTests
     private sealed class InstalledRootLifecycleClient : ICameraAgentLifecycleClient
     {
         public Task<LifecycleContinuity> PauseAndDrainAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)
-            => Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            => Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0));
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
-            => Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            => Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0));
 
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
-            => Task.FromResult(new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true));
+            => Task.FromResult(new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true));
 
         public Task<LifecycleResumeReceipt> ResumeRecoveryAsync(
             Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)

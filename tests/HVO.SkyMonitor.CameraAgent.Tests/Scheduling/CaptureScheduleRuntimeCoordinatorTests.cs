@@ -2,11 +2,10 @@ using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -15,7 +14,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
@@ -50,7 +48,7 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             .ReturnsAsync(AuthorizationResult.Success());
         var statusService = new CameraAgentOperatorUiService(
             new FixedAuthenticationStateProvider(principal), authorization.Object,
-            null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            null!, null!, null!, null!, null!, null!, null!, null!, null!,
             accessor, fixture.Runtime, [], [], fixture.HostOptions, null!, fixture.TimeProvider,
             NullLogger<CameraAgentOperatorUiService>.Instance);
         var initial = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
@@ -555,28 +553,6 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         Assert.AreEqual(expectedSha256, runtime.Revision.ProfileSha256);
         var operatorState = await fixture.Runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(expectedSha256, operatorState.ActiveRevision.ProfileSha256);
-
-        var accessor = new CameraAgentConfigurationAccessor();
-        accessor.SetConfiguration(runtime.Configuration);
-        var fleet = new FleetStatusCollector(
-            accessor,
-            new RawIngressState(fixture.TimeProvider),
-            new CaptureLaneState(fixture.TimeProvider, fixture.HostOptions),
-            new CaptureProcessingState(),
-            new ArtifactOutboxState(),
-            new StoragePressureState(),
-            new CaptureTelemetrySink(),
-            new FleetRuntimeState(fixture.TimeProvider),
-            fixture.TimeProvider,
-            fixture.Runtime);
-        var fleetReport = await fleet.CollectAsync(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            1,
-            fixture.TimeProvider.GetUtcNow().AddMinutes(-1),
-            new FleetStatusOutboxSnapshot(0, 0, 0, 0, 0, 0, 0, null, fixture.TimeProvider.GetUtcNow()),
-            CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(expectedSha256, fleetReport.Configuration.ActiveLocalProfileSha256);
 
         var grant = await fixture.Runtime.WaitForGrantAsync(CancellationToken.None).ConfigureAwait(false);
         using var admission = await fixture.Admission.EnterAsync(CancellationToken.None).ConfigureAwait(false);

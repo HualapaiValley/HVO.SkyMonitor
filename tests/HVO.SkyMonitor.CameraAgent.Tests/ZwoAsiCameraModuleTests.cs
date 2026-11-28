@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using Microsoft.Extensions.DependencyInjection;
@@ -310,7 +310,7 @@ public sealed class ZwoAsiCameraModuleTests
         StringAssert.Contains(exception.Message, "not connected", StringComparison.Ordinal);
         Assert.AreEqual(nameof(AsiErrorCode.CameraRemoved), exception.Data["AsiErrorCode"]);
         Assert.AreEqual(true, exception.Data["IsCameraDisconnected"]);
-        Assert.IsTrue(FleetRuntimeState.IsCameraDisconnectException(exception));
+        Assert.IsTrue(CaptureRuntimeState.IsCameraDisconnectException(exception));
         Assert.DoesNotContain(Convert.ToHexString(PrivateSerial), exception.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -384,7 +384,7 @@ public sealed class ZwoAsiCameraModuleTests
         StringAssert.Contains(exception.Message, errorCode.ToString(), StringComparison.Ordinal);
         Assert.AreEqual(errorCode.ToString(), exception.Data["AsiErrorCode"]);
         Assert.AreEqual(expectDisconnected, exception.Data["IsCameraDisconnected"]);
-        Assert.AreEqual(expectDisconnected, FleetRuntimeState.IsCameraDisconnectException(exception),
+        Assert.AreEqual(expectDisconnected, CaptureRuntimeState.IsCameraDisconnectException(exception),
             $"Native ASI error {errorCode} at {stage} expected IsCameraDisconnected={expectDisconnected}.");
     }
 

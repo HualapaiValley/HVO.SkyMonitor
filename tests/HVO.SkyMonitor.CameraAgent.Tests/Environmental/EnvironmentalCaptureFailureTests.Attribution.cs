@@ -217,7 +217,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "capture-scope-" + Guid.NewGuid().ToString("N"));
         internal Clock Clock { get; } = new() { Now = Epoch.AddSeconds(-50) };
-        internal SqliteEnvironmentalObservationOutbox Store { get; private set; } = null!;
+        internal SqliteEnvironmentalObservationStore Store { get; private set; } = null!;
         internal AttributionDevice Device { get; private set; } = null!;
         internal EnvironmentalAcquisitionCoordinator Coordinator { get; private set; } = null!;
         internal EnvironmentalCaptureTriggerBridge Bridge { get; private set; } = null!;

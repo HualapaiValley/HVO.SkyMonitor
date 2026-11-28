@@ -291,7 +291,7 @@ internal sealed partial class CameraAgentLifecycleManager
             CaptureInitialized: true,
             CaptureVersion: >= 0, CaptureSequence: >= 0,
             RawPending: >= 0, RawLeased: >= 0, LanePending: >= 0, LaneLeased: >= 0,
-            ProcessingPending: >= 0, ProcessingLeased: >= 0, OutboxPending: >= 0, OutboxLeased: >= 0,
+            ProcessingPending: >= 0, ProcessingLeased: >= 0,
             ReplayPending: >= 0, ReplayLeased: >= 0
         } && boundary.RecordedUtc != default;
 
@@ -2614,8 +2614,8 @@ internal sealed partial class CameraAgentLifecycleManager
             value.LaneLeased,
             value.ProcessingPending,
             value.ProcessingLeased,
-            value.OutboxPending,
-            value.OutboxLeased,
+            OutboxPending: 0,
+            OutboxLeased: 0,
             DateTimeOffset.UtcNow,
             value.CaptureInitialized,
             value.ReplayPending,

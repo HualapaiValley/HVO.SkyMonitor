@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestProperty("Area", "Ui")]
 public sealed class OperationsPageTests
 {
-    private static readonly string[] LoadedFacts = ["Not reported", "Schedule open", "Installed rig", "Available"];
+    private static readonly string[] LoadedFacts = ["Not reported", "Schedule open", "Installed rig"];
 
     [TestMethod]
     public void LoadingThenLoaded_RendersPrototypeOverviewFromRecordedSources()
@@ -56,11 +56,11 @@ public sealed class OperationsPageTests
             AssertCard(cut, "/operations/calibration", "No active bundle", "0 published bundles");
 
             var lanes = cut.FindAll(".ops-lane");
-            Assert.HasCount(4, lanes);
+            Assert.HasCount(3, lanes);
             StringAssert.Contains(lanes[0].TextContent, "0 pending", StringComparison.Ordinal);
             var meter = cut.Find(".ops-meter.blue[role='meter']");
             Assert.AreEqual("50", meter.GetAttribute("aria-valuenow"));
-            StringAssert.Contains(lanes[3].TextContent, "50% used", StringComparison.Ordinal);
+            StringAssert.Contains(lanes[2].TextContent, "50% used", StringComparison.Ordinal);
 
             StringAssert.Contains(cut.Markup, "No capture activity yet", StringComparison.Ordinal);
             Assert.HasCount(2, cut.FindAll(".ops-metric strong").Where(static metric => metric.TextContent == "Not reported").ToArray());
@@ -96,52 +96,25 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
-    public void FreshDisconnectedAndPressure_RaiseAttentionItems()
+    public void StorageAndLanePressure_RaiseAttentionItem()
     {
         using var context = new BunitContext();
         var service = Configure(context);
         service.OperationsHandler = _ => ValueTask.FromResult(
             OperatorUiResult<CameraAgentOperationsView>.Success(
-                OperatorUiTestData.Operations(heartbeat: "Unavailable", lanePressure: 2, storagePressure: true)));
+                OperatorUiTestData.Operations(lanePressure: 2, storagePressure: true)));
 
         var cut = context.Render<OperationsPage>();
 
         cut.WaitForAssertion(() =>
         {
             var items = cut.FindAll(".ops-attention-item");
-            Assert.HasCount(2, items);
-            StringAssert.Contains(items[0].TextContent, "LogicHost connection unavailable", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/health", items[0].QuerySelector("a")!.GetAttribute("href"));
-            StringAssert.Contains(items[1].TextContent, "Storage or lane pressure", StringComparison.Ordinal);
-            StringAssert.Contains(items[1].TextContent, "Under pressure: Raw ingress storage, Standard lane.", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/storage", items[1].QuerySelector("a")!.GetAttribute("href"));
+            Assert.HasCount(1, items);
+            StringAssert.Contains(items[0].TextContent, "Storage or lane pressure", StringComparison.Ordinal);
+            StringAssert.Contains(items[0].TextContent, "Under pressure: Raw ingress storage, Standard lane.", StringComparison.Ordinal);
+            Assert.AreEqual("/operations/storage", items[0].QuerySelector("a")!.GetAttribute("href"));
             Assert.IsNotNull(cut.Find(".ops-meter.attention[role='meter']"));
-            Assert.AreEqual("Unavailable", cut.FindAll(".ops-state-facts dd")[3].TextContent);
             Assert.IsFalse(cut.Markup.Contains("_view.Summary", StringComparison.Ordinal));
-        });
-    }
-
-    [TestMethod]
-    public void StandaloneMode_RendersDisabledCentralWithoutDisconnectedWarning()
-    {
-        using var context = new BunitContext();
-        var service = Configure(context);
-        service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(
-                OperatorUiTestData.Operations(
-                    heartbeat: "Disabled",
-                    centralIntegration: "Disabled")));
-
-        var cut = context.Render<OperationsPage>();
-
-        cut.WaitForAssertion(() =>
-        {
-            Assert.AreEqual("Disabled", cut.FindAll(".ops-state-facts dd")[3].TextContent);
-            var delivery = cut.FindAll(".ops-lane")[2];
-            StringAssert.Contains(delivery.TextContent, "Central integration is disabled", StringComparison.Ordinal);
-            StringAssert.Contains(delivery.TextContent, "Disabled", StringComparison.Ordinal);
-            Assert.IsEmpty(cut.FindAll(".ops-attention-item"));
-            Assert.IsFalse(cut.Markup.Contains("LogicHost connection unavailable", StringComparison.Ordinal));
         });
     }
 
@@ -404,28 +377,6 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
-    public void UnknownHeartbeat_DoesNotInventAConnectionOutage()
-    {
-        using var context = new BunitContext();
-        var service = Configure(context);
-        var current = OperatorUiTestData.Operations(heartbeat: "Unavailable");
-        service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(current with
-            {
-                Summary = current.Summary with
-                {
-                    Heartbeat = current.Summary.Heartbeat with { Freshness = "unknown" }
-                }
-            }));
-        var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() =>
-        {
-            StringAssert.Contains(cut.Markup, "Some operating facts have not been observed", StringComparison.Ordinal);
-            Assert.IsFalse(cut.Markup.Contains("LogicHost connection unavailable", StringComparison.Ordinal));
-        });
-    }
-
-    [TestMethod]
     public void UnavailableSchedule_DoesNotInventActiveRevisionOrRecentChanges()
     {
         using var context = new BunitContext();
@@ -550,50 +501,6 @@ public sealed class OperationsPageTests
             StringAssert.Contains(cut.Markup, "pause and resume are unavailable in this state", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("#capture-action"));
             Assert.IsFalse(cut.Markup.Contains("command is settling", StringComparison.Ordinal));
-        });
-    }
-
-    [TestMethod]
-    public void EnvironmentalDeliveryAttention_LinksToDataPage()
-    {
-        using var context = new BunitContext();
-        var service = Configure(context);
-        var current = OperatorUiTestData.Operations();
-        service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(current with
-            {
-                Summary = current.Summary with
-                {
-                    EnvironmentalDelivery = current.Summary.EnvironmentalDelivery with
-                    {
-                        Value = current.Summary.EnvironmentalDelivery.Value with { RetryCount = 1 }
-                    }
-                }
-            }));
-        var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() =>
-        {
-            var item = cut.Find(".ops-attention-item.info");
-            StringAssert.Contains(item.TextContent, "One environmental delivery is retrying", StringComparison.Ordinal);
-            Assert.AreEqual("/operations/delivery", item.QuerySelector("a")!.GetAttribute("href"));
-        });
-    }
-
-    [TestMethod]
-    public void QuarantinedArtifact_LinksToQuarantineWithoutInlineActions()
-    {
-        using var context = new BunitContext();
-        var service = Configure(context);
-        service.OperationsHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations(
-                artifactQuarantine: [new OperatorOutboxItem("Artifact", "Quarantined", "raw-ingress", "Preview",
-                    1, 100, OperatorUiTestData.Now, "invalid-source", "replay-token", "abandon-token")])));
-        var cut = context.Render<OperationsPage>();
-        cut.WaitForAssertion(() =>
-        {
-            Assert.AreEqual("Review", cut.Find(".ops-attention-item a[href='/operations/quarantine']").TextContent);
-            Assert.IsEmpty(cut.FindAll("button[id$='-abandon']"));
-            Assert.IsEmpty(cut.FindAll("button[id$='-replay']"));
         });
     }
 

@@ -15,7 +15,6 @@ services:
       CameraAgent__ConfigFilePath: /run/hvo/cameraagent.json
       CameraAgent__RawIngressRoot: /var/lib/hvo/data/agent
       CameraAgent__AcceptanceFaultControlRoot: /var/lib/hvo/data/agent/acceptance-faults
-      CameraAgent__AcceptanceCentralAttemptLogPath: /var/lib/hvo/data/agent/central-http-attempts.log
       Catalog__Root: /var/lib/hvo/data/catalog
       Catalog__RequiredCatalogId: hyg-v42-production
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}

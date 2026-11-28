@@ -34,7 +34,7 @@ public sealed partial class ProcessingNodeOptionsTests
                         Assert.AreEqual(value, ProcessingNodeOptionsCodec.Decode(descriptor, result.Options.Value).Get(option.Key).Value.AsNullableWholeNumber());
                         var graph = Graph(Node("layer", descriptor.StepAlias, descriptor.StepVersion, result.Options.Value.GetRawText()));
                         Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(graph));
-                        foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
+                        foreach (var host in new[] { ProcessingGraphHosts.CameraAgent })
                             Assert.AreEqual(ProcessingGraphCompiler.Compile(graph, new(host, [])).Plan!.PlanIdentitySha256,
                                 ProcessingGraphCompiler.Compile(RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, graph), new(host, [])).Plan!.PlanIdentitySha256);
                     }

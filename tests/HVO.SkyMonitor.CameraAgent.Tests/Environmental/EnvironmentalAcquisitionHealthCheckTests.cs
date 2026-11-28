@@ -35,7 +35,7 @@ public sealed class EnvironmentalAcquisitionHealthCheckTests
     [TestMethod]
     public async Task DisabledAcquisitionIsHealthyWithoutReadingJournal()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var check = new EnvironmentalAcquisitionHealthCheck(
             store,
             store,
@@ -76,7 +76,7 @@ public sealed class EnvironmentalAcquisitionHealthCheckTests
                 Sources = [source]
             }
         };
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch));
         var check = new EnvironmentalAcquisitionHealthCheck(
             store, store, Options.Create(configured), new FixedTimeProvider(Epoch));
         Assert.AreEqual(
@@ -128,7 +128,7 @@ public sealed class EnvironmentalAcquisitionHealthCheckTests
             }
         };
         var clock = new MutableTimeProvider(Epoch);
-        using var store = new SqliteEnvironmentalObservationOutbox(clock);
+        using var store = new SqliteEnvironmentalObservationStore(clock);
         var check = new EnvironmentalAcquisitionHealthCheck(store, store, Options.Create(configured), clock);
         await RecordProducedAsync(store, source, Epoch, Epoch.AddSeconds(45), Epoch.AddSeconds(30)).ConfigureAwait(false);
         Assert.AreEqual(
@@ -150,7 +150,7 @@ public sealed class EnvironmentalAcquisitionHealthCheckTests
     }
 
     private async Task RecordProducedAsync(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         EnvironmentalSourceConfiguration source,
         DateTimeOffset observedAtUtc,
         DateTimeOffset staleAfterUtc,

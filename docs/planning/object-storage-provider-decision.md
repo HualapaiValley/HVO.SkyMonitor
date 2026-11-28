@@ -1,5 +1,8 @@
 # LogicHost Object-Storage Provider Decision
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 Status date: 2026-09-05
 
 Decision owner: `RM-016`, epic [#499](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/499)

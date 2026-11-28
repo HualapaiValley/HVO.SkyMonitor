@@ -14,14 +14,8 @@ internal sealed class CaptureLanePolicy
         {
             Create("standard", enabled: true, required: true, ordered: true)
         };
-        definitions.Add(Create(
-            "upload",
-            !options.Value.ProvisioningStartupGate.Enabled &&
-            options.Value.CentralIntegration.Mode == CentralIntegrationMode.Enabled && configured.UploadEnabled,
-            required: true,
-            ordered: false));
         var transient = options.Value.TransientDetection;
-        if (transient.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid)
+        if (transient.Mode == TransientOperatingMode.Edge)
         {
             definitions.Add(Create("transient", enabled: true, transient.Required, ordered: true));
         }

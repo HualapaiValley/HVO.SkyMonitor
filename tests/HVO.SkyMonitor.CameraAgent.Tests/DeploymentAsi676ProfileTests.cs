@@ -202,7 +202,7 @@ public sealed class DeploymentAsi676ProfileTests
                 step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal));
             var storage = pipeline.Steps.Single(step => step.Id == "storage");
             var storageOptions = storage.Options!.Value.Deserialize<FileStorageCaptureProcessingStepOptions>(StrictJsonOptions)!;
-            Assert.IsFalse(storageOptions.QueueForUpload);
+            Assert.IsTrue(storageOptions.UpdateLatestFrame);
             CollectionAssert.AreEquivalent(
                 ExpectedStorageDependencies,
                 storage.DependsOn!.ToArray());
@@ -217,14 +217,13 @@ public sealed class DeploymentAsi676ProfileTests
     }
 
     [TestMethod]
-    public async Task StoragePolicies_SelectExactProducersAndRejectLayoutlessUploads()
+    public async Task StoragePolicies_SelectExactProducers()
     {
         var configuration = await LoadAsync("hvo-edge-01.virtual-asi676mm.full.json").ConfigureAwait(false);
         using var provider = CreateProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
 
         CameraModuleConfig WithPolicies(
-            bool queueForUpload,
             params ArtifactStoragePolicyOptions[] policies)
         {
             var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
@@ -235,7 +234,6 @@ public sealed class DeploymentAsi676ProfileTests
                         StorageRoot = "/app/data/raw",
                         RetentionDays = 1,
                         UpdateLatestFrame = true,
-                        QueueForUpload = queueForUpload,
                         Policies = policies
                     }, StrictJsonOptions)
                 }
@@ -243,39 +241,20 @@ public sealed class DeploymentAsi676ProfileTests
             return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
         }
 
-        static CameraModuleConfig WithQualityDependency(CameraModuleConfig config)
-            => config with
-            {
-                Pipeline = config.Pipeline! with
-                {
-                    Steps = config.Pipeline.Steps.Select(step => step.Id == "storage"
-                        ? step with { DependsOn = [.. step.DependsOn!, "quality"] }
-                        : step).ToArray()
-                }
-            };
-
         Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
-            false, new ArtifactStoragePolicyOptions { StepId = "final-jpeg", QueueForUpload = true })));
-        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithQualityDependency(WithPolicies(
-            false, new ArtifactStoragePolicyOptions { StepId = "quality", QueueForUpload = true }))));
-        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
-            false, new ArtifactStoragePolicyOptions { StepId = "missing", QueueForUpload = true })));
-        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
-            true, new ArtifactStoragePolicyOptions { StepId = "sky-annotation" })));
+            new ArtifactStoragePolicyOptions { StepId = "missing" })));
         Assert.ThrowsExactly<System.ComponentModel.DataAnnotations.ValidationException>(() => factory.CreateGraph(WithPolicies(
-            false,
             new ArtifactStoragePolicyOptions { StepId = "final-jpeg", RetentionDays = 1 },
             new ArtifactStoragePolicyOptions { StepId = "FINAL-JPEG", RetentionDays = 30 })));
 
         var alertFrameGraph = factory.CreateGraph(WithPolicies(
-            false, new ArtifactStoragePolicyOptions { StepId = "sky-annotation", QueueForUpload = true }));
+            new ArtifactStoragePolicyOptions { StepId = "sky-annotation" }));
         alertFrameGraph.DisposeSteps();
-        var globalWithLayoutlessOverrides = factory.CreateGraph(WithPolicies(
-            true,
-            new ArtifactStoragePolicyOptions { StepId = "final-jpeg", QueueForUpload = false },
-            new ArtifactStoragePolicyOptions { StepId = "thumbnail-large", QueueForUpload = false },
-            new ArtifactStoragePolicyOptions { StepId = "thumbnail-small", QueueForUpload = false }));
-        globalWithLayoutlessOverrides.DisposeSteps();
+        var jpegGraph = factory.CreateGraph(WithPolicies(
+            new ArtifactStoragePolicyOptions { StepId = "final-jpeg" },
+            new ArtifactStoragePolicyOptions { StepId = "thumbnail-large" },
+            new ArtifactStoragePolicyOptions { StepId = "thumbnail-small" }));
+        jpegGraph.DisposeSteps();
     }
 
     [TestMethod]
@@ -293,7 +272,6 @@ public sealed class DeploymentAsi676ProfileTests
             var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
             {
                 ConfigFilePath = path,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = Location
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
 
@@ -311,7 +289,6 @@ public sealed class DeploymentAsi676ProfileTests
         var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = Location
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

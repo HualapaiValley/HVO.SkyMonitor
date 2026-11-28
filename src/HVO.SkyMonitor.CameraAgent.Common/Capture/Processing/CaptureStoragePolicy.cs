@@ -6,7 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-/// <summary>Graph revisions cannot override the profile that also owns retention and outbox draining.</summary>
+/// <summary>Graph revisions cannot override the profile that also owns local retention.</summary>
 public static class CaptureStoragePolicy
 {
     public const string RejectionMessage = "Enabled Storage settings must match the active capture profile. Pause acquisition and finish in-flight processing before changing the local capture profile, then reconcile, validate and activate the graph before resuming. Raw captures are retained while incompatible standard processing is skipped.";
@@ -53,7 +53,7 @@ public static class CaptureStoragePolicy
         ArgumentNullException.ThrowIfNull(exception);
         var fields = (exception.ValidationResult?.MemberNames ?? [])
             .Where(static field => field is "StorageNode" or "StorageRoot" or "RetentionDays" or
-                "UpdateLatestFrame" or "QueueForUpload" or "Policies").Distinct(StringComparer.Ordinal).ToArray();
+                "UpdateLatestFrame" or "Policies").Distinct(StringComparer.Ordinal).ToArray();
         return RejectionMessage + (fields.Length > 0 ? " Differing fields: " + string.Join(", ", fields) + "." : string.Empty);
     }
 
@@ -75,7 +75,6 @@ public static class CaptureStoragePolicy
             StorageRoot = StorageRootIdentity.Key(options.StorageRoot),
             options.RetentionDays,
             options.UpdateLatestFrame,
-            options.QueueForUpload,
             // Equal-specificity overlapping selectors use the first match at runtime, so order is significant.
             Policies = (options.Policies ?? []).Select(static policy => new
             {
@@ -83,7 +82,6 @@ public static class CaptureStoragePolicy
                 policy.Role,
                 policy.Variant,
                 policy.RecipeName,
-                policy.QueueForUpload,
                 policy.RetentionDays
             }).ToArray()
         });

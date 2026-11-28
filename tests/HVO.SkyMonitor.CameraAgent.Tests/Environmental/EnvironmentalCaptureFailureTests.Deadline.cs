@@ -17,7 +17,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var fixture = await AttributionFixture.CreateAsync(250, blockCompletion: true).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         fixture.Clock.Now = Epoch;
-        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observations.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
         using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
         EnvironmentalCaptureAcquisition acquisition;
@@ -51,7 +51,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         fixture.Clock.Now = Epoch;
-        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observations.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
         using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
         var stopwatch = Stopwatch.StartNew();
@@ -91,7 +91,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         await fixture.Device.Started(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         fixture.Device.Release(2, fail: false);
         await fixture.CompletionWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observations.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
         using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
         fixture.AllowCompletionWrite.TrySetResult();
@@ -138,7 +138,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     {
         var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
-        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observations.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
         using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
         using var cancellation = new CancellationTokenSource();
@@ -193,7 +193,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     {
         var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
-        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observations.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
         using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
         using var cancellation = new CancellationTokenSource();

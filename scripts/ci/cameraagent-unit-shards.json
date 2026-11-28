@@ -30,8 +30,6 @@
     "DeploymentLocation",
     "Diagnostics",
     "Endpoints",
-    "Evidence",
-    "Fleet",
     "Gallery",
     "Modules.VirtualSky",
     "NightlyProducts",
@@ -43,7 +41,6 @@
     "Telemetry",
     "TestInfrastructure",
     "TimeLapses",
-    "Transients",
-    "Upload"
+    "Transients"
   ]
 ]

@@ -117,15 +117,13 @@ internal static class CameraAgentLifecycleEndpoints
         var continuity = await continuityReader.ReadAsync(options.Value.RawIngressRoot, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         var captureSequence = continuity.CaptureSequences.Select(static value => value.LastSequence)
-            .Append(continuity.FleetMaximumSequence ?? 0)
-            .Append(continuity.FleetNextSequence is > 0 ? continuity.FleetNextSequence.Value - 1 : 0)
+            .DefaultIfEmpty()
             .Max();
         return Results.Ok(new LifecycleStateResponse(
             summary.CaptureControl,
             summary.RawIngress,
             summary.CaptureLanes,
             summary.CaptureProcessing,
-            summary.ArtifactOutbox,
             summary.ArchivedReplay,
             captureSequence,
             ArchivedReplayCatalogIndependent: true));
@@ -271,7 +269,6 @@ internal static class CameraAgentLifecycleEndpoints
         OperationsSection<OperationsQueueState> RawIngress,
         OperationsSection<OperationsCaptureLanesState> CaptureLanes,
         OperationsSection<OperationsQueueState> CaptureProcessing,
-        OperationsSection<OperationsQueueState> ArtifactOutbox,
         OperationsSection<OperationsArchivedReplayState> ArchivedReplay,
         long CaptureSequence,
         // Declares that archived replay never builds a scene from the mounted catalog (the replay guard in

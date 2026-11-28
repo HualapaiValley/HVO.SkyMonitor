@@ -1,5 +1,8 @@
 # Requirements-Driven CI and Deployment Target Architecture
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 This proposal records the former split-host CI topology. See the [current CI runbook](../runbooks/ci-pipeline.md) for the active gates.
 
 Issue #877. Parent epic #876. This document is the approved current-state evidence map and target design that must precede any change to protected CI or deployment authority. It writes design and evidence only; it does not rewrite CI and does not translate the deployment harness.

@@ -1,5 +1,8 @@
 # All-Sky Architecture Handoff
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 This handoff gives another agent enough context to brainstorm product,
 architecture, workflow, and implementation ideas for HVO.SkyMonitor without
 needing to first learn the internal code paths. It is intentionally high level.

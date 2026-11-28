@@ -109,7 +109,6 @@ public sealed class CameraAgentSkyMapProjection(
             location.Version <= 1
                 ? CameraAgentSkyMapLocationOrigin.StartupSeed
                 : CameraAgentSkyMapLocationOrigin.SucceededVersion,
-            deploymentLocationStore?.Staged is not null,
             location.LatitudeDegrees,
             location.LongitudeDegrees,
             location.ElevationMeters,

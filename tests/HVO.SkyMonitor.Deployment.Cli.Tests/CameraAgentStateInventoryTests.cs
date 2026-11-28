@@ -6,13 +6,9 @@ using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentRep
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// The installer's snapshot inventory against the previous-release store fixture (#1314 R8). The CameraAgent side
-/// (<c>PreviousReleaseStoreReadabilityTests</c>) proves the runtime keeps its SQLite stores at exactly the fixture's
-/// locations, plus the ones that release declares it adds, for the fixture's storage roots; this side proves the
-/// installer finds every one of those fixture locations from configuration alone, so a store the runtime adds without
-/// declaring it, or moves, fails one side or the other. The orbital elements, space-weather and calibration-family stores
-/// are locations the snapshot deliberately leaves out (<see cref="CameraAgentStateLayout.SqliteStores"/>), so they are
-/// never expected here.
+/// Checks that the installer locates the snapshot stores in the synthetic fixture from configuration and schedule
+/// revisions. The fixture includes orbital elements, space weather and calibration families, which the snapshot
+/// excludes (<see cref="CameraAgentStateLayout.SqliteStores"/>).
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]

@@ -3,10 +3,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -70,7 +69,7 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
                     return Json(sample is null ? null : new { sample.StartedUtc, sample.FrameStored, sample.Exposure, sample.ProcessingLatency, sample.LoopDuration });
                 })),
             Section("fleet capture", () => ReadSnapshot(budget,
-                services.GetRequiredService<FleetRuntimeState>(), static (state, remaining) =>
+                services.GetRequiredService<CaptureRuntimeState>(), static (state, remaining) =>
                 {
                     if (!state.TrySnapshot(remaining, out var snapshot)) return "unavailable(timeout)";
                     var fleet = snapshot.Capture;

@@ -12,7 +12,6 @@ public sealed class InstallerControlDrainClientTests
     [DataRow("rawIngress")]
     [DataRow("captureLanes")]
     [DataRow("captureProcessing")]
-    [DataRow("artifactOutbox")]
     public async Task ControlDrainWaitsForEveryAcceptedQueueAndSendsStableExpectedVersionCommand(string pendingSection)
     {
         var operationId = Guid.NewGuid();
@@ -20,8 +19,8 @@ public sealed class InstallerControlDrainClientTests
         var client = new CameraAgentLifecycleClient(new Uri("http://virtual-cameraagent"), handler,
             new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(1)));
         var boundary = await client.PauseControlAndDrainAsync(operationId, 7, "installation-test-token", CancellationToken.None);
-        Assert.AreEqual(2, handler.StateReads, "An unleased but queued capture or delivery is not a completed control drain.");
-        Assert.AreEqual(0L, boundary.RawPending + boundary.LanePending + boundary.ProcessingPending + boundary.OutboxPending);
+        Assert.AreEqual(2, handler.StateReads, "An unleased but queued capture is not a completed control drain.");
+        Assert.AreEqual(0L, boundary.RawPending + boundary.LanePending + boundary.ProcessingPending);
     }
 
     [TestMethod]

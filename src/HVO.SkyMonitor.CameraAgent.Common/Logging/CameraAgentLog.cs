@@ -85,15 +85,14 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2011, Level = LogLevel.Information, Message = "Created camera module {ModuleType} ({Implementation})")]
     public static partial void CameraModuleCreated(this ILogger logger, string moduleType, string implementation);
 
-    [LoggerMessage(EventId = 2012, Level = LogLevel.Debug, Message = "Capture cycle completed in {ElapsedMilliseconds} ms (Interval {IntervalMilliseconds} ms, Exposure {ExposureMilliseconds} ms, Gain {Gain}, Mode {Mode}, ImmediateUpload {ImmediateUpload})")]
+    [LoggerMessage(EventId = 2012, Level = LogLevel.Debug, Message = "Capture cycle completed in {ElapsedMilliseconds} ms (Interval {IntervalMilliseconds} ms, Exposure {ExposureMilliseconds} ms, Gain {Gain}, Mode {Mode})")]
     public static partial void CaptureCycleCompleted(
         this ILogger logger,
         double ElapsedMilliseconds,
         double IntervalMilliseconds,
         double ExposureMilliseconds,
         double Gain,
-        CaptureMode Mode,
-        bool ImmediateUpload);
+        CaptureMode Mode);
 
     [LoggerMessage(EventId = 2013, Level = LogLevel.Warning, Message = "Capture processing step {Step} failed for frame captured at {TimestampUtc}")]
     public static partial void CaptureProcessingStepFailed(this ILogger logger, string Step, DateTimeOffset TimestampUtc, Exception exception);

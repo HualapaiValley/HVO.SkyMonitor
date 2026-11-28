@@ -29,7 +29,7 @@ public sealed class FileCameraAgentConfigurationLoader(
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
     internal static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
-    private const string SampleAgentId = "replace-with-registered-device-id";
+    private const string SampleAgentId = "use-local-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
@@ -197,33 +197,10 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException("Camera agent configuration is invalid.");
         }
 
-        var configuredAgentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
-        var agentId = configuredAgentId;
-        if (_options.CentralIntegration.Mode == CentralIntegrationMode.Enabled)
+        var agentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
+        if ((string.IsNullOrWhiteSpace(agentId) || agentId == SampleAgentId) && captureAgentIdentityProvider is not null)
         {
-            if (captureAgentIdentityProvider is null)
-            {
-                throw new InvalidOperationException(
-                    "Central integration requires a persistent CameraAgent device identity provider.");
-            }
-
-            var provisionedAgentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(provisionedAgentId))
-            {
-                throw new InvalidOperationException(
-                    "The persistent CameraAgent device identity does not contain a valid device identifier.");
-            }
-
-            if (string.IsNullOrWhiteSpace(configuredAgentId) ||
-                string.Equals(configuredAgentId, SampleAgentId, StringComparison.Ordinal))
-            {
-                agentId = provisionedAgentId;
-            }
-            else if (!string.Equals(configuredAgentId, provisionedAgentId, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    "Configured AgentId does not match the persistent CameraAgent device identity.");
-            }
+            agentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
         }
         var locationSeed = new DeploymentLocationSeed(
             _options.DeploymentLocation.LocationId,
@@ -294,7 +271,7 @@ public sealed class FileCameraAgentConfigurationLoader(
 
         if (string.IsNullOrWhiteSpace(config.AgentId))
         {
-            throw new InvalidOperationException("AgentId must be specified and match the registered device identity.");
+            throw new InvalidOperationException("An AgentId or a local device identity is required.");
         }
 
         var locationValidation = config.DeploymentLocation?.Validate()

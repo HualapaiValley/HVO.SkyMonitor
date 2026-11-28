@@ -1,5 +1,7 @@
 # Fireball and Transient Detection Plan
 
+> Historical design for the original transient workflow. Current CameraAgent supports local detection and review of retained evidence.
+
 ## 1. Scope
 
 This document defines the subsystem architecture for optional meteor, fireball,

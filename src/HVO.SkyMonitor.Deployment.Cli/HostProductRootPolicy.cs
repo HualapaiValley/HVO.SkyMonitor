@@ -285,7 +285,7 @@ internal static class HostProductRootPolicy
 
     /// <summary>
     /// Writes the policy so it names <paramref name="requestedRoot"/>. Refuses to move a production root that already
-    /// holds CameraAgent or LogicHost instances, creates only the final product-root directory when its validated
+    /// holds CameraAgent instances, creates only the final product-root directory when its validated
     /// parent exists, and publishes the file atomically. The caller must already hold the policy owner's authority.
     /// With <paramref name="repairMount"/>, only the root already named by a trusted policy is accepted, it must
     /// already exist, and stale mount metadata is replaced by the mount currently holding that same root.
@@ -405,24 +405,18 @@ internal static class HostProductRootPolicy
     }
 
     /// <summary>
-    /// Refuses when <paramref name="productRoot"/> holds any CameraAgent or LogicHost instance entry, including a purge
+    /// Refuses when <paramref name="productRoot"/> holds any CameraAgent instance entry, including a purge
     /// tombstone. Moving such a root would orphan every instance, whose manifests and Compose files name it.
     /// </summary>
     internal static void EnsureHoldsNoInstances(string productRoot)
     {
-        foreach (var name in new[] { "cameraagents", "logichosts" })
+        var path = Path.Combine(productRoot, "cameraagents");
+        var identity = NativeLinux.TryGetNodeIdentity(path);
+        if (identity is not null &&
+            (identity.Type != DirectoryType || Directory.EnumerateFileSystemEntries(path).Any()))
         {
-            var path = Path.Combine(productRoot, name);
-            var identity = NativeLinux.TryGetNodeIdentity(path);
-            if (identity is null)
-            {
-                continue;
-            }
-            if (identity.Type != DirectoryType || Directory.EnumerateFileSystemEntries(path).Any())
-            {
-                throw new InstallerException(
-                    $"The current product root '{productRoot}' already holds instances under '{path}'; the product root cannot be moved while instances depend on it.");
-            }
+            throw new InstallerException(
+                $"The current product root '{productRoot}' already holds instances under '{path}'; the product root cannot be moved while instances depend on it.");
         }
     }
 

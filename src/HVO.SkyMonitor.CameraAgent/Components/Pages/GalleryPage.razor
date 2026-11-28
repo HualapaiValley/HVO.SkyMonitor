@@ -22,7 +22,7 @@
         <div class="gallery-heading-facts">
             <span aria-live="polite" aria-atomic="true"><strong>@VisibleItems.Count</strong> on this page</span>
             <span><strong>@ArtifactCount</strong> artifacts on this page</span>
-            <span title="Prospectively recorded local candidate links; central event review is unavailable"><strong>@(CandidateLinksAvailable ? LinkedCandidateCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : LinkedCandidateCount > 0 ? $"{LinkedCandidateCount}+" : "Unavailable")</strong> linked local candidates on this page</span>
+            <span title="Prospectively recorded local candidate links"><strong>@(CandidateLinksAvailable ? LinkedCandidateCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : LinkedCandidateCount > 0 ? $"{LinkedCandidateCount}+" : "Unavailable")</strong> linked local candidates on this page</span>
         </div>
     </header>
 

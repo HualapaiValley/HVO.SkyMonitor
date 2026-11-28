@@ -49,8 +49,7 @@ public sealed record ReplayCandidateArtifactView(
     string ChecksumSha256,
     long? ByteLength,
     string Availability,
-    string RetentionState,
-    string DeliveryAvailability);
+    string RetentionState);
 
 public sealed record ReplayCandidateRevisionView(
     string RevisionId,
@@ -410,8 +409,7 @@ internal sealed class CameraAgentReplayUiService(
             artifact.ChecksumSha256,
             artifact.ByteLength,
             artifact.Availability,
-            state?.RetentionState ?? "Unavailable",
-            state?.DeliveryAvailability ?? "Unavailable");
+            state?.RetentionState ?? "Unavailable");
     }
 
     /// <summary>Terminal replay states never poll again and never offer cancellation.</summary>

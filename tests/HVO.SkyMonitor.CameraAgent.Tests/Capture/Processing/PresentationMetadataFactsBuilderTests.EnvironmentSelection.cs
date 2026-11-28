@@ -26,7 +26,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task EnvironmentProducerDeduplicatesRepeatedSourceOccurrencesWithEnabledAcquisition()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var kinds = new EnvironmentPresentationLayerProcessingStepOptions().EnvironmentalKinds;
         var acquisition = EnvironmentSelectionAcquisition(kinds);
         System.ComponentModel.DataAnnotations.Validator.ValidateObject(acquisition,
@@ -90,7 +90,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task EnvironmentSelectionDraftActivationAndRollbackReachRetainedProducerAndSharedReconstruction()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var temperature = Fact(Guid.Parse("16630000-0000-0000-0000-000000000001"), EnvironmentalObservationKind.AirTemperature, 12);
         var humidity = Fact(Guid.Parse("16630000-0000-0000-0000-000000000002"), EnvironmentalObservationKind.RelativeHumidity, 45, staleAfter: Epoch.AddSeconds(1));
         await CommitAsync(store, temperature).ConfigureAwait(false);

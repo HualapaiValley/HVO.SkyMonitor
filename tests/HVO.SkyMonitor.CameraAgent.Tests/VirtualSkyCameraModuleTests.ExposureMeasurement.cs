@@ -13,7 +13,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -119,7 +118,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
                     new FileStorageCaptureProcessingStepOptions
                     {
-                        StorageRoot = Path.Combine(root, "storage"), QueueForUpload = false, UpdateLatestFrame = false
+                        StorageRoot = Path.Combine(root, "storage"), UpdateLatestFrame = false
                     }))
             };
             if (calibration != "Omitted")
@@ -555,7 +554,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         {
                             var prediction = execution.Nodes.Single(item => item.NodeId == ExposureCatalogPredictionProducts.StepAlias);
                             Assert.Contains(Assert.ContainsSingle(prediction.Outputs).ArtifactId, associationOutput.SourceArtifactIds);
-                            await AssertAuthoritativeSceneUploadAsync(provider, lease.Context, execution).ConfigureAwait(false);
+                            await AssertAuthoritativeLocalScenesAsync(provider, lease.Context, execution).ConfigureAwait(false);
                         }
                         Assert.Contains(artifactId, associationOutput.SourceArtifactIds);
                         var fitting = execution.Nodes.Single(item => item.NodeId == "fit");
@@ -695,7 +694,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private async Task AssertAuthoritativeSceneUploadAsync(ServiceProvider provider, CaptureLaneHandlerContext context,
+    private static async Task AssertAuthoritativeLocalScenesAsync(ServiceProvider provider, CaptureLaneHandlerContext context,
         ProcessingGraphExecutionDetail execution)
     {
         var token = CancellationToken.None;
@@ -724,53 +723,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         CollectionAssert.AreEqual(new[] { raw.Descriptor.Artifact.ArtifactId }, canonical.SourceArtifactIds.ToArray());
         CollectionAssert.AreEqual(canonical.SourceArtifactIds.ToArray(), prediction.SourceArtifactIds.ToArray());
 
-        var upload = provider.GetRequiredService<UploadCaptureLaneHandler>();
-        var outbox = provider.GetRequiredService<IArtifactOutbox>();
-        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
-        var root = persistence.StorageRoot;
-        var result = await upload.HandleAsync(context with { Lane = "upload" }, token).ConfigureAwait(false);
-        var queued = await outbox.GetRetentionHoldsAsync(root, token).ConfigureAwait(false);
-        TestContext.WriteLine(JsonSerializer.Serialize(new
-        {
-            raw.Descriptor.Capture.CaptureId,
-            Raw = raw.Descriptor.Artifact.ArtifactId,
-            Canonical = new
-            {
-                canonicalNode.NodeId,
-                canonical.ArtifactId,
-                canonical.Variant,
-                canonical.OutputIdentitySha256,
-                canonicalOutput.ProductSchemaVersion,
-                canonicalOutput.Artifact.Recipe.Name
-            },
-            Prediction = new
-            {
-                predictionNode.NodeId,
-                prediction.ArtifactId,
-                prediction.Variant,
-                prediction.OutputIdentitySha256,
-                predictionOutput.ProductSchemaVersion,
-                predictionOutput.Artifact.Recipe.Name
-            },
-            Outcome = result.Outcome.ToString(),
-            result.Reason,
-            EnqueuedCount = queued.Count,
-            Enqueued = queued.Select(hold => hold.ArtifactId)
-        }));
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-        CollectionAssert.AreEquivalent(new[] { raw.Descriptor.Artifact.ArtifactId, canonical.ArtifactId },
-            queued.Select(hold => hold.ArtifactId).ToArray());
-        var manifest = await persistence.FindCommittedSceneUploadAsync(raw.Descriptor, token).ConfigureAwait(false);
-        Assert.IsNotNull(manifest);
-        Assert.AreEqual(canonical.ArtifactId, manifest.Descriptor.Artifact.ArtifactId);
-        Assert.AreEqual(canonical.OutputIdentitySha256, manifest.Descriptor.OutputIdentitySha256);
-        Assert.AreEqual(canonicalNode.NodeId, manifest.ProducerStepId);
-        var enqueued = await outbox.ReadAsync(root, manifest.IdempotencyKey, token).ConfigureAwait(false);
-        Assert.IsNotNull(enqueued);
-        CollectionAssert.AreEqual(StructuredProcessingProductManifestJson.Serialize(manifest), enqueued.ManifestBytes.ToArray());
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-            await persistence.CreateSceneUploadManifestAsync(raw.Descriptor, predictionOutput, token).ConfigureAwait(false))
-            .ConfigureAwait(false);
+
     }
 
     private static async Task AssertNamedPredictionDependenciesAsync(ServiceProvider provider, CameraModuleConfig active,
@@ -1118,7 +1071,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
                             new FileStorageCaptureProcessingStepOptions
                             {
-                                StorageRoot = Path.Combine(root, "storage"), QueueForUpload = false, UpdateLatestFrame = false
+                                StorageRoot = Path.Combine(root, "storage"), UpdateLatestFrame = false
                             }))
                     ]
                 }

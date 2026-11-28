@@ -11,7 +11,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -24,7 +23,6 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("storageRoot")]
     [DataRow("retentionDays")]
-    [DataRow("queueForUpload")]
     [DataRow("updateLatestFrame")]
     [DataRow("policies")]
     public async Task StoragePolicyRejectsLocalDraftDivergenceWithoutChangingHostPlans(string member)
@@ -52,7 +50,6 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("storageRoot")]
     [DataRow("retentionDays")]
-    [DataRow("queueForUpload")]
     public async Task StoragePolicyRejectsLegacyValidateActivateRollbackAndRecoveryAcrossRestart(string member)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-storage-policy-legacy");
@@ -132,7 +129,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var current = stale with
             {
                 Pipeline = DivergentStoragePipeline(
-                DivergentStoragePipeline(stale.Pipeline, root, "retentionDays"), root, "queueForUpload")
+                DivergentStoragePipeline(stale.Pipeline, root, "retentionDays"), root, "updateLatestFrame")
             };
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(stale, CancellationToken.None).ConfigureAwait(false);
@@ -147,8 +144,8 @@ public sealed partial class ProcessingGraphOperationsTests
             var selected = await operations.SelectLiveRevisionAsync(current, false, CancellationToken.None).ConfigureAwait(false);
             var storage = selected.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value;
             Assert.AreEqual(90, storage.GetProperty("RetentionDays").GetInt32());
-            Assert.IsTrue(storage.GetProperty("QueueForUpload").GetBoolean());
-            AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), current, root, 90, true);
+            Assert.IsFalse(storage.GetProperty("UpdateLatestFrame").GetBoolean());
+            AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), current, root, 90);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -232,8 +229,8 @@ public sealed partial class ProcessingGraphOperationsTests
         { Options = ChangeStorageMember(step.Options!.Value, member, member switch
         {
             "storageRoot" => JsonSerializer.Serialize(Path.Combine(root, "edited")),
-            "retentionDays" => "90", "queueForUpload" => "true", "updateLatestFrame" => "false",
-            _ => "[{\"Role\":\"Raw\",\"QueueForUpload\":true}]"
+            "retentionDays" => "90", "updateLatestFrame" => "false",
+            _ => "[{\"Role\":\"Raw\",\"RetentionDays\":90}]"
         }) } : step)]
         };
 
@@ -246,22 +243,19 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     private static void AssertProfileStoragePlans(ICameraAgentConfigurationAccessor accessor, CameraModuleConfig profile, string root,
-        int retentionDays = 30, bool queueForUpload = false)
+        int retentionDays = 30)
     {
         var host = new CameraAgentHostOptions
         {
             RawIngressRoot = root,
-            CentralIntegration = new() { Mode = CentralIntegrationMode.Enabled },
-            CaptureDistribution = new() { UploadEnabled = false }
+            CaptureDistribution = new() { }
         };
-        using var retention = new RetentionBackgroundService(accessor, Options.Create(host), TimeProvider.System,
-            Mock.Of<IArtifactOutbox>(), Mock.Of<IStorageCapacityProvider>(), new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance);
+        using var retention = new RetentionBackgroundService(accessor, Options.Create(host), TimeProvider.System, Mock.Of<IStorageCapacityProvider>(), new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance);
         var planner = typeof(RetentionBackgroundService).GetMethod("BuildRetentionPlans", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var plans = (List<StorageRetentionPlan>)planner.Invoke(retention, [profile])!;
         Assert.HasCount(1, plans);
         Assert.AreEqual(Path.GetFullPath(root), plans[0].StorageRoot);
         Assert.AreEqual(retentionDays, plans[0].RetentionDays);
-        CollectionAssert.AreEqual(queueForUpload ? new[] { Path.GetFullPath(root) } : [],
-            ArtifactOutboxDrainService.ResolveStorageRoots(profile, host).ToArray());
+
     }
 }

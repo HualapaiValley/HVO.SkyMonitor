@@ -762,7 +762,6 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingBytes"] = (8L * 1024 * 1024 * 1024).ToString(
                     System.Globalization.CultureInfo.InvariantCulture)

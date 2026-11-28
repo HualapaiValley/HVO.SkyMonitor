@@ -917,7 +917,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
-        await using var host = await CameraAgentKestrelFixture.CreateAsync(enableCentralIntegration: true).ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
         await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
@@ -986,7 +986,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         await page.SetViewportSizeAsync(1440, 900).ConfigureAwait(false);
         await AssertOperationsAndCaptureControlAsync(page).ConfigureAwait(false);
-        await AssertQuarantineAsync(page).ConfigureAwait(false);
         foreach (var width in new[] { 1440, 390, 320 })
         {
             await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
@@ -1016,8 +1015,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
-        await using var host = await CameraAgentKestrelFixture.CreateAsync(
-            enableCentralIntegration: true).ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
 
@@ -1054,7 +1052,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await AssertCurrentSkyAsync(page).ConfigureAwait(false);
         await AssertOperationsAndCaptureControlAsync(page).ConfigureAwait(false);
         var detailUrl = await AssertGalleryAsync(page, context, host).ConfigureAwait(false);
-        await AssertQuarantineAsync(page).ConfigureAwait(false);
         await AssertSystemNavigationAsync(page).ConfigureAwait(false);
         await AssertResponsiveAndAccessibleAsync(page, detailUrl).ConfigureAwait(false);
 
@@ -1075,8 +1072,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
-            useCalibrationLibrary: true,
-            enableCentralIntegration: true).ConfigureAwait(false);
+            useCalibrationLibrary: true).ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
         await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
@@ -2627,33 +2623,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await AssertPageStructureAsync(page, "/system").ConfigureAwait(false);
     }
 
-    private static async Task AssertQuarantineAsync(IPage page)
-    {
-        await page.GotoAsync("/operations/quarantine?kind=Artifact").ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Quarantine", Level = 1 })).ConfigureAwait(false);
-        var olderRecords = page.GetByRole(AriaRole.Button, new() { Name = "Older records" });
-        await VisibleAsync(olderRecords).ConfigureAwait(false);
-        if (await olderRecords.IsEnabledAsync().ConfigureAwait(false))
-        {
-            await olderRecords.ClickAsync().ConfigureAwait(false);
-            await page.WaitForFunctionAsync("() => new URL(location.href).searchParams.has('cursor')").ConfigureAwait(false);
-        }
-
-        var action = page.GetByRole(AriaRole.Button, new() { Name = "Review abandon" }).First;
-        await VisibleAsync(action).ConfigureAwait(false);
-        var triggerId = await action.GetAttributeAsync("id").ConfigureAwait(false);
-        var dialog = page.Locator("dialog.confirmation");
-        await OpenDialogAsync(action, dialog).ConfigureAwait(false);
-        Assert.IsTrue(await dialog.EvaluateAsync<bool>("element => element.matches(':modal') && element.contains(document.activeElement)")
-            .ConfigureAwait(false));
-        await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
-        Assert.AreEqual(triggerId, await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
-        await OpenDialogAsync(action, dialog).ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Confirm abandon" }).ClickAsync().ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".receipt[role='status']")).ConfigureAwait(false);
-    }
-
     private static async Task AssertResponsiveAndAccessibleAsync(IPage page, string detailUrl)
     {
         var capture = await ReadGalleryCaptureAsync(page, detailUrl).ConfigureAwait(false);
@@ -2673,7 +2642,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             ("/", "Current sky"),
             ("/operations", "Operations"),
-            ("/operations/quarantine?kind=Artifact", "Quarantine browser"),
+            ("/operations/quarantine?kind=RawEvidence", "Quarantine and retry browser"),
             ("/gallery?pageSize=24", "Archive"),
             (detailUrl, $"Capture #{capture.CaptureSequence}"),
             ("/schedule", "Schedule"),
@@ -2682,13 +2651,11 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             ("/operations/health", "Health & diagnostics"),
             ("/operations/control", "System control"),
             ("/operations/software", "Software & catalog"),
-            ("/operations/registration", "Registration"),
             ("/operations/camera", "Camera & rig"),
             ("/operations/pipeline", "Pipeline"),
             ("/operations/environment", "Environment"),
             ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/delivery", "Delivery"),
             ("/operations/storage", "Storage & retention"),
             ("/operations/site", "Observatory & location"),
             ("/operations/pipeline/executions", "Processing executions"),
@@ -2763,7 +2730,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
     private static readonly HashSet<string> WorkspaceFormRoutes = new(StringComparer.Ordinal)
     {
-        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/delivery", "/operations/storage",
+        "/schedule", "/operations/camera", "/operations/pipeline", "/operations/automations", "/operations/storage",
         "/operations/site",
         "/operations/pipeline/executions", "/operations/pipeline/graphs", "/operations/pipeline/graphs/new"
     };

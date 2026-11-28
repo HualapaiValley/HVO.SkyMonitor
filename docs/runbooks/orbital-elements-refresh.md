@@ -74,7 +74,7 @@ an operator command can bypass it.
   cache or distributor is future topology; #528 provides none.
 - **No redistribution.** Raw and quarantined provider bytes stay on this CameraAgent's
   host, under the store root. #528 never sends the feed or its quarantine evidence to
-  LogicHost or any other service. Local `cameraagent backup` archives do contain them,
+  any other service. Local `cameraagent backup` archives do contain them,
   because the store, `raw/` and `quarantine/` included, lies inside the instance a
   backup copies. Keep those archives owner-only, and do not redistribute them or share
   them with third parties. See [Backup And Restore](#backup-and-restore).
@@ -811,7 +811,7 @@ a request that the provider policy forbids.
 Use this to remove orbital data from a CameraAgent, for example when you retire
 acquisition or decommission the device. Everything #528 stores, provider bytes
 included, lives under the store root `<RawIngressRoot>/.orbital-elements/`. Raw and
-quarantined provider bytes are never sent to LogicHost or any other service, so there
+quarantined provider bytes are never sent to any other service, so there
 is no central copy to remove. Local `cameraagent backup` archives are the exception:
 every archive taken while the store existed contains it, `raw/` and `quarantine/`
 included (see [Backup And Restore](#backup-and-restore)). If your purpose requires the
@@ -847,7 +847,7 @@ An archive of the store, like a `cameraagent backup` archive, holds `raw/` and
 licence for the feed:
 
 - Keep the archive on owner-controlled storage.
-- Do not publish it, attach it to an issue or support ticket, upload it to LogicHost or
+- Do not publish it, attach it to an issue or support ticket, upload it to another service or
   another site, or include it in a release or installer.
 - Share checksums, manifest identities and counts instead of bytes.
 

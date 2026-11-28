@@ -2,7 +2,7 @@
 
 `cloud-assessment-v1` is the canonical image-derived cloud evidence envelope emitted
 by the `cloud-assessment` recipe as one layoutless `Metadata` product. It is shared by
-CameraAgent and LogicHost and does not represent a reconstructable camera frame.
+CameraAgent. It describes the assessment and its reference lineage.
 
 ## Evidence
 
@@ -56,18 +56,6 @@ panel; see [Cloud assessment options](../runbooks/cloud-assessment-options.md) f
 the exact alias/version, defaults, bounds and explicit activation/rollback flow.
 The retained reference path and provisioning remain opaque and unchanged.
 
-LogicHost designates one reconstructable raw reference per device/rig through
-`PUT /api/v1.0/devices/{devicePublicId}/rigs/{rigId}/clear-reference`. Automatic central
-scheduling creates an assessment only when that designation is usable. Job creation
-freezes the current and reference artifact IDs, a canonical capture-time environmental
-snapshot (including an explicit missing state), and the resulting bound recipe identity.
-Retries and designation or weather changes do not reselect those inputs.
-
-When the canonical central preview and cloud assessment are both available, LogicHost
-schedules `weather-cloud-overlay` with the exact preview and assessment artifacts and a
-copy of the assessment's frozen environmental input. Layoutless assessment metadata is
-verified from its persisted processing evidence and passed to the shared recipe without
-inventing a camera-frame layout.
 
 ## Validation
 

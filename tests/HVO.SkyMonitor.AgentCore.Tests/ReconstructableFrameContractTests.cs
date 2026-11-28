@@ -1,7 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 
-namespace HVO.SkyMonitor.Tests.LogicHost.Contracts;
+namespace HVO.SkyMonitor.AgentCore.Tests;
 
 [TestClass]
 [TestCategory("Unit")]

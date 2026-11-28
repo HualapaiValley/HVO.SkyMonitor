@@ -171,6 +171,24 @@ fi
 comparison_dir="$(mktemp -d)"
 trap 'rm -rf "$comparison_dir"' EXIT
 
+# Issue #2178 deletes these component-only sources. A reintroduced source
+# takes its existing floor, and a moved source keeps its floor at the new path.
+removed_cameraagent_floors=(
+  'HVO.SkyMonitor.CameraAgent.Common/Fleet/SqliteFleetStatusOutbox.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactUploadClient.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/SqliteArtifactOutbox.cs'
+)
+removed_floors_json="$(
+  for path in "${removed_cameraagent_floors[@]}"; do
+    if [[ ! -e "src/$path" && ! -L "src/$path" ]]; then
+      printf '%s\n' "$path"
+    fi
+  done | jq -Rnc '[inputs]'
+)"
+environmental_outbox='HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationOutbox.cs'
+environmental_store='HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationStore.cs'
+
 for baseline in "${baselines[@]}"; do
   if ! git cat-file -e "origin/$base_ref:$baseline" 2>/dev/null; then
     printf 'New coverage baseline introduced by this pull request: %s\n' "$baseline"
@@ -178,15 +196,35 @@ for baseline in "${baselines[@]}"; do
   fi
 
   git show "origin/$base_ref:$baseline" > "$comparison_dir/base.json"
-  jq --exit-status --slurpfile base "$comparison_dir/base.json" '
+  component_retirements='[]'
+  renamed_environmental=''
+  if [[ "$baseline" == scripts/coverage/baseline.cameraagent.json ]]; then
+    component_retirements="$removed_floors_json"
+    if [[ ! -e "src/$environmental_outbox" && ! -L "src/$environmental_outbox" ]]; then
+      renamed_environmental="$environmental_store"
+    fi
+  fi
+  jq --exit-status --slurpfile base "$comparison_dir/base.json" \
+    --argjson retired "$component_retirements" \
+    --arg oldEnvironmental "$environmental_outbox" --arg renamedEnvironmental "$renamed_environmental" '
     . as $candidate |
     $candidate.aggregate.line >= $base[0].aggregate.line and
     $candidate.aggregate.branch >= $base[0].aggregate.branch and
     $candidate.aggregate.tolerancePercentagePoints <= $base[0].aggregate.tolerancePercentagePoints and
     all($base[0].files | to_entries[];
-      $candidate.files[.key] != null and
-      $candidate.files[.key].line >= .value.line and
-      $candidate.files[.key].branch >= .value.branch)
+      .key as $path |
+      if ($retired | index($path)) != null then
+        true
+      else
+        (if $path == $oldEnvironmental and $renamedEnvironmental != "" then
+           $renamedEnvironmental
+         else
+           $path
+         end) as $candidatePath |
+        $candidate.files[$candidatePath] != null and
+        $candidate.files[$candidatePath].line >= .value.line and
+        $candidate.files[$candidatePath].branch >= .value.branch
+      end)
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline %s is weaker than origin/%s.\n' "$baseline" "$base_ref" >&2
     exit 1

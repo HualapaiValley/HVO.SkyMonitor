@@ -19,7 +19,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new Clock();
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "station",
@@ -60,7 +60,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
                 Assert.AreEqual(Epoch.AddSeconds(1), state.LastCompletedUtc);
                 var (principal, authorization) = CameraAgentEnvironmentalUiServiceTests.ReadAuthorized();
                 var ui = CameraAgentEnvironmentalUiServiceTests.CreateService(principal, authorization, source,
-                    stateStore: store, observationStore: store, centralMode: CentralIntegrationMode.Disabled, root: root, timeProvider: clock);
+                    stateStore: store, observationStore: store, root: root, timeProvider: clock);
                 Assert.IsEmpty((await ui.GetLatestReadingsAsync(CancellationToken.None).ConfigureAwait(false)).Value!);
                 Assert.AreEqual("Unavailable", (await ui.GetStatusAsync(CancellationToken.None).ConfigureAwait(false)).Value!.Sources.Single().Freshness);
                 var associations = new EnvironmentalAssociationService(store, store, options, clock, acquisitionStates: store);
@@ -83,7 +83,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new Clock();
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "station",

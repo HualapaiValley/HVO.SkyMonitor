@@ -40,4 +40,4 @@ pipeline JSON. Required dependencies still apply even when a layer is disabled.
 This panel adds no producers, rich-facts conversion, compositor or capture and
 publication authority. Retained products and old revisions remain reconstructable
 from their recorded inputs. Both hosts use the shared descriptor/codec and
-materialization executor; this slice adds no LogicHost editing surface.
+materialization executor.

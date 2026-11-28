@@ -291,11 +291,7 @@ public sealed class CameraAgentDeploymentLocationOperationsEndpointsTests
             ActiveVersion: 4,
             KnownVersion: 4,
             NextVersion: 5,
-            PendingVersion: null,
             ManualSequence: 2,
-            CentralAcknowledgementRequired: false,
-            StagedAcknowledgementPending: false,
-            CandidateAwaitingAcknowledgement: false,
             Override: null,
             OverrideSupersededAtUtc: null,
             History: []);

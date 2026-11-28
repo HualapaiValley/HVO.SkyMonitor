@@ -387,7 +387,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                  consumer.Config.Required || consumer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
                 throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may consume its analysis inputs.");
             // A terminal, retained assessment may still have local Storage or outcome consumers. Existing
-            // storage-policy validation disallows upload of the layoutless fit and context.
             if (consumerDependencies.Any(fits.Contains) && consumer.Step is not (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep))
                 throw new InvalidOperationException("Only Storage and Telemetry may consume an independent astrometry assessment.");
         }
@@ -418,20 +417,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 annotation.Config.DependsOn?.Contains(sceneId, StringComparer.OrdinalIgnoreCase) != true)
                 throw new InvalidOperationException(
                     $"Annotation step '{annotation.Step.Name}' must require and explicitly depend on ProjectedScene step '{sceneId}'.");
-        }
-        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
-        {
-            var step = (FileStorageCaptureProcessingStep)storage.Step;
-            var dependencies = storage.Config.DependsOn ?? [];
-            var uploadsImages = dependencies.Any(IsRawDependency) && step.QueuesUpload(null, FrameArtifactRole.Raw, null, null) ||
-                configured.Where(item => item.Step is ICaptureProcessingGraphStep &&
-                        dependencies.Contains(item.Step.Name, StringComparer.OrdinalIgnoreCase))
-                    .Any(item => GetOutputs((ICaptureProcessingGraphStep)item.Step).Any(output =>
-                        output.Role != FrameArtifactRole.Metadata &&
-                        step.QueuesUpload(item.Step.Name, output.Role, output.Variant, output.RecipeName)));
-            if (uploadsImages && !dependencies.Contains(sceneId, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    $"Storage step '{step.Name}' uploading scene-bearing images must explicitly depend on ProjectedScene step '{sceneId}'.");
         }
     }
 
@@ -545,25 +530,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 {
                     throw new InvalidOperationException(
                         $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
-                }
-            }
-            foreach (var target in producerOutputs.Where(target =>
-                         target.Output.Role == FrameArtifactRole.Metadata && target.Step is not ProjectedSceneCaptureProcessingStep ||
-                         target.Step is JpegEncodingCaptureProcessingStep))
-            {
-                var policy = (options.Policies ?? [])
-                    .Where(candidate => candidate.StepId is null || string.Equals(candidate.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
-                    .Where(candidate => candidate.Role is null || candidate.Role == target.Output.Role)
-                    .Where(candidate => candidate.Variant is null || string.Equals(candidate.Variant, target.Output.Variant, StringComparison.Ordinal))
-                    .Where(candidate => candidate.RecipeName is null || string.Equals(candidate.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
-                    .OrderByDescending(static candidate =>
-                        (candidate.StepId is null ? 0 : 1) + (candidate.Role is null ? 0 : 1) +
-                        (candidate.Variant is null ? 0 : 1) + (candidate.RecipeName is null ? 0 : 1))
-                    .FirstOrDefault();
-                if (policy?.QueueForUpload ?? options.QueueForUpload)
-                {
-                    throw new InvalidOperationException(
-                        $"Storage upload policy for step '{target.Id}' output '{target.Output.Variant}' cannot target a layoutless metadata or JPEG product.");
                 }
             }
         }
@@ -968,7 +934,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 windowStep.Timeout.Ticks,
                 windowStep.MissingInputOutcome)
             : null;
-        // Publication, storage, upload, and telemetry options stay in the CameraAgent plan identity.
+        // Publication, storage and telemetry options stay in the CameraAgent plan identity.
         var effectiveSharedOptions = graphStep is null
             ? CaptureContractJson.SerializeToElement(new { })
             : item.Config.Options ?? CaptureContractJson.SerializeToElement(new { });

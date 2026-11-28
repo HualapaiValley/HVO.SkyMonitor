@@ -80,7 +80,6 @@ internal sealed record SystemHealthView(
     SystemCheckState Overall,
     IReadOnlyList<SystemHealthCheck> Checks,
     SystemHostFacts Host,
-    bool CentralIntegrationEnabled,
     SystemClockFact? Clock = null);
 
 internal sealed record SystemCatalogView(
@@ -158,7 +157,6 @@ internal sealed class CameraAgentSystemUiService(
     CaptureAdmissionCoordinator captureControl,
     SqliteCaptureScheduleStore scheduleStore,
     CatalogSnapshotResult catalog,
-    IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
     ILogger<CameraAgentSystemUiService> logger,
     IClockSyncMonitor? clockMonitor = null,
@@ -188,17 +186,11 @@ internal sealed class CameraAgentSystemUiService(
             ["capture-lanes"] = ("Capture lanes", "Acquisition", "/operations/storage"),
             ["environmental-acquisition"] = ("Environmental acquisition", "Acquisition", "/operations/environment"),
             ["capture-processing"] = ("Capture processing", "Processing", "/operations/pipeline"),
-            ["processing-graph-delivery"] = ("Processing graph delivery", "Processing", "/operations/pipeline"),
             ["calibration-library"] = ("Calibration library", "Processing", "/operations/calibration"),
             ["transient-worker"] = ("Transient worker", "Processing", "/operations/transients"),
-            ["artifact-outbox"] = ("Artifact delivery", "Central", "/operations/delivery"),
-            ["fleet-heartbeat"] = ("Fleet heartbeat", "Central", "/operations/registration"),
-            ["deployment-location-reconciliation"] = ("Location acknowledgement", "Central", "/operations/site"),
-            ["environmental-delivery"] = ("Environmental delivery", "Central", "/operations/environment"),
-            ["transient-candidate-delivery"] = ("Transient delivery", "Central", "/operations/transients"),
         };
 
-    private static readonly string[] ScopeOrder = ["Host", "Acquisition", "Processing", "Local", "Central", "Other"];
+    private static readonly string[] ScopeOrder = ["Host", "Acquisition", "Processing", "Local", "Other"];
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
@@ -213,9 +205,8 @@ internal sealed class CameraAgentSystemUiService(
         try
         {
             var report = await healthChecks.CheckHealthAsync(timeout.Token).ConfigureAwait(false);
-            var centralEnabled = options.Value.CentralIntegration.Mode != CentralIntegrationMode.Disabled;
             var checks = report.Entries
-                .Select(entry => MapCheck(entry.Key, entry.Value, centralEnabled))
+                .Select(entry => MapCheck(entry.Key, entry.Value))
                 .OrderBy(static check => Array.IndexOf(ScopeOrder, check.Scope))
                 .ThenBy(static check => check.Label, StringComparer.Ordinal)
                 .ToArray();
@@ -225,7 +216,7 @@ internal sealed class CameraAgentSystemUiService(
                 .DefaultIfEmpty(SystemCheckState.Healthy)
                 .Max();
             return OperatorUiResult<SystemHealthView>.Success(new SystemHealthView(
-                timeProvider.GetUtcNow(), overall, checks, SampleHost(), centralEnabled, ClockFact()));
+                timeProvider.GetUtcNow(), overall, checks, SampleHost(), ClockFact()));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -435,7 +426,7 @@ internal sealed class CameraAgentSystemUiService(
     internal static string LifecycleDetail(CameraAgentControlReceipt receipt) => receipt.Phase switch
     {
         CameraAgentControlPhase.Queued => "Waiting for the installer worker.",
-        CameraAgentControlPhase.Draining => "Stopping acquisition and settling accepted processing and delivery.",
+        CameraAgentControlPhase.Draining => "Stopping acquisition and settling accepted processing.",
         CameraAgentControlPhase.Restarting => "Installer requested a supervised CameraAgent restart.",
         CameraAgentControlPhase.Verifying => "Installer is waiting for a new process and verifying durable continuity.",
         CameraAgentControlPhase.Succeeded when receipt.Request.Kind == CameraAgentControlKind.Drain => "Drained; capture remains paused until explicitly resumed.",
@@ -468,14 +459,13 @@ internal sealed class CameraAgentSystemUiService(
         return (informational[..plus], revision.Length > 12 ? revision[..12] : revision);
     }
 
-    private static SystemHealthCheck MapCheck(string name, HealthReportEntry entry, bool centralEnabled)
+    private static SystemHealthCheck MapCheck(string name, HealthReportEntry entry)
     {
         var (label, scope, href) = CheckCatalog.TryGetValue(name, out var known)
             ? known
             : (name, "Other", (string?)null);
-        var disabled = (entry.Data.TryGetValue("Availability", out var availability) &&
-                string.Equals(availability as string, "Disabled", StringComparison.Ordinal)) ||
-            (!centralEnabled && string.Equals(scope, "Central", StringComparison.Ordinal));
+        var disabled = entry.Data.TryGetValue("Availability", out var availability) &&
+            string.Equals(availability as string, "Disabled", StringComparison.Ordinal);
         var state = disabled
             ? SystemCheckState.Disabled
             : entry.Status switch

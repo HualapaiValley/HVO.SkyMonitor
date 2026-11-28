@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -35,19 +34,13 @@ public sealed partial class DurableCaptureProcessingTests
             Directory.CreateDirectory(parent);
             var destination = Path.Combine(parent, "new-ancestor", "storage");
             using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            using var outbox = new SqliteArtifactOutbox();
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
             var persistence = CreatePersistence(fixture.Options, store, frameStorage, telemetry);
             var storageStep = new FileStorageCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("storage", "Storage", 90),
-                new FileStorageCaptureProcessingStepOptions { StorageRoot = destination, RetentionDays = 1, QueueForUpload = false },
-                new LatestFrameAccessor(), frameStorage, outbox,
-                Options.Create(new CameraAgentHostOptions
-                {
-                    RawIngressRoot = root,
-                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
-                }),
+                new FileStorageCaptureProcessingStepOptions { StorageRoot = destination, RetentionDays = 1 },
+                new LatestFrameAccessor(), frameStorage,
                 NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
             var annotation = new PackedAnnotationProducingStep();
             var producer = pixels

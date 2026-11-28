@@ -15,7 +15,7 @@ public sealed partial class HostProductRootPolicyTests
         using var host = new PolicyHost();
         var root = host.CreateDirectory("srv/data/current");
         var camera = host.CreateDirectory("srv/data/current/cameraagents/purge-tombstone");
-        var logic = host.CreateDirectory("srv/data/current/logichosts/unrecognized-entry");
+        var catalog = host.CreateDirectory("srv/data/current/catalogs/unrecognized-entry");
         WriteStaleMount(host, root);
         Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.Resolve(host.Location));
         var runner = new RecordingRunner(new ProcessResult(1, string.Empty, "the test must not invoke sudo"));
@@ -57,7 +57,7 @@ public sealed partial class HostProductRootPolicyTests
         Assert.AreEqual(root, policy.RootElement.GetProperty("productRoot").GetString());
         Assert.AreEqual(MountPointHolding(root), policy.RootElement.GetProperty("mountPoint").GetString());
         Assert.IsTrue(Directory.Exists(camera));
-        Assert.IsTrue(Directory.Exists(logic));
+        Assert.IsTrue(Directory.Exists(catalog));
         Assert.AreEqual(SharedFile, File.GetUnixFileMode(host.Location.PolicyPath));
         Assert.AreEqual(HostPolicyChange.Unchanged, HostProductRootPolicy.Apply(host.Location, root).Outcome);
         var status = (LifecycleRequest)CommandLine.ParseCommand(["status"], new CommandLineContext(false, host.Location));

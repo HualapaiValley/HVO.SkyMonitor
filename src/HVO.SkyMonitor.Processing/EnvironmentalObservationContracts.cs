@@ -161,32 +161,6 @@ public sealed record EnvironmentalObservationFactV1(
     }
 }
 
-public enum EnvironmentalObservationDeliveryDisposition
-{
-    Accepted,
-    Duplicate
-}
-
-public sealed record EnvironmentalObservationDeliveryEnvelope(
-    [property: JsonRequired] string SchemaVersion,
-    [property: JsonRequired] string DeviceId,
-    [property: JsonRequired] string DeviceKey,
-    [property: JsonRequired] EnvironmentalObservationV1 Observation)
-{
-    public const string CurrentSchemaVersion = "environmental-observation-delivery-v1";
-}
-
-public sealed record EnvironmentalObservationAcknowledgement(
-    [property: JsonRequired] string SchemaVersion,
-    [property: JsonRequired] Guid ObservationId,
-    [property: JsonRequired] string SourceIdentitySha256,
-    [property: JsonRequired] string ContentSha256,
-    [property: JsonRequired] DateTimeOffset ReceivedAtUtc,
-    [property: JsonRequired] EnvironmentalObservationDeliveryDisposition Disposition)
-{
-    public const string CurrentSchemaVersion = "environmental-observation-acknowledgement-v1";
-}
-
 /// <summary>Receiver-owned durable envelope. Receipt time does not participate in source-content identity.</summary>
 public sealed record ReceivedEnvironmentalObservationV1(
     [property: JsonRequired] EnvironmentalObservationV1 Observation,

@@ -57,7 +57,7 @@ public sealed class InfraredSkySource : EnvironmentalAdapterSource
             foreach (var input in inputs) await publisher.PublishAsync(input, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException or
-            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException or EnvironmentalObservationOutboxCapacityException)
+            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException)
         {
             return new(EnvironmentalSourceAcquisitionOutcome.Failed, "journal-unavailable");
         }
