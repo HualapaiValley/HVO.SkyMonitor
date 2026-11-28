@@ -166,6 +166,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         Assert.AreEqual(reference.ArtifactId, layer.Evidence!.ArtifactId);
         Assert.IsNotNull(layer.Drawable);
         Assert.IsFalse(layer.Drawable.EnabledByDefault);
+        await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
 
         var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
         var source = await persistence.ReadCenteredViewParentAsync(exposure.CaptureId, output.ArtifactId, token).ConfigureAwait(false);
