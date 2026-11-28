@@ -41,21 +41,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedAgentId = "cameraagent-standalone-w6-asi676mc";
     private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string ExpectedRigSha256 = "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B";
-    private const string ExpectedProcessingSha256 = "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE";
-    private const string ExpectedLocalProfileSha256 = "86F33CC1F53B39B3307B3100FB942348A16C4DB8AEFB3B1987C542E23D020CB5";
+    private const string ExpectedProcessingSha256 = "7AE0C731C2AC7C865B0A62C763FD0E680A95D0E0E782FBBCAD5742DAB3A85BC7";
+    private const string ExpectedLocalProfileSha256 = "CC0674AFD04D9FC94BBDDBE5C2726EA6BCEBF863DCE8764FB4525FF5CF5F6332";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
-    private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
-    private const string ExpectedEffectiveGraphSha256 = "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339";
+    private const string ExpectedDesiredGraphSha256 = "7B502DC7EB6D565C7671D5B8042FAB4CACFA72E0B4B25B38F67629C5CA607F3E";
+    private const string ExpectedEffectiveGraphSha256 = "982CCB44AF344846F4716C9D8400206CE9496532ED0E1A810A668CEBBD97DC6D";
     private const int ExpectedMonoNodeCount = 5; // Includes the durable ProjectedScene producer.
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
-    private const string ExpectedMonoProcessingSha256 = "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106";
-    private const string ExpectedMonoLocalProfileSha256 = "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD";
+    private const string ExpectedMonoProcessingSha256 = "36205AA7433BF39C252928F52C3B04A855FD3A81463D120D9ABCB54575C5541D";
+    private const string ExpectedMonoLocalProfileSha256 = "D837B53C95B766384D12B4AD228C8C7EBB14B12AE97B502F9AAACBDCD6B0369B";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
-    private const string ExpectedMonoDesiredGraphSha256 = "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90";
-    private const string ExpectedMonoEffectiveGraphSha256 = "52281764A916B8CD0AA35B59E60F1FF97DEE0AFBC27411D0BA5951BD9F4CD2D8";
-    private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
-    private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
+    private const string ExpectedMonoDesiredGraphSha256 = "E5F0E7EAEA0C834FF8A332F11A9725DC50C31A603D87A32EC8FB73BB80006680";
+    private const string ExpectedMonoEffectiveGraphSha256 = "C8580B09979EE4C27D5FE6C43D4835C1D4CC482A2F83B3D1C19DF26B1D6E3418";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
     private static readonly string[] QualityDependentNodeIds = ["storage", "telemetry"];
     // Issue #719 phase 2. Every value below is sourced from the W6 template's `pipeline.steps`
@@ -98,15 +96,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ["transient-capture"] = RequiredLaneBound(),
             ["transient-frames"] = RequiredLaneBound(),
             ["transient-candidates"] = RequiredLaneBound(),
-            ["artifact-outbox"] = DisabledLaneBound(),
-            ["environmental-outbox"] = DisabledLaneBound(),
-            ["fleet-outbox"] = DisabledLaneBound()
         };
 
     private static DurableQueueBound RequiredLaneBound()
         => new(10_000, 128_793_600_000, TimeSpan.FromMinutes(10_080).TotalSeconds);
 
-    private static DurableQueueBound DisabledLaneBound() => new(0, 0, 0);
     private static readonly FrameArtifactRole[] ExpectedRoles =
     [
         FrameArtifactRole.Raw,
@@ -171,7 +165,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
         var container = Required("HVO_ISSUE_211_CONTAINER");
         var denyContainer = Required("HVO_ISSUE_211_CENTRAL_DENY_CONTAINER");
-        var centralHandlerLog = RequiredPath("HVO_ISSUE_211_CENTRAL_HANDLER_LOG");
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -376,7 +369,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsEmpty(unexpectedErrors, string.Join(Environment.NewLine, unexpectedErrors));
         var centralTrafficAttempts = CountDenyHits(await DockerLogsAsync(denyContainer).ConfigureAwait(false));
         Assert.AreEqual(0, centralTrafficAttempts);
-        var centralHandlerAttempts = AssertCentralHandlerAttempts(centralHandlerLog);
         var resource = sampler.Summarize();
         var faultResource = faultSampler.Summarize(requireContinuousCoverage: false);
         var durableQueueMaxima = MergeDurableQueueMaxima(
@@ -538,7 +530,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             representative,
             comparisonPreview,
             centralTrafficAttempts,
-            centralHandlerAttempts,
             result = new { passed = true }
         };
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-w6.json");
@@ -572,7 +563,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidenceRoot = RequiredPath("HVO_ISSUE_211_EVIDENCE_ROOT");
         var container = Required("HVO_ISSUE_211_CONTAINER");
         var denyContainer = Required("HVO_ISSUE_211_CENTRAL_DENY_CONTAINER");
-        var centralHandlerLog = RequiredPath("HVO_ISSUE_211_CENTRAL_HANDLER_LOG");
         var password = (await File.ReadAllTextAsync(RequiredPath("HVO_ISSUE_211_OWNER_PASSWORD_FILE")).ConfigureAwait(false)).Trim();
         Directory.CreateDirectory(evidenceRoot);
 
@@ -649,7 +639,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         var centralTrafficAttempts = CountDenyHits(await DockerLogsAsync(denyContainer).ConfigureAwait(false));
         Assert.AreEqual(0, centralTrafficAttempts);
-        var centralHandlerAttempts = AssertCentralHandlerAttempts(centralHandlerLog);
         var resource = sampler.Summarize();
         AssertDurableQueueBounds(resource.MaximumDurableQueues);
         var retainedFilesystemBytes = DirectoryBytes(runtimeRoot);
@@ -743,7 +732,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             },
             readout,
             centralTrafficAttempts,
-            centralHandlerAttempts,
             result = new { passed = true }
         };
         var evidencePath = Path.Combine(evidenceRoot, "issue-211-mono8.json");
@@ -1543,7 +1531,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ("/operations/environment", "Environment"),
             ("/operations/transients", "Transients"),
             ("/operations/automations", "Automations"),
-            ("/operations/delivery", "Delivery"),
             ("/operations/storage", "Storage & retention"),
             ("/operations/pipeline/executions", "Processing executions"),
             ("/operations/pipeline/graphs", "Named graphs"),
@@ -1555,8 +1542,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 .WaitForAsync().ConfigureAwait(false);
             await page.Locator(".page-state[role='status'] .spinner-border")
                 .WaitForAsync(new() { State = WaitForSelectorState.Hidden }).ConfigureAwait(false);
+            var sectionContent = route == "/operations/automations" ? "main #automation-definitions .ops-status-rail" : "main h2";
+            await page.Locator(sectionContent).First.WaitForAsync().ConfigureAwait(false);
             Assert.AreEqual(0, await page.Locator(".page-state--error").CountAsync().ConfigureAwait(false), $"{route} rendered an error notice.");
-            Assert.IsGreaterThan(0, await page.Locator("main h2").CountAsync().ConfigureAwait(false), $"{route} rendered no section content.");
         }
     }
 
@@ -4137,7 +4125,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix"),
             DeploymentLocation = new DeploymentLocationOptions
             {
@@ -4709,8 +4696,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var loader = new FileCameraAgentConfigurationLoader(
             Options.Create(new CameraAgentHostOptions
             {
-                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json"),
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json")
             }),
             NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         var configured = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
@@ -5108,7 +5094,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = Path.Combine(runtimeRoot, ".environment", "environmental-observation-outbox.db"),
+            DataSource = Path.Combine(runtimeRoot, ".environment", "environmental-observations.db"),
             Mode = SqliteOpenMode.ReadOnly,
             Pooling = false
         }.ToString());
@@ -5660,19 +5646,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static int CountDenyHits(string logs)
         => Regex.Count(logs, "HVO211_DENY_HIT", RegexOptions.CultureInvariant);
-
-    private static int AssertCentralHandlerAttempts(string path)
-    {
-        var records = File.ReadAllLines(path);
-        Assert.AreEqual(CentralHandlerReadyRecord, records.FirstOrDefault());
-        Assert.IsTrue(records.All(static record =>
-            record == CentralHandlerReadyRecord ||
-            record.StartsWith(CentralHandlerAttemptRecord, StringComparison.Ordinal)));
-        var attempts = records.Count(static record =>
-            record.StartsWith(CentralHandlerAttemptRecord, StringComparison.Ordinal));
-        Assert.AreEqual(0, attempts);
-        return attempts;
-    }
 
     private static async Task OpenDialogAsync(ILocator trigger, ILocator dialog)
     {
@@ -7383,35 +7356,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 queues.Add(new DurableQueueSample("transient-frames", 0, 0, 0));
                 queues.Add(new DurableQueueSample("transient-candidates", 0, 0, 0));
-            }
-            queues.Add(ReadQueue("artifact-outbox", Path.Combine(root, "outbox", "artifact-outbox.db"),
-                """
-                SELECT COUNT(*), COALESCE(SUM(COALESCE(payload_length, length(manifest_bytes))), 0),
-                       MIN(created_unix_ms)
-                FROM artifact_outbox_records
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            queues.Add(ReadQueue(
-                "environmental-outbox",
-                Path.Combine(root, ".environment", "environmental-observation-outbox.db"),
-                """
-                SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0), MIN(created_unix_ms)
-                FROM environmental_observation_outbox
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            var fleetDatabase = Path.Combine(root, ".fleet", "fleet-status.db");
-            if (File.Exists(fleetDatabase))
-            {
-                queues.Add(ReadQueue("fleet-outbox", fleetDatabase,
-                """
-                SELECT COUNT(*), COALESCE(SUM(length(payload)), 0), MIN(created_unix_ms)
-                FROM fleet_status_records
-                WHERE status IN ('pending', 'leased', 'retry');
-                """));
-            }
-            else
-            {
-                queues.Add(new DurableQueueSample("fleet-outbox", 0, 0, 0));
             }
             return new BacklogSample(
                 queues.Sum(static queue => queue.Count),

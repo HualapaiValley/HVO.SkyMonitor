@@ -211,14 +211,14 @@ else
             }
             else if (SelectedStage(canvas) is { } stage)
             {
-                <p class="eyebrow">@(stage.Central ? "Meteor detection / LogicHost" : "Meteor detection / this agent")</p>
+                <p class="eyebrow">Meteor detection</p>
                 <h2 id="pipeline-step-title">@stage.Title</h2>
                 <p>@stage.Description</p>
                 <dl class="ops-node-facts">
                     <div><dt>Stage</dt><dd>@stage.Caption</dd></div>
                     <div><dt>Inputs</dt><dd>@StageInputs(canvas, stage)</dd></div>
                     <div><dt>Outputs</dt><dd>@stage.Outputs</dd></div>
-                    <div><dt>Runs on</dt><dd>@(stage.Central ? "LogicHost" : "CameraAgent transient worker")</dd></div>
+                    <div><dt>Runs on</dt><dd>CameraAgent transient worker</dd></div>
                     <div><dt>Live state</dt><dd>@StageState(_transients, stage)</dd></div>
                 </dl>
                 <div class="pipeline-inspector-actions">
@@ -300,7 +300,7 @@ else
                 <ol id="pipeline-lane-list">
                     @foreach (var stage in canvas.Stages)
                     {
-                        <li><strong>@stage.Title</strong> (@(stage.Central ? "LogicHost" : "this agent")): reads @StageInputs(canvas, stage)</li>
+                        <li><strong>@stage.Title</strong>: reads @StageInputs(canvas, stage)</li>
                     }
                 </ol>
             }

@@ -1224,24 +1224,6 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private string ProductBadgeClass => _selectedStage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw ? "source" : "current";
 
-    private string CentralStatusLabel => IsArchived ? "Historical capture" : _operations switch
-    {
-        { CentralIntegrationEnabled: false } => "Disabled",
-        { ArtifactUploadEnabled: false } => "Uploads disabled",
-        { ArtifactUploadEnabled: true } => "Delivery configured",
-        _ => "Unavailable"
-    };
-
-    private string CentralStatusReason => IsArchived
-        ? "Current LogicHost connectivity is not a historical capture fact."
-        : _operations switch
-        {
-            { CentralIntegrationEnabled: false } => "Standalone mode; no central delivery is configured.",
-            { ArtifactUploadEnabled: false } => "Central integration is configured, but artifact upload is disabled.",
-            { ArtifactUploadEnabled: true } => "Open Delivery for retained acknowledgements; configuration alone does not prove connectivity.",
-            _ => "The current delivery configuration could not be read."
-        };
-
     private string StorageStatusLabel => IsArchived ? "Retained evidence" : _operations switch
     {
         { RawReconciliation.MissingEvidence: > 0 } => "Evidence missing",
@@ -1303,7 +1285,6 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _ => _transientMessage ?? (_transient?.CurrentMode switch
         {
             HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off => "Detection is off now; this capture has no retained local outcome.",
-            HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central => "Central detection is configured now; no local outcome is retained for this capture.",
             not null => "This capture has no retained local detector outcome.",
             _ => "Reading this capture's retained detector outcome."
         })

@@ -237,8 +237,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             RawIngressRoot = _options.Value.RawIngressRoot,
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -113, 0, "America/Phoenix"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -113, 0, "America/Phoenix")
         });
         var path = SeedOlderJson(1)[0];
         using var store = CreateStore();

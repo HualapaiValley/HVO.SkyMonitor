@@ -9,7 +9,7 @@ public sealed record AstrometryCatalogSnapshotV1(CatalogMetadata Metadata, IRead
     AstrometricCatalogProvenance Package, bool Complete, double CompletenessMagnitudeLimit,
     string CoordinateModel = AstrometricConventions.CoordinateModel);
 
-/// <summary>Shared edge/central reconstruction of the same frozen request. No scheduling or persistence ownership.</summary>
+/// <summary>Shared reconstruction of the same frozen request. No scheduling or persistence ownership.</summary>
 public static class RetainedAstrometryProducts
 {
     public const string ContextRecipe = "retained-astrometry-context";

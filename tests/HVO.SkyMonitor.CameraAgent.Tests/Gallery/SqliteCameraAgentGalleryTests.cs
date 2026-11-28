@@ -49,8 +49,6 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     private static readonly string[] SourceDependency = ["source"];
-    private static readonly string[] ExpectedDeliveryStatuses = ["Pending", "Retry", "Acknowledged", "Quarantined"];
-    private static readonly string[] ExpectedTwoRootDeliveryStatuses = ["raw-ingress:Pending", "storage-1:Acknowledged"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
@@ -245,7 +243,6 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNull(legacyNode.StartedUtc);
         Assert.IsNull(legacyNode.DurationMilliseconds);
         Assert.IsNull(legacyNode.Outcome);
-        Assert.AreEqual("Unavailable", detail.Detail.ArtifactStates[0].DeliveryAvailability);
         Assert.AreEqual("Unavailable", detail.Detail.CloudAssessment.Availability);
         Assert.AreEqual("Unavailable", detail.CanonicalSceneAvailability);
         var json = JsonSerializer.Serialize(detail);
@@ -563,12 +560,7 @@ public sealed class SqliteCameraAgentGalleryTests
         var optionalNode = AssertSingle(optional!.Detail!.ProcessingNodes);
         Assert.IsFalse(AssertSingle(optional.ProcessingNodes).Required);
         Assert.AreEqual("calibration.library.corrupt", optionalNode.FailureCategory);
-        var delivery = required.Detail.ArtifactStates.Single(state =>
-            state.ArtifactId == requiredRaw.Descriptor.Artifact.ArtifactId);
-        CollectionAssert.AreEqual(
-            ExpectedDeliveryStatuses,
-            delivery.DeliveryStatuses.Select(static item => item.Status).ToArray());
-        Assert.IsTrue(delivery.DeliveryStatuses.All(static item => item.StorageAlias == "raw-ingress"));
+
     }
 
     [TestMethod]
@@ -638,33 +630,6 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsTrue(nodeBoundDetail.ProcessingNodesTruncated);
         Assert.IsTrue(nodeBoundDetail.ArtifactsTruncated,
             "Outputs attached to omitted nodes must mark the artifact projection as truncated.");
-    }
-
-    [TestMethod]
-    public async Task DetailAggregatesDeliveryStatusAcrossConfiguredStorageAliasesAsync()
-    {
-        using var fixture = await GalleryFixture.CreateAsync(twoStorageRoots: true).ConfigureAwait(false);
-        var raw = await fixture.AddRawAsync(Utc(7), "Physical", null).ConfigureAwait(false);
-        await GalleryFixture.SetDeliveryStatusesAsync(
-            fixture.Root,
-            raw.Descriptor.Artifact.ArtifactId,
-            ["pending"]).ConfigureAwait(false);
-        await GalleryFixture.SetDeliveryStatusesAsync(
-            fixture.SecondaryRoot!,
-            raw.Descriptor.Artifact.ArtifactId,
-            ["acknowledged"]).ConfigureAwait(false);
-
-        var detail = await fixture.Gallery.GetCaptureAsync(
-            raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
-
-        var delivery = detail!.Detail!.ArtifactStates.Single(state =>
-            state.ArtifactId == raw.Descriptor.Artifact.ArtifactId);
-        CollectionAssert.AreEqual(
-            ExpectedTwoRootDeliveryStatuses,
-            delivery.DeliveryStatuses.Select(static item => $"{item.StorageAlias}:{item.Status}").ToArray());
-        var json = JsonSerializer.Serialize(detail);
-        Assert.IsFalse(json.Contains(fixture.Root, StringComparison.Ordinal));
-        Assert.IsFalse(json.Contains(fixture.SecondaryRoot!, StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -1506,7 +1471,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 root,
                 journal,
                 processingStore,
-                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation,
+                new SqliteCameraAgentGallery(options, processingStore, deploymentLocation: deploymentLocation,
                     silo: siloProvider?.GetRequiredService<SiloArtifactStorage>()),
                 siloProvider)
             {
@@ -1546,7 +1511,7 @@ public sealed class SqliteCameraAgentGalleryTests
         }
 
         internal SqliteCameraAgentGallery OpenArchive(ObservingDayCalendar calendar)
-            => new(CreateOptions(Root), _processingStore, null, new FixedObservingDayCalendarProvider(calendar));
+            => new(CreateOptions(Root), _processingStore, new FixedObservingDayCalendarProvider(calendar));
 
         internal RestartedGallery OpenRestartedGallery()
         {
@@ -1898,7 +1863,7 @@ public sealed class SqliteCameraAgentGalleryTests
         private sealed class FixedStorageResolver(IReadOnlyList<CameraAgentStorageLocation> locations)
             : ICameraAgentStorageResolver
         {
-            public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(
+            public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetStorageLocationsAsync(
                 CancellationToken cancellationToken) => ValueTask.FromResult(locations);
 
             public ValueTask<CameraAgentStorageLocation?> ResolveAliasAsync(

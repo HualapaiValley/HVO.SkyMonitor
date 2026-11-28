@@ -62,12 +62,12 @@ public sealed partial class ProcessingGraphOperationsTests
             await reopened.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var recovered = reopened.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             await RunManifestTestAssertions.ResponseAsync(recovered, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
-            foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+            foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                 await ReadManifestJournalConsumerAsync(root, recovered, id, consumer, true).ConfigureAwait(false);
             await ReplaceManifestCounterAsync(root, id, "frozenOutputInputCounts", null).ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(recovered, id).ConfigureAwait(false);
             Assert.AreEqual(0, await ReadManifestCounterAsync(root, id, "committedOutputCounts", "preview").ConfigureAwait(false));
-            foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+            foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                 await ReadManifestJournalConsumerAsync(root, recovered, id, consumer, false).ConfigureAwait(false);
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }

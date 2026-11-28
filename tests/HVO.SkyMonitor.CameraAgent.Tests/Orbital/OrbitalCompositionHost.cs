@@ -71,7 +71,6 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
         {
             ["CameraAgent:RawIngressRoot"] = rawIngressRoot,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         if (enabled is { } value)
         {

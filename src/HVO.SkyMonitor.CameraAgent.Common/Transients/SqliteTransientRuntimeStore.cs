@@ -1207,7 +1207,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 using var evidenceReader = await evidenceRead.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 if (!await evidenceReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+                    throw new QuarantineOperationCollisionException("Transient runtime quarantine no longer exists.");
                 }
                 var evidence = await ReadQuarantineRecordAsync(evidenceReader, cancellationToken).ConfigureAwait(false);
                 EnsureExactTarget(evidence, target);
@@ -1229,7 +1229,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+                throw new QuarantineOperationCollisionException("Transient runtime quarantine no longer exists.");
             }
             var current = await ReadQuarantineRecordAsync(reader, cancellationToken).ConfigureAwait(false);
             await reader.DisposeAsync().ConfigureAwait(false);
@@ -1252,7 +1252,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 work.Parameters.AddWithValue("$expected", target.ExpectedWorkUpdatedUtc.ToUnixTimeMilliseconds());
                 if (await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
-                    throw new OutboxOperationCollisionException("Transient lane work changed before abandonment.");
+                    throw new QuarantineOperationCollisionException("Transient lane work changed before abandonment.");
                 }
             }
             using (var frame = connection.CreateCommand())
@@ -1270,7 +1270,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 frame.Parameters.AddWithValue("$failure", target.ExpectedFailureReason);
                 if (await frame.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
-                    throw new OutboxOperationCollisionException("Transient worker frame changed before abandonment.");
+                    throw new QuarantineOperationCollisionException("Transient worker frame changed before abandonment.");
                 }
             }
             await InsertOperationReceiptAsync(
@@ -1308,7 +1308,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
-            throw new OutboxOperationCollisionException("Transient runtime operation collided with durable state.", exception);
+            throw new QuarantineOperationCollisionException("Transient runtime operation collided with durable state.", exception);
         }
         finally
         {
@@ -1685,7 +1685,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 ownership.InventorySha256,
                 ownership.LegacyOwnershipExternallyEstablished,
                 out var normalizedOwnership) || ownership != normalizedOwnership ||
-            !OutboxOperationsReasonCodes.IsAllowed(OutboxOperationAction.Abandon, reasonCode))
+            !QuarantineOperationReasonCodes.IsAllowed(QuarantineOperationAction.Abandon, reasonCode))
         {
             throw new ArgumentException("Transient runtime operation is invalid.");
         }
@@ -1711,7 +1711,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             current.WorkUpdatedUtc != target.ExpectedWorkUpdatedUtc ||
             current.FrameUpdatedUtc != target.ExpectedFrameUpdatedUtc)
         {
-            throw new OutboxOperationCollisionException("Transient runtime identity or state changed.");
+            throw new QuarantineOperationCollisionException("Transient runtime identity or state changed.");
         }
     }
 
@@ -1830,7 +1830,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             reader.GetString(22) != "abandon" || reader.GetString(23) != actor || reader.GetString(24) != reasonCode ||
             reader.GetString(27) != reader.GetString(28))
         {
-            throw new OutboxOperationCollisionException("Idempotency key belongs to another transient runtime operation.");
+            throw new QuarantineOperationCollisionException("Idempotency key belongs to another transient runtime operation.");
         }
         return new TransientRuntimeOperationReceipt(
             TransientRuntimeOperationDisposition.Duplicate, reader.GetString(25), actor, reasonCode,

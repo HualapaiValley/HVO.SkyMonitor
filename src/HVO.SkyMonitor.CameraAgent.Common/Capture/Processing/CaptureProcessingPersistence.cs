@@ -50,56 +50,8 @@ internal sealed partial class CaptureProcessingPersistence(
             throw new InvalidDataException("The canonical scene differs from the committed processing product.");
         return output;
     }
-    // Callers hold the storage lifecycle gate through enqueue, so expiry cannot remove
-    // the authenticated payload between this read and the durable outbox hold.
-    internal async ValueTask<StructuredProcessingProductManifestV1?> FindCommittedSceneUploadAsync(
-        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
-    {
-        var candidates = new List<DurableCaptureProduct>(2);
-        foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
-        {
-            candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene,
-                excludeExposurePrediction: descriptor.CenteredAcquisition is not null).ConfigureAwait(false));
-        }
-        if (candidates.Count == 0) return null;
-        if (candidates.Count != 1)
-            throw new InvalidDataException("The capture's canonical projected scene is ambiguous.");
-        var output = await RequireOutputAsync(candidates[0].ArtifactId, descriptor.Capture.CaptureId,
-            cancellationToken).ConfigureAwait(false);
-        return await CreateSceneUploadManifestAsync(descriptor, output, cancellationToken).ConfigureAwait(false);
-    }
-
     internal ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(Guid captureId, CancellationToken cancellationToken)
         => _store.ReadAbandonedStandardWorkReasonAsync(captureId, cancellationToken);
-
-    internal async ValueTask<StructuredProcessingProductManifestV1> CreateSceneUploadManifestAsync(
-        ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
-    {
-        if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
-            output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ProjectedScene ||
-            IsExposurePredictionOutput(descriptor, output.Artifact.SourceId, output.Artifact.Variant) ||
-            !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
-            output.Artifact.SourceArtifactIds.Count != 1 ||
-            output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
-            output.Capture != descriptor.Capture)
-            throw new InvalidDataException("The canonical scene is not bound to this raw capture.");
-        var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-        var product = restored.Product;
-        var parsed = ProjectedSceneJson.Parse(product.Payload);
-        if (!parsed.IsValid || parsed.Scene is not { } scene ||
-            scene.Source != new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
-                CaptureContractJson.ComputeDescriptorSha256(descriptor)) ||
-            scene.SceneIdentitySha256 != product.ContentIdentitySha256)
-            throw new InvalidDataException("The canonical scene's immutable source evidence is invalid.");
-        return new StructuredProcessingProductManifestV1(
-            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
-            new StructuredProcessingProductDescriptorV1(
-                descriptor, output.Artifact, product.OutputIdentitySha256, product.Algorithms,
-                product.Compatibility, product.TotalIntegration.Ticks, product.Payload.Length,
-                product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
-            output.PayloadRelativePath, output.Artifact.SourceId);
-    }
 
     // Centered catalog prediction shares the scene recipe and schema. Its fixed producer
     // and variant distinguish it from the renderer's scene, whose alias and variant are configurable.

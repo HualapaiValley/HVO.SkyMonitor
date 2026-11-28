@@ -44,9 +44,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
     private const int A3Warmups = 20;
     private const int A3Measurements = 200;
     private const int A4CaptureCount = 360;
-    private const int A5FactCount = 600;
-    private const int A5RestartAfter = 300;
-    private const int A5DeliveryCapacity = 100;
     private const long WorkingSetCeilingBytes = 256L * 1024 * 1024;
     private const int LocalHistoryP95CeilingMilliseconds = 1_000;
     private const int AuthenticatedHistoryP95CeilingMilliseconds = 5_000;
@@ -57,9 +54,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         "HVO.SkyMonitor.CameraAgent.Tests.Environmental.EnvironmentalAcquisitionPerformanceTests." +
         "Issue209_A1ToA6_RecordsReproducibleEvidence\"";
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
-    private static readonly EnvironmentalObservationResolvedTarget DeliveryTarget = new(
-        Guid.Parse("20900000-0000-0000-0000-000000000001"),
-        Guid.Parse("20900000-0000-0000-0000-000000000002"));
     private static readonly string[] HistoryPositions = ["first", "middle", "late"];
     // Preserve the ordered issue #209 v1 workload when the production enum gains new kinds.
     private static readonly IReadOnlyList<EnvironmentalObservationKind> WorkloadKinds = Array.AsReadOnly<EnvironmentalObservationKind>(
@@ -112,7 +106,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
             var a3 = await MeasureA3Async(
                 Path.Combine(workRoot, "a3-1000"), a2Root, workingSet, signals).ConfigureAwait(false);
             var a4 = await MeasureA4Async(workingSet).ConfigureAwait(false);
-            var a5 = await MeasureA5Async(Path.Combine(workRoot, "a5"), workingSet).ConfigureAwait(false);
             var a6 = await MeasureA6Async(Path.Combine(workRoot, "a6"), workingSet).ConfigureAwait(false);
 
             signals.RecordObservableInstruments();
@@ -191,7 +184,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                 A2 = a2,
                 A3 = a3,
                 A4 = a4,
-                A5 = a5,
                 A6 = a6,
                 RuntimeSignals = signalEvidence,
                 SafetyCeilings = new
@@ -212,7 +204,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                     "Microsoft.Data.Sqlite does not expose physical bytes written, statement counters, automatic checkpoint counts, or fsync counts. A2 records API transaction boundaries, synchronous=FULL, WAL footprints, and explicit checkpoint results instead.",
                     "The current local CommitLocalAsync API has no fault-injection seam. A6 injects caller-visible failures immediately before and immediately after the production local commit and verifies restart state at both boundaries.",
                     "The current regime trigger contract carries RegimeChange but not named from/to regimes. A4 records one pinned Night-to-Twilight logical transition as exactly one production RegimeChange trigger.",
-                    "A5 uses the production durable projection, claim, acknowledgement, and worker drain path with an in-process idempotent receiver; it does not claim LogicHost network or SQL Server performance."
                 },
                 Correctness = new
                 {
@@ -220,7 +211,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                     A2ExactTargetlessRowsAndHashes = true,
                     A3BoundedIndexedPagesAndAssociationPlans = true,
                     A4GlobalAndPerSourceConcurrencyBounded = true,
-                    A5AllLocalAndCentralLogicalFactsConverged = true,
                     A6FaultRestartRetentionHealthAndSignalChecks = true,
                     Result = "Pass"
                 }
@@ -311,7 +301,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         Directory.CreateDirectory(root);
         var clock = new MutableTimeProvider(Epoch);
         var sources = CreateVirtualSources("a2", [EnvironmentalAcquisitionTrigger.Periodic]);
-        using var store = new SqliteEnvironmentalObservationOutbox(
+        using var store = new SqliteEnvironmentalObservationStore(
             clock,
             maximumLocalRecords: A2FactCount + 1_000,
             maximumLocalBytes: 256L * 1024 * 1024);
@@ -339,7 +329,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                 var committed = await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
                 commitMilliseconds.Add(Stopwatch.GetElapsedTime(commitStarted).TotalMilliseconds);
                 Assert.AreEqual(LocalEnvironmentalObservationCommitDisposition.Committed, committed.Disposition);
-                Assert.AreEqual(EnvironmentalObservationProjectionDisposition.NotRequested, committed.ProjectionDisposition);
                 aggregate.AppendData(Convert.FromHexString(committed.Record.ContentSha256));
                 clock.Advance(TimeSpan.FromMilliseconds(1000d / 12));
             }
@@ -378,7 +367,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                 Sources = KindCount,
                 LogicalBatchSize = A2BatchSize,
                 LogicalBatches = A2FactCount / A2BatchSize,
-                Path = "Production VirtualEnvironmentalSource -> EnvironmentalObservationFactV1 -> SqliteEnvironmentalObservationOutbox.CommitLocalAsync"
+                Path = "Production VirtualEnvironmentalSource -> EnvironmentalObservationFactV1 -> SqliteEnvironmentalObservationStore.CommitLocalAsync"
             },
             Timing = new
             {
@@ -433,7 +422,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         Directory.CreateDirectory(oneThousandRoot);
         var airSource = CreateVirtualSources("a3-1000", [EnvironmentalAcquisitionTrigger.OnDemand])
             .Single(source => source.Descriptor.Kind == EnvironmentalObservationKind.AirTemperature);
-        using (var seedStore = new SqliteEnvironmentalObservationOutbox(maximumLocalRecords: 2_000))
+        using (var seedStore = new SqliteEnvironmentalObservationStore(maximumLocalRecords: 2_000))
         {
             for (var index = 0; index < 1_000; index++)
             {
@@ -454,7 +443,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         }
 
         using var telemetry = new EnvironmentalAcquisitionTelemetry();
-        using (var associationStore = new SqliteEnvironmentalObservationOutbox())
+        using (var associationStore = new SqliteEnvironmentalObservationStore())
         {
             var associationService = new EnvironmentalAssociationService(
                 associationStore,
@@ -482,7 +471,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
             new HistoryDataset(A2FactCount, tenThousandRoot)
         })
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(acquisitionTelemetry: telemetry);
+            using var store = new SqliteEnvironmentalObservationStore(acquisitionTelemetry: telemetry);
             var filteredRows = await ScalarLongAsync(
                 dataset.Root,
                 "SELECT COUNT(*) FROM environmental_observation_journal WHERE observation_kind = 'AirTemperature';")
@@ -731,176 +720,12 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         };
     }
 
-    private static async Task<object> MeasureA5Async(string root, WorkingSetTracker workingSet)
-    {
-        Directory.CreateDirectory(root);
-        var clock = new MutableTimeProvider(Epoch);
-        var sources = CreateVirtualSources("a5", [EnvironmentalAcquisitionTrigger.Periodic]);
-        LocalEnvironmentalObservationSnapshot restartSnapshot;
-        using (var beforeRestart = new SqliteEnvironmentalObservationOutbox(
-            clock,
-            maximumRecords: A5DeliveryCapacity,
-            maximumLocalRecords: A5FactCount + 100))
-        {
-            for (var index = 0; index < A5RestartAfter; index++)
-            {
-                var fact = await GenerateFactAtLogicalRateAsync(sources, index).ConfigureAwait(false);
-                _ = await beforeRestart.CommitLocalAsync(
-                    root, fact, DeliveryTarget, CancellationToken.None).ConfigureAwait(false);
-                clock.Advance(TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 12));
-            }
-            restartSnapshot = await beforeRestart.GetLocalSnapshotAsync(root, CancellationToken.None)
-                .ConfigureAwait(false);
-            Assert.AreEqual(A5RestartAfter, restartSnapshot.StoredCount);
-            Assert.IsTrue((await beforeRestart.GetSnapshotAsync(root, CancellationToken.None)
-                .ConfigureAwait(false)).StoredCount <= A5DeliveryCapacity);
-        }
-        SqliteConnection.ClearAllPools();
-
-        using var restarted = new SqliteEnvironmentalObservationOutbox(
-            clock,
-            maximumRecords: A5DeliveryCapacity,
-            maximumLocalRecords: A5FactCount + 100);
-        for (var index = A5RestartAfter; index < A5FactCount; index++)
-        {
-            var fact = await GenerateFactAtLogicalRateAsync(sources, index).ConfigureAwait(false);
-            _ = await restarted.CommitLocalAsync(
-                root, fact, DeliveryTarget, CancellationToken.None).ConfigureAwait(false);
-            clock.Advance(TimeSpan.FromTicks(TimeSpan.TicksPerSecond / 12));
-            if ((index + 1) % A2BatchSize == 0)
-            {
-                workingSet.Sample();
-            }
-        }
-
-        var localBeforeRecovery = await restarted.GetLocalSnapshotAsync(root, CancellationToken.None)
-            .ConfigureAwait(false);
-        var deliveryBeforeRecovery = await restarted.GetSnapshotAsync(root, CancellationToken.None)
-            .ConfigureAwait(false);
-        var waitingBeforeRecovery = await ScalarLongAsync(
-            root,
-            "SELECT COUNT(*) FROM environmental_observation_central_projection WHERE status = 'waiting';")
-            .ConfigureAwait(false);
-        Assert.AreEqual(A5FactCount, localBeforeRecovery.StoredCount);
-        Assert.AreEqual(A5DeliveryCapacity, deliveryBeforeRecovery.StoredCount);
-        Assert.AreEqual(A5FactCount - A5DeliveryCapacity, waitingBeforeRecovery);
-
-        var receiver = new IdempotentReceiver(clock);
-        var lostLease = await restarted.ClaimAsync(
-            root, "issue-209-lost-ack", TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(lostLease);
-        var acceptedBeforeLostAcknowledgement = receiver.Ingest(lostLease.Record.Observation);
-        Assert.AreEqual(EnvironmentalObservationDeliveryDisposition.Accepted,
-            acceptedBeforeLostAcknowledgement.Disposition);
-        clock.Advance(TimeSpan.FromSeconds(10));
-
-        using var transport = new ReceiverTransport(receiver);
-        using var deliveryTelemetry = new EnvironmentalObservationDeliveryTelemetry(
-            new EnvironmentalObservationDeliveryState(), clock);
-        using var service = new EnvironmentalObservationDeliveryService(
-            transport,
-            NullTargetResolver.Instance,
-            restarted,
-            new EnvironmentalObservationDeliveryWakeup(),
-            new EnvironmentalObservationDeliveryState(),
-            deliveryTelemetry,
-            Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                EnvironmentalDelivery = DeliveryOptions(A5DeliveryCapacity)
-            }),
-            clock,
-            NullLogger<EnvironmentalObservationDeliveryService>.Instance);
-        var oldestAgeBeforeRecovery = deliveryBeforeRecovery.OldestPendingUtc is { } oldest
-            ? clock.GetUtcNow() - oldest
-            : TimeSpan.Zero;
-        var recoveryStarted = Stopwatch.GetTimestamp();
-        var drainPasses = 0;
-        long maximumObservedDeliveryBacklog = deliveryBeforeRecovery.StoredCount;
-        while (true)
-        {
-            var snapshot = await restarted.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-            var waiting = await ScalarLongAsync(
-                root,
-                "SELECT COUNT(*) FROM environmental_observation_central_projection WHERE status = 'waiting';")
-                .ConfigureAwait(false);
-            maximumObservedDeliveryBacklog = Math.Max(maximumObservedDeliveryBacklog, snapshot.StoredCount);
-            Assert.IsTrue(snapshot.StoredCount <= A5DeliveryCapacity);
-            if (snapshot.StoredCount == 0 && waiting == 0)
-            {
-                break;
-            }
-            _ = await service.DrainBatchAsync(
-                root, DeliveryOptions(A5DeliveryCapacity), CancellationToken.None).ConfigureAwait(false);
-            drainPasses++;
-            workingSet.Sample();
-            Assert.IsTrue(drainPasses <= 10, "A5 recovery did not converge in the bounded number of passes.");
-        }
-        var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
-        var localAfterRecovery = await restarted.GetLocalSnapshotAsync(root, CancellationToken.None)
-            .ConfigureAwait(false);
-        var deliveryAfterRecovery = await restarted.GetSnapshotAsync(root, CancellationToken.None)
-            .ConfigureAwait(false);
-        var distinctLocalRows = await ScalarLongAsync(
-            root,
-            "SELECT COUNT(DISTINCT source_identity_sha256 || ':' || observation_id) FROM environmental_observation_journal;")
-            .ConfigureAwait(false);
-
-        Assert.AreEqual(A5FactCount, localAfterRecovery.StoredCount);
-        Assert.AreEqual(A5FactCount, distinctLocalRows);
-        Assert.AreEqual(A5FactCount, receiver.Count);
-        Assert.AreEqual(0, deliveryAfterRecovery.StoredCount);
-        Assert.AreEqual(1, transport.DuplicateCount);
-        Assert.AreEqual(A5FactCount - 1, transport.AcceptedCount);
-        Assert.IsTrue(A5FactCount / recoveryElapsed.TotalSeconds > 12);
-
-        return new
-        {
-            Facts = A5FactCount,
-            LogicalArrivalRatePerSecond = 12,
-            LogicalArrivalDurationSeconds = 50,
-            RestartAfterFacts = A5RestartAfter,
-            RestartLocalRows = restartSnapshot.StoredCount,
-            DeliveryCapacity = A5DeliveryCapacity,
-            MaximumObservedDeliveryBacklog = maximumObservedDeliveryBacklog,
-            StandaloneCentralAttempts = 0,
-            BeforeRecovery = new
-            {
-                LocalRows = localBeforeRecovery.StoredCount,
-                LocalBytes = localBeforeRecovery.StoredBytes,
-                DeliveryRows = deliveryBeforeRecovery.StoredCount,
-                WaitingProjectionRows = waitingBeforeRecovery,
-                OldestAgeSeconds = oldestAgeBeforeRecovery.TotalSeconds
-            },
-            LostAcknowledgementFixture = new
-            {
-                FirstDisposition = acceptedBeforeLostAcknowledgement.Disposition,
-                ReplayDisposition = EnvironmentalObservationDeliveryDisposition.Duplicate,
-                DuplicateDeliveries = transport.DuplicateCount
-            },
-            Recovery = new
-            {
-                DrainPasses = drainPasses,
-                ElapsedMilliseconds = recoveryElapsed.TotalMilliseconds,
-                DrainFactsPerSecond = A5FactCount / recoveryElapsed.TotalSeconds,
-                TransportRequests = transport.SendCount,
-                AcceptedByRecoveryTransport = transport.AcceptedCount,
-                DuplicateByRecoveryTransport = transport.DuplicateCount,
-                CentralLogicalFacts = receiver.Count,
-                FinalDeliveryBacklog = deliveryAfterRecovery.StoredCount,
-                FinalLocalRows = localAfterRecovery.StoredCount,
-                DistinctLocalLogicalFacts = distinctLocalRows
-            },
-            Result = "Pass"
-        };
-    }
-
     private static async Task<object> MeasureA6Async(string root, WorkingSetTracker workingSet)
     {
         Directory.CreateDirectory(root);
         var boundaryRoot = Path.Combine(root, "commit-boundaries");
         Directory.CreateDirectory(boundaryRoot);
-        using var boundaryStore = new SqliteEnvironmentalObservationOutbox();
+        using var boundaryStore = new SqliteEnvironmentalObservationStore();
         using var beforeFixture = CreateSingleVirtualCoordinator(
             boundaryRoot,
             new BoundaryPublisher(boundaryStore, boundaryRoot, Boundary.BeforeCommit),
@@ -929,14 +754,14 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         Assert.AreEqual(EnvironmentalAcquisitionDisposition.Failed, after.Disposition);
         boundaryStore.Dispose();
         SqliteConnection.ClearAllPools();
-        using var boundaryRestart = new SqliteEnvironmentalObservationOutbox();
+        using var boundaryRestart = new SqliteEnvironmentalObservationStore();
         var afterRestart = await boundaryRestart.GetLocalSnapshotAsync(boundaryRoot, CancellationToken.None)
             .ConfigureAwait(false);
         Assert.AreEqual(1, afterRestart.StoredCount);
 
         var timeoutRoot = Path.Combine(root, "timeout");
         Directory.CreateDirectory(timeoutRoot);
-        using var timeoutStore = new SqliteEnvironmentalObservationOutbox();
+        using var timeoutStore = new SqliteEnvironmentalObservationStore();
         using var timeoutFixture = CreateSingleVirtualCoordinator(
             timeoutRoot,
             new RecordingPublisher(),
@@ -964,7 +789,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
 
         var invalidRoot = Path.Combine(root, "invalid");
         Directory.CreateDirectory(invalidRoot);
-        using var invalidStore = new SqliteEnvironmentalObservationOutbox();
+        using var invalidStore = new SqliteEnvironmentalObservationStore();
         var validFact = await GenerateFactAsync(
             CreateVirtualSources("a6-invalid", [EnvironmentalAcquisitionTrigger.OnDemand]),
             0,
@@ -1011,7 +836,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
 
         var lockRoot = Path.Combine(root, "database-lock");
         Directory.CreateDirectory(lockRoot);
-        using var lockStore = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+        using var lockStore = new SqliteEnvironmentalObservationStore(busyTimeoutSeconds: 1);
         _ = await lockStore.CommitLocalAsync(lockRoot, validFact, CancellationToken.None).ConfigureAwait(false);
         var databasePath = DatabasePath(lockRoot);
         using var lockingConnection = new SqliteConnection($"Data Source={databasePath}");
@@ -1046,7 +871,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         Directory.CreateDirectory(retentionRoot);
         var retentionClock = new MutableTimeProvider(Epoch);
         using var retentionTelemetry = new EnvironmentalAcquisitionTelemetry();
-        using var retentionStore = new SqliteEnvironmentalObservationOutbox(retentionClock);
+        using var retentionStore = new SqliteEnvironmentalObservationStore(retentionClock);
         var retentionSources = CreateVirtualSources("a6-retention", [EnvironmentalAcquisitionTrigger.OnDemand]);
         var pinnedFact = await GenerateSpecificFactAsync(
             retentionSources, EnvironmentalObservationKind.AirTemperature, Epoch).ConfigureAwait(false);
@@ -1084,27 +909,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
             retentionRoot, pinnedFact, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(LocalEnvironmentalObservationCommitDisposition.Duplicate, duplicate.Disposition);
 
-        var outageRoot = Path.Combine(root, "delivery-outage");
-        Directory.CreateDirectory(outageRoot);
-        var outageClock = new MutableTimeProvider(Epoch);
-        using var outageStore = new SqliteEnvironmentalObservationOutbox(outageClock, maximumRecords: 1);
-        _ = await outageStore.CommitLocalAsync(
-            outageRoot, validFact, DeliveryTarget, CancellationToken.None).ConfigureAwait(false);
-        var outageLease = await outageStore.ClaimAsync(
-            outageRoot, "a6-outage", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(outageLease);
-        await outageStore.RetryAsync(
-            outageRoot,
-            outageLease,
-            outageClock.GetUtcNow().AddSeconds(5),
-            "transport-unavailable",
-            CancellationToken.None).ConfigureAwait(false);
-        var outageSnapshot = await outageStore.GetSnapshotAsync(outageRoot, CancellationToken.None)
-            .ConfigureAwait(false);
-        Assert.AreEqual(1, outageSnapshot.RetryCount);
-        Assert.AreEqual(1, (await outageStore.GetLocalSnapshotAsync(
-            outageRoot, CancellationToken.None).ConfigureAwait(false)).StoredCount);
-
         var health = new EnvironmentalAcquisitionHealthCheck(
             timeoutStore,
             timeoutStore,
@@ -1117,20 +921,13 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
 
         var signalRoot = Path.Combine(root, "signals");
         Directory.CreateDirectory(signalRoot);
-        using var signalStore = new SqliteEnvironmentalObservationOutbox();
+        using var signalStore = new SqliteEnvironmentalObservationStore();
         using var signalAcquisitionTelemetry = new EnvironmentalAcquisitionTelemetry();
-        using var signalDeliveryTelemetry = new EnvironmentalObservationDeliveryTelemetry(
-            new EnvironmentalObservationDeliveryState(), new FixedTimeProvider(Epoch));
         var signalPublisher = new EnvironmentalObservationPublisher(
-            NullTargetResolver.Instance,
             signalStore,
-            new EnvironmentalObservationDeliveryWakeup(),
-            new EnvironmentalObservationDeliveryState(),
-            signalDeliveryTelemetry,
             Options.Create(new CameraAgentHostOptions
             {
-                RawIngressRoot = signalRoot,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                RawIngressRoot = signalRoot
             }),
             new FixedTimeProvider(Epoch),
             signalAcquisitionTelemetry);
@@ -1169,13 +966,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
                     PinnedRecordId = pinnedCommit.Record.RecordId,
                     AssociationStatus = association[0].Status,
                     PinnedEvidenceSurvived = true
-                },
-                DeliveryOutage = new
-                {
-                    Executed = true,
-                    RetryRows = outageSnapshot.RetryCount,
-                    LocalRows = 1,
-                    LocalHistoryUnaffected = true
                 }
             },
             Health = new
@@ -1190,11 +980,9 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
             {
                 LocalCommitBoundaryRestartConvergence = true,
                 SourceFailureIsExplicitAndDoesNotManufactureFact = true,
-                QueueAndDeliveryCapacityAreBounded = true,
                 DatabaseContentionIsExplicit = true,
                 DuplicatePublicationIsIdempotent = true,
                 RetentionPreservesAssociationEvidence = true,
-                DeliveryOutageDoesNotDeleteLocalHistory = true,
                 HealthDataIsBoundedAndSanitized = true,
                 RuntimeSignalLabelsAreScannedByTopLevelHarness = true
             },
@@ -1203,7 +991,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
     }
 
     private static async Task<IReadOnlyList<HistoryQuerySample>> RunHistoryQueriesAsync(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         string root,
         Dictionary<string, LocalEnvironmentalObservationCursor?> cursors,
         int count,
@@ -1351,7 +1139,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
     }
 
     private static string DatabasePath(string root)
-        => Path.Combine(root, ".environment", "environmental-observation-outbox.db");
+        => Path.Combine(root, ".environment", "environmental-observations.db");
 
     private static async Task<string> ReadSqliteVersionAsync(string root)
     {
@@ -1647,18 +1435,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         return new CoordinatorFixture(services, coordinator);
     }
 
-    private static EnvironmentalObservationDeliveryOptions DeliveryOptions(int batchSize)
-        => new()
-        {
-            BatchSize = batchSize,
-            LeaseSeconds = 10,
-            RequestTimeoutSeconds = 1,
-            RetryInitialDelaySeconds = 1,
-            RetryMaximumDelaySeconds = 1,
-            MaximumAttempts = 10,
-            MaximumPendingCount = A5DeliveryCapacity
-        };
-
     private static double Percentile(IEnumerable<double> values, double percentile)
     {
         var ordered = values.Order().ToArray();
@@ -1893,8 +1669,7 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         {
             Interlocked.Increment(ref _publishCount);
             return ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued,
-                null));
+                EnvironmentalObservationPublishDisposition.Committed));
         }
     }
 
@@ -1971,72 +1746,6 @@ public sealed class EnvironmentalAcquisitionPerformanceTests
         private DateTimeOffset _now = now;
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
-    }
-
-    private sealed class IdempotentReceiver(TimeProvider timeProvider)
-    {
-        private readonly Dictionary<(string Source, Guid Observation), EnvironmentalObservationAcknowledgement> _facts = [];
-        public int Count => _facts.Count;
-
-        public EnvironmentalObservationAcknowledgement Ingest(EnvironmentalObservationV1 observation)
-        {
-            var source = EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation);
-            var key = (source, observation.ObservationId);
-            if (_facts.TryGetValue(key, out var existing))
-            {
-                return existing with { Disposition = EnvironmentalObservationDeliveryDisposition.Duplicate };
-            }
-            var acknowledgement = new EnvironmentalObservationAcknowledgement(
-                EnvironmentalObservationAcknowledgement.CurrentSchemaVersion,
-                observation.ObservationId,
-                source,
-                EnvironmentalObservationJson.ComputeContentSha256(observation),
-                timeProvider.GetUtcNow(),
-                EnvironmentalObservationDeliveryDisposition.Accepted);
-            _facts.Add(key, acknowledgement);
-            return acknowledgement;
-        }
-    }
-
-    private sealed class ReceiverTransport(IdempotentReceiver receiver) : IEnvironmentalObservationTransport, IDisposable
-    {
-        public int SendCount { get; private set; }
-        public int AcceptedCount { get; private set; }
-        public int DuplicateCount { get; private set; }
-
-        public ValueTask<EnvironmentalObservationTransportResult> SendAsync(
-            EnvironmentalObservationV1 observation,
-            CancellationToken cancellationToken)
-        {
-            SendCount++;
-            var acknowledgement = receiver.Ingest(observation);
-            if (acknowledgement.Disposition == EnvironmentalObservationDeliveryDisposition.Accepted)
-            {
-                AcceptedCount++;
-            }
-            else
-            {
-                DuplicateCount++;
-            }
-            return ValueTask.FromResult(new EnvironmentalObservationTransportResult(
-                EnvironmentalObservationTransportDisposition.Acknowledged,
-                acknowledgement.Disposition == EnvironmentalObservationDeliveryDisposition.Accepted
-                    ? "accepted"
-                    : "duplicate",
-                acknowledgement));
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class NullTargetResolver : IEnvironmentalObservationTargetResolver
-    {
-        public static NullTargetResolver Instance { get; } = new();
-
-        public ValueTask<EnvironmentalObservationResolvedTarget?> ResolveAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult<EnvironmentalObservationResolvedTarget?>(null);
     }
 
     private sealed class CoordinatorFixture(ServiceProvider services, EnvironmentalAcquisitionCoordinator coordinator)

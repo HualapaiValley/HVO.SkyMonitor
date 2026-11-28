@@ -23,7 +23,6 @@ internal sealed class TransientWorkerService(
     TransientDetectorRuntime detector,
     TransientDetectorSourcePreparation detectorPreparation,
     TransientWorkerWakeup wakeup,
-    TransientCandidateDeliveryWakeup deliveryWakeup,
     TransientWorkerState state,
     TransientWorkerTelemetry telemetry,
     ITransientRuntimeFaultInjector faultInjector,
@@ -41,7 +40,7 @@ internal sealed class TransientWorkerService(
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The hosted worker records unhealthy state and must remain available for durable recovery after an iteration failure.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (_options.Mode is TransientOperatingMode.Off or TransientOperatingMode.Central)
+        if (_options.Mode == TransientOperatingMode.Off)
         {
             state.Set(TransientWorkerAvailability.Disabled, "mode-disabled", 0, 0);
             return;
@@ -228,13 +227,6 @@ internal sealed class TransientWorkerService(
                     canonical.Candidates[index],
                     cancellationToken).ConfigureAwait(false);
                 faultInjector.Inject(TransientRuntimeFaultPoint.AfterCandidateJournalCommit);
-                if (_options.Mode == TransientOperatingMode.Hybrid)
-                {
-                    failureStage = "handoff";
-                    await PersistHybridSubmissionAsync(canonical.Candidates[index], cancellationToken).ConfigureAwait(false);
-                    faultInjector.Inject(TransientRuntimeFaultPoint.AfterHandoffJournalCommit);
-                    await store.MarkCandidateCompletedAsync(allocation.CandidateId, cancellationToken).ConfigureAwait(false);
-                }
             }
             await CompleteFrameAsync(
                 frame, "causal-candidate-persisted", causalSucceeded: true, cancellationToken).ConfigureAwait(false);
@@ -300,14 +292,6 @@ internal sealed class TransientWorkerService(
             {
                 return false;
             }
-            if (_options.Mode == TransientOperatingMode.Hybrid)
-            {
-                await PersistHybridSubmissionAsync(entry.Candidate, cancellationToken).ConfigureAwait(false);
-                faultInjector.Inject(TransientRuntimeFaultPoint.AfterHandoffJournalCommit);
-                await store.MarkCandidateCompletedAsync(allocation.CandidateId, cancellationToken).ConfigureAwait(false);
-                return true;
-            }
-
             var frame = await store.ReadFrameAsync(allocation.TargetRawCaptureRowId, cancellationToken).ConfigureAwait(false);
             var deadlineExpired = timeProvider.GetUtcNow() >= entry.TimeoutUtc;
             var causalWindowComplete = await store.IsCausalWindowCompleteAsync(
@@ -596,29 +580,6 @@ internal sealed class TransientWorkerService(
                 ambiguous);
         }
         return output;
-    }
-
-    private async ValueTask PersistHybridSubmissionAsync(
-        TransientCandidateV1 candidate,
-        CancellationToken cancellationToken)
-    {
-        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity("transient.handoff");
-        var envelope = new TransientCandidateSubmissionEnvelopeV1(
-            TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion,
-            candidate.CandidateId,
-            candidate.EventId,
-            candidate,
-            candidate.Extraction.RecipeIdentitySha256,
-            candidate.Provenance.ProcessingProfileIdentity,
-            new string('0', 64));
-        envelope = envelope with
-        {
-            SubmissionIdentitySha256 = TransientCandidateDeliveryJson.ComputeSubmissionIdentitySha256(envelope)
-        };
-        await candidateJournal.PersistSubmissionAsync(
-            candidate.CandidateId, candidate.EventId, envelope, cancellationToken).ConfigureAwait(false);
-        deliveryWakeup.Signal();
-        activity?.SetStatus(ActivityStatusCode.Ok);
     }
 
     private async ValueTask CompleteFrameAsync(

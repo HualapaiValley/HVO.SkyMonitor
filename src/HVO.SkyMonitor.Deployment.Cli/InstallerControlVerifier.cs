@@ -321,7 +321,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
     private static bool Drained(LifecycleContinuity state) => state.CaptureInitialized && state.QueuesObserved && state.CaptureState == "Paused" &&
         state.CaptureVersion >= 0 && state.CaptureSequence >= 0 &&
         state.RawPending == 0 && state.RawLeased == 0 && state.LanePending == 0 && state.LaneLeased == 0 &&
-        state.ProcessingPending == 0 && state.ProcessingLeased == 0 && state.OutboxPending == 0 && state.OutboxLeased == 0;
+        state.ProcessingPending == 0 && state.ProcessingLeased == 0;
 
     private static TimeSpan Min(TimeSpan left, TimeSpan right) => left < right ? left : right;
 }

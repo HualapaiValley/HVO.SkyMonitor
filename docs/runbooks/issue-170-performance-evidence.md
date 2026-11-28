@@ -1,5 +1,8 @@
 # Issue 170 Performance Evidence
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 This runbook records the historical issue #170 campaign. Issue #457 retired its
 unreleased EF migration and backfill workload. Reproduce the reviewed historical
 summary only from the cited revisions; current authority measurements start from

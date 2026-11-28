@@ -225,7 +225,7 @@ public sealed class EnvironmentalHardwareAdapterTests
         public ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)
         {
             Facts.Add(fact);
-            return ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Enqueued, null));
+            return ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Committed));
         }
     }
     private sealed class ScriptedDevice : IEnvironmentalDevice

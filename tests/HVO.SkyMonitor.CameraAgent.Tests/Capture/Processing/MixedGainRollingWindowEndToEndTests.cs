@@ -597,7 +597,6 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
             }).Build());
         return services.BuildServiceProvider();

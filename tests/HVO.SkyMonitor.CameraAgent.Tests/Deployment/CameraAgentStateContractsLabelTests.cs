@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 /// <c>stateContracts.cameraAgent</c> repeats (install contract section 6), equal to the stores this release keeps. Every
 /// SQLite store an instance keeps is declared; each store's <c>writes</c> is the schema the store records about itself
 /// when this release creates it; and its <c>reads</c> are the schemas this release opens: the one it writes, and for raw
-/// ingress, environmental outbox, nightly products and local automations also the inputs they migrate from.
+/// ingress, environmental observations, nightly products and local automations also the inputs they migrate from.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -32,9 +32,7 @@ public sealed class CameraAgentStateContractsLabelTests
         ("rawIngress", "raw/journal/raw-ingress.db", "PRAGMA user_version;"),
         ("siloPublication", "raw/.silo/publication-state.db", "PRAGMA user_version;"),
         ("siloCatalog", "raw/.silo/catalog-index.db", "PRAGMA user_version;"),
-        ("fleetStatus", "raw/.fleet/fleet-status.db", "SELECT schema_version FROM fleet_status_metadata WHERE metadata_key = 1;"),
-        ("environmentalOutbox", "raw/.environment/environmental-observation-outbox.db", "PRAGMA user_version;"),
-        ("executionEvidenceOutbox", "raw/evidence/execution-evidence-outbox.db", "SELECT version FROM execution_evidence_schema WHERE schema_key = 1;"),
+        ("environmentalObservations", "raw/.environment/environmental-observations.db", "PRAGMA user_version;"),
         ("timeLapses", "raw/.time-lapses/time-lapses.db", "PRAGMA user_version;"),
         ("nightlyProducts", "raw/.nightly-products/nightly-products.db", "PRAGMA user_version;"),
         ("localAutomations", "raw/.automation/local-automations.db", "PRAGMA user_version;"),
@@ -81,7 +79,7 @@ public sealed class CameraAgentStateContractsLabelTests
         {
             // No store opens a schema newer than the one it writes.
             Assert.AreEqual(contract.Writes, contract.Max, $"{store} reads no schema newer than it writes");
-            if (store is not ("rawIngress" or "nightlyProducts" or "environmentalOutbox" or "localAutomations"))
+            if (store is not ("rawIngress" or "nightlyProducts" or "environmentalObservations" or "localAutomations"))
             {
                 // Every other store refuses any schema but the one it writes, at startup.
                 Assert.AreEqual(contract.Writes, contract.Min, $"{store} reads only the schema it writes");
@@ -99,11 +97,11 @@ public sealed class CameraAgentStateContractsLabelTests
         CollectionAssert.AreEqual(
             opened,
             Enumerable.Range((int)rawIngress.Min, (int)(rawIngress.Max - rawIngress.Min + 1)).Select(static schema => (long)schema).ToArray());
-        var environmental = declared["environmentalOutbox"];
-        Assert.AreEqual(SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion, environmental.Writes);
+        var environmental = declared["environmentalObservations"];
+        Assert.AreEqual(SqliteEnvironmentalObservationStore.CurrentSchemaVersion, environmental.Writes);
         CollectionAssert.AreEqual(
-            new long[] { SqliteEnvironmentalObservationOutbox.BeforeRetentionIndexesSchemaVersion,
-                SqliteEnvironmentalObservationOutbox.PreviousSchemaVersion, SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion },
+            new long[] { SqliteEnvironmentalObservationStore.BeforeRetentionIndexesSchemaVersion,
+                SqliteEnvironmentalObservationStore.PreviousSchemaVersion, SqliteEnvironmentalObservationStore.CurrentSchemaVersion },
             Enumerable.Range((int)environmental.Min, (int)(environmental.Max - environmental.Min + 1)).Select(static schema => (long)schema).ToArray());
         var automation = declared["localAutomations"];
         Assert.AreEqual(LocalAutomationContract.CurrentSchemaVersion, automation.Writes);

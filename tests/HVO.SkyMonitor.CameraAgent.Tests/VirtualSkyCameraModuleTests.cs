@@ -406,9 +406,6 @@ public sealed partial class VirtualSkyCameraModuleTests
             .AddJsonFile("appsettings.StandaloneProductionSmoke.json")
             .Build();
         Assert.AreEqual(fileName, deployment["CameraAgent:ConfigFilePath"]);
-        Assert.AreEqual("Disabled", deployment["CameraAgent:CentralIntegration:Mode"]);
-        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:CaptureDistribution:UploadEnabled"));
-        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:EnvironmentalDelivery:Enabled"));
         Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
         Assert.AreEqual("hyg-v42-production", deployment["Catalog:RequiredCatalogId"]);
         Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
@@ -444,7 +441,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = path,
             AgentId = "canonical-profile-test",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
 
@@ -2332,7 +2328,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
             AgentId = "canonical-profile-test",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

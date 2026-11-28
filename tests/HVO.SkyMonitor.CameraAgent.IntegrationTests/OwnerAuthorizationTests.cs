@@ -1110,7 +1110,7 @@ public sealed class OwnerAuthorizationTests
         foreach (var page in new[]
         {
             (Path: "/", Expected: "Current sky"),
-            (Path: "/operations", Expected: "Configure and operate this camera"),
+            (Path: "/operations", Expected: "Operate this camera and inspect local acquisition"),
             (Path: "/gallery", Expected: "Archive"),
             (Path: "/schedule", Expected: "Capture / deterministic admission"),
             (Path: "/calibration", Expected: "Capture / immutable references"),
@@ -1124,7 +1124,6 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/environment", Expected: "Processing / independent observations"),
             (Path: "/operations/transients", Expected: "Processing / independent detector lane"),
             (Path: "/operations/automations", Expected: "Automations"),
-            (Path: "/operations/delivery", Expected: "Data / one-way central integration"),
             (Path: "/operations/storage", Expected: "Storage &amp; retention"),
             (Path: "/operations/data", Expected: "Storage &amp; retention"),
             (Path: "/operations/site", Expected: "Observatory &amp; location"),
@@ -1135,9 +1134,7 @@ public sealed class OwnerAuthorizationTests
             (Path: "/operations/pipeline/replays/new", Expected: "Submit this capture for replay"),
             (Path: "/operations/health", Expected: "System / bounded diagnostics"),
             (Path: "/operations/control", Expected: "System / authenticated local actions"),
-            (Path: "/operations/software", Expected: "System / verified local assets"),
-            (Path: "/operations/registration", Expected: "Setup / central integration"),
-            (Path: "/devices/bootstrap", Expected: "Setup / central integration")
+            (Path: "/operations/software", Expected: "System / verified local assets")
         })
         {
             using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
@@ -1157,6 +1154,14 @@ public sealed class OwnerAuthorizationTests
             Assert.AreEqual(HttpStatusCode.OK, owner.StatusCode, page.Path);
             var ownerHtml = await owner.Content.ReadAsStringAsync().ConfigureAwait(false);
             StringAssert.Contains(ownerHtml, page.Expected, StringComparison.Ordinal, page.Path);
+        }
+
+        using var retiredRouteClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        retiredRouteClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        foreach (var path in new[] { "/operations/delivery", "/operations/registration", "/devices/bootstrap" })
+        {
+            using var response = await retiredRouteClient.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotFound, response.StatusCode, path);
         }
     }
 

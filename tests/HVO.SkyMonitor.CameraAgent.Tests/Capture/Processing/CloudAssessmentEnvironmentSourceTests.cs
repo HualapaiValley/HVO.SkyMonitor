@@ -318,7 +318,6 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
         const string prefix = "CameraAgent:EnvironmentalAcquisition:";
         var settings = new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         void AddNws(int index)
         {

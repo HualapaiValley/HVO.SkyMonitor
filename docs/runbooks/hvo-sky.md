@@ -120,7 +120,7 @@ nothing about CameraAgent's state. A key CameraAgent refuses (HTTP 401 or 403) e
 
 | Command | Key | What it does |
 | --- | --- | --- |
-| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. A line ends `(stale)` when CameraAgent last observed that part more than 5 minutes ago, `(not observed yet)` when it has not observed it, and `(disabled)` when it is switched off. `Capture` is CameraAgent's live pause-or-run state and is never stale. |
+| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane and processing queues, and storage. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. A line ends `(stale)` when CameraAgent last observed that part more than 5 minutes ago, `(not observed yet)` when it has not observed it, and `(disabled)` when it is switched off. `Capture` is CameraAgent's live pause-or-run state and is never stale. |
 | `info` | Read | `hvo-sky`'s own version, then CameraAgent's version, runtime, start time, catalog, whether it can restart itself, and the key in use and where it came from. |
 | `config show [GROUP]` | Read | The settings by group, from CameraAgent's settings catalogue: each value, where it comes from, and whether it can be changed here. |
 | `config get KEY` | Read | One setting: value, default, source, what it accepts, when a change applies, what it affects, and why it is read-only when it is. `KEY` is the full key, or the part after the group when that is unique. |
@@ -142,7 +142,7 @@ nothing about CameraAgent's state. A key CameraAgent refuses (HTTP 401 or 403) e
 The settings are the ones CameraAgent's catalogue describes
 ([cameraagent-operator-settings-v1.md](../contracts/cameraagent-operator-settings-v1.md)): the site profile, the
 deployment location, the sky map's object limit, the virtual sky's lighting and the active schedule revision. Paths,
-listeners, central integration and credentials are not settings; the installer owns them.
+listeners and credentials are not settings; the installer owns them.
 
 - **One group at a time.** A group is the unit of one write. `config set` refuses settings of two groups (exit 2).
 - **Read-only settings.** A setting that an environment variable, a secrets file or another source above the settings
@@ -216,7 +216,7 @@ are: character-cell panels, aligned readings, and content bounded by its panel.
 
 | Key | Page | What it shows, and what it changes |
 | --- | --- | --- |
-| F1 | Status | Capture and the camera, the queues, storage and, from 110 columns, LogicHost delivery; a line that sums the state up; the recent changes of state under a rule. Read every poll interval (2 s). |
+| F1 | Status | Capture and the camera, the queues, storage and, from 110 columns, local transient and replay workers; a line that sums the state up; the recent changes of state under a rule. Read every poll interval (2 s). |
 | F2 | Settings | The settings catalogue's groups and settings, each with its value, source and whether it can be changed here, and the chosen one's rules. **Change** builds its form from the catalogue, as `config set` checks it, and sends the group with the version read: CameraAgent, not the form, says whether anything changed. |
 | F3 | Camera & rig ("Camera" on the tab bar below 110 columns, so every page keeps its name at 80) | The active and staged rig revisions, the revisions, and the camera settings. **Stage** previews and stages a revision, with the acknowledgement `rig stage` asks for; **Apply** restarts CameraAgent and waits, as `rig apply` does. |
 | F4 | Schedule | The active and staged schedule revisions, whether capture is admitted, the revisions and the next capture windows. **Apply staged** and **Activate** activate a revision at the next capture boundary, going forward or back from the revision numbers, as `schedule apply` does. |

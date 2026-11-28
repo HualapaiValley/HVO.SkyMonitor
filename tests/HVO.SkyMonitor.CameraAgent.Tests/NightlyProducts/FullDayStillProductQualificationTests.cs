@@ -364,7 +364,6 @@ public sealed class FullDayStillProductQualificationTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
         services.AddSingleton(clock);

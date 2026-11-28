@@ -10,7 +10,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -59,8 +58,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
                 var rootB = Path.Combine(root, "storage-b");
                 Assert.IsTrue(Directory.EnumerateFiles(rootB, "*.json", SearchOption.AllDirectories).Any(), "Matching profile publication resumes.");
-                Assert.IsTrue((await restarted.GetRequiredService<IArtifactOutbox>().GetSnapshotAsync(rootB, CancellationToken.None).ConfigureAwait(false)).HeldCount > 0,
-                    "Matching upload-enabled profile publishes real outbox work.");
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                     await Operations(restarted).RollbackRevisionAsync(namedId,
                         (await Operations(restarted).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).StateVersion,
@@ -192,8 +189,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
 
     internal static ServiceProvider Provider(string root) => ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-        ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
     });
 
     internal static CameraModuleConfig Profile(string root)

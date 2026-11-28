@@ -66,15 +66,14 @@ public sealed class CameraAgentTransientOperationsUiServiceTests
 
         var result = await CreateService(
                 principal, Authorized(principal), runtime.Object, projection.Object, processing.Object,
-                HostOptions(TransientOperatingMode.Hybrid, required: true), worker)
+                HostOptions(TransientOperatingMode.Edge, required: true), worker)
             .GetOverviewAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.IsTrue(result.IsSuccess);
         var view = result.Value!;
         Assert.AreEqual(Now, view.EvaluatedUtc);
-        Assert.AreEqual(TransientOperatingMode.Hybrid, view.Mode);
+        Assert.AreEqual(TransientOperatingMode.Edge, view.Mode);
         Assert.IsTrue(view.Required);
-        Assert.IsTrue(view.CentralIntegrationEnabled);
         Assert.AreEqual(TransientWorkerAvailability.Healthy, view.Worker.Availability);
         Assert.AreEqual(3, view.Worker.PendingFrames);
         Assert.AreEqual("edge-v1", view.Profile.ExtractionProfile);
@@ -178,7 +177,6 @@ public sealed class CameraAgentTransientOperationsUiServiceTests
             authorization,
             Options.Create(options ?? HostOptions(TransientOperatingMode.Edge, required: false)),
             worker ?? new TransientWorkerState(new FixedTimeProvider(Now)),
-            new TransientCandidateDeliveryState(new FixedTimeProvider(Now)),
             runtime,
             projection,
             processing,
@@ -188,7 +186,6 @@ public sealed class CameraAgentTransientOperationsUiServiceTests
     private static CameraAgentHostOptions HostOptions(TransientOperatingMode mode, bool required) => new()
     {
         TransientDetection = new TransientDetectionOptions { Mode = mode, Required = required },
-        CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled },
     };
 
     private static TransientCaptureOutcome Outcome(long sequence, int candidates) => new(

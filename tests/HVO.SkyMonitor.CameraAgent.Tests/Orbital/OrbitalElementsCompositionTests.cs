@@ -393,7 +393,6 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
             {
                 ["CameraAgent:RawIngressRoot"] = rawIngressRoot,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
         return services;

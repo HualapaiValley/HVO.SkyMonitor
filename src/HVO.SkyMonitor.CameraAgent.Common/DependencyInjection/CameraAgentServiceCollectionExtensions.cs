@@ -4,7 +4,6 @@ using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
@@ -24,11 +23,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.Video.FFmpeg;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using Microsoft.Extensions.Hosting;
@@ -68,8 +66,8 @@ public static class CameraAgentServiceCollectionExtensions
             .Bind(configuration.GetSection("CameraAgent"))
             .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
-            .Validate(options => options.CentralIntegration.Mode == CentralIntegrationMode.Disabled,
-                "The Silo storage layout requires disabled central integration.")
+            .Validate(options => options.ProcessingGraphs.ReplayProfile != ReplayExecutionProfile.LocalRunner,
+                "The Silo storage layout requires in-process replay.")
             .ValidateOnStart();
         services.AddSingleton(_ => SiloInstalledSettings.ReadHostConfiguration(configuration));
         services.AddSingleton<SiloInstalledStorage>();
@@ -102,14 +100,10 @@ public static class CameraAgentServiceCollectionExtensions
             if (!string.Equals(
                     Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
                     "StandaloneW6",
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    configuration["CameraAgent:CentralIntegration:Mode"],
-                    "Disabled",
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "Acceptance fault control is permitted only in StandaloneW6 with central integration disabled.");
+                    "Acceptance fault control is permitted only in StandaloneW6.");
             }
             services.AddSingleton(new CameraAgentAcceptanceFaultController(acceptanceFaultRoot));
             services.AddSingleton<IStorageCapacityProvider>(provider =>
@@ -188,9 +182,6 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(provider => new TransientDetectorSourcePreparation(
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<TransientWorkerWakeup>();
-        services.AddSingleton<TransientCandidateDeliveryWakeup>();
-        services.AddSingleton<TransientCandidateDeliveryState>();
-        services.TryAddSingleton<ITransientCandidateTransport>(NullTransientCandidateTransport.Instance);
         services.AddSingleton<TransientWorkerState>();
         services.AddSingleton<TransientWorkerTelemetry>();
         services.AddSingleton<CameraModuleFactory>();
@@ -242,42 +233,30 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();
-        services.AddSingleton<FleetRuntimeState>();
-        services.AddSingleton<FleetHeartbeatState>();
-        services.AddSingleton<FleetHeartbeatTelemetry>();
-        services.AddSingleton<FleetStatusCollector>();
-        services.AddSingleton<IFleetStatusOutbox, SqliteFleetStatusOutbox>();
-        services.AddSingleton<EnvironmentalObservationDeliveryWakeup>();
-        services.TryAddSingleton<IEnvironmentalObservationTargetResolver, NullEnvironmentalObservationTargetResolver>();
-        services.AddSingleton<EnvironmentalObservationDeliveryState>();
-        services.AddSingleton<EnvironmentalObservationDeliveryTelemetry>();
+        services.AddSingleton<CaptureRuntimeState>();
         services.AddSingleton<EnvironmentalAcquisitionTelemetry>();
-        services.AddSingleton<SqliteEnvironmentalObservationOutbox>(provider =>
+        services.AddSingleton<SqliteEnvironmentalObservationStore>(provider =>
         {
             var configured = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions>>().Value;
-            return new SqliteEnvironmentalObservationOutbox(
+            return new SqliteEnvironmentalObservationStore(
                 provider.GetRequiredService<TimeProvider>(),
                 configured.RawIngressSqliteBusyTimeoutSeconds,
-                configured.EnvironmentalDelivery.MaximumPendingCount,
-                configured.EnvironmentalDelivery.MaximumPendingBytes,
                 maximumLocalRecords: configured.EnvironmentalAcquisition.MaximumHistoryCount,
                 maximumLocalBytes: configured.EnvironmentalAcquisition.MaximumHistoryBytes,
                 localRetentionDays: configured.EnvironmentalAcquisition.RetentionDays,
                 localRetentionBatchSize: configured.EnvironmentalAcquisition.RetentionBatchSize,
                 acquisitionTelemetry: provider.GetRequiredService<EnvironmentalAcquisitionTelemetry>());
         });
-        services.AddSingleton<IEnvironmentalObservationOutbox>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
         services.AddSingleton<ILocalEnvironmentalObservationStore>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+            provider.GetRequiredService<SqliteEnvironmentalObservationStore>());
         services.AddSingleton<ILocalEnvironmentalAssociationStore>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+            provider.GetRequiredService<SqliteEnvironmentalObservationStore>());
         services.AddSingleton<IEnvironmentalAcquisitionStateStore>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+            provider.GetRequiredService<SqliteEnvironmentalObservationStore>());
         services.AddSingleton<IEnvironmentalOnDemandCommandStore>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+            provider.GetRequiredService<SqliteEnvironmentalObservationStore>());
         services.AddSingleton<ILocalEnvironmentalRetentionStore>(provider =>
-            provider.GetRequiredService<SqliteEnvironmentalObservationOutbox>());
+            provider.GetRequiredService<SqliteEnvironmentalObservationStore>());
         services.AddSingleton<IEnvironmentalObservationPublisher, EnvironmentalObservationPublisher>();
         services.AddSingleton(new EnvironmentalSourceRegistration(
             "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions)));
@@ -354,21 +333,6 @@ public static class CameraAgentServiceCollectionExtensions
             () => provider.GetService<IAstrometricCatalogSource>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
-        services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>
-            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
-        services.AddSingleton<IExecutionEvidenceSource>(provider =>
-            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
-        services.TryAddSingleton<IProcessingGraphDeliveryTransport>(NullProcessingGraphDeliveryTransport.Instance);
-        services.AddSingleton<ProcessingGraphDeliveryState>();
-        services.AddSingleton<ProcessingGraphDeliveryTelemetry>();
-        services.AddSingleton<ExecutionEvidenceExportState>();
-        services.AddSingleton<ExecutionEvidenceExportTelemetry>();
-        services.AddSingleton<ExecutionEvidenceExportWakeup>();
-        services.AddSingleton<IExecutionEvidenceOutbox>(provider => new SqliteExecutionEvidenceOutbox(
-            provider.GetRequiredService<TimeProvider>(),
-            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressSqliteBusyTimeoutSeconds));
-        services.TryAddSingleton<IExecutionEvidenceTransport>(NullExecutionEvidenceTransport.Instance);
-        services.TryAddSingleton<IExecutionEvidenceOriginProvider, LocalExecutionEvidenceOriginProvider>();
         services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
         services.AddSingleton<SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
@@ -494,20 +458,14 @@ public static class CameraAgentServiceCollectionExtensions
                 // Resolved on first use by a mixed-gain node: composing any graph must not require the durable stores.
                 provider.GetRequiredService<GainNormalizationPreparer>);
         });
-        services.AddSingleton<ArtifactOutboxState>();
-        services.AddSingleton<ArtifactOutboxTelemetry>();
-        services.AddSingleton<IArtifactOutbox, SqliteArtifactOutbox>();
         services.AddSingleton<StandardCaptureLaneHandler>();
-        services.AddSingleton<UploadCaptureLaneHandler>();
         services.AddSingleton<TransientCaptureLaneHandler>();
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<StandardCaptureLaneHandler>());
-        services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<UploadCaptureLaneHandler>());
         services.AddSingleton<ICaptureLaneHandler>(provider => provider.GetRequiredService<TransientCaptureLaneHandler>());
         services.AddSingleton<ICaptureLaneHandler>(provider =>
             provider.GetRequiredService<EnvironmentalAssociationCaptureLaneHandler>());
         services.AddSingleton<CaptureDistributionService>();
         services.AddSingleton<ICaptureDistributor>(provider => provider.GetRequiredService<CaptureDistributionService>());
-        services.AddTransient<ArtifactUploadClient>();
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Preview", typeof(PreviewCaptureProcessingStep), typeof(PreviewProcessingStepOptions), 50));
         services.AddSingleton(new CaptureProcessingStepRegistration(
@@ -602,14 +560,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<CameraCaptureService>();
         // Registered after the capture owner so host shutdown stops a focus session before the module is revoked.
         services.AddHostedService(provider => provider.GetRequiredService<ManualFocusSessionCoordinator>());
-        services.AddHostedService<FleetHeartbeatService>();
-        services.AddHostedService<EnvironmentalObservationDeliveryService>();
-        services.AddHostedService<ProcessingGraphDeliveryService>();
-        services.AddHostedService<ExecutionEvidenceExportService>();
         services.AddSingleton<TransientWorkerService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
-        services.AddSingleton<TransientCandidateDeliveryService>();
-        services.AddHostedService(provider => provider.GetRequiredService<TransientCandidateDeliveryService>());
         services.TryAddSingleton<ISntpClient, SntpClient>();
         services.TryAddSingleton<IKernelClockReader, LinuxKernelClockReader>();
         services.AddSingleton(provider => new ClockSyncMonitor(

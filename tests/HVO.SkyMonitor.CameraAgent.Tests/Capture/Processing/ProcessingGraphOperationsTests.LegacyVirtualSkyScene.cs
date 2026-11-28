@@ -7,7 +7,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,8 +56,6 @@ public sealed partial class ProcessingGraphOperationsTests
             new("legacy-topology", "v1", new Uri("https://example.invalid/topology"), new string('C', 64), "fixture", "v1"));
         var overrides = new Dictionary<string, string?>
         {
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
         };
         var baseline = CreateProjectedSceneConfiguration();
         if (retentionOwner)
@@ -201,21 +198,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     outputs.Add(node, (output.OutputIdentitySha256, payloadPath, Sha256OfFile(payloadPath)));
                 }
 
-                var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
-                var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static value => value.Name == "upload");
-                var lease = await laneStore.ClaimAsync(lane, "legacy-scene-upload", configuration, token).ConfigureAwait(false);
-                Assert.IsNotNull(lease);
-                var uploaded = await provider.GetRequiredService<UploadCaptureLaneHandler>().HandleAsync(lease.Context, token).ConfigureAwait(false);
-                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, uploaded.Outcome, uploaded.Reason);
-                await laneStore.CompleteAsync(lease, token).ConfigureAwait(false);
-                var outbox = provider.GetRequiredService<IArtifactOutbox>();
-                Assert.AreEqual(2L, (await outbox.GetSnapshotAsync(root, token).ConfigureAwait(false)).PendingCount,
-                    "Only the raw image and its canonical scene enter the upload outbox.");
-                var manifest = await provider.GetRequiredService<CaptureProcessingPersistence>()
-                    .FindCommittedSceneUploadAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false);
-                Assert.IsNotNull(manifest);
-                Assert.AreEqual(outputs["projected-scene"].Path, Path.Combine(root, manifest.RelativeArtifactPath));
-                Assert.IsNotNull(await outbox.ReadAsync(root, manifest.IdempotencyKey, token).ConfigureAwait(false));
+
             }
 
             using (var restarted = CreateProvider(root, overrides))

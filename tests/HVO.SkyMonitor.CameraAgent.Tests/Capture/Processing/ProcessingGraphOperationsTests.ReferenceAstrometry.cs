@@ -886,7 +886,6 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 ConfigFilePath = configurationPath,
                 AgentId = "reference-astrometry-test",
-                CentralIntegration = new() { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
     }

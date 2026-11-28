@@ -585,12 +585,9 @@ shared_projects=(
   HVO.SkyMonitor.Astronomy
   HVO.SkyMonitor.Catalog.Sqlite
   HVO.SkyMonitor.Common
-  HVO.SkyMonitor.Fleet.Contracts
   HVO.SkyMonitor.Imaging
   HVO.SkyMonitor.Processing
   HVO.SkyMonitor.Video.FFmpeg
-  HVO.SkyMonitor.ProcessingRunner
-  HVO.SkyMonitor.ProcessingRunner.Contracts
   HVO.SkyMonitor.LocalFiles
   HVO.SkyMonitor.TestSupport
   HVO.SkyMonitor.AgentCore.Tests
@@ -598,10 +595,8 @@ shared_projects=(
   HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests
   HVO.SkyMonitor.Catalog.Sqlite.Tests
   HVO.SkyMonitor.Common.Tests
-  HVO.SkyMonitor.Fleet.Contracts.Tests
   HVO.SkyMonitor.Imaging.Tests
   HVO.SkyMonitor.Processing.Tests
-  HVO.SkyMonitor.ProcessingRunner.Tests
   HVO.SkyMonitor.TestSupport.Tests
 )
 

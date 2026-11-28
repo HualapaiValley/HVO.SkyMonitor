@@ -118,9 +118,6 @@ public sealed record ManualDeploymentLocationOverride(
 /// The highest version the protected history knows, including a candidate or staged version. This is
 /// the concurrency token a command echoes as its expected version; it is not the capture-stamped one.
 /// </param>
-/// <param name="PendingVersion">
-/// The version a candidate or staged snapshot already occupies, or null when none is pending.
-/// </param>
 /// <param name="ManualSequence">
 /// The sequence of the newest recorded manual entry, or zero when none. A command echoes it so a
 /// second operator cannot silently replace a pending manual entry the history has not yet versioned.
@@ -131,11 +128,7 @@ public sealed record ManualDeploymentLocationState(
     long ActiveVersion,
     long KnownVersion,
     long NextVersion,
-    long? PendingVersion,
     long ManualSequence,
-    bool CentralAcknowledgementRequired,
-    bool StagedAcknowledgementPending,
-    bool CandidateAwaitingAcknowledgement,
     ManualDeploymentLocationOverride? Override,
     DateTimeOffset? OverrideSupersededAtUtc,
     IReadOnlyList<ManualDeploymentLocationAuditEntry> History)
@@ -147,11 +140,7 @@ public sealed record ManualDeploymentLocationState(
         ActiveVersion: 0,
         KnownVersion: 0,
         NextVersion: 0,
-        PendingVersion: null,
         ManualSequence: 0,
-        CentralAcknowledgementRequired: false,
-        StagedAcknowledgementPending: false,
-        CandidateAwaitingAcknowledgement: false,
         Override: null,
         OverrideSupersededAtUtc: null,
         History: []);

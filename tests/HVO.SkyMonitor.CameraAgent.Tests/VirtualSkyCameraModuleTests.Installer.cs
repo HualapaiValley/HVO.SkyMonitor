@@ -29,7 +29,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = runtimePath,
             RawIngressRoot = root,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         });
         try

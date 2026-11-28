@@ -17,12 +17,12 @@ public sealed class SiloPublicationOwnershipTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void InstalledSiloSettingsRejectCentralIntegration()
+    public void InstalledSiloSettingsRejectLocalRunnerReplay()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:Silo:StateContract"] = "cameraagent-silo-state-v1",
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled"
+            ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner"
         }).Build();
         var services = new ServiceCollection();
         services.AddLogging();
@@ -30,7 +30,7 @@ public sealed class SiloPublicationOwnershipTests
         using var provider = services.BuildServiceProvider();
         var failure = Assert.ThrowsExactly<OptionsValidationException>(() =>
             _ = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value);
-        CollectionAssert.Contains(failure.Failures.ToArray(), "The Silo storage layout requires disabled central integration.");
+        CollectionAssert.Contains(failure.Failures.ToArray(), "The Silo storage layout requires in-process replay.");
     }
 
     [TestMethod]

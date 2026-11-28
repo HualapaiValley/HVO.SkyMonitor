@@ -109,7 +109,7 @@ but the typed editor currently rejects those tokens until the affected fields
 are explicitly corrected. It does not silently rewrite retained values.
 
 This restriction also applies to mixed-gain RollingCombination window sizes and
-age/integration limits, including raw JSON authored in LogicHost. Repeated
+age/integration limits. Repeated
 described option names, including differently cased spellings, are rejected;
 runtime binding can instead keep the last value. Mixed-gain WindowKind retains
 its existing enum binding (names or defined numeric values).

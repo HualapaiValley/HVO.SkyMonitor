@@ -278,7 +278,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             "site", 3, "installer", null, DateTimeOffset.UnixEpoch, null, 35, -114, 1000, "UTC");
 
         private ManualDeploymentLocationState _manual = new(
-            true, "site", 3, 3, 4, null, 0, false, false, false, null, null, []);
+            true, "site", 3, 3, 4, 0, null, null, []);
 
         public bool FailRead { get; set; }
 

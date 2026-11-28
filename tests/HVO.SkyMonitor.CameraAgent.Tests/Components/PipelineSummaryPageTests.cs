@@ -1145,7 +1145,6 @@ public sealed class PipelineSummaryPageTests
 
     [TestMethod]
     [DataRow(TransientOperatingMode.Off, "Transient detection is off", DisplayName = "Off")]
-    [DataRow(TransientOperatingMode.Central, "Central detection", DisplayName = "Central")]
     public void Lane_WithoutLocalStages_SaysWhyAndLinksToTransients(TransientOperatingMode mode, string title)
     {
         using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())), transients: Lane(mode));
@@ -1215,7 +1214,7 @@ public sealed class PipelineSummaryPageTests
         cut.Find("#pipeline-stage-causal-scan").Click();
 
         Assert.AreEqual("Causal candidate scan", cut.Find("#pipeline-step-title").TextContent.Trim());
-        Assert.AreEqual("Meteor detection / this agent", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent.Trim());
+        Assert.AreEqual("Meteor detection", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent.Trim());
         var facts = cut.Find(".ops-node-facts").TextContent;
         Assert.Contains("Linear detector input, Durable frame window", facts);
         Assert.Contains("3 frames waiting", facts);
@@ -1237,32 +1236,7 @@ public sealed class PipelineSummaryPageTests
     }
 
     [TestMethod]
-    public void Lane_Hybrid_RelaysToCentralStagesThisAgentDoesNotMeasure()
-    {
-        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(ExplicitPlan())),
-            transients: Lane(TransientOperatingMode.Hybrid, delivering: 2, retrying: 1));
-
-        var cut = context.Render<PipelineSummaryPage>();
-
-        cut.WaitForElement(".ops-pipeline-graph");
-        Assert.IsNotNull(cut.Find("#pipeline-stage-relay"));
-        Assert.IsEmpty(cut.FindAll("#pipeline-stage-assess"));
-        Assert.Contains("central", cut.Find("#pipeline-stage-central-validation").GetAttribute("class")!);
-        Assert.DoesNotContain("central", cut.Find("#pipeline-stage-relay").GetAttribute("class")!);
-
-        cut.Find("#pipeline-stage-relay").Click();
-        Assert.Contains("2 candidates waiting, 1 retrying", cut.Find(".ops-node-facts").TextContent);
-
-        cut.Find("#pipeline-stage-central-validation").Click();
-        Assert.AreEqual("Meteor detection / LogicHost", cut.Find(".ops-pipeline-inspector .eyebrow").TextContent.Trim());
-        var facts = cut.Find(".ops-node-facts").TextContent;
-        Assert.Contains("Not measured on this agent", facts);
-        Assert.Contains("LogicHost", facts);
-    }
-
-    [TestMethod]
     [DataRow(TransientOperatingMode.Edge, "assess", DisplayName = "Edge")]
-    [DataRow(TransientOperatingMode.Hybrid, "relay", DisplayName = "Hybrid")]
     public void Lane_EmptyExplicitPlan_StillDrawsTheRawFrameAndTheLane(TransientOperatingMode mode, string stage)
     {
         using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
@@ -1287,7 +1261,6 @@ public sealed class PipelineSummaryPageTests
 
     [TestMethod]
     [DataRow(TransientOperatingMode.Off, DisplayName = "Off")]
-    [DataRow(TransientOperatingMode.Central, DisplayName = "Central")]
     public void Lane_EmptyExplicitPlan_WithoutLocalStages_OffersOnlyTheRawFrame(TransientOperatingMode mode)
     {
         using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan([], []))),
@@ -1387,7 +1360,6 @@ public sealed class PipelineSummaryPageTests
                 PendingFrames = pendingFrames,
                 PendingCandidates = pendingCandidates,
             },
-            Delivery = view.Delivery with { PendingCount = delivering, RetryingCount = retrying },
         });
     }
 

@@ -65,16 +65,6 @@ internal sealed class OperationsAttention
                 "/operations/health", "Inspect"));
         }
 
-        var centralEnabled = !string.Equals(summary.Configuration.Value.CentralIntegration, "Disabled", StringComparison.Ordinal);
-        if (centralEnabled &&
-            string.Equals(summary.Heartbeat.Freshness, "fresh", StringComparison.OrdinalIgnoreCase) &&
-            summary.Heartbeat.Value.Availability is "Unavailable" or "Unhealthy")
-        {
-            items.Add(new("health", "warning", "warning", "LogicHost connection unavailable",
-                "Local acquisition continues; central delivery waits in the durable outbox.",
-                "/operations/health", "Inspect"));
-        }
-
         var pressuredStorage = summary.Storage.Value.Where(static storage => storage.IsUnderPressure)
             .Select(static storage => $"{OperationsPage.SplitWords(storage.Alias)} storage").ToArray();
         var pressuredLanes = summary.CaptureLanes.Value.Lanes.Where(static lane => lane.PressureLevel > 0)
@@ -84,38 +74,6 @@ internal sealed class OperationsAttention
             items.Add(new("storage", "warning", "warning", "Storage or lane pressure",
                 $"Under pressure: {string.Join(", ", pressuredStorage.Concat(pressuredLanes))}.",
                 "/operations/storage", "Inspect"));
-        }
-
-        var artifactRetries = summary.ArtifactOutbox.Value.RetryCount;
-        if (artifactRetries > 0)
-        {
-            items.Add(new("delivery", "info", "running", Plural(artifactRetries, "artifact delivery is", "artifact deliveries are") + " retrying",
-                "Captures are durable locally; the outbox is applying bounded backoff.",
-                "/operations/delivery", "Inspect"));
-        }
-
-        var artifactHeld = Math.Max(summary.ArtifactOutbox.Value.QuarantineCount, view.ArtifactQuarantine.Count);
-        if (artifactHeld > 0)
-        {
-            items.Add(new("storage", "warning", "warning", Plural(artifactHeld, "artifact item is", "artifact items are") + " quarantined",
-                "Held items stop retrying until they are replayed or abandoned.",
-                "/operations/quarantine", "Review"));
-        }
-
-        var environmentalRetries = summary.EnvironmentalDelivery.Value.RetryCount;
-        if (environmentalRetries > 0)
-        {
-            items.Add(new("delivery", "info", "running", Plural(environmentalRetries, "environmental delivery is", "environmental deliveries are") + " retrying",
-                "Observations are durable locally; delivery is applying bounded backoff.",
-                "/operations/delivery", "Inspect"));
-        }
-
-        var environmentalHeld = Math.Max(summary.EnvironmentalDelivery.Value.QuarantineCount, view.EnvironmentalQuarantine.Count);
-        if (environmentalHeld > 0)
-        {
-            items.Add(new("storage", "warning", "warning", Plural(environmentalHeld, "environmental item is", "environmental items are") + " quarantined",
-                "Held observations stop retrying until they are replayed or abandoned.",
-                "/operations/quarantine?kind=Environmental", "Review"));
         }
 
         if (extra is not null)
@@ -132,11 +90,8 @@ internal sealed class OperationsAttention
         summary.RawIngress.Freshness,
         summary.CaptureLanes.Freshness,
         summary.CaptureProcessing.Freshness,
-        summary.ArtifactOutbox.Freshness,
         summary.Storage.Freshness,
         summary.CaptureRuntime.Freshness,
-        summary.Heartbeat.Freshness,
-        summary.EnvironmentalDelivery.Freshness,
         summary.TransientWorker.Freshness,
         summary.CaptureTelemetry.Freshness,
         summary.Configuration.Freshness

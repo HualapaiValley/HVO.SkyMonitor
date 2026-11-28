@@ -13,7 +13,7 @@
     <PageHeader Eyebrow="Archived evidence replay"
                 Title="Submit this capture for replay"
                 HeadingId="replay-submit-heading"
-                Lead="Replay re-executes retained evidence in a separate execution class. It never repeats acquisition, never changes the current or latest view, and never uploads or publishes anything automatically." />
+                Lead="Replay re-executes retained evidence in a separate execution class. It never repeats acquisition, never changes the current or latest view, and never publishes anything automatically." />
 
     @if (_loading)
     {
@@ -83,7 +83,6 @@
                     <div><dt>Byte length</dt><dd>@OperationsPage.FormatBytes(_candidate.PrimaryArtifact.ByteLength)</dd></div>
                     <div><dt>Availability</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.Availability)</dd></div>
                     <div><dt>Retention</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.RetentionState)</dd></div>
-                    <div><dt>Delivery availability</dt><dd>@OperationsPage.SplitWords(_candidate.PrimaryArtifact.DeliveryAvailability)</dd></div>
                 </dl>
             }
 
@@ -149,7 +148,7 @@
                     <p id="replay-confirm-description">
                         The durable store freezes the exact capture, artifact, ordered inputs, and retention
                         pins at submission. Replay results stay separate from the current and latest view and
-                        are never uploaded or published automatically.
+                        are never published automatically.
                     </p>
                 </div>
                 <div>

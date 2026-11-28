@@ -12,7 +12,6 @@ public sealed record CaptureTelemetrySample(
     double Gain,
     double? TargetFps,
     CaptureMode Mode,
-    bool RequiresImmediateUpload,
     bool FrameStored,
     TimeSpan ProcessingLatency,
     TimeSpan LoopDuration,
@@ -27,8 +26,7 @@ public sealed record CaptureTelemetryAggregate(
     double AverageGain,
     double CapturesPerMinute,
     double DutyCycle,
-    int FramesStored,
-    int ImmediateUploadCount)
+    int FramesStored)
 {
     public static CaptureTelemetryAggregate FromSamples(IReadOnlyList<CaptureTelemetrySample> samples)
     {
@@ -36,7 +34,7 @@ public sealed record CaptureTelemetryAggregate(
 
         if (samples.Count == 0)
         {
-            return new CaptureTelemetryAggregate(0, 0, 0, 0, 0, 0, 0, 0, 0);
+            return new CaptureTelemetryAggregate(0, 0, 0, 0, 0, 0, 0, 0);
         }
 
         var avgInterval = samples.Average(static s => s.Interval.TotalMilliseconds);
@@ -45,7 +43,6 @@ public sealed record CaptureTelemetryAggregate(
         var avgLoop = samples.Average(static s => s.LoopDuration.TotalMilliseconds);
         var avgGain = samples.Average(static s => s.Gain);
         var framesStored = samples.Count(static s => s.FrameStored);
-        var immediateUploads = samples.Count(static s => s.RequiresImmediateUpload);
 
         var first = samples[0];
         var last = samples[^1];
@@ -61,8 +58,7 @@ public sealed record CaptureTelemetryAggregate(
             avgGain,
             capturesPerMinute,
             dutyCycle,
-            framesStored,
-            immediateUploads);
+            framesStored);
     }
 }
 

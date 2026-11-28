@@ -91,7 +91,7 @@ internal static class CameraAgentEnvironmentalOperationsEndpoints
 
     private static async Task<IResult> GetHistoryAsync(
         ILocalEnvironmentalObservationStore store,
-        OutboxOperationsTokenService tokens,
+        LocalOperationsTokenService tokens,
         IOptions<CameraAgentHostOptions> options,
         [AsParameters] HistoryQuery query,
         CancellationToken cancellationToken)
@@ -115,7 +115,7 @@ internal static class CameraAgentEnvironmentalOperationsEndpoints
     private static async Task<IResult> GetHistoryDetailAsync(
         string reference,
         ILocalEnvironmentalObservationStore store,
-        OutboxOperationsTokenService tokens,
+        LocalOperationsTokenService tokens,
         IOptions<CameraAgentHostOptions> options,
         CancellationToken cancellationToken)
     {
@@ -131,7 +131,7 @@ internal static class CameraAgentEnvironmentalOperationsEndpoints
     private static async Task<IResult> GetAssociationsAsync(
         Guid captureId,
         ILocalEnvironmentalAssociationStore store,
-        OutboxOperationsTokenService tokens,
+        LocalOperationsTokenService tokens,
         IOptions<CameraAgentHostOptions> options,
         CancellationToken cancellationToken)
     {
@@ -159,7 +159,7 @@ internal static class CameraAgentEnvironmentalOperationsEndpoints
 
     private static ObservationResponse Project(
         LocalEnvironmentalObservationRecord item,
-        OutboxOperationsTokenService tokens)
+        LocalOperationsTokenService tokens)
         => new(
             tokens.ProtectEnvironmentalHistoryReference(item.RecordId),
             item.Fact.ObservationId,

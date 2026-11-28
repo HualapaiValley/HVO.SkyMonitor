@@ -586,8 +586,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                         "options": {
                           "storageRoot": {{JsonSerializer.Serialize(root)}},
                           "retentionDays": 1,
-                          "updateLatestFrame": true,
-                          "queueForUpload": false
+                          "updateLatestFrame": true
                         }
                       }
                     ]

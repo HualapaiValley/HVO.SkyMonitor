@@ -86,5 +86,4 @@ rather than silently treated as its default.
 preserved JSON settings. No templates, fonts, glyphs, rich text, new renderer,
 qualification change or automatic conversion to
 layered presentation/Frame Facts is included. The same shared recipe remains
-available to CameraAgent and LogicHost; LogicHost does not gain edge metadata
-collection or a new configuration surface. #1386 remains a partial delivery.
+available in CameraAgent. #1386 remains a partial delivery.

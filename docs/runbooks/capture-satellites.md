@@ -40,8 +40,6 @@ may include both new nodes. Durable-local publication writes their canonical
 Silo versions. Current Sky and the archive
 view consume the canonical retained products. Retention also protects copies in
 recorded historical archive roots made through existing publication primitives.
-The optional central reconstruction boundary is the portable typed products;
-this slice adds no upload policy or automatic secondary archive publication.
 
 Installed orbital storage and the existing local time source supply the inputs.
 Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained

@@ -16,7 +16,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -844,15 +843,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
             new EmptyPipelineFactory(),
             new EvidenceLogger<StandardCaptureLaneHandler>(runtimeSignals),
             fixture.Ingress);
-        using var outbox = new SqliteArtifactOutbox();
-        var upload = new UploadCaptureLaneHandler(outbox, fixture.Options);
         var secondary = new GatedSecondaryLaneHandler(blocked);
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(configuration),
             fixture.Ingress,
             fixture.Ingress,
             fixture.Policy,
-            [standard, upload, secondary],
+            [standard, secondary],
             standard,
             fixture.Options,
             TimeProvider.System,
@@ -936,7 +933,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var requiredCompleted = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE required = 1 AND state = 'completed';").ConfigureAwait(false);
             Assert.AreEqual(W3PayloadCount, rawRows);
             Assert.AreEqual(W3PayloadBytes, rawBytes);
-            Assert.AreEqual(W3PayloadCount * 3L, laneRows);
+            Assert.AreEqual(W3PayloadCount * 2L, laneRows);
             Assert.AreEqual(W3PayloadCount * 2L, requiredCompleted);
             using (var connection = await OpenDatabaseAsync(root).ConfigureAwait(false))
             {
@@ -990,7 +987,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             var finalPending = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state IN ('pending', 'leased', 'retry_wait');").ConfigureAwait(false);
             var finalQuarantined = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'quarantined';").ConfigureAwait(false);
             var finalRetentionHeld = await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold != 0;").ConfigureAwait(false);
-            Assert.AreEqual(W3PayloadCount * 3L, finalCompleted);
+            Assert.AreEqual(W3PayloadCount * 2L, finalCompleted);
             Assert.AreEqual(0L, finalPending);
             Assert.AreEqual(0L, finalQuarantined);
             Assert.AreEqual(0L, finalRetentionHeld);
@@ -1095,7 +1092,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Assert.AreEqual(expectedOptionalBacklog, optional.PendingCount);
             Assert.AreEqual(0L, backlogs.Where(static backlog => backlog.Required).Sum(static backlog => backlog.PendingCount));
             Assert.AreEqual(W3PayloadCount, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
-            Assert.AreEqual(W3PayloadCount * 3L, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
+            Assert.AreEqual(W3PayloadCount * 2L, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
         }
         return samples;
     }
@@ -1133,7 +1130,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
     private static CaptureDistributionOptions CreateDistributionOptions()
         => new()
         {
-            UploadEnabled = true,
             PollIntervalMilliseconds = 100,
             ShutdownDrainSeconds = 60,
             RequiredMaximumPendingCount = 1_000_000,
@@ -1153,7 +1149,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 ConfigFilePath = CanonicalProfilePath,
                 RawIngressRoot = "performance-only",
                 AgentId = "agent-95-performance",
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix")
             }),
             new EvidenceLogger<FileCameraAgentConfigurationLoader>(null));

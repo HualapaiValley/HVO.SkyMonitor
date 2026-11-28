@@ -1352,8 +1352,7 @@ unexpectedly disappears from the archive, check the configured storage path,
 mount availability, permissions and warning log. Recover the original journal
 or mount to restore access to current copies.
 
-The LogicHost delivery-queue correction from the original centered acquisition
-review is retired. The optional Silo archive tracks the ordering requirement
+The optional Silo archive tracks publication ordering
 in [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969).
 Archive confirmation refers to a locally committed publication whose exact
 dependencies have been verified at the archive.
@@ -1513,6 +1512,8 @@ dimensions. It is supplemental evidence, not the canonical W6 workload. Run
 environment prerequisites, rendered outputs, isolation, recovery, and canonical
 W6 performance disposition defined in
 [`performance-validation.md`](../planning/performance-validation.md).
+The current campaign checks the isolated test network with an external denial
+probe. Previous evidence includes the probe built into the retired delivery client.
 
 ## Persistent State
 
@@ -1554,8 +1555,8 @@ hvo-sky-install host set-product-root /srv/data/hvo-skymonitor
 The command escalates through one narrow `sudo`-executed internal command,
 `internal-set-product-root --product-root <path>`, which accepts nothing else and
 always writes `/etc/hvo-sky/host.json`. It re-reads and re-validates the
-existing policy itself, refuses to move a production root whose `cameraagents` or
-`logichosts` directory holds any entry, creates only the final product-root
+existing policy itself and refuses to move a production root whose
+`cameraagents` directory holds any entry, creates only the final product-root
 directory (`root:root 0755`) beneath an existing validated parent, and publishes
 the file atomically (`root:root 0644`). It records `mountPoint`, the mount point
 of the filesystem the root resolves through at that moment (from
@@ -1667,8 +1668,7 @@ regardless of invocation form.
    publishes `host.json` as `root:root 0644`. A missing, malformed or untrusted
    policy, or an absent/unsafe root, is refused without replacing the policy;
    repair does not guess the root or recover malformed JSON.
-4. **Never delete the policy while any entry exists beneath `cameraagents/` or
-   `logichosts/` in its root**, including tombstones and unrecognized entries.
+4. **Never delete the policy while any entry exists beneath `cameraagents/` in its root**, including tombstones and unrecognized entries.
    Without the file commands fall back to `/var/lib/hvo-sky` and cannot find
    the policy-root instances. The repair works in place with existing entries.
    Remove the policy only when the root is empty after all instances have been
@@ -1713,7 +1713,7 @@ internal preparation command when needed. That command prepares only the
 production product root the host policy resolves, under the host-policy lock:
 under the default root it may also create `/var/lib/hvo-sky` itself, and under a
 policy root it validates the existing root; under either it creates the
-`cameraagents`, `logichosts`, and `catalogs` namespaces as `root:root 0755`.
+`cameraagents` and `catalogs` namespaces as `root:root 0755`.
 `catalog install` and `catalog gc` use
 the same command's product form (`--product-root`, `--uid`, `--gid`, no instance)
 when the runtime user is denied creating the runtime-owned `operations` directory
@@ -1908,7 +1908,7 @@ Destructive paths, all beneath `<instance-root>/state`:
 state/identity          # local Identity SQLite database and owner recovery socket
 state/data-protection   # Data Protection key ring
 state/provisioning      # device identity and device secrets
-state/raw               # raw-ingress journal, frames, index, quarantine, outboxes
+state/raw               # raw-ingress journal, frames, index, quarantine, local observations
 state/archive           # archived artifacts
 state/replay-runner     # local replay runner socket directory
 ```

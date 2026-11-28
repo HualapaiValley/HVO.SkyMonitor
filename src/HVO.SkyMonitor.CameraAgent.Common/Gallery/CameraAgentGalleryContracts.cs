@@ -121,11 +121,7 @@ public sealed record CameraAgentGalleryControls(
 
 public sealed record CameraAgentGalleryArtifactState(
     Guid ArtifactId,
-    string RetentionState,
-    string DeliveryAvailability,
-    IReadOnlyList<CameraAgentGalleryArtifactDelivery> DeliveryStatuses);
-
-public sealed record CameraAgentGalleryArtifactDelivery(string StorageAlias, string Status);
+    string RetentionState);
 
 public sealed record CameraAgentGalleryProcessingNodeDetail(
     string NodeId,

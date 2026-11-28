@@ -18,7 +18,6 @@ public sealed partial class ArchitectureBoundaryTests
     private const string AgentCore = "HVO.SkyMonitor.AgentCore";
     private const string Astronomy = "HVO.SkyMonitor.Astronomy";
     private const string Imaging = "HVO.SkyMonitor.Imaging";
-    private const string FleetContracts = "HVO.SkyMonitor.Fleet.Contracts";
     private const string Processing = "HVO.SkyMonitor.Processing";
     private const string VideoFFmpeg = "HVO.SkyMonitor.Video.FFmpeg";
     private const string Catalog = "HVO.SkyMonitor.Catalog.Sqlite";
@@ -31,8 +30,6 @@ public sealed partial class ArchitectureBoundaryTests
     // hvo-sky (#1317), CameraAgent's runtime client: a separate executable that reaches CameraAgent only over its HTTP
     // operations API, so it references no host project; its terminal interface, 'hvo-sky ui', draws with TerminalUi.
     private const string CameraAgentCli = "HVO.SkyMonitor.CameraAgent.Cli";
-    private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
-    private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
@@ -50,7 +47,7 @@ public sealed partial class ArchitectureBoundaryTests
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
 
-    private static readonly IReadOnlySet<string> HostProjects = Set(CameraAgent, CameraAgentReplayRunner, ProcessingRunner);
+    private static readonly IReadOnlySet<string> HostProjects = Set(CameraAgent, CameraAgentReplayRunner);
 
     private static readonly string[] SupportedConfigurations = ["Debug", "Release"];
 
@@ -72,19 +69,16 @@ public sealed partial class ArchitectureBoundaryTests
             [AgentCore] = Set(),
             [Astronomy] = Set(AgentCore),
             [Imaging] = Set(AgentCore, Astronomy),
-            [FleetContracts] = Set(),
             [Processing] = Set(AgentCore, Astronomy, Imaging),
             [VideoFFmpeg] = Set(Processing, LocalFiles),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
             [LocalFiles] = Set(),
-            [CameraAgentCommon] = Set(DeploymentContracts, AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, LocalFiles),
+            [CameraAgentCommon] = Set(DeploymentContracts, AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, CameraAgentReplay, LocalFiles),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
             [CameraAgentCli] = Set(TerminalUi),
-            [ProcessingRunnerContracts] = Set(AgentCore, Processing),
-            [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
             [DeploymentContracts] = Set(),
             [TerminalUi] = Set(),
@@ -102,10 +96,8 @@ public sealed partial class ArchitectureBoundaryTests
         "HVO.SkyMonitor.Common.Tests",
         "HVO.SkyMonitor.Deployment.Cli.Tests",
         "HVO.SkyMonitor.Deployment.Distribution.Tests",
-        "HVO.SkyMonitor.Fleet.Contracts.Tests",
         "HVO.SkyMonitor.Imaging.Tests",
         "HVO.SkyMonitor.Processing.Tests",
-        "HVO.SkyMonitor.ProcessingRunner.Tests",
         "HVO.SkyMonitor.TestSupport.Tests");
 
     private static readonly IReadOnlySet<string> CameraAgentTestProjects = Set(
@@ -1025,8 +1017,8 @@ public sealed partial class ArchitectureBoundaryTests
         var projects = new Dictionary<string, ProjectInfo>(StringComparer.Ordinal)
         {
             [CameraAgent] = Project(CameraAgent, ProjectKind.Production, CameraAgentCommon),
-            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, ProcessingRunner),
-            [ProcessingRunner] = Project(ProcessingRunner, ProjectKind.Production, Common),
+            [CameraAgentCommon] = Project(CameraAgentCommon, ProjectKind.Production, AgentCore),
+            [AgentCore] = Project(AgentCore, ProjectKind.Production, Common),
             [Common] = Project(Common, ProjectKind.Production, TestSupport),
             [TestSupport] = Project(TestSupport, ProjectKind.Test)
         };
@@ -1035,9 +1027,9 @@ public sealed partial class ArchitectureBoundaryTests
         var violations = graph.ValidateTransitiveBoundaries(HostProjects);
 
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{CameraAgent} -> {CameraAgentCommon} -> {ProcessingRunner}", StringComparison.Ordinal)));
+            $"{CameraAgent} -> {CameraAgentCommon} -> {AgentCore}", StringComparison.Ordinal)));
         Assert.IsTrue(violations.Any(violation => violation.Contains(
-            $"{ProcessingRunner} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
+            $"{AgentCore} -> {Common} -> {TestSupport}", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -2323,7 +2315,6 @@ public sealed partial class ArchitectureBoundaryTests
                 : hostName switch
                 {
                     CameraAgent => Path.Combine(evidenceRoot, "cameraagent"),
-                    ProcessingRunner => Path.Combine(evidenceRoot, "processing-runner", "linux-x64"),
                     _ => Path.Combine(evidenceRoot, "replay-runner", "linux-x64")
                 };
             if (Directory.Exists(output))
@@ -2338,7 +2329,7 @@ public sealed partial class ArchitectureBoundaryTests
                     repository.Root,
                     repository.Projects[hostName].Path,
                     output,
-                    hostName is CameraAgentReplayRunner or ProcessingRunner ? "linux-x64" : null).ConfigureAwait(false);
+                    hostName is CameraAgentReplayRunner ? "linux-x64" : null).ConfigureAwait(false);
                 var forbiddenAssemblies = testAssemblies.ToHashSet(StringComparer.OrdinalIgnoreCase);
                 foreach (var forbiddenHost in HostProjects.Where(
                     candidate => candidate != hostName))

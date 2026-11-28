@@ -98,7 +98,7 @@ public sealed partial class ProcessingNodeOptionsTests
                     continue;
                 }
                 Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(graph));
-                foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
+                foreach (var host in new[] { ProcessingGraphHosts.CameraAgent })
                 {
                     var compiled = ProcessingGraphCompiler.Compile(graph, new(host, []));
                     Assert.IsTrue(compiled.IsValid, string.Join(' ', compiled.Diagnostics));

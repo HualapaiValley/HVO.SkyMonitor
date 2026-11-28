@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>
 /// Optional retained capture fields absent from the reconstruction descriptor. Identity binds these fields to
 /// the descriptor, not to a current submission or host configuration. ProcessingCompletedUtc projects the
-/// selected retained GraphExecutionEvidenceV1.CompletedUtc, never artifact creation or wall-clock time.
+/// retained processing execution completion time, never artifact creation or wall-clock time.
 /// </summary>
 public sealed record FrameFactsRetainedCaptureExtrasV1(
     string DescriptorIdentitySha256,

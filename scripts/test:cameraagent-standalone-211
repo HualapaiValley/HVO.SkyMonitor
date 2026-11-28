@@ -576,7 +576,6 @@ run_profile_trial() {
     fi
     # The acceptance handler appends its startup ready record and attempts. Each invocation gets a
     # fresh log while retaining every other file in the durable runtime root.
-    rm -f -- "$trial_local/runtime/central-http-attempts.log"
     jq '
       .schedule.blackouts = [{
         "id": "w6-bootstrap-closed",
@@ -688,7 +687,6 @@ EOF
     HVO_ISSUE_211_PROXY_CONTAINER="hvo211-$suffix-proxy" \
     HVO_ISSUE_211_COLLECTOR_CONTAINER="hvo211-$suffix-collector" \
     HVO_ISSUE_211_CENTRAL_DENY_CONTAINER="hvo211-$suffix-central-deny" \
-    HVO_ISSUE_211_CENTRAL_HANDLER_LOG="$trial_local/runtime/central-http-attempts.log" \
     HVO_ISSUE_211_OWNER_PASSWORD_FILE="$trial_local/secrets/owner-password" \
     HVO_ISSUE_211_CAMERA_IMAGE="$CAMERA_AGENT_IMAGE" \
     HVO_ISSUE_211_WORKTREE_FINGERPRINT="$WORKTREE_FINGERPRINT" \
@@ -797,13 +795,13 @@ EOF
         rm -f "$trial_result/evidence/.process-names" "$trial_result/evidence/.expected-process-names"
     fi
     docker stop --timeout 30 "hvo211-$suffix-camera" >/dev/null
-    cp "$trial_local/runtime/central-http-attempts.log" \
-        "$trial_result/evidence/central-http-attempts.log"
     while IFS= read -r line; do
         printf '%s\n' "${line//$owner_email/[REDACTED-OWNER]}"
     done < <(docker logs --timestamps --tail 20000 "hvo211-$suffix-camera" 2>&1) \
         > "$trial_result/evidence/cameraagent.log"
     docker logs --timestamps --tail 20000 "hvo211-$suffix-collector" > "$trial_result/evidence/collector.log" 2>&1
+    [[ "$(docker inspect --format '{{.State.Running}}' "hvo211-$suffix-central-deny")" == true ]] ||
+        { printf 'The network denial probe is unavailable for %s.\n' "$trial" >&2; return 1; }
     docker logs --timestamps --tail 20000 "hvo211-$suffix-central-deny" > "$trial_result/evidence/central-deny.log" 2>&1
     local deny_rg_status=0
     local final_deny_hits=0
@@ -816,50 +814,11 @@ EOF
     if ((deny_rg_status == 1)); then
         final_deny_hits=0
     fi
-    local final_handler_rg_status=0
-    local final_central_handler_attempts=0
-    rg --text --invert-match '^(HVO211_HANDLER_READY|HVO211_HANDLER_ATTEMPT .+)$' \
-        "$trial_local/runtime/central-http-attempts.log" >/dev/null || final_handler_rg_status=$?
-    if ((final_handler_rg_status == 0 || final_handler_rg_status > 1)); then
-        printf 'The final central-handler log is invalid for %s (rg exit %s).\n' \
-            "$trial" "$final_handler_rg_status" >&2
-        return 1
-    fi
-    final_handler_rg_status=0
-    final_central_handler_attempts="$(rg --count-matches '^HVO211_HANDLER_ATTEMPT ' \
-        "$trial_local/runtime/central-http-attempts.log")" || final_handler_rg_status=$?
-    if ((final_handler_rg_status > 1)); then
-        printf 'Unable to scan final central-handler attempts for %s (rg exit %s).\n' \
-            "$trial" "$final_handler_rg_status" >&2
-        return 1
-    fi
-    if ((final_handler_rg_status == 1)); then
-        final_central_handler_attempts=0
-    fi
-    local final_handler_ready_count=0
-    final_handler_rg_status=0
-    final_handler_ready_count="$(rg --count-matches '^HVO211_HANDLER_READY$' \
-        "$trial_local/runtime/central-http-attempts.log")" || final_handler_rg_status=$?
-    if ((final_handler_rg_status > 1)); then
-        printf 'Unable to scan final central-handler readiness for %s (rg exit %s).\n' \
-            "$trial" "$final_handler_rg_status" >&2
-        return 1
-    fi
-    if ((final_handler_rg_status == 1)); then
-        final_handler_ready_count=0
-    fi
-    if ((final_handler_ready_count < 1)); then
-        printf 'The final central-handler log has no ready record for %s.\n' "$trial" >&2
-        return 1
-    fi
     local in_test_central_attempts='null'
-    local in_test_central_handler_attempts='null'
     local in_test_counters_applicable=false
     local in_test_counters_reason='Replay evidence schema does not record in-test central traffic counters.'
     if [[ "$trial_kind" != replay ]]; then
         in_test_central_attempts="$(jq -er '.centralTrafficAttempts | select(type == "number")' \
-            "$trial_result/evidence/$profile_evidence_file")"
-        in_test_central_handler_attempts="$(jq -er '.centralHandlerAttempts | select(type == "number")' \
             "$trial_result/evidence/$profile_evidence_file")"
         in_test_counters_applicable=true
         in_test_counters_reason='Recorded by the profile evidence schema.'
@@ -870,9 +829,10 @@ EOF
         --arg inTestCountersReason "$in_test_counters_reason" \
         --argjson inTestCountersApplicable "$in_test_counters_applicable" \
         --argjson inTestCentralTrafficAttempts "$in_test_central_attempts" \
-        --argjson inTestCentralHandlerAttempts "$in_test_central_handler_attempts" \
-        --argjson finalCentralHandlerAttempts "$final_central_handler_attempts" \
-        --argjson finalCentralHandlerReadyRecords "$final_handler_ready_count" \
+        --argjson networkOnly true \
+        --argjson inTestCentralHandlerAttempts null \
+        --argjson finalCentralHandlerAttempts null \
+        --argjson finalCentralHandlerReadyRecords null \
         --argjson finalDenyHits "$final_deny_hits" \
         > "$trial_result/evidence/central-traffic-gate.json"
     docker stop --timeout 10 "hvo211-$suffix-collector" "hvo211-$suffix-central-deny" >/dev/null
@@ -1053,7 +1013,6 @@ EOF
         "skymonitor.environment.local.payload.size": "By",
         "hvo.transient.worker.duration": "ms",
         "hvo.transient.worker.evidence.bytes": "By",
-        "hvo.cameraagent.outbox.pending.bytes": "By",
         "hvo.transient.operator.query.duration": "ms",
         "hvo.transient.operator.response.bytes": "By"
       };
@@ -1098,8 +1057,7 @@ EOF
          "camera_agent.calibration.acquisitions", "camera_agent.calibration.acquisition.duration",
          "skymonitor.environment.local.acquisitions", "skymonitor.environment.local.payload.size",
          "hvo.transient.worker.outcomes", "hvo.transient.worker.duration",
-         "hvo.transient.worker.evidence.bytes", "hvo.cameraagent.outbox.pending",
-         "hvo.cameraagent.outbox.pending.bytes",
+         "hvo.transient.worker.evidence.bytes",
          "camera_agent.processing.plan.previews", "camera_agent.processing.plan.mutations",
          "camera_agent.processing.comparison.requests", "camera_agent.processing.plan.preview.duration",
          "camera_agent.processing.comparison.duration", "camera_agent.processing.comparison.output.bytes",
@@ -1124,7 +1082,7 @@ EOF
          "HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
          "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.Calibration",
          "HVO.SkyMonitor.CameraAgent.EnvironmentalAcquisition", "HVO.SkyMonitor.CameraAgent.Transients",
-         "HVO.SkyMonitor.CameraAgent.Outbox", "HVO.SkyMonitor.CameraAgent.Operator"]
+         "HVO.SkyMonitor.CameraAgent.Operator"]
         elif local_runner_replay then
           ["HVO.SkyMonitor.CameraAgent.RawIngress", "HVO.SkyMonitor.CameraAgent.CaptureLanes",
            "HVO.SkyMonitor.CameraAgent.ProcessingGraph", "HVO.SkyMonitor.CameraAgent.ReplayRunner"]
@@ -1257,17 +1215,14 @@ EOF
          requiredEventFamilies: $required_event_families,
          missingEventFamilies: ($required_event_families | map(select(.present | not) | .name)),
          notApplicableEventFamilies: (if $trialKind == "w6" then [
-           {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
            {name: "capture-control", reason: "Fixed W6 control decisions are debug-level."}
           ] elif $trialKind == "replay" then ([
-            {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
             {name: "capture-control", reason: "Replay uses fixed capture control decisions that are debug-level."},
             {name: "transient-worker", reason: "Replay trials disable transient processing."},
             {name: "environmental-acquisition", reason: "Replay validates archived processing rather than environmental acquisition."}
           ] + (if $replayProfile == "LocalRunner" then [
             {name: "calibration", reason: "LocalRunner selects the bundle InProcess established; acquisition and activation are not repeated."}
          ] else [] end)) else [
-           {name: "artifact-outbox", reason: "Successful outbox work is debug-level; warning events indicate failure."},
            {name: "capture-control", reason: "Fixed Mono8 control decisions are debug-level."},
            {name: "transient-worker", reason: "Mono8 control disables transient processing."},
            {name: "calibration", reason: "Mono8 control does not require calibration."},
@@ -1573,9 +1528,9 @@ readonly EXPECTED_CENTRAL_TRAFFIC_TRIALS
 # measurement. Corrupt one trial to a finalDenyHits of 1 and another to -1 and the sum is zero
 # again, so a type check alone lets two corrupted trials cancel each other out and every gate
 # below passes. An event count is a non-negative whole number, and that is now the requirement.
-# `passed` is recomputed here from the five counters the trial derived it from, rather than read
-# back as a flag that a corrupted document keeps after its counters have stopped supporting it.
+# Recompute `passed` from each trial's recorded counters so a corrupted record cannot carry a stale pass.
 jq -s -f "$CENTRAL_TRAFFIC_SUMMARY_PROGRAM" \
+    --argjson networkOnly true \
     --argjson expectedTrials "$EXPECTED_CENTRAL_TRAFFIC_TRIALS" \
     "$RESULTS"/*/evidence/central-traffic-gate.json > "$RESULTS/final-central-traffic-summary.json"
 
@@ -1724,9 +1679,6 @@ jq -s \
     as $central_traffic_attempts |
   ($final_central_traffic | map(.finalDenyHits | require_count("finalDenyHits")) | add)
     as $final_deny_hits |
-  ($final_central_traffic
-    | map(.finalCentralHandlerAttempts | require_count("finalCentralHandlerAttempts")) | add)
-    as $central_handler_attempts |
   # Issue #770, correction round 3. Requiring a value to be a number is not requiring it to be a
   # measurement. Rewrite three of five allocatedBytes samples to minus one and the median goes
   # negative, the normalized percent change goes to roughly minus one hundred, and the
@@ -1875,7 +1827,6 @@ jq -s \
       }))
     },
     centralTrafficAttempts: $central_traffic_attempts,
-    centralHandlerAttempts: $central_handler_attempts,
     finalDenyGateCount: ($final_central_traffic | length),
     finalDenyHits: $final_deny_hits,
     allPassed: all(.result.passed),
@@ -1886,7 +1837,6 @@ jq -s \
       exactlyFiveTrials: (length == 5),
       allFiveTestResultsPassed: (length == 5 and all(.result.passed == true)),
       zeroCentralTrafficAttempts: ($central_traffic_attempts == 0),
-      zeroCentralHandlerAttempts: ($central_handler_attempts == 0),
       eightFinalDenyChecksPassed:
         (($final_central_traffic | length) == 8 and all($final_central_traffic[]; .passed == true)),
       zeroFinalDenyHits: ($final_deny_hits == 0),
@@ -1911,7 +1861,6 @@ jq -s \
       length == 5 and
       all(.result.passed == true) and
       $central_traffic_attempts == 0 and
-      $central_handler_attempts == 0 and
       ($final_central_traffic | length) == 8 and
       all($final_central_traffic[]; .passed == true) and
       $final_deny_hits == 0 and
@@ -1932,13 +1881,13 @@ jq --exit-status --argjson declaredBoundedTrialFootprintBytes "$DECLARED_BOUNDED
      .declaredBoundedTrialFootprintBytes == $declaredBoundedTrialFootprintBytes and
      .peakFilesystemBytes.minimum >= 0 and
      .peakFilesystemBytes.maximum <= $declaredBoundedTrialFootprintBytes and
-     .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0 and
+     .centralTrafficAttempts == 0 and
      .finalDenyGateCount == 8 and .finalDenyHits == 0 and
      .allPassed == true and .retainedFilesystemWithinDeclaredBound == true and
      ([.candidateGates[]] | all) and .w6Ready == true' \
     "$RESULTS/five-trial-summary.json" >/dev/null || gate_failed 'five-trial summary' "$RESULTS/five-trial-summary.json"
 jq --exit-status '.result.passed == true and (.captures | length) == 5 and
-    .centralTrafficAttempts == 0 and .centralHandlerAttempts == 0' \
+    .centralTrafficAttempts == 0' \
     "$RESULTS/mono8-control/evidence/issue-211-mono8.json" >/dev/null || gate_failed 'mono8 control profile' "$RESULTS/mono8-control/evidence/issue-211-mono8.json"
 jq --exit-status '.passed == true and .finalDenyHits == 0' \
     "$RESULTS/mono8-control/evidence/central-traffic-gate.json" >/dev/null || gate_failed 'mono8 central traffic' "$RESULTS/mono8-control/evidence/central-traffic-gate.json"

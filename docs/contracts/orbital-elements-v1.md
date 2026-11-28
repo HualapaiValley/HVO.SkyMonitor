@@ -14,9 +14,7 @@ existing Astronomy geometry; it does not reference host, storage, network,
 SkiaSharp or persistence adapters. #529 supplies numerical prediction.
 
 CameraAgent.Common owns its operational refresh read model and #528's concrete
-reader, job, automation, persistence and health adapters. LogicHost consumes the
-same scientific manifest but owns any separately approved central operation;
-it never references CameraAgent.Common for a UI/status DTO. Processing composes
+reader, job, automation, persistence and health adapters.Common for a UI/status DTO. Processing composes
 prediction/measurement products and presentation; Imaging retains algorithms
 and existing line/label payloads. HYG/OpenNGC and Catalog.Sqlite are unchanged.
 

@@ -1,5 +1,8 @@
 # Deferred Phase 14 Evidence Campaign
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 This campaign is historical. Reproduce its commands and fixtures at the [last split-host source revision](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/66e6aa237b40c70342815af6e2511122daa56bb6/docs/planning/phase14-evidence-campaign.md).
 
 ## Authority And Scope

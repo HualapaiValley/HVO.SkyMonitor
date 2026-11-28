@@ -1,13 +1,12 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging.Abstractions;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
@@ -48,7 +47,7 @@ public sealed class CameraCaptureServiceTests
             var module = new GatedCameraModule();
             using var service = new CameraCaptureService(new ConfigurationAccessor(CreateConfig()), new ModuleFactory(module),
                 ingress, new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(), telemetry,
-                admission, new FleetRuntimeState(TimeProvider.System), lifetime, NullLogger<CameraCaptureService>.Instance,
+                admission, new CaptureRuntimeState(TimeProvider.System), lifetime, NullLogger<CameraCaptureService>.Instance,
                 moduleOwnership: ownership)
             { ModuleLeaseDrainTimeout = TimeSpan.FromMilliseconds(50) };
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -494,7 +493,7 @@ public sealed class CameraCaptureServiceTests
         CaptureAdmissionCoordinator admission, CaptureScheduleRuntimeCoordinator runtime,
         SqliteNamedRigProfileStore named, TestHostApplicationLifetime lifetime, TimeProvider clock)
         => new(accessor, new ModuleFactory(module), ingress, new RecordingDistributor(), clock,
-            new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+            new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
             NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
 
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
@@ -629,7 +628,7 @@ public sealed class CameraCaptureServiceTests
             var fresh = new RigRecordingModule(clock);
             var factory = new SequenceModuleFactory(stale, fresh);
             var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
-                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -734,7 +733,7 @@ public sealed class CameraCaptureServiceTests
             CaptureScheduleCaptureContext committed = default;
             var activationFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
-                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named,
                 moduleOwnership: ownership)
             {
@@ -822,7 +821,7 @@ public sealed class CameraCaptureServiceTests
             var factory = new SequenceModuleFactory(before, after);
             using var service = new CameraCaptureService(new ConfigurationAccessor(original), factory,
                 ingress, new RecordingDistributor(), clock, new AstronomyEnginePlanetEphemeris(), telemetry,
-                admission, new FleetRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance,
+                admission, new CaptureRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance,
                 scheduleRuntimeCoordinator: runtime, moduleOwnership: ownership);
             await service.StartAsync(token).ConfigureAwait(false);
             lifetime.NotifyStarted();
@@ -955,7 +954,7 @@ public sealed class CameraCaptureServiceTests
             var activeModule = new RigRecordingModule(clock);
             var factory = new SequenceModuleFactory(stale, activeModule);
             var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
-                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1144,7 +1143,7 @@ public sealed class CameraCaptureServiceTests
             using var lifetime = new TestHostApplicationLifetime();
             var service = new CameraCaptureService(new ConfigurationAccessor(config), factory, ingress,
                 new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(),
-                telemetry, admission, new FleetRuntimeState(TimeProvider.System), lifetime,
+                telemetry, admission, new CaptureRuntimeState(TimeProvider.System), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1217,7 +1216,7 @@ public sealed class CameraCaptureServiceTests
                 new AstronomyEnginePlanetEphemeris(),
                 telemetry,
                 coordinator,
-                new FleetRuntimeState(TimeProvider.System),
+                new CaptureRuntimeState(TimeProvider.System),
                 applicationLifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
@@ -1269,7 +1268,7 @@ public sealed class CameraCaptureServiceTests
                 stagingStore: staging);
             using var service = new CameraCaptureService(new ConfigurationAccessor(config), new ModuleFactory(module),
                 ingress, distributor, clock, new AstronomyEnginePlanetEphemeris(), telemetry, admission,
-                new FleetRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance);
+                new CaptureRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
             await clock.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1316,7 +1315,7 @@ public sealed class CameraCaptureServiceTests
                     new AstronomyEnginePlanetEphemeris(),
                     telemetry,
                     coordinator,
-                    new FleetRuntimeState(TimeProvider.System),
+                    new CaptureRuntimeState(TimeProvider.System),
                     waitingLifetime,
                     NullLogger<CameraCaptureService>.Instance);
 
@@ -1340,7 +1339,7 @@ public sealed class CameraCaptureServiceTests
                 new AstronomyEnginePlanetEphemeris(),
                 telemetry,
                 coordinator,
-                new FleetRuntimeState(TimeProvider.System),
+                new CaptureRuntimeState(TimeProvider.System),
                 applicationLifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
@@ -1381,7 +1380,7 @@ public sealed class CameraCaptureServiceTests
             using var lifetime = new TestHostApplicationLifetime();
             var service = new CameraCaptureService(new CameraAgentConfigurationAccessor(), factory, ingress,
                 new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(),
-                telemetry, coordinator, new FleetRuntimeState(TimeProvider.System), lifetime,
+                telemetry, coordinator, new CaptureRuntimeState(TimeProvider.System), lifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);

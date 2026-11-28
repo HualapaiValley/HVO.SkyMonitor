@@ -7,25 +7,25 @@ namespace HVO.SkyMonitor.CameraAgent.Cli.Ui;
 
 /// <summary>
 /// F1 Status, laid out as the terminal prototype's first page: capture and the queues side by side (and, from
-/// <see cref="SkyTerminalUi.WideWidth"/> columns, LogicHost delivery), storage, a line that sums the state up, Refresh,
+/// <see cref="SkyTerminalUi.WideWidth"/> columns, local workers), storage, a line that sums the state up, Refresh,
 /// and the recent changes of state under a rule. Read every poll interval from the operations summary.
 /// </summary>
 internal sealed class SkyUiStatusPage : SkyUiPage
 {
     /// <summary>The queues whose quarantined items the Queues panel adds up.</summary>
-    private static readonly string[] QuarantiningQueues = ["rawIngress", "captureLanes", "captureProcessing", "artifactOutbox"];
+    private static readonly string[] QuarantiningQueues = ["rawIngress", "captureLanes", "captureProcessing"];
 
     /// <summary>The configuration's validation status when CameraAgent validated it (<c>CameraAgentOperationsSummary</c>).</summary>
     private const string Validated = "validated";
 
     private readonly SkyUiFields _capture;
     private readonly SkyUiFields _queues;
-    private readonly SkyUiFields _delivery;
+    private readonly SkyUiFields _workers;
     private readonly SkyUiFields _storage;
     private readonly SkyUiFields _changes;
     private readonly HvoPanel _capturePanel;
     private readonly HvoPanel _queuesPanel;
-    private readonly HvoPanel _deliveryPanel;
+    private readonly HvoPanel _workersPanel;
     private readonly HvoPanel _storagePanel;
     private readonly Label _note;
     private readonly SkyUiRule _changesRule;
@@ -37,12 +37,12 @@ internal sealed class SkyUiStatusPage : SkyUiPage
     {
         _capture = new SkyUiFields(Theme, 12);
         _queues = new SkyUiFields(Theme, 12);
-        _delivery = new SkyUiFields(Theme, 13);
+        _workers = new SkyUiFields(Theme, 13);
         _storage = new SkyUiFields(Theme, 10);
         _changes = new SkyUiFields(Theme, 11) { Ground = HvoGround.Page };
         _capturePanel = AddPanel("Capture", _capture);
         _queuesPanel = AddPanel("Queues", _queues);
-        _deliveryPanel = AddPanel("Delivery", _delivery);
+        _workersPanel = AddPanel("Workers", _workers);
         _storagePanel = AddPanel("Storage", _storage);
         _note = new Label { Height = 1 };
         _changesRule = new SkyUiRule(Theme, "Recent changes");
@@ -68,7 +68,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
             var column = (width - 4) / 3;
             Place(_capturePanel, 1, 0, column, boxes);
             Place(_queuesPanel, 2 + column, 0, column, boxes);
-            Place(_deliveryPanel, 3 + 2 * column, 0, width - 4 - 2 * column, boxes);
+            Place(_workersPanel, 3 + 2 * column, 0, width - 4 - 2 * column, boxes);
         }
         else
         {
@@ -77,7 +77,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
             Place(_queuesPanel, 2 + left, 0, width - 3 - left, boxes);
         }
 
-        _deliveryPanel.Visible = wide;
+        _workersPanel.Visible = wide;
         Place(_storagePanel, 1, boxes, width - 2, stores + 2);
         var note = boxes + stores + 2;
         Place(_note, 2, note, width - 4, 1);
@@ -97,7 +97,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
         var reading = Ui.Data.Summary;
         _capturePanel.Caption = Titled("Capture", reading);
         _queuesPanel.Caption = Titled("Queues", reading);
-        _deliveryPanel.Caption = Titled("Delivery", reading);
+        _workersPanel.Caption = Titled("Workers", reading);
         _storagePanel.Caption = Titled("Storage", reading);
         _changes.Fields = Ui.Data.Changes.Count == 0
             ? [new SkyUiField(string.Empty, "No change of state read yet.", HvoTone.Muted)]
@@ -107,7 +107,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
             var pending = Ui.Connection is null ? new SkyUiField(string.Empty, "Not signed in: F5 System.", HvoTone.Warning) : Pending(reading, "the status");
             _capture.Fields = [pending];
             _queues.Fields = [];
-            _delivery.Fields = [];
+            _workers.Fields = [];
             _storage.Fields = [];
             ShowNote(Ui.Connection is null ? "Sign in on F5 System, or run 'hvo-sky login'." : "Reading the status...", HvoTone.Muted);
             return;
@@ -117,7 +117,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
         var now = Ui.Now;
         _capture.Fields = Capture(summary, now);
         _queues.Fields = Queues(summary);
-        _delivery.Fields = Delivery(summary);
+        _workers.Fields = Workers(summary);
         _storage.Fields = Storage(summary);
         var (text, tone) = Ui.Freshness == SkyUiFreshness.Live
             ? Summarize(summary)
@@ -133,7 +133,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
             Describe(_queuesPanel.Caption, _queues, 60),
             Describe(_storagePanel.Caption, _storage, 76),
             _note.Text
-        }.Concat(Ui.Wide ? [Describe(_deliveryPanel.Caption, _delivery, 60)] : [])
+        }.Concat(Ui.Wide ? [Describe(_workersPanel.Caption, _workers, 60)] : [])
             .Append($"{_changesRule.Line(40)}\n{string.Join('\n', _changes.Rows(100))}"));
 
     /// <summary>
@@ -207,37 +207,27 @@ internal sealed class SkyUiStatusPage : SkyUiPage
     internal static IReadOnlyList<SkyUiField> Queues(JsonElement summary)
     {
         var quarantined = QuarantiningQueues.Sum(name => SkyJson.Integer(summary, name, "value", "quarantineCount") ?? 0);
-        var central = SkyJson.Text(summary, "configuration", "value", "centralIntegration") ?? "unknown";
         return
         [
             Queue("Raw ingress", summary, "rawIngress"),
             Queue("Lanes", summary, "captureLanes"),
             Queue("Processing", summary, "captureProcessing"),
-            Queue("Outbox", summary, "artifactOutbox"),
             new("Quarantined", SkyCliFormat.Count(quarantined), quarantined > 0 ? HvoTone.Danger : HvoTone.Text),
-            new("LogicHost", central)
         ];
     }
 
-    internal static IReadOnlyList<SkyUiField> Delivery(JsonElement summary)
+    internal static IReadOnlyList<SkyUiField> Workers(JsonElement summary)
     {
         SkyUiField Lane(string label, string section)
         {
             var availability = SkyJson.Text(summary, section, "value", "availability") ?? "unknown";
             var pending = SkyJson.Integer(summary, section, "value", "pendingCount");
-            // In CameraAgent's words: the heartbeat is Available when it is well and the other lanes Healthy; any of them
-            // Disabled when it is switched off. Anything else (starting, degraded, unhealthy, unavailable) is amber.
             return new(label, availability + (pending is { } count ? $", {SkyCliFormat.Count(count)} pending" : string.Empty)
                 + Freshness(summary, section), availability is "Healthy" or "Available" or "Disabled" ? HvoTone.Text : HvoTone.Warning);
         }
 
-        var acknowledged = SkyJson.Time(summary, "heartbeat", "value", "lastAcknowledgedUtc");
         return
         [
-            Lane("Heartbeat", "heartbeat"),
-            new("Last ack", acknowledged is { } at ? SkyCliFormat.Time(at) : "never"),
-            Lane("Environment", "environmentalDelivery"),
-            Lane("Evidence", "executionEvidenceExport"),
             Lane("Transients", "transientWorker"),
             Lane("Replay", "archivedReplay")
         ];

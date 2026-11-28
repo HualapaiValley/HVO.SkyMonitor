@@ -6,9 +6,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -65,7 +64,7 @@ public sealed partial class VirtualSkyPipelineTests
         var services = scope.ServiceProvider;
         object state = section switch
         {
-            "fleet capture" => services.GetRequiredService<FleetRuntimeState>(),
+            "fleet capture" => services.GetRequiredService<CaptureRuntimeState>(),
             "capture telemetry" => services.GetRequiredService<ICaptureTelemetryProvider>(),
             _ => services.GetRequiredService<CaptureProcessingState>()
         };
@@ -547,92 +546,6 @@ public sealed partial class VirtualSkyPipelineTests
         return connection;
     }
 
-    private static OutboxCheckpoint ReadPendingOutboxCheckpoint()
-    {
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT idempotency_key, artifact_id, payload_sha256, payload_length
-            FROM artifact_outbox_records
-            WHERE status = 'pending' AND manifest_kind = 'v2'
-            ORDER BY next_attempt_unix_ms, created_unix_ms, idempotency_key
-            LIMIT 1;
-            """;
-        using var reader = command.ExecuteReader();
-        Assert.IsTrue(reader.Read(), "A pending outbox record was not available for the upload checkpoint.");
-        return new OutboxCheckpoint(
-            reader.GetString(0),
-            Guid.ParseExact(reader.GetString(1), "N"),
-            reader.GetString(2),
-            reader.GetInt64(3));
-    }
-
-    private static bool HasMatchingAcknowledgement(OutboxCheckpoint checkpoint)
-    {
-        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT status, acknowledgement
-            FROM artifact_outbox_records
-            WHERE idempotency_key = $key;
-            """;
-        command.Parameters.AddWithValue("$key", checkpoint.IdempotencyKey);
-        using var reader = command.ExecuteReader();
-        if (!reader.Read() || reader.GetString(0) != "acknowledged" || reader.IsDBNull(1))
-        {
-            return false;
-        }
-
-        try
-        {
-            var acknowledgement = JsonSerializer.Deserialize<ArtifactUploadAcknowledgement>((byte[])reader[1]);
-            acknowledgement?.Validate();
-            return acknowledgement is not null &&
-                string.Equals(acknowledgement.IdempotencyKey, checkpoint.IdempotencyKey, StringComparison.OrdinalIgnoreCase) &&
-                acknowledgement.ArtifactId == checkpoint.ArtifactId &&
-                string.Equals(acknowledgement.ChecksumSha256, checkpoint.ChecksumSha256, StringComparison.OrdinalIgnoreCase) &&
-                acknowledgement.ByteLength == checkpoint.ByteLength &&
-                acknowledgement.AcceptedManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion;
-        }
-        catch (Exception exception) when (exception is JsonException or ArgumentException)
-        {
-            return false;
-        }
-    }
-
-    private static int CountUnfinishedOutboxRecords()
-    {
-        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
-        if (!File.Exists(path))
-        {
-            return 0;
-        }
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status <> 'acknowledged';";
-        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
-    }
-
-    private static bool HasNoEnvironmentalOutboxRecord(Guid observationId)
-    {
-        var path = Path.Combine(Fixture.StorageRoot, ".environment", "environmental-observation-outbox.db");
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM environmental_observation_outbox WHERE observation_id = $observationId;";
-        command.Parameters.AddWithValue("$observationId", observationId.ToString("D"));
-        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0;
-    }
-
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
     {
         var parameter = command.CreateParameter();
@@ -654,8 +567,7 @@ public sealed partial class VirtualSkyPipelineTests
                     CaptureTelemetryMetricsRecorder.MeterName or
                     CaptureControlTelemetry.MeterName or
                     RawIngressTelemetry.MeterName or
-                    CaptureProcessingTelemetry.MeterName or
-                    "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")
+                    CaptureProcessingTelemetry.MeterName)
                 {
                     instrumentNames.TryAdd(instrument.Name, 0);
                     current.EnableMeasurementEvents(instrument);
@@ -685,8 +597,7 @@ public sealed partial class VirtualSkyPipelineTests
             ShouldListenTo = static source => source.Name is
                 CaptureControlTelemetry.ActivitySourceName or
                 RawIngressTelemetry.ActivitySourceName or
-                CaptureProcessingTelemetry.ActivitySourceName or
-                "HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery",
+                CaptureProcessingTelemetry.ActivitySourceName,
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = activity =>
             {
@@ -717,50 +628,4 @@ public sealed partial class VirtualSkyPipelineTests
         }
     }
 
-    private static string ReadOutboxState(string idempotencyKey)
-    {
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT status || ':' || COALESCE(last_reason, '') || ':ack=' ||
-                   CASE WHEN acknowledgement IS NULL THEN 'missing' ELSE 'present' END
-            FROM artifact_outbox_records
-            WHERE idempotency_key = $key;
-            """;
-        command.Parameters.AddWithValue("$key", idempotencyKey);
-        var selected = Convert.ToString(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) ?? "no-record";
-        command.Parameters.Clear();
-        command.CommandText = """
-            SELECT
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN status = 'acknowledged' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN status = 'quarantined' THEN 1 ELSE 0 END)
-            FROM artifact_outbox_records;
-            """;
-        using var reader = command.ExecuteReader();
-        reader.Read();
-        return $"selected={selected}; counts=pending:{reader.GetInt64(0)},leased:{reader.GetInt64(1)},retry:{reader.GetInt64(2)},acknowledged:{reader.GetInt64(3)},quarantined:{reader.GetInt64(4)}";
-    }
-
-    private static SqliteConnection OpenOutboxReadConnection()
-    {
-        var path = Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db");
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadOnly,
-            DefaultTimeout = 5,
-            Pooling = false
-        }.ToString());
-        connection.Open();
-        return connection;
-    }
-
-    private sealed record OutboxCheckpoint(
-        string IdempotencyKey,
-        Guid ArtifactId,
-        string ChecksumSha256,
-        long ByteLength);
 }

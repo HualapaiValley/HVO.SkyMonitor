@@ -60,7 +60,7 @@ public sealed record CameraAgentTimeLapseFrameLineage(
     IReadOnlyList<string> StackPayloadSha256,
     TimeSpan TotalIntegration);
 
-/// <summary>An immutable local-only video. It never becomes an upload artifact or outbox item.</summary>
+/// <summary>An immutable local-only video. It never becomes an upload artifact or quarantine item.</summary>
 public sealed record CameraAgentTimeLapseProduct(
     Guid ProductId,
     string OutputIdentitySha256,

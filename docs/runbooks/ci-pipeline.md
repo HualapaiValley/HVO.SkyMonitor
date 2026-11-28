@@ -36,7 +36,7 @@ Kepler's publication commands.
 **Development v1 / Build and Unit** enforces the canonical risk-file line and
 branch floors from `scripts/coverage/baseline.json`, using the same pinned
 ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
-canonical gate. V1 collects from ProcessingRunner.Tests and the two active
+canonical gate. V1 collects from the two active
 supplemental Unit projects as well as the regular Unit projects. Integration
 reports belong to full qualification. Preflight also runs
 `scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
@@ -84,8 +84,8 @@ TestSupport, migration, build-output and attribute exclusions remain intact.
 This avoids instrumenting host assemblies whose coverage is not measured by this
 profile. The generated settings are retained with the raw reports. The merge
 requires one GUID-directory report from each CameraAgent shard and one per other
-selected project in `tests/unit-test-projects.json`. The full run supplies 18
-reports and the path-filtered run supplies 17. The merge excludes TRX attachment
+selected project in `tests/unit-test-projects.json`. The full run supplies 16
+reports and the path-filtered run supplies 15. The merge excludes TRX attachment
 copies and searches only the fresh run root.
 Every input is parsed and checked before ReportGenerator runs: that tool can log
 a malformed input, omit it and still exit zero. Raw records must occupy the
@@ -434,10 +434,10 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. The discovery audit checks Unit project membership against `tests/unit-test-projects.json` across the solution, including for component plans. Skipped only in classified reduced mode. |
 | **Unit Tests** | Unit cases in the active assemblies with an intentionally invalid Docker endpoint. Two [supplemental Unit selections](#supplemental-unit-selections) write TRX only. The complete solution plan runs this job. Component plans run the selections in their active lanes. A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | The complete solution plan runs Integration cases across Astronomy and CameraAgent assemblies. The Integration step attempts every selected assembly and reports failure if any fail. Architecture & Publish runs the repository graph, provider-boundary and publish cases. |
-| **Architecture & Publish** | Both category selections of the architecture project cover Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and Integration-category repository graph, provider-boundary, MSBuild and publish cases. Retains SHA-256 publish manifests for CameraAgent and for both runners and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
+| **Architecture & Publish** | Both category selections of the architecture project cover Unit-category boundary cases, including the host `Dockerfile` and CameraAgent event-ID uniqueness contracts, and Integration-category repository graph, provider-boundary, MSBuild and publish cases. Retains SHA-256 publish manifests for CameraAgent and for ReplayRunner and the installer on Linux x64 and ARM64. Runs for every full-mode head. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
-| **Shared Libraries** | Component lane. Project-root restore/build of the shared test and runner project roots, the shared Unit and Integration selections, a `linux-x64` ProcessingRunner publish with a checksum manifest, and the shared component coverage baseline over 10 slots. |
+| **Shared Libraries** | Component lane. Project-root restore and build of the shared test projects, the shared Unit and Integration selections, and the shared component coverage baseline over nine slots. |
 | **CameraAgent Component** | Component lane. Project-root restore/build of the CameraAgent host, runner, and test project roots, the CameraAgent Unit and Integration selections, CameraAgent and `linux-x64` ReplayRunner publishes with checksum manifests and an opposite-host assembly check, and the CameraAgent component coverage baseline over 5 slots. |
 | **Delivery Component** | Component lane. Project-root restore/build of the deployment CLI project root and the deployment CLI/distribution test roots, which also build the deployment contracts and release-tool projects they reference, against the exact production catalog contract; a `linux-x64` installer publish with a checksum manifest; and the delivery component coverage baseline over 2 slots. |
 | **Coverage** | Aggregate rollup for the complete solution plan: exact source-path and branch merge of the configured report slots, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. Component plans enforce their own baselines inside their lanes instead. |
@@ -800,7 +800,7 @@ cover:
 
 Dependabot covers every repository Dockerfile through the `docker` directories
 in `.github/dependabot.yml`: the devcontainer, Stellarium, CameraAgent,
-ProcessingRunner, and TimeLapseBenchmark images. Updates are weekly and grouped
+and TimeLapseBenchmark images. Updates are weekly and grouped
 per dependency across all directories (`group-by: dependency-name`), so identical
 image tags keep the same digest wherever they occur.
 
@@ -901,13 +901,10 @@ differences; see
 [`tests/fixtures/ci-base-images-buildkit`](../../tests/fixtures/ci-base-images-buildkit/README.md).
 
 Development v1 CI does not build images; full qualification's Deployment
-Contracts job exercises the CameraAgent image. ProcessingRunner
-has no dedicated CI image build. Build affected images locally before merging a
-base-image pull request, including ProcessingRunner when its base changes:
+Contracts job exercises the CameraAgent image. To build an affected image locally:
 
 ```bash
 docker build -f src/HVO.SkyMonitor.CameraAgent/Dockerfile .
-docker build -f src/HVO.SkyMonitor.ProcessingRunner/Dockerfile .
 ```
 
 ## Coverage Badge Publication
@@ -1176,7 +1173,6 @@ patterns=(
   'TestResults/unit/deployment-distribution/*/coverage.cobertura.xml'
   'TestResults/unit/agent-core/*/coverage.cobertura.xml'
   'TestResults/unit/common/*/coverage.cobertura.xml'
-  'TestResults/unit/fleet-contracts/*/coverage.cobertura.xml'
   'TestResults/unit/test-support/*/coverage.cobertura.xml'
   'TestResults/unit/architecture/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
@@ -1335,7 +1331,7 @@ Classification matches exact project directory names.
 
 | Component | Owned paths |
 | --- | --- |
-| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Catalog.Sqlite`, `Common`, `Fleet.Contracts`, `Imaging`, `Processing`, `ProcessingRunner`, `ProcessingRunner.Contracts`, `LocalFiles`, `TestSupport`, and `Video.FFmpeg` |
+| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Catalog.Sqlite`, `Common`, `Imaging`, `Processing`, `LocalFiles`, `TestSupport`, and `Video.FFmpeg` |
 | `cameraagent` | `src/HVO.SkyMonitor.CameraAgent`, `CameraAgent.Cli`, `CameraAgent.Common`, `CameraAgent.Modules.Zwo`, `CameraAgent.Replay`, `CameraAgent.ReplayRunner`, and `tests/HVO.SkyMonitor.CameraAgent.{Tests,AcceptanceTests,IntegrationTests}` |
 | `delivery` | `src/HVO.SkyMonitor.Deployment.{Cli,Contracts}`, `src/HVO.SkyMonitor.TerminalUi`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.{Cli,Distribution}.Tests` |
 
@@ -1468,11 +1464,6 @@ reach it, and only when the entry records a `belowAggregateReason`. One entry
 does today: `HVO.SkyMonitor.AgentCore/ArtifactManifestV2.cs` reaches 0.90 branch
 coverage only in the union of every report, so the shared lane records 0.85 with
 that reason while the aggregate rollup keeps enforcing 0.90 on `main`.
-
-`TestResults/unit/processing-runner` is deliberately not a coverage slot: the
-aggregate rollup has never counted it, and changing the aggregate slot set is
-outside component gating. The Shared Libraries lane still runs that suite as a
-gate; only its coverage report is discarded, exactly as the Unit job does today.
 
 ## Supplemental Unit selections
 

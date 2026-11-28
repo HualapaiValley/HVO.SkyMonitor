@@ -10,7 +10,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
@@ -2949,7 +2948,7 @@ public sealed partial class DurableCaptureProcessingTests
                 HeightPixels = 2,
                 DrawLabels = false
             });
-        using var environmentStore = new SqliteEnvironmentalObservationOutbox();
+        using var environmentStore = new SqliteEnvironmentalObservationStore();
         var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
         var associationService = new EnvironmentalAssociationService(
             environmentStore, environmentStore, hostOptions, TimeProvider.System);

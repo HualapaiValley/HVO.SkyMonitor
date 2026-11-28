@@ -222,7 +222,7 @@ public sealed partial class CloudAssessmentCaptureProcessingStepTests
             EnvironmentalObservationKind? kind, int pageSize, LocalEnvironmentalObservationCursor? cursor,
             CancellationToken cancellationToken) => throw UnexpectedRead();
         public ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(string root,
-            EnvironmentalObservationFactV1 fact, EnvironmentalObservationResolvedTarget? deliveryTarget,
+            EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken) => throw new InvalidOperationException("No observation write is expected.");
         public ValueTask SaveAssociationAsync(string root, LocalEnvironmentalCaptureAssociation association,
             CancellationToken cancellationToken) => throw new InvalidOperationException("No association write is expected.");

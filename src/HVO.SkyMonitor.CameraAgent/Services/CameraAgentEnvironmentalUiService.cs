@@ -30,22 +30,7 @@ internal sealed record EnvironmentalUiStatus(
     long OverflowCount,
     IReadOnlyList<EnvironmentalUiSource> Sources,
     IReadOnlyList<EnvironmentalAcquisitionAttemptRecord> Attempts,
-    int RetentionDays,
-    EnvironmentalUiDelivery Delivery);
-
-/// <summary>
-/// The independent environmental outbox as the Environment page shows it. Counters and times only; no payload,
-/// endpoint or credential is exposed. <see cref="ExportEnabled"/> is false when central integration or the
-/// environmental delivery lane is disabled, and every counter is then zero.
-/// </summary>
-internal sealed record EnvironmentalUiDelivery(
-    bool ExportEnabled,
-    string Availability,
-    DateTimeOffset? LastAcknowledgedUtc,
-    long? PendingCount,
-    long? RetryCount,
-    long? QuarantineCount,
-    DateTimeOffset? OldestPendingUtc);
+    int RetentionDays);
 
 internal sealed record EnvironmentalUiSource(
     string Id,
@@ -87,9 +72,8 @@ internal sealed class CameraAgentEnvironmentalUiService(
     IEnvironmentalAcquisitionStateStore stateStore,
     ILocalEnvironmentalObservationStore observationStore,
     EnvironmentalOnDemandAcquisitionService commandService,
-    EnvironmentalObservationDeliveryState deliveryState,
     IOptions<CameraAgentHostOptions> options,
-    OutboxOperationsTokenService tokens,
+    LocalOperationsTokenService tokens,
     TimeProvider timeProvider,
     ILogger<CameraAgentEnvironmentalUiService> logger) : ICameraAgentEnvironmentalUiService
 {
@@ -139,8 +123,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
                 snapshot.OverflowCount,
                 sources,
                 attempts,
-                configured.RetentionDays,
-                Delivery()));
+                configured.RetentionDays));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -316,26 +299,6 @@ internal sealed class CameraAgentEnvironmentalUiService(
             return OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Failure(
                 OperatorUiResultKind.Unavailable, "Current environmental readings are unavailable.");
         }
-    }
-
-    private EnvironmentalUiDelivery Delivery()
-    {
-        var host = options.Value;
-        if (host.CentralIntegration.Mode == CentralIntegrationMode.Disabled || !host.EnvironmentalDelivery.Enabled)
-        {
-            return new(false, "Disabled", null, 0, 0, 0, null);
-        }
-        // The outbox has no snapshot until the delivery worker first reads it; its counts are then unknown, not zero.
-        var snapshot = deliveryState.Snapshot;
-        var outbox = snapshot.Outbox;
-        return new(
-            true,
-            snapshot.Availability.ToString(),
-            snapshot.LastAcknowledgedUtc,
-            outbox?.PendingCount,
-            outbox?.RetryCount,
-            outbox?.QuarantineCount,
-            outbox?.OldestPendingUtc);
     }
 
     private static EnvironmentalUiObservation Project(LocalEnvironmentalObservationRecord item) => new(

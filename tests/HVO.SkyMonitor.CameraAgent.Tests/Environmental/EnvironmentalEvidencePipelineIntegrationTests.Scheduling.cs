@@ -19,7 +19,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new ExposureTestTimeProvider(Epoch);
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload));
             using var client = new WeatherProviderClient(new HttpClient(handler), clock);
             using var provider = new ServiceCollection().AddSingleton(client).BuildServiceProvider();
@@ -63,7 +63,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new ExposureTestTimeProvider(Epoch.AddMilliseconds(100));
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var requestTimes = new List<DateTimeOffset>();
             using var handler = new OnlineWeatherSourceTests.FakeHandler(_ =>
             { requestTimes.Add(clock.GetUtcNow()); return OnlineWeatherSourceTests.Response(200, EnvironmentalAdapterContractsTests.Payload); });
@@ -104,7 +104,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new Clock();
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "sqm",

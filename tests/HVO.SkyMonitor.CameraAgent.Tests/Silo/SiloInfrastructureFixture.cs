@@ -73,7 +73,6 @@ internal static class SiloInfrastructureFixture
         }
 
         var settings = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["CameraAgent:CentralIntegration:Mode"] = "Disabled" })
             .AddConfiguration(configuration)
             .AddInMemoryCollection(new Dictionary<string, string?> { [rootSetting] = root })
             .AddInMemoryCollection(bucket.Configuration).Build();

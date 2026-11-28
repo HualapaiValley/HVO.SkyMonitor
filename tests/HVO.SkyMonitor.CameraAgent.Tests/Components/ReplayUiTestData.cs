@@ -21,7 +21,7 @@ internal static class ReplayUiTestData
         "Available",
         true,
         new ReplayCandidateArtifactView(
-            ArtifactId, "Raw", null, new string('A', 64), 2048, "Available", "Held", "Available"),
+            ArtifactId, "Raw", null, new string('A', 64), 2048, "Available", "Held"),
         "Named",
         "revision-active",
         7,

@@ -44,9 +44,7 @@ instance ID. Its record and `instance-manifest.json` must agree with the
 installed configuration. Release upgrades retain the instance identity.
 
 Each CameraAgent has a UUID-derived cookie name, container name and Compose
-project, with its own port, state and owner. Existing retired `logichosts`
-entries can still block host-root changes or catalog garbage collection
-because they may hold state or catalog references.
+project, with its own port, state and owner.
 
 ## Catalog Identity
 

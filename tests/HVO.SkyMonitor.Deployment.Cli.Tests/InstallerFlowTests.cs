@@ -634,7 +634,7 @@ public sealed partial class InstallerFlowTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
-    [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    [DataRow("io.hvo.skymonitor.component", "OtherProduct")]
     [DataRow("org.opencontainers.image.created", "2026-10-17T18:00:01Z")]
     public async Task InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing(string label, string value)
     {
@@ -845,7 +845,7 @@ public sealed partial class InstallerFlowTests
         {
             case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
             case "revision-label": labels["org.opencontainers.image.revision"] = new string('f', 40); break;
-            case "component-label": labels["io.hvo.skymonitor.component"] = "LogicHost"; break;
+            case "component-label": labels["io.hvo.skymonitor.component"] = "OtherProduct"; break;
             case "created-label": labels.Remove("org.opencontainers.image.created"); break;
             case "created-other": labels["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"; break;
             case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
@@ -951,7 +951,7 @@ public sealed partial class InstallerFlowTests
                     break;
                 case "config-alias":
                     entries.Add(new(configName.Replace("blobs/sha256/", "blobs/sha256//", StringComparison.Ordinal),
-                        Encoding.UTF8.GetBytes(Text(configName).Replace("CameraAgent", "LogicHost", StringComparison.Ordinal))));
+                        Encoding.UTF8.GetBytes(Text(configName).Replace("CameraAgent", "OtherProduct", StringComparison.Ordinal))));
                     break;
                 case "layer-alias":
                     entries.Add(new(layer.Name.Replace("blobs/sha256/", "blobs/sha256/./", StringComparison.Ordinal), "other layer"u8.ToArray()));

@@ -895,7 +895,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 windowStep.Timeout.Ticks,
                 windowStep.MissingInputOutcome)
             : null;
-        // Publication, storage, upload, and telemetry options stay in the CameraAgent plan identity.
+        // Publication, storage and telemetry options stay in the CameraAgent plan identity.
         var effectiveSharedOptions = graphStep is null
             ? CaptureContractJson.SerializeToElement(new { })
             : item.Config.Options ?? CaptureContractJson.SerializeToElement(new { });

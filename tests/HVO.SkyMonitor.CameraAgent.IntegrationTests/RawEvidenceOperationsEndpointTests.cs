@@ -11,7 +11,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
-public sealed partial class OutboxOperationsEndpointTests
+[TestClass]
+[TestCategory("Integration")]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515", Justification = "MSTest requires a public test class.")]
+public sealed class RawEvidenceOperationsEndpointTests
 {
     [TestMethod]
     public async Task RawEvidenceReleaseEnforcesAuthenticationOwnershipAntiforgeryAndActualActor()
@@ -77,5 +80,33 @@ public sealed partial class OutboxOperationsEndpointTests
             Reason = reason;
             return ValueTask.FromResult(new RawEvidenceReleaseReceipt(false, new(action, actor, reason, DateTimeOffset.UnixEpoch)));
         }
+    }
+    private static async Task<HttpResponseMessage> SendMutationAsync(
+        HttpClient client,
+        string path,
+        string operationKey,
+        string actionToken,
+        string reasonCode,
+        string antiforgery)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(path, UriKind.Relative));
+        request.Headers.Add("Idempotency-Key", operationKey);
+        request.Headers.Add("RequestVerificationToken", antiforgery);
+        request.Content = JsonContent.Create(new { actionToken, reasonCode });
+        return await client.SendAsync(request).ConfigureAwait(false);
+    }
+
+    private static async Task<string> GetAntiforgeryTokenAsync(HttpClient client)
+    {
+        using var response = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        const string name = "name=\"__RequestVerificationToken\"";
+        var nameIndex = html.IndexOf(name, StringComparison.Ordinal);
+        Assert.IsGreaterThanOrEqualTo(0, nameIndex);
+        const string value = "value=\"";
+        var valueIndex = html.IndexOf(value, nameIndex, StringComparison.Ordinal) + value.Length;
+        var endIndex = html.IndexOf('"', valueIndex);
+        return WebUtility.HtmlDecode(html[valueIndex..endIndex]);
     }
 }

@@ -1,5 +1,4 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
@@ -40,13 +39,7 @@ public sealed class StorageRootIdentityTests
         Assert.AreSame(latest, pressure.Get(alias));
         Assert.HasCount(1, pressure.Snapshots);
 
-        var outbox = new ArtifactOutboxState();
-        outbox.ReportUnavailable(alias, "unavailable");
-        outbox.Update(root, new(1, 1, DateTimeOffset.UnixEpoch, 1, 0, 0, 0, 0, 0));
-        Assert.AreEqual(ArtifactOutboxAvailability.Healthy, outbox.Snapshot.Availability);
-        outbox.Update(alias, new(0, 0, null, 0, 0, 0, 1, 0, 0));
-        Assert.HasCount(1, outbox.Roots);
-        Assert.AreEqual(0, outbox.Snapshot.PendingCount);
+
     }
 
     [TestMethod]

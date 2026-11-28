@@ -14,9 +14,9 @@ component="${1:-}"
 evidence_root="TestResults/publish/component"
 
 case "$component" in
-  shared | cameraagent | delivery) ;;
+  cameraagent | delivery) ;;
   *)
-    printf 'Usage: scripts/ci:component-publish <shared|cameraagent|delivery>\n' >&2
+    printf 'Usage: scripts/ci:component-publish <cameraagent|delivery>\n' >&2
     exit 2
     ;;
 esac
@@ -44,10 +44,6 @@ mkdir -p "$evidence_root"
 : > "$evidence_root/summary.txt"
 
 case "$component" in
-  shared)
-    publish_project src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj processing-runner-linux-x64 linux-x64
-    test -x "$evidence_root/processing-runner-linux-x64/HVO.SkyMonitor.ProcessingRunner"
-    ;;
   cameraagent)
     publish_project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj cameraagent
     publish_project src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj replay-runner-linux-x64 linux-x64

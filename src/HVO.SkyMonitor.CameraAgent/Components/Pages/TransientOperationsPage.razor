@@ -177,33 +177,6 @@ else
             }
         </section>
 
-        <section class="ops-panel transients-handoff" aria-labelledby="transients-handoff-heading">
-            @{ var handoff = Handoff(view); }
-            <header class="ops-panel-heading">
-                <div><h2 id="transients-handoff-heading">Central handoff</h2><p>Hybrid mode hands candidates to LogicHost for centered assessment.</p></div>
-                <span class="state-chip @handoff.Chip">@handoff.Text</span>
-            </header>
-            @if (view.Mode != TransientOperatingMode.Hybrid)
-            {
-                <p class="transients-empty">@handoff.Detail</p>
-            }
-            else
-            {
-                var delivery = view.Delivery;
-                @if (handoff.Detail is not null)
-                {
-                    <div class="ops-note-banner compact" role="status"><span class="status-icon @handoff.Icon" aria-hidden="true"></span><span>@handoff.Detail</span></div>
-                }
-                <dl class="ops-facts">
-                    <div><dt>Pending</dt><dd>@Count(delivery.PendingCount)</dd></div>
-                    <div><dt>Retrying</dt><dd>@Count(delivery.RetryingCount)</dd></div>
-                    <div><dt>Sign-in blocked</dt><dd>@Count(delivery.AuthenticationBlockedCount)</dd></div>
-                    <div><dt>Quarantined</dt><dd>@Count(delivery.QuarantinedCount)</dd></div>
-                    <div><dt>Oldest pending</dt><dd>@(delivery.OldestPendingUtc is { } oldest ? FormatAge(view.EvaluatedUtc - oldest) : "None")</dd></div>
-                    <div><dt>Last acknowledged</dt><dd>@(delivery.LastAcknowledgedUtc is { } acknowledged ? FormatAge(view.EvaluatedUtc - acknowledged) : "Never")</dd></div>
-                </dl>
-            }
-        </section>
     </div>
 
     <p class="transients-evaluated">Read @FormatSiteTime(view.EvaluatedUtc).</p>

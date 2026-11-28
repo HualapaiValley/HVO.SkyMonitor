@@ -276,8 +276,6 @@ public sealed partial class CaptureSatelliteIntegrationTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddSingleton<ICameraAgentOrbitalTimeSource>(new TimeSource(f, unavailable));
         services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(

@@ -43,9 +43,6 @@ Proposed ownership, to be confirmed in the implementation PR:
 - **The CameraAgent host** holds the operator surface, the refresh, resume and
   acknowledge endpoints, and DI.
 
-LogicHost does not consume these facts in v1. If a central consumer is approved
-later, it reads the same fact records. It is never a second poller.
-
 ## Fact taxonomy
 
 Every fact is global. Location applicability is a separate derived fact

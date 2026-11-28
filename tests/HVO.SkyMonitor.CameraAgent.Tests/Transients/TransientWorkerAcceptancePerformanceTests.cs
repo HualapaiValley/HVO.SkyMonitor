@@ -479,7 +479,6 @@ public sealed class TransientWorkerAcceptancePerformanceTests
         var cases = new[]
         {
             (Mode: TransientOperatingMode.Edge, Workload: Workload.W1),
-            (Mode: TransientOperatingMode.Hybrid, Workload: Workload.W2)
         };
         var output = new List<PositiveModeEvidence>();
         foreach (var scenario in cases)
@@ -918,7 +917,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
             ["CameraAgent:TransientDetection:Required"] = required.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] =
-                (mode == TransientOperatingMode.Hybrid).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "false",
             ["CameraAgent:CaptureDistribution:RequiredMaximumPendingCount"] = "20000",
             ["CameraAgent:CaptureDistribution:RequiredMaximumPendingBytes"] = "200000000000",
             ["CameraAgent:CaptureDistribution:OptionalMaximumPendingBytes"] = "20000000000"

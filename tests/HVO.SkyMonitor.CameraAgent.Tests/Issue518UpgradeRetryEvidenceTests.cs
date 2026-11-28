@@ -63,8 +63,6 @@ public sealed class Issue518UpgradeRetryEvidenceTests
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = "issue518-retry",
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
         }).Build());
         using var provider = services.BuildServiceProvider();
         var ingress = provider.GetRequiredService<RawCaptureIngress>();
@@ -98,12 +96,10 @@ public sealed class Issue518UpgradeRetryEvidenceTests
             var lanes = provider.GetRequiredService<CaptureLanePolicy>().Definitions;
             var outcomes = new List<object>();
             var standard = lanes.Single(static lane => lane.Name == "standard");
-            var upload = lanes.Single(static lane => lane.Name == "upload");
             foreach (var (lane, handler) in new (CaptureLaneDefinition, ICaptureLaneHandler)[]
             {
                 (standard, provider.GetRequiredService<StandardCaptureLaneHandler>()),
-                (upload, provider.GetRequiredService<UploadCaptureLaneHandler>())
-            }.Take(mode == "interrupted" ? 1 : 2))
+            })
             {
                 var lease = await ingress.ClaimAsync(lane, "issue518-retry", config, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(lease, lane.Name);

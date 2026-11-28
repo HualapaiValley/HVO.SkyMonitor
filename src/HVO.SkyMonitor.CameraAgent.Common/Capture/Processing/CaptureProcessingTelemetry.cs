@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -29,12 +29,12 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     private readonly Histogram<double> _graphDuration;
     private readonly Histogram<double> _replayQueueWaitDuration;
     private readonly CaptureProcessingState _state;
-    private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureRuntimeState? _captureRuntimeState;
 
-    public CaptureProcessingTelemetry(CaptureProcessingState? state = null, FleetRuntimeState? fleetRuntimeState = null)
+    public CaptureProcessingTelemetry(CaptureProcessingState? state = null, CaptureRuntimeState? captureRuntimeState = null)
     {
         _state = state ?? new CaptureProcessingState();
-        _fleetRuntimeState = fleetRuntimeState;
+        _captureRuntimeState = captureRuntimeState;
         _graphs = _meter.CreateCounter<long>("camera_agent.processing.graphs", "{graph}");
         _executionStarts = _meter.CreateCounter<long>("camera_agent.processing.execution.starts", "{execution}");
         _nodes = _meter.CreateCounter<long>("camera_agent.processing.nodes", "{node}");
@@ -77,7 +77,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     internal void RecordGraph(string outcome, TimeSpan duration, string executionClass = "Ephemeral")
     {
         _state.GraphCompleted(outcome);
-        _fleetRuntimeState?.ProcessingCompleted(duration);
+        _captureRuntimeState?.ProcessingCompleted(duration);
         var tags = new TagList { { "outcome", outcome }, { "execution.class", executionClass } };
         _graphs.Add(1, tags);
         _graphDuration.Record(duration.TotalSeconds, tags);

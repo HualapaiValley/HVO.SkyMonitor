@@ -15,7 +15,6 @@
     </header>
     <section class="event-summary" aria-label="Event summary">
         <article><span>Confirmed</span><strong>Unavailable</strong><small>Owner review is not recorded locally</small></article>
-        <article><span>Awaiting review</span><strong>Unavailable</strong><small>Central review state is not recorded locally</small></article>
         <article><span>Rejected</span><strong>Unavailable</strong><small>Local workflow is not owner review</small></article>
         <article><span>Latest event on this page</span>
             @if (_isLoading) { <strong>Loading</strong><small>Reading retained candidates on this page</small> }
@@ -37,7 +36,6 @@
             <button type="button" class="@(CalendarView ? "active" : null)" aria-label="Event calendar view" aria-pressed="@(CalendarView ? "true" : "false")" @onclick="() => SetView(true)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="13"></rect><path d="M6 2v4m8-4v4M3 8h14"></path></svg></button>
         </div>
     </section>
-    <p id="review-unavailable" class="event-result-count">Owner review belongs to LogicHost. A local assessment or finalization does not establish owner confirmation or rejection.</p>
     @if (HasRange) { <p class="range-state">Candidate creation range: @RangeLabel. <a href="/transients">Clear range and filters</a></p> }
     @if (_isLoading)
     {

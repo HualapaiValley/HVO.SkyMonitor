@@ -1028,7 +1028,6 @@ public sealed class LocalReplayRunnerPerformanceTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:ProcessingGraphs:ReplayProfile"] = profile.ToString(),
             ["CameraAgent:ProcessingGraphs:ReplayMaximumConcurrency"] = "1",
             ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingCount"] = "1000",

@@ -216,7 +216,6 @@ public sealed class TimeLapseGenerationTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:TimeLapses:Enabled"] = "true",
             ["CameraAgent:TimeLapses:Timing:Compression"] = compression.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:RigProfileSha256"] = RigProjectionContextFactory.CreateProfileHashSha256(Rig()),

@@ -28,7 +28,7 @@ public static class SiteProfileLimits
 
 /// <summary>
 /// The operator-facing identity of this deployment: what the observatory and camera are called and who to contact
-/// about them. It is descriptive only; nothing about capture, geometry, or central registration reads it.
+/// about them. It is independent of capture and geometry.
 /// </summary>
 public sealed record SiteProfileValues(
     string? ObservatoryName,

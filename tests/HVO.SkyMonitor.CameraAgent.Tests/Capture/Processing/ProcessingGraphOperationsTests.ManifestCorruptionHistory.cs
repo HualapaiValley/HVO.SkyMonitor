@@ -40,7 +40,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 foreach (var id in new[] { liveId, replay.Execution.ExecutionId })
                 {
                     originals[id] = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
-                    foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                    foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                         facts[(id, consumer)] = await ReadManifestJournalConsumerAsync(root, operations, id, consumer, false).ConfigureAwait(false);
                     await ReplaceManifestCountsAsync(root, id, originals[id], counts).ConfigureAwait(false);
                     await RunManifestTestAssertions.ResponseAsync(operations, id, corrupt ? CameraAgentRunManifest.CorruptReason : null).ConfigureAwait(false);

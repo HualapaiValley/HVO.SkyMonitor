@@ -169,7 +169,7 @@ public sealed class ReleaseRegistryImageTests
     [TestMethod]
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
-    [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    [DataRow("io.hvo.skymonitor.component", "OtherProduct")]
     [DataRow("org.opencontainers.image.created", "2026-10-17T18:00:00+00:00")]
     public async Task ReadAsync_ImageNotLabelledAsTheRelease_IsRefusedBeforeAnythingIsPulled(string label, string value)
     {

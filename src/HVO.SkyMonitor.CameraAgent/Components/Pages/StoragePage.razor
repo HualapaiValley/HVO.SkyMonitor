@@ -108,7 +108,7 @@ else
                 }
                 <div class="full"><dt>Oldest held evidence</dt><dd>@OldestHeld</dd></div>
             </dl>
-            <p class="storage-links"><a href="/operations/quarantine">Quarantine &amp; recovery</a><a href="/operations/delivery">Delivery</a></p>
+            <p class="storage-links"><a href="/operations/quarantine">Quarantine &amp; recovery</a></p>
         </section>
     </div>
 
@@ -124,11 +124,10 @@ else
                         @if (_system is not null)
                         {
                             var retention = _system.Retention;
-                            var environmental = summary.EnvironmentalDelivery.Value;
                             <tr>
                                 <td><strong>Environment observations</strong><small>Up to @retention.EnvironmentalMaximumHistoryCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) / @OperationsPage.FormatBytes(retention.EnvironmentalMaximumHistoryBytes)</small></td>
                                 <td>@(retention.EnvironmentalHistoryEnabled ? Days(retention.EnvironmentalRetentionDays) : "Not collected")</td>
-                                <td>@(environmental.StoredCount > 0 ? $"{Count(environmental.StoredCount, "observation", "observations")} / {OperationsPage.FormatBytes(environmental.StoredBytes)}" : "None stored")</td>
+                                <td><a href="/operations/environment">View history</a></td>
                             </tr>
                             <tr>
                                 <td><strong>Raw ingress reserve</strong><small>Kept free for new frames</small></td>

@@ -21,7 +21,7 @@ public sealed class CameraAgentProcessingCompletionTests
         try
         {
             using var provider = EdgeUpgradeLaneTests.CreateProvider(
-                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow), enableCentralIntegration: false);
+                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow));
             var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
             var first = await fixture.AcceptAsync(0).ConfigureAwait(false);
             var second = await fixture.AcceptAsync(1).ConfigureAwait(false);
@@ -77,7 +77,7 @@ public sealed class CameraAgentProcessingCompletionTests
         try
         {
             using var provider = EdgeUpgradeLaneTests.CreateProvider(
-                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow), enableCentralIntegration: false);
+                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow));
             var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
             var former = fixture with { Configuration = fixture.Configuration with { AgentId = "former-agent" } };
             // The former identity's captures came first: sequences 1 and 2, then the current identity's 1 to 6.

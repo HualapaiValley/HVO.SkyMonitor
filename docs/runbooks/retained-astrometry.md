@@ -66,8 +66,6 @@ recompute command, storage-layout change or prepared data deletion. Keep
 original products as evidence. Duration uses exact UTC endpoints with no
 tolerance above one second. See the [#1179 qualification decision](../validation/issue-1179-qualification.md).
 
-On development prereleases (not stable 0.9.0), a pre-upgrade long-exposure product with `available` uncertainty still queued in a CameraAgent outbox is rejected by LogicHost ingest with HTTP 400 and quarantined by CameraAgent as `http-400`, a terminal outcome with no retry loop or blocked outbox.
-
 The configured astrometry node is optional. Its existing worker policy degrades
 an exception to a terminal optional-node outcome in live execution; replay
 retries only up to the configured replay attempt limit, then records optional
@@ -88,12 +86,6 @@ The adopted solution's ordered immediate parents are raw, measured associations,
 scene, context. The standalone recipe's existing two-parent form is unchanged.
 The context also holds the prior's raw artifact when supplied. Existing retention
 walks these parents; restart restores completed outputs without refitting.
-In LogicHost only this authenticated context parent at ordinal 3 may resolve to
-another capture, and it must belong to the same device and have the Raw role.
-Current raw/measured/scene parents and all solution parents remain capture-bound.
-Ingest retains and checks every supplied role, variant and producer hash; native
-scene/context parents carry roles without invented variant or producer facts.
-Reconciliation admits the products only when their required parents resolve.
 Raw/descriptor, catalog rows/package, scene/calibration, observer, reported time,
 readout, settings and prior are independently bound by the shared recipe.
 Hashes preserve identity and integrity; they do not establish physical accuracy.
@@ -104,16 +96,8 @@ than rerunning a clock-dependent budget outcome or consulting current settings.
 Replay fails closed if originals are absent, ambiguous, renamed or altered.
 No live work dispatches to a replay runner.
 
-Export/import uses `StructuredProcessingProductManifestV1` for all four Metadata
-products and the raw manifest/payload. Preserve ordered source IDs and producer
-descriptors. `RetainedAstrometryProducts.Request` rebuilds the same request;
-`Verify` checks its retained assessment without fitting. LogicHost's existing
-input reader now reconstructs ingested typed products from their authenticated
-structured descriptor even when they have no central-producer evidence row.
-`ProcessingRunnerArtifactMetadata.RecipeDescriptor` preserves that producer
-through claim projection and rejects descriptor/identity mismatches. The runner
-advertises the shared recipe; this does not activate central jobs or change
-lease, graph, ingestion or publication authority.
+`RetainedAstrometryProducts.Request` rebuilds the frozen request and
+`Verify` checks its retained assessment.
 
 ## Viewer handoff to #1644
 

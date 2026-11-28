@@ -99,7 +99,6 @@ public sealed class StoragePageTests
             {
                 RawIngress = summary.RawIngress with { Value = summary.RawIngress.Value with { PendingCount = 3, QuarantineCount = 1, OldestPendingUtc = Now.AddMinutes(-5) } },
                 CaptureLanes = summary.CaptureLanes with { Value = laneState },
-                ArtifactOutbox = summary.ArtifactOutbox with { Value = summary.ArtifactOutbox.Value with { PendingCount = 5, QuarantineCount = 1, OldestPendingUtc = Now.AddMinutes(-20) } },
             },
         });
 
@@ -108,9 +107,8 @@ public sealed class StoragePageTests
         cut.WaitForElement(".storage-holds");
         Assert.AreEqual("3", Fact(cut, ".storage-holds", "Raw captures held"));
         Assert.AreEqual("10", Fact(cut, ".storage-holds", "Capture lanes"));
-        Assert.AreEqual("4", Fact(cut, ".storage-holds", "Delivery"));
-        Assert.AreEqual("4", Fact(cut, ".storage-holds", "Quarantine"));
-        Assert.AreEqual("23 Jul 2026 11:40:00 +00:00 (UTC (site time zone unavailable)), Delivery", Fact(cut, ".storage-holds", "Oldest held evidence"));
+        Assert.AreEqual("3", Fact(cut, ".storage-holds", "Quarantine"));
+        Assert.AreEqual("23 Jul 2026 11:55:00 +00:00 (UTC (site time zone unavailable)), Raw captures held", Fact(cut, ".storage-holds", "Oldest held evidence"));
     }
 
     [TestMethod]
@@ -127,7 +125,6 @@ public sealed class StoragePageTests
             {
                 RawIngress = summary.RawIngress with { Value = summary.RawIngress.Value with { PendingCount = 2, QuarantineCount = 0 } },
                 CaptureLanes = summary.CaptureLanes with { Value = summary.CaptureLanes.Value with { PendingCount = 2, QuarantineCount = 1 } },
-                ArtifactOutbox = summary.ArtifactOutbox with { Value = summary.ArtifactOutbox.Value with { PendingCount = 0, QuarantineCount = 0 } },
             },
         });
 

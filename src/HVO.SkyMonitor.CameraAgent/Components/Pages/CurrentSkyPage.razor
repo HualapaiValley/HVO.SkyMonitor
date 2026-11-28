@@ -90,7 +90,6 @@ else
                     <div><dt>Image age</dt><dd>@(FactCapture is { } image ? FormatDuration(image.AgeSeconds) : "Unavailable")</dd></div>
                 }
             }
-            <div><dt>LogicHost</dt><dd><a href="/operations/delivery" title="@CentralStatusReason">@CentralStatusLabel</a></dd></div>
             <div><dt>Storage</dt><dd><a href="/operations/storage" title="@StorageStatusReason">@StorageStatusLabel</a></dd></div>
             <div><dt>Capture cadence</dt><dd>@CaptureCadenceLabel</dd></div>
         </dl>
@@ -747,7 +746,6 @@ else
             <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>@(IsArchived ? ArchivedView!.Capture.RawState : SystemLabel)</strong><span>@(_presentation?.LatestCapture is { } acquired ? $"{(IsArchived ? "Selected" : "Latest")} capture #{acquired.CaptureSequence}" : "No durable capture yet")</span></div></article>
             <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>@ProcessingStripLabel</strong><span>@(_liveExecutionId is null ? "Run link unavailable" : $"Run for capture #{FactCapture?.CaptureSequence}")</span></div></article>
             <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>@TransientOutcomeLabel</strong><span>@TransientOutcomeReason</span></div></article>
-            <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>@CentralStatusLabel</strong><span>@CentralStatusReason</span></div></article>
         </section>
     };
 

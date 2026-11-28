@@ -807,7 +807,6 @@ public sealed partial class RollingCombinationWindowLineageTests
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:MaximumWindowInputs"] = maximumWindowInputs.ToString(
                     CultureInfo.InvariantCulture),
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"

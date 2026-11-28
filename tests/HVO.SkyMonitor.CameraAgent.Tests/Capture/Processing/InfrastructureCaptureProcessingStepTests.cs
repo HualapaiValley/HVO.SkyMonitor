@@ -7,7 +7,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
@@ -22,46 +21,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestProperty("Area", "Capture.Processing")]
 public sealed class InfrastructureCaptureProcessingStepTests
 {
-    [TestMethod]
-    public async Task OrdinaryUploadLane_QueuesExactlyOneRawManifest()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "raw-upload");
-        var payload = new byte[] { 0, 0, 0, 0 };
-        var manifest = ReconstructableCaptureContractTests.CreateManifest(
-            CameraPixelFormat.Mono8,
-            2,
-            2,
-            2,
-            payload);
-        var receipt = new RawCaptureReceipt(
-            RawIngressOutcome.Committed,
-            manifest,
-            new StoredFrameReference(
-                manifest.RelativeArtifactPath,
-                Path.Combine(root, manifest.RelativeArtifactPath),
-                manifest.Descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw),
-            CaptureContractJson.ComputeManifestSha256(manifest));
-        var context = CreateContext(receipt);
-        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
-        outbox.Setup(value => value.EnqueueAsync(root, manifest, It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.CompletedTask);
-        var handler = new UploadCaptureLaneHandler(
-            outbox.Object,
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
-
-        var result = await handler.HandleAsync(new CaptureLaneHandlerContext(
-            "upload",
-            1,
-            context.Config,
-            context.Submission,
-            receipt), CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
-        outbox.Verify(value => value.EnqueueAsync(root, manifest, It.IsAny<CancellationToken>()), Times.Once);
-        outbox.VerifyNoOtherCalls();
-    }
-
     [TestMethod]
     public async Task ExplicitPublicationOwnership_PreventsStorageWriteButKeepsPackedLatestFrame()
     {

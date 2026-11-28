@@ -18,7 +18,7 @@ internal static partial class SkyCli
             {
                 Description = "With --watch: seconds between reads, 1 to 3600 (default 2)."
             };
-            var command = new Command("status", "Show the running CameraAgent's status: capture, queues, storage and LogicHost delivery. With --watch, follow it until Ctrl+C.")
+            var command = new Command("status", "Show the running CameraAgent's status: capture, queues and storage. With --watch, follow it until Ctrl+C.")
             {
                 watch,
                 interval
@@ -219,7 +219,6 @@ internal static class SkyStatusText
         rows.Add(("Raw ingress", Queue(summary, "rawIngress", bytes: true)));
         rows.Add(("Capture lanes", Queue(summary, "captureLanes", bytes: true)));
         rows.Add(("Processing", Queue(summary, "captureProcessing", bytes: false)));
-        rows.Add(("Artifact outbox", Queue(summary, "artifactOutbox", bytes: true)));
         foreach (var store in SkyJson.Items(summary, "storage", "value"))
         {
             var alias = SkyJson.Text(store, "alias") ?? "storage";
@@ -237,16 +236,6 @@ internal static class SkyStatusText
             rows.Add(($"Storage {alias}",
                 $"{SkyCliFormat.Bytes(SkyJson.Integer(store, "availableBytes"))} free of {SkyCliFormat.Bytes(SkyJson.Integer(store, "totalBytes"))}"
                 + (notes.Count > 0 ? ", " + string.Join(", ", notes) : string.Empty)));
-        }
-
-        var central = SkyJson.Text(summary, "configuration", "value", "centralIntegration");
-        var heartbeat = SkyJson.Text(summary, "heartbeat", "value", "availability");
-        if (central is not null || heartbeat is not null)
-        {
-            var acknowledged = SkyJson.Time(summary, "heartbeat", "value", "lastAcknowledgedUtc");
-            rows.Add(("LogicHost", $"{central ?? "unknown"}; heartbeat {heartbeat ?? "unknown"}"
-                + (acknowledged is { } ack ? $", last acknowledged {SkyCliFormat.Time(ack)}" : string.Empty)
-                + Freshness(summary, "heartbeat")));
         }
 
         rows.Add(("As of", SkyCliFormat.Time(SkyJson.Time(summary, "capturedUtc"))));
@@ -267,7 +256,6 @@ internal static class SkyStatusText
             $"raw {SkyCliFormat.Count(SkyJson.Integer(summary, "rawIngress", "value", "pendingCount"))}",
             $"lanes {SkyCliFormat.Count(SkyJson.Integer(summary, "captureLanes", "value", "pendingCount"))}",
             $"processing {SkyCliFormat.Count(SkyJson.Integer(summary, "captureProcessing", "value", "pendingCount"))}",
-            $"outbox {SkyCliFormat.Count(SkyJson.Integer(summary, "artifactOutbox", "value", "pendingCount"))}",
             pressure ? "storage UNDER PRESSURE" : "storage ok"
         };
         if (SkyJson.Text(summary, "configuration", "value", "validationStatus") is { } validation)

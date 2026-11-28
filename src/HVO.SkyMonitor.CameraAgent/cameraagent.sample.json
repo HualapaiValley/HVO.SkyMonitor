@@ -1,5 +1,5 @@
 {
-    "agentId": "replace-with-registered-device-id",
+    "agentId": "use-local-device-id",
     "module": {
         "type": "VirtualSky",
         "options": {

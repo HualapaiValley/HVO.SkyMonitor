@@ -16,7 +16,6 @@ public static class ProcessingGraphHosts
 {
     public const string CameraAgent = "camera-agent";
 
-    public const string LogicHost = "logic-host";
 }
 
 public enum ProcessingGraphNodeFailurePolicy

@@ -496,7 +496,6 @@ public sealed class AnnotationEnvironmentSourceTests
         const string prefix = "CameraAgent:EnvironmentalAcquisition:";
         var settings = new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         switch (profile)
         {

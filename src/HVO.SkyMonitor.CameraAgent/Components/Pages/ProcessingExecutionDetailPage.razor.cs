@@ -49,12 +49,9 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
 
-    [Inject] internal IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
+    [Inject] private IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
 
-    private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
-    private string LogicHostState => HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled
-        ? "Disabled now / no receipt"
-        : "No acknowledgement recorded for this execution";
+    private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Edge;
     private long? _captureSequence;
     private string TriggerLabel => _view?.Execution is { } execution
         ? $"{(execution.TriggerReference is { } reference ? reference : "Recorded capture trigger")} at {SiteTime.Format(execution.AcceptedUtc)}"

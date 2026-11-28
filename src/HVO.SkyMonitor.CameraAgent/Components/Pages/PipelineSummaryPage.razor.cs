@@ -847,7 +847,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         => string.Concat("ops-pipeline-node source", key == selectedKey ? " active" : "");
 
     private static string StageClass(MeteorLaneStage stage, string key, string? selectedKey)
-        => string.Concat("ops-pipeline-node transient", stage.Central ? " central" : "", key == selectedKey ? " active" : "");
+        => string.Concat("ops-pipeline-node transient", key == selectedKey ? " active" : "");
 
     private static string Pressed(string key, string? selectedKey) => key == selectedKey ? "true" : "false";
 
@@ -858,8 +858,6 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     {
         null => "State unavailable",
         TransientOperatingMode.Edge => "Edge mode / reads every raw frame on its own durable lane",
-        TransientOperatingMode.Hybrid => "Hybrid mode / scans here, validates on LogicHost",
-        TransientOperatingMode.Central => "Central mode / runs on LogicHost",
         _ => "Off on this agent",
     };
 
@@ -882,8 +880,6 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         {
             MeteorLaneMeasure.PendingFrames => Waiting(view.Worker.PendingFrames, "frame", "frames"),
             MeteorLaneMeasure.PendingCandidates => Waiting(view.Worker.PendingCandidates, "candidate", "candidates"),
-            MeteorLaneMeasure.Delivery => string.Concat(
-                Waiting(view.Delivery.PendingCount, "candidate", "candidates"), ", ", Count(view.Delivery.RetryingCount), " retrying"),
             _ => "Not measured on this agent",
         };
 

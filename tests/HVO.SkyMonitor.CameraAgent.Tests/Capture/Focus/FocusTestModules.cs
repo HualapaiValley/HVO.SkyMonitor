@@ -1,10 +1,9 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -115,7 +114,7 @@ internal sealed class FocusOwnerFixture : IAsyncDisposable
 
     public CameraModuleManualFocusPreviewSource Source { get; }
 
-    public static async Task<FocusOwnerFixture> CreateAsync(FleetRuntimeState? fleet = null)
+    public static async Task<FocusOwnerFixture> CreateAsync(CaptureRuntimeState? fleet = null)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-focus-owner-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);

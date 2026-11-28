@@ -252,7 +252,7 @@ public sealed partial class CloudAssessmentCaptureProcessingStepTests
                     true,
                     EnvironmentalObservationQuality.Good),
                 []);
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var committed = await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
             var configured = Options.Create(new CameraAgentHostOptions
             {

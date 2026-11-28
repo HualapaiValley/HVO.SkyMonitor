@@ -11,9 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    [DataRow("upload", true)]
     [DataRow("secondary", true)]
-    [DataRow("upload", false)]
     [DataRow("secondary", false)]
     public async Task SecondaryCaptureLanes_ClaimRetryAndCompletionPreserveGraphOwnership(string laneName, bool standardFirst)
     {
@@ -64,15 +62,12 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.IsNotNull(completed);
             Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Execution.Status);
             Assert.IsNotNull(completed.Execution.CompletedUtc);
-            Assert.IsNull(await operations.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
 
     [TestMethod]
-    [DataRow("upload", true)]
     [DataRow("secondary", true)]
-    [DataRow("upload", false)]
     [DataRow("secondary", false)]
     public async Task SecondaryCaptureLanes_InvalidEvidenceCannotFailAnotherLanesGraph(string laneName, bool standardFirst)
     {
@@ -128,7 +123,6 @@ public sealed partial class ProcessingGraphOperationsTests
                     await AssertSecondaryGraphUnchangedAsync(operations, expected).ConfigureAwait(false);
                 }
                 await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
-                Assert.IsNull(await operations.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false));
             }
         }
         finally { Directory.Delete(root, recursive: true); }
@@ -137,7 +131,6 @@ public sealed partial class ProcessingGraphOperationsTests
     private static ServiceProvider CreateSecondaryLaneProvider(string root, TimeProvider? clock = null)
         => CreateProvider(root, new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true",
             ["CameraAgent:CaptureDistribution:SecondaryLanes:0:Name"] = "secondary",
             ["CameraAgent:CaptureDistribution:SecondaryLanes:0:Enabled"] = "true"
         }, clock);
@@ -159,8 +152,6 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.AreEqual(expected.Execution, actual.Execution, "A nonstandard lane cannot change graph status, timing, attempts or failure state.");
         Assert.AreEqual(JsonSerializer.Serialize(expected.Nodes), JsonSerializer.Serialize(actual.Nodes),
             "A nonstandard lane cannot change node attempts, lineage or publication.");
-        var active = await operations.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false);
-        if (expected.Execution.Status == ProcessingGraphExecutionStatus.Completed) { Assert.IsNull(active); }
-        else { Assert.IsNotNull(active, "Actual unfinished standard work must remain an export barrier."); }
+
     }
 }

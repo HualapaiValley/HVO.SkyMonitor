@@ -1,10 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -26,7 +24,7 @@ internal interface ICameraAgentPresentationRuntime
 internal sealed class CameraAgentPresentationRuntime(
     CaptureAdmissionCoordinator captureAdmission,
     CaptureScheduleRuntimeCoordinator captureSchedule,
-    FleetRuntimeState fleetRuntime) : ICameraAgentPresentationRuntime
+    CaptureRuntimeState captureRuntime) : ICameraAgentPresentationRuntime
 {
     public CameraAgentPresentationRuntimeSnapshot GetSnapshot(DateTimeOffset observedUtc)
     {
@@ -37,7 +35,7 @@ internal sealed class CameraAgentPresentationRuntime(
             schedule?.CurrentDecision,
             schedule?.Revision.Definition,
             schedule?.Configuration.Rig.Pipeline.CaptureInterval,
-            fleetRuntime.Snapshot.Capture.Availability,
+            captureRuntime.Snapshot.Capture.Availability,
             observedUtc);
     }
 
@@ -46,20 +44,20 @@ internal sealed class CameraAgentPresentationRuntime(
         CaptureScheduleDecision? decision,
         CaptureScheduleDefinition? schedule,
         TimeSpan? expectedInterval,
-        FleetAvailability captureAvailability,
+        CaptureAvailability captureAvailability,
         DateTimeOffset observedUtc)
     {
         var (state, message) = admission.State switch
         {
             CaptureAdmissionState.Unavailable =>
                 (CameraAgentPresentationSystemState.Unavailable, "Capture is unavailable."),
-            _ when captureAvailability == FleetAvailability.Unavailable =>
+            _ when captureAvailability == CaptureAvailability.Unavailable =>
                 (CameraAgentPresentationSystemState.Unavailable, "The camera is currently unavailable."),
             CaptureAdmissionState.Initializing =>
                 (CameraAgentPresentationSystemState.Starting, "CameraAgent is preparing capture."),
             CaptureAdmissionState.PauseRequested or CaptureAdmissionState.Paused =>
                 (CameraAgentPresentationSystemState.Paused, "Capture is paused."),
-            _ when captureAvailability == FleetAvailability.Initializing =>
+            _ when captureAvailability == CaptureAvailability.Initializing =>
                 (CameraAgentPresentationSystemState.Starting, "The camera is preparing capture."),
             _ when decision is { Admitted: false, Reason: CaptureScheduleAdmissionReason.SafetyUnavailable } =>
                 (CameraAgentPresentationSystemState.Unavailable, "Capture is waiting for a required local dependency."),

@@ -15,6 +15,9 @@ The central application and combined deployment requirements record retired
 scope under #1848 and #2061. The linked historical revisions retain their
 specifications and evidence.
 
+> Requirements for the retired central host and split-host acceptance record historical delivery.
+> The current product scope is standalone CameraAgent under #1964.
+
 ## 1. Cross-Cutting Requirements
 
 | IDs | Requirement group | Owning source | Phase/issues |
