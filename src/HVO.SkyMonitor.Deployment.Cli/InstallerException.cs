@@ -39,16 +39,6 @@ internal sealed class InstallerException : Exception
     internal static InstallerException WorkerRestartRequired() => new("Restart the lifecycle worker after its runtime identity, listener or credential changes.")
     { IsRefusal = true, IsWorkerRestartRequired = true };
 
-    /// <summary>The signed recovery journal has recorded a hold on the retained stores.</summary>
-    internal bool IsSignedRecoveryHeld { get; private init; }
-
-    internal static InstallerException SignedRecoveryHeld(string message, Exception cause) =>
-        new(message, cause)
-        {
-            IsRefusal = true,
-            IsSignedRecoveryHeld = true
-        };
-
     /// <summary>A refusal: the installer will not do what was asked here, and nothing was changed.</summary>
     public static InstallerException Refused(string message) => new(message) { IsRefusal = true };
 

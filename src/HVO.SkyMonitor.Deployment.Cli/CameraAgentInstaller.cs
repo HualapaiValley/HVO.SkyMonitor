@@ -76,16 +76,14 @@ internal sealed partial class CameraAgentInstaller
             throw InstallerException.Refused("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
         }
         var retained = await ReadRetainedAsync(paths, cancellationToken).ConfigureAwait(false);
-        if (retained is null)
+        if (retained is null && Directory.Exists(paths.InstanceRoot))
         {
-            if (File.Exists(paths.ManifestPath))
-                _ = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-            if (File.Exists(paths.ResultPath))
-                _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+            SafeFileSystem.EnsureSafeExistingAncestors(paths.InstanceRoot);
+            EnsureInstanceRootCanBeOwned(paths, hasState: false);
         }
-        // The Silo layout is a clean install with a new state contract (#1966; cutover contract D1, 2, 8.1). An instance
-        // never changes layout in place, a completed Silo-layout instance is not re-run in this release, and a new one
-        // starts only on an absent data root on local ext4. Every check here only reads.
+        _ = await InstallRecordStore.ReadAsync(
+            InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot), cancellationToken).ConfigureAwait(false);
+        // An instance keeps its original layout. A new Silo instance starts on an absent data root on local ext4.
         var silo = request.StorageLayout == CameraAgentStorageLayout.Silo;
         if (retained?.Manifest is { } retainedManifest &&
             string.Equals(retainedManifest.ComponentSchemaVersion, SiloRuntimeProfile.ComponentSchemaVersion, StringComparison.Ordinal) != silo)
@@ -337,6 +335,7 @@ internal sealed partial class CameraAgentInstaller
                 acquiredImage?.Image,
                 cancellationToken)
                 .ConfigureAwait(false);
+            CameraAgentStateContract.RequireCurrent(image.StateContract);
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
             EnsureImageSupportsCatalog(image, catalog.CatalogId);
@@ -408,17 +407,14 @@ internal sealed partial class CameraAgentInstaller
                 instanceId,
                 image,
                 existingManifest is not null
-                    ? existingManifest.Image.UpgradeCompatibility ?? existingManifest.UpgradeCompatibility
-                    : image.UpgradeCompatibility,
+                    ? existingManifest.Image.StateContract ?? existingManifest.StateContract
+                    : image.StateContract,
                 uid,
                 gid,
                 (ContractReplayProfile)request.ReplayProfile,
                 persist: true,
                 renderToStandardError: !request.Json,
                 cancellationToken,
-                // Installing an image is not an in-place state migration, so an image that predates the label
-                // correction is admitted as a known contract; the persisted boundaries it declares still decide.
-                CameraAgentStateContractPolicy.AllowLegacy,
                 acquiredImage?.Release.Tag).ConfigureAwait(false);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
@@ -670,15 +666,14 @@ internal sealed partial class CameraAgentInstaller
                 instanceId,
                 image,
                 retained.Manifest is { } manifest
-                    ? manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility
-                    : image.UpgradeCompatibility,
+                    ? manifest.Image.StateContract ?? manifest.StateContract
+                    : image.StateContract,
                 uid,
                 gid,
                 (ContractReplayProfile)request.ReplayProfile,
                 persist: false,
                 renderToStandardError: !request.Json,
                 cancellationToken,
-                CameraAgentStateContractPolicy.AllowLegacy,
                 release?.Release.Tag)
             .ConfigureAwait(false);
     }
@@ -736,6 +731,7 @@ internal sealed partial class CameraAgentInstaller
         {
             try
             {
+                CameraAgentStateContract.RequireCurrent(image.StateContract);
                 if (!IsValid(image, request.ReplayProfile))
                     throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
                 EnsureImageSupportsCatalog(image, catalogId);
@@ -838,7 +834,7 @@ internal sealed partial class CameraAgentInstaller
             finalPaths.StateRoot,
             NativeLinux.getuid(),
             NativeLinux.getgid(),
-            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
+            silo is null ? ComposeDeployment.TemplateVersionFor(request.ReplayProfile) : SiloRuntimeProfile.ComposeTemplateVersion,
             request.LatitudeDegrees,
             request.LongitudeDegrees,
             request.ElevationMeters,
@@ -970,7 +966,7 @@ internal sealed partial class CameraAgentInstaller
             image,
             previous?.PreviousImage,
             daemon,
-            image.UpgradeCompatibility ?? "requires-declared-compatible-migration",
+            image.StateContract!,
             previous?.CreatedUtc ?? DateTimeOffset.UtcNow,
             previous?.PreviousCatalog,
             InstanceLifecycleCondition.Installed,
@@ -982,11 +978,7 @@ internal sealed partial class CameraAgentInstaller
             previous?.PreviousComposeModelSha256,
             (ContractReplayProfile)request.ReplayProfile,
             resources,
-            // A completed installation's re-run describes the manifest as it is, retained database snapshot included. Any
-            // other install (a fresh one, a resumed one, the reinstall after a state reset) drops it, so a later
-            // rollback can never bring back databases from before the reset.
             keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null,
-            // Catalog selections are deployment configuration and survive state reset and reinstall.
             previous?.DeepSkyCatalog,
             previous?.PreviousDeepSkyCatalog,
             previous?.HasPreviousDeepSkySelection ?? false,
@@ -1150,8 +1142,9 @@ internal sealed partial class CameraAgentInstaller
         {
             throw new InstallerException("The retained installation state is invalid JSON.", exception);
         }
-        if (value.SchemaVersion != DeploymentSchemaVersions.InstallationState ||
-            value.InstallationId == Guid.Empty || value.InstanceId == Guid.Empty ||
+        if (value.SchemaVersion != DeploymentSchemaVersions.InstallationState)
+            throw InstallerException.Refused(CameraAgentStateContract.FreshInstallRequired);
+        if (value.InstallationId == Guid.Empty || value.InstanceId == Guid.Empty ||
             !IsSha256(value.RequestSha256) || !Enum.IsDefined(value.Phase) || !Enum.IsDefined(value.Status))
         {
             throw new InstallerException("The retained installation state is invalid or unsupported.");
@@ -1184,6 +1177,7 @@ internal sealed partial class CameraAgentInstaller
                System.Text.RegularExpressions.RegexOptions.CultureInvariant) &&
            value.ImageId is not null && value.ImageId.StartsWith("sha256:", StringComparison.Ordinal) &&
            IsSha256(value.ImageId["sha256:".Length..]) && value.Architecture is "amd64" or "arm64" &&
+            CameraAgentStateContract.IsCurrent(value.StateContract) &&
             value.Component == "CameraAgent" && value.ConfigurationContract == "cameraagent-install-v1" &&
              CameraAgentImageContract.IsKnownCatalogContract(value.CatalogContract) && IsSourceRevision(value.SourceRevision) &&
              (replayProfile == CameraAgentReplayProfile.InProcess ||
@@ -1257,7 +1251,7 @@ internal sealed partial class CameraAgentInstaller
         if (unexpected is not null || !hasState && Directory.EnumerateFileSystemEntries(paths.InstanceRoot)
                 .Any(path => Path.GetFileName(path) != ".deployment.lock"))
         {
-            throw new InstallerException("The instance root contains unowned content and cannot be adopted.");
+            throw InstallerException.Refused(CameraAgentStateContract.FreshInstallRequired);
         }
     }
 
@@ -1424,43 +1418,7 @@ internal sealed partial class CameraAgentInstaller
         => string.Equals(
                retainedSha256,
                ComputeRequestSha256(request, instanceId, release),
-               StringComparison.Ordinal) ||
-           // The legacy identity predates replay profiles, explicit illumination, container limits and releases,
-           // so a request using any of them never matches it.
-           release is null && request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null &&
-           request.StorageLayout == CameraAgentStorageLayout.Filesystem &&
-           request.Memory is null && request.IlluminationMode is null &&
-           string.Equals(
-               retainedSha256,
-               ComputeLegacyRequestSha256(request, instanceId),
                StringComparison.Ordinal);
-
-    internal static string ComputeLegacyRequestSha256(
-        InstallRequest request,
-        Guid instanceId)
-    {
-        var identity = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            instanceId,
-            request.FriendlyName,
-            request.OwnerEmail,
-            request.BindAddress,
-            request.Port,
-            request.ProductRoot,
-            request.CatalogBundle,
-            CatalogRelease = (object?)null,
-            request.ImageReference,
-            request.ImageArchive,
-            request.ImageArchiveSha256,
-            request.PasswordFile,
-            request.LatitudeDegrees,
-            request.LongitudeDegrees,
-            request.ElevationMeters,
-            request.TimeZoneId,
-            request.AcknowledgePlaintextHttp
-        });
-        return Convert.ToHexStringLower(SHA256.HashData(identity));
-    }
 
     private static Uri PublicUri(InstallRequest request)
     {

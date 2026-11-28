@@ -71,7 +71,10 @@ public sealed class InstallWizardCommandLineTests
             "cameraagent", "install", "--instance-id", WizardHost.InstanceId.ToString("D"), "--owner-email", "admin@example.test",
             "--bind-address", "127.0.0.1", "--port", "5140", "--acknowledge-plaintext-http", "--latitude", "35.2",
             "--longitude", "-114.1", "--elevation", "1300", "--time-zone", "UTC", "--cpus", "3", "--memory", "6g",
-            "--replay-profile", "local-runner", "--illumination-mode", "ControlledNight", "--password-file", "/srv/hvo/password", "--release", Release,
+            "--storage-layout", "silo", "--silo-image-archive", "/srv/hvo/silo.tar",
+            "--silo-archive-endpoint", "https://archive.example:9443", "--silo-archive-bucket", "hvo-archive",
+            "--silo-archive-ca-file", "/srv/hvo/ca.pem", "--silo-archive-credential-file", "/srv/hvo/credential",
+            "--replay-profile", "in-process", "--illumination-mode", "ControlledNight", "--password-file", "/srv/hvo/password", "--release", Release,
             "--image-source", "registry", "--catalog-bundle", Catalog, "--no-download"
         ];
 
@@ -114,6 +117,7 @@ public sealed class InstallWizardCommandLineTests
         var applied = host.Installs.Single();
         Assert.AreEqual(reviewed with { DryRun = false, Json = false }, applied, "the Review page checked what was installed");
         Assert.AreEqual(Enum.Parse<ReleaseImageSource>(expected), applied.ImageSource);
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, applied.StorageLayout);
         Assert.AreEqual(Release, applied.Release, "the release given replaces the saved one");
         Assert.AreEqual(Catalog, applied.CatalogBundle);
         Assert.AreEqual("ControlledNight", applied.IlluminationMode);

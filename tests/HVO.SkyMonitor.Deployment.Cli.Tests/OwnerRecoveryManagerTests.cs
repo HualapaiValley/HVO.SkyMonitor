@@ -12,9 +12,11 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class OwnerRecoveryManagerTests
 {
     [TestMethod]
-    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath(bool silo)
     {
-        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await RecoveryFixture.CreateAsync(silo).ConfigureAwait(false);
         var recoveryClient = new FakeRecoveryClient();
 
         var result = await OwnerRecoveryManager.ExecuteAsync(
@@ -348,7 +350,7 @@ public sealed class OwnerRecoveryManagerTests
                 InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId)));
         }
 
-        internal static async Task<RecoveryFixture> CreateAsync()
+        internal static async Task<RecoveryFixture> CreateAsync(bool silo = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-or-{Guid.NewGuid():N}"[..15]);
             var instanceId = Guid.NewGuid();
@@ -388,7 +390,7 @@ public sealed class OwnerRecoveryManagerTests
                 $"sha256:{new string('c', 64)}",
                 "amd64",
                 null,
-                UpgradeCompatibility: "backward-compatible",
+                StateContract: CameraAgentStateContract.Current,
                 SourceRevision: new string('8', 40),
                 Component: "CameraAgent",
                 ConfigurationContract: "cameraagent-install-v1",
@@ -399,7 +401,7 @@ public sealed class OwnerRecoveryManagerTests
             var scheduleSha = new string('1', 64);
             var composeSha = ComposeDeployment.ComputeSha256("services: {}\n");
             var manifest = new InstanceManifest(
-                1,
+                DeploymentSchemaVersions.InstanceManifest,
                 "HVO.SkyMonitor",
                 "cameraagent-install-v1",
                 DeploymentComponent.CameraAgent,
@@ -434,13 +436,13 @@ public sealed class OwnerRecoveryManagerTests
                 image,
                 null,
                 daemon,
-                "backward-compatible",
+                CameraAgentStateContract.Current,
                 DateTimeOffset.UtcNow,
                 LifecycleCondition: InstanceLifecycleCondition.Installed,
                 Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"));
             var result = new InstallationResult(
-                1,
+                DeploymentSchemaVersions.InstallationResult,
                 InstallationOutcome.Installed,
                 installationId,
                 instanceId,
@@ -475,6 +477,19 @@ public sealed class OwnerRecoveryManagerTests
                 true,
                 "owner-password-change-required",
                 DateTimeOffset.UtcNow);
+            if (silo)
+            {
+                using var harness = new SiloHarness(paths, instanceId, seed: false);
+                image = image with { FirstBootContract = SiloInstallation.FirstBootContract };
+                manifest = manifest with
+                {
+                    ComponentSchemaVersion = SiloRuntimeProfile.ComponentSchemaVersion,
+                    ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion,
+                    Image = image,
+                    Silo = harness.Identity with { DataRootFileSystem = SiloRuntimeProfile.RequiredFileSystem }
+                };
+                result = result with { ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion, Image = image };
+            }
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ManifestPath,
                 manifest,

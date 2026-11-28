@@ -59,6 +59,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("e8260a29-0717-4730-a9ea-7780b3a8d377"),
             FriendlyName = "Contract Camera",
@@ -238,7 +239,8 @@ public sealed partial class InstallerFlowTests
                 RuntimeGid,
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe));
-            StringAssert.Contains(unsupported.Message, "invalid or unsupported", StringComparison.Ordinal);
+            Assert.IsTrue(unsupported.IsRefusal);
+            StringAssert.Contains(unsupported.Message, "fresh install", StringComparison.Ordinal);
         }
         finally
         {
@@ -271,6 +273,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('c', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("a71e12c8-bef2-4184-8fd4-3548b74a7d89"),
             FriendlyName = "Resume Camera",
@@ -354,6 +357,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('d', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e001"),
             FriendlyName = "Default Owner Camera",
@@ -434,6 +438,7 @@ public sealed partial class InstallerFlowTests
         File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e003"),
             FriendlyName = "Spaced Password Camera",
@@ -492,6 +497,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('e', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e002"),
             FriendlyName = "Generated Owner Camera",
@@ -1311,6 +1317,7 @@ public sealed partial class InstallerFlowTests
 
     private static InstallRequest ReleaseRequest(string root, string bundle, Guid instanceId, string release) => new()
     {
+        StorageLayout = CameraAgentStorageLayout.Filesystem,
         AllowTestProductRoot = true,
         InstanceId = instanceId,
         FriendlyName = "Release Camera",
@@ -1350,6 +1357,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d3f0c8e-6a1b-4f27-9e44-2c7d8b9a1e60"),
             FriendlyName = "LAN Camera",
@@ -1415,6 +1423,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("9e1c4a7b-2f35-4d68-8b0a-6c3e5f7d9a12"),
             FriendlyName = "Pi Camera",
@@ -1510,6 +1519,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("3c6f1d2e-8a47-4b59-9d10-7e2f4a6b8c31"),
             FriendlyName = "Budget Camera",

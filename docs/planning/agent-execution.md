@@ -84,7 +84,7 @@ inputs, validation, interruption/resume and operator recovery/data-loss
 expectations before conversion. Preserve ordinary protected upgrade checkpoint
 recovery: restoring a paired pre-upgrade point does not reverse a migration.
 This exception neither removes protection universally nor permits silent
-destructive conversion. The [install contract](../hvo-install-contract.md#skymonitor-qualification-and-adoption)
+destructive conversion. The [install contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/7719263037a631fad37b4edcbf6aaffb3d7aa2a5/docs/hvo-install-contract.md#skymonitor-qualification-and-adoption)
 and [implementation map](skymonitor-upgrade-recovery.md#ordering-and-forward-only-conversions)
 own the detailed boundary; existing required gates remain in force.
 

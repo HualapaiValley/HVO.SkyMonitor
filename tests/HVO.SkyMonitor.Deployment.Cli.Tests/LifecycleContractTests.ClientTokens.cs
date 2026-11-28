@@ -131,7 +131,7 @@ public sealed partial class LifecycleContractTests
 
     private static async Task UpgradeAndCommitAsync(LifecycleFixture fixture)
         => Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
 
     private static async Task RecoverFromCandidateWriteAsync(
@@ -142,7 +142,7 @@ public sealed partial class LifecycleContractTests
             if (image == CandidateImageId) candidateWrite();
         };
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle ?? new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle ?? new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error ?? TextWriter.Null));
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);

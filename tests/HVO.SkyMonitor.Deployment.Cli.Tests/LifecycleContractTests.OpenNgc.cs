@@ -23,6 +23,7 @@ public sealed partial class LifecycleContractTests
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             ProductRoot = fixture.Root,
             InstanceId = fixture.InstanceId,

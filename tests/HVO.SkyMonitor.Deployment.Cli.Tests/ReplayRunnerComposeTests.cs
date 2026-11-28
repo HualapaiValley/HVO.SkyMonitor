@@ -232,26 +232,6 @@ public sealed class ReplayRunnerComposeTests
     }
 
     [TestMethod]
-    public void LegacyRequestIdentityMatchesOnlyInProcessProfile()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var (inProcess, _) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
-            var localRunner = inProcess with { ReplayProfile = CameraAgentReplayProfile.LocalRunner };
-            var instanceId = Guid.NewGuid();
-            var legacySha256 = CameraAgentInstaller.ComputeLegacyRequestSha256(inProcess, instanceId);
-
-            Assert.IsTrue(CameraAgentInstaller.RequestIdentityMatches(legacySha256, inProcess, instanceId));
-            Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(legacySha256, localRunner, instanceId));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
     public void LocalRunnerRequiresImmutableImageCapabilityContract()
     {
         var image = new ImageInstallationIdentity(
@@ -260,7 +240,7 @@ public sealed class ReplayRunnerComposeTests
             $"sha256:{new string('a', 64)}",
             "amd64",
             null,
-            UpgradeCompatibility: "backward-compatible",
+            StateContract: CameraAgentStateContract.Current,
             SourceRevision: new string('b', 40),
             Component: "CameraAgent",
             ConfigurationContract: "cameraagent-install-v1",
@@ -288,7 +268,7 @@ public sealed class ReplayRunnerComposeTests
             $"sha256:{new string('a', 64)}",
             "amd64",
             null,
-            UpgradeCompatibility: "backward-compatible",
+            StateContract: CameraAgentStateContract.Current,
             SourceRevision: new string('b', 40),
             Component: "CameraAgent",
             ConfigurationContract: "cameraagent-install-v1",
@@ -323,6 +303,7 @@ public sealed class ReplayRunnerComposeTests
     {
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             FriendlyName = "Replay Test",
             OwnerEmail = "owner@example.test",
             ProductRoot = root,

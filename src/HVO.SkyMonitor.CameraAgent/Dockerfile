@@ -125,35 +125,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Declared after the payload so that the package install stays cached across revisions. The version label is set
 # explicitly so it never inherits the base image's operating-system version.
 #
-# The state-compatibility label names the durable CameraAgent state contract this image
-# reads and writes. It is not a generic backward-compatibility promise: revisions before
-# original compatibility floor produced catalog manifest v1, Identity migration
-# 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
-# adopt in place. Deployment preflight compares the three declared boundaries below against
-# the persisted state before the container starts.
-#
-# catalog-manifest-version is the highest catalog manifest this image reads. Preflight
-# accepts a selected catalog from manifest 2 through that label. catalog-contract
-# hvo-approved-catalogs-v3 resolves every lineage in the embedded registry, including
-# the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
-# image that omits the manifest label is held to manifest 2 only.
-#
-# The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
-# and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
-# and local automation schema 4 (Refs #1768). Paired protected state
-# is snapshotted with the databases before adoption so an older-reader rollback
-# receives its pre-upgrade history. The combined reader advances beyond the processing-only
-# predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
-# Its change makes existing installers checkpoint the paired databases before store conversion;
-# rollback restores that checkpoint rather than handing converted stores to older readers.
-# This revision reads raw schema 17, processing schema 12 and the settled environmental schema 5.
-# The combined layout includes the registration retention index and input diagnostics (#1961),
-# the six centered-view retention indexes (#2000), and the centered-view window-work due index
-# and durable retry_count column (#1991, #1999). Advance the boundary to b45b293f so the
-# installer checkpoints from the prior ded7cadc reader and earlier schema-12 readers at raw 17
-# and processing 12 before startup adoption.
-# The checkpoint preserves the previous reader's processing and environmental stores.
-# Refs #1901, #1919, #1922, #1938, #1991, #1999.
+# The state-contract label identifies the fresh-install baseline for CameraAgent lifecycle operations.
+# The catalog-manifest-version label identifies the highest supported catalog manifest.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -167,11 +140,9 @@ ARG HVO_VERSION
 ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
-      io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="b45b293feede430290d255a332b4c388d2b7f56f" \
+      io.hvo.skymonitor.state-contract="cameraagent-silo-state-v1" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
-      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \

@@ -43,7 +43,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -87,7 +87,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -117,7 +117,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -159,7 +159,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
                 fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
         }

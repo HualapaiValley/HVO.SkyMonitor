@@ -37,6 +37,7 @@ public sealed partial class InstallerFlowTests
             // A fresh plan names what the run creates beside CameraAgent, and changes nothing anywhere.
             var plan = await Install(request with { DryRun = true });
             Assert.AreEqual(InstallationOutcome.Planned, plan.Outcome);
+            Assert.AreEqual(SiloRuntimeProfile.ComposeTemplateVersion, plan.ComposeTemplateVersion);
             var paths = runner.Paths;
             AssertPlanned(plan.Plan!, "folder", SiloRuntimeProfile.DataRoot(paths), DeploymentPlanAction.Create);
             AssertPlanned(plan.Plan!, "network", SiloRuntimeProfile.NetworkNameFor(instanceId), DeploymentPlanAction.Create);
@@ -305,8 +306,7 @@ public sealed partial class InstallerFlowTests
         ProductRoot = root,
         CatalogBundle = bundle,
         ImageReference = SiloCameraAgentImage,
-        Port = SelectFreePort(),
-        StorageLayout = CameraAgentStorageLayout.Silo
+        Port = SelectFreePort()
     };
 
     /// <summary>A Silo data root is admitted only on local ext4 with its headroom reserve free; a host without both cannot run this flow.</summary>

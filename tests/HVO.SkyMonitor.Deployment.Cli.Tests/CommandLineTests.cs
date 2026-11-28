@@ -27,6 +27,7 @@ public sealed class CommandLineTests
         Assert.AreEqual(5130, request.Port);
         Assert.AreEqual(InstallRequest.DefaultProductRoot, request.ProductRoot);
         Assert.AreEqual(CameraAgentReplayProfile.InProcess, request.ReplayProfile);
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, request.StorageLayout);
     }
 
     [TestMethod]
@@ -43,10 +44,10 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void Parse_LocalReplayRunnerProfile_IsExplicitlySelectable()
+    public void Parse_LocalReplayRunnerProfile_RequiresAnExplicitFilesystemLayout()
     {
         var request = CommandLine.Parse(ValidArguments.Concat([
-            "--replay-profile", "local-runner"
+            "--storage-layout", "filesystem", "--replay-profile", "local-runner"
         ]).ToArray());
 
         Assert.AreEqual(CameraAgentReplayProfile.LocalRunner, request.ReplayProfile);
@@ -433,18 +434,16 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void ParseCommand_Upgrade_RequiresImmutableImageAndCompatibilityAcknowledgement()
+    public void ParseCommand_Upgrade_RequiresImmutableImage()
     {
         var request = (LifecycleRequest)CommandLine.ParseCommand([
             "cameraagent", "upgrade",
             "--instance-id", Guid.NewGuid().ToString("D"),
             "--image-ref", $"cameraagent@sha256:{new string('a', 64)}",
-            "--migration-backward-compatible",
             "--no-download"
         ]);
 
         Assert.AreEqual(LifecycleOperationKind.Upgrade, request.Operation);
-        Assert.IsTrue(request.MigrationBackwardCompatible);
         Assert.IsTrue(request.NoDownload);
     }
 
@@ -455,70 +454,6 @@ public sealed class CommandLineTests
             "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
             "--image-ref", "cameraagent:latest"
         ]));
-    }
-
-    [TestMethod]
-    public void ParseCommand_RestoreOnlyBindsRecoveryWithoutChangingOriginalRequestHash()
-    {
-        string[] original = ["cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--image-ref", $"sha256:{new string('a', 64)}", "--no-download", "--migration-backward-compatible"];
-        var operationId = Guid.NewGuid();
-        var request = (LifecycleRequest)CommandLine.ParseCommand(original);
-        var recovery = (LifecycleRequest)CommandLine.ParseCommand([.. original, "--resume", "--restore-only", "--operation-id", operationId.ToString("D")]);
-
-        Assert.IsTrue(recovery.RestoreOnly);
-        Assert.IsTrue(recovery.Resume);
-        Assert.AreEqual(operationId, recovery.RecoveryOperationId);
-        Assert.AreEqual(request.ComputeRequestSha256(), recovery.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    public void ParseCommand_LeavePausedPreservesTheSignedUpgradeRequest()
-    {
-        string[] original = ["cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--release", "/srv/release", "--image-source", "archive"];
-        var id = Guid.NewGuid();
-        var parsed = (LifecycleRequest)CommandLine.ParseCommand([.. original, "--resume", "--leave-paused", "--operation-id", id.ToString("D")]);
-
-        Assert.IsTrue(parsed.LeavePaused);
-        Assert.AreEqual(id, parsed.RecoveryOperationId);
-        Assert.AreEqual(((LifecycleRequest)CommandLine.ParseCommand(original)).ComputeRequestSha256(), parsed.ComputeRequestSha256());
-        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { Resume = false }).Validate());
-        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { RestoreOnly = true }).Validate());
-        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { RecoveryOperationId = null }).Validate());
-        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { ImageSource = ReleaseImageSource.Registry }).Validate());
-        Assert.ThrowsExactly<InstallUsageException>(() => (parsed with { AllowQuarantinedReadiness = true }).Validate());
-    }
-
-    [TestMethod]
-    [DataRow("missing-resume")]
-    [DataRow("missing-operation")]
-    [DataRow("missing-restore")]
-    [DataRow("dry-run")]
-    [DataRow("rollback")]
-    [DataRow("signed-registry")]
-    [DataRow("signed-quarantine")]
-    public void ParseCommand_RestoreOnlyRejectsUnsupportedOptions(string fault)
-    {
-        var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, Guid.NewGuid(), InstallRequest.DefaultProductRoot,
-            dryRun: false, resume: true, json: false)
-        {
-            ImageReference = $"sha256:{new string('a', 64)}",
-            RestoreOnly = true,
-            RecoveryOperationId = Guid.NewGuid()
-        };
-        request = fault switch
-        {
-            "missing-resume" => request with { Resume = false },
-            "missing-operation" => request with { RecoveryOperationId = null },
-            "missing-restore" => request with { RestoreOnly = false },
-            "dry-run" => request with { DryRun = true },
-            "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
-            "signed-registry" => request with { ImageReference = null, Release = "/srv/release", ImageSource = ReleaseImageSource.Registry },
-            "signed-quarantine" => request with { ImageReference = null, Release = "/srv/release", AllowQuarantinedReadiness = true },
-            _ => throw new InvalidOperationException()
-        };
-        Assert.ThrowsExactly<InstallUsageException>(request.Validate);
     }
 
     [TestMethod]
@@ -800,7 +735,7 @@ public sealed class CommandLineTests
         var rollback = UsageFor(["cameraagent", "rollback", "--help"]);
         Assert.DoesNotContain("--release", rollback, StringComparison.Ordinal);
         Assert.DoesNotContain("--migration-backward-compatible", rollback, StringComparison.Ordinal);
-        StringAssert.Contains(UsageFor(["cameraagent", "upgrade", "--help"]), "--migration-backward-compatible", StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", UsageFor(["cameraagent", "upgrade", "--help"]), StringComparison.Ordinal);
     }
 
     /// <summary>

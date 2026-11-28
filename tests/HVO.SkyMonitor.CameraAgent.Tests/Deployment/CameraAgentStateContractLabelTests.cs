@@ -2,33 +2,24 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Catalog.Sqlite;
-using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 
-/// <summary>
-/// Keeps the CameraAgent image's declared durable-state boundaries equal to the code that enforces them at
-/// startup. The pre-<c>70ecdd3</c> upgrade failed because the image claimed unbounded backward compatibility
-/// while the runtime rejected the persisted Identity lineage and raw-ingress schema it inherited.
-/// </summary>
 [TestClass]
 [TestCategory("Unit")]
 [TestProperty("Area", "Deployment")]
-public sealed class CameraAgentStateCompatibilityLabelTests
+public sealed class CameraAgentStateContractLabelTests
 {
-    private const string MinimumCompatibleRevision = "b45b293feede430290d255a332b4c388d2b7f56f";
-
     [TestMethod]
-    public void Dockerfile_DeclaresTheDurableStateContractInsteadOfUnboundedBackwardCompatibility()
+    public void Dockerfile_DeclaresTheFreshInstallStateContract()
     {
         var labels = ReadImageLabels();
 
-        Assert.AreEqual("cameraagent-state-v2", labels["io.hvo.skymonitor.state-compatibility"]);
-        Assert.AreEqual(MinimumCompatibleRevision, labels["io.hvo.skymonitor.minimum-compatible-revision"]);
-        Assert.AreNotEqual(
-            "backward-compatible",
-            labels["io.hvo.skymonitor.state-compatibility"],
-            "the image must not claim generic backward compatibility with pre-70ecdd3 CameraAgent state");
+        Assert.AreEqual(CameraAgentSiloBinding.StateContract, labels["io.hvo.skymonitor.state-contract"]);
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.state-compatibility"));
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.minimum-compatible-revision"));
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.raw-ingress-migration"));
     }
 
     [TestMethod]
@@ -39,7 +30,6 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
-        Assert.AreEqual(RawIngressV13Schema.CenteredExposureMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]

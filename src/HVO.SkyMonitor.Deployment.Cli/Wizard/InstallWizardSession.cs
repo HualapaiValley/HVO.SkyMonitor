@@ -118,6 +118,8 @@ internal sealed partial class InstallWizardSession
     /// <summary>The value the command line gave <paramref name="option"/>.</summary>
     public string? GivenValue(string option) => _given.TryGetValue(option, out var value) ? value : null;
 
+    public CameraAgentStorageLayout StorageLayout => CommandLine.ParseStorageLayout(GivenValue("--storage-layout"));
+
     /// <summary>Where the instance ID came from, for the operator.</summary>
     public string InstanceIdSource
         => Given("--instance-id") ? "from --instance-id"
@@ -134,6 +136,8 @@ internal sealed partial class InstallWizardSession
     {
         var a = Answers;
         var handedRelease = Given("--release") || Given("--image-ref");
+        var storageLayout = StorageLayout;
+        var savedSilo = storageLayout == CameraAgentStorageLayout.Silo ? Saved : null;
         return new InstallAnswers
         {
             SchemaVersion = InstallAnswers.CurrentSchemaVersion,
@@ -157,6 +161,12 @@ internal sealed partial class InstallWizardSession
             AcknowledgePlaintextHttp = Given("--acknowledge-plaintext-http") ? true : IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
             GeneratePassword = a.Password == OwnerPasswordChoice.Generate ? true : null,
             ReplayProfile = a.ReplayProfile,
+            StorageLayout = storageLayout,
+            SiloImageArchive = GivenValue("--silo-image-archive") ?? savedSilo?.SiloImageArchive,
+            SiloArchiveEndpoint = GivenValue("--silo-archive-endpoint") ?? savedSilo?.SiloArchiveEndpoint,
+            SiloArchiveBucket = GivenValue("--silo-archive-bucket") ?? savedSilo?.SiloArchiveBucket,
+            SiloArchiveCaFile = GivenValue("--silo-archive-ca-file") ?? savedSilo?.SiloArchiveCaFile,
+            SiloArchiveCredentialFile = GivenValue("--silo-archive-credential-file") ?? savedSilo?.SiloArchiveCredentialFile,
             IlluminationMode = a.IlluminationMode,
             Cpus = Blank(a.Cpus) is { } cpus ? decimal.Parse(cpus, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) : null,
             Memory = Given("--memory") ? GivenValue("--memory") : Blank(a.Memory)
@@ -443,27 +453,8 @@ internal sealed partial class InstallWizardSession
     // before any page is passed over: what cameraagent install refuses is a usage error (exit 2) before the wizard opens,
     // rather than a page that cannot be left or a value quietly replaced. Only the questions the wizard asks and the
     // command line left open are answered for the check, each with a stand-in that is never used.
-    /// <summary>
-    /// The Silo layout's options (#1966). The answers file has no member for them, so the install the wizard runs would
-    /// drop them and install a filesystem-layout instance; they are refused before the wizard opens instead.
-    /// </summary>
-    internal static readonly string[] SiloOptions =
-    [
-        "--storage-layout", "--silo-image-archive", "--silo-archive-endpoint", "--silo-archive-bucket", "--silo-archive-ca-file",
-        "--silo-archive-credential-file"
-    ];
-
     private void Validate(string[] args)
     {
-        var siloLayout = Given("--storage-layout") &&
-                         CommandLine.ParseStorageLayout(GivenValue("--storage-layout")) == CameraAgentStorageLayout.Silo;
-        if ((siloLayout ? "--storage-layout silo" : SiloOptions.Skip(1).FirstOrDefault(Given)) is { } silo)
-        {
-            throw new InstallUsageException(
-                $"The wizard does not ask {silo}: a Silo-layout install takes every answer on the command line. " +
-                "Give --friendly-name, --release (or --image-ref) and --catalog-bundle with it. Nothing was changed.");
-        }
-
         var probe = new List<string>(InstallWizardGate.InstallArguments(args));
         if (!Given("--friendly-name"))
         {
@@ -516,7 +507,11 @@ internal sealed partial class InstallWizardSession
             TimeZone = Text("--time-zone", saved?.TimeZoneId, "UTC"),
             Cpus = Text("--cpus", saved?.Cpus?.ToString(CultureInfo.InvariantCulture), string.Empty),
             Memory = Text("--memory", saved?.Memory, string.Empty),
-            ReplayProfile = GivenValue("--replay-profile") is { } profile ? CommandLine.ParseReplayProfile(profile) : saved?.ReplayProfile ?? CameraAgentReplayProfile.InProcess,
+            ReplayProfile = StorageLayout == CameraAgentStorageLayout.Silo
+                ? CameraAgentReplayProfile.InProcess
+                : GivenValue("--replay-profile") is { } replay
+                    ? CommandLine.ParseReplayProfile(replay)
+                    : saved?.ReplayProfile ?? CameraAgentReplayProfile.InProcess,
             IlluminationMode = GivenValue("--illumination-mode") ?? saved?.IlluminationMode,
             Password = password,
             PasswordFile = Text("--password-file", saved?.PasswordFile, string.Empty)

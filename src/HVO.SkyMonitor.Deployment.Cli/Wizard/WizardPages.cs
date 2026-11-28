@@ -265,7 +265,8 @@ internal sealed class SoftwarePage : WizardPage
         }
         else
         {
-            _release = Field("Release folder", Answers.Release, 48, "The folder holding the release's files, such as /home/you/hvo-sky-0.9.0.");
+            _release = Field("Release folder", Answers.Release, 48,
+                $"The folder holding the release's files, such as /home/you/hvo-sky-{CameraAgentStateContract.BaselineRelease}.");
             if (Session.GivenValue("--image-source") is { } source)
             {
                 Given("Image from", source, "--image-source");
@@ -499,7 +500,10 @@ internal sealed class LimitsPage : WizardPage
 
     public HvoChoiceList? ReplayChoice => _replay;
 
-    public override bool Applies => !Session.Given("--cpus") || !Session.Given("--memory") || !Session.Given("--replay-profile");
+    private bool AsksReplayProfile
+        => Session.StorageLayout == CameraAgentStorageLayout.Filesystem && !Session.Given("--replay-profile");
+
+    public override bool Applies => !Session.Given("--cpus") || !Session.Given("--memory") || AsksReplayProfile;
 
     public override void Showing()
     {
@@ -525,13 +529,9 @@ internal sealed class LimitsPage : WizardPage
             _memory = Field("Memory", Answers.Memory, 8, "empty for 4g; at least 4g, such as 6g or 6144m");
         }
 
-        Gap();
-        if (Session.GivenValue("--replay-profile") is { } profile)
+        if (AsksReplayProfile)
         {
-            Given("Replays run", profile, "--replay-profile");
-        }
-        else
-        {
+            Gap();
             _replay = Choice("Replays run", ["in CameraAgent's own process", "in a separate local runner"], Array.IndexOf(Profiles, Answers.ReplayProfile));
         }
     }

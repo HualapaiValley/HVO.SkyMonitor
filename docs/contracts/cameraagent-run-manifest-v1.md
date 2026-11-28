@@ -137,8 +137,5 @@ counts remain unknown rather than becoming invented zeroes. Corrupt or excessive
 legacy ledgers retain explicit refusal states while ordinary processing continues.
 Migration cancellation or interruption leaves the previous layout available for retry.
 
-The raw journal remains schema 15. The CameraAgent image advances its
-`minimum-compatible-revision` boundary to the integrated schema-9/retained-history reader, selecting
-the installer's existing paired checkpoint before startup. Older readers require that checkpoint during rollback; frozen previous-release
-SQL images remain unchanged. The manifest's existing 2 MiB aggregate snapshot and
+The raw journal remains schema 15 for this format change. The manifest's existing 2 MiB aggregate snapshot and
 encoded-download limits still apply independently of the ledger capacity.

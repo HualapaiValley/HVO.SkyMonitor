@@ -382,7 +382,7 @@ public sealed partial class LifecycleContractTests
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None, allowSiloLayout: true);
         await SafeFileSystem.WriteJsonAtomicAsync(
             fixture.Paths.StatePath,
-            new InstallationState(1, installationId ?? manifest.InstallationId, fixture.InstanceId, new string('0', 64),
+            new InstallationState(DeploymentSchemaVersions.InstallationState, installationId ?? manifest.InstallationId, fixture.InstanceId, new string('0', 64),
                 status == InstallationStatus.Completed ? InstallationPhase.Completed : InstallationPhase.Verification, status,
                 DateTimeOffset.UtcNow),
             DeploymentJsonContext.Default.InstallationState,
