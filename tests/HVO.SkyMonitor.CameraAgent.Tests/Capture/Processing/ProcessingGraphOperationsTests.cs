@@ -3445,7 +3445,7 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     private static async ValueTask<string> ReadArtifactShaAsync(IServiceProvider provider, Guid artifactId) =>
-        SiloHash.Sha256(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, artifactId, CancellationToken.None).ConfigureAwait(false));
+        PayloadChecksum.ComputeSha256(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, artifactId, CancellationToken.None).ConfigureAwait(false));
 
     private static string Sha256OfFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 

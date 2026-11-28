@@ -7,7 +7,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -226,7 +225,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var archive = await store.ReadNodeAsync(captureId, "archive", token).ConfigureAwait(false);
                 await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var rawSha = await ReadArtifactShaAsync(provider, raw.Manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
-                Assert.AreEqual(SiloCenteredViews.LowerHex(raw.Manifest.Descriptor.Artifact.ChecksumSha256), rawSha);
+                Assert.AreEqual(raw.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
                 var archived = archive?.Status == DurableProcessingNodeStatus.Completed;
                 var stepTelemetry = telemetry.Latest?.ProcessingSteps.SingleOrDefault(step => step.Name == "Astrometry");
                 Assert.IsNotNull(solved);
