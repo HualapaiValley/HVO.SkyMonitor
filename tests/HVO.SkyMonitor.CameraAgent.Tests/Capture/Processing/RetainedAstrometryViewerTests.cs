@@ -42,9 +42,11 @@ public sealed partial class DurableCaptureProcessingTests
             var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var astrometryGraph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), numericalGate,
                 enabled: scenario != "no-data", persistence: persistence);
+            var rawPayload = await persistence.Silo.ReadRawAsync(descriptor, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(rawPayload);
             var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
                 ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256, descriptor.Artifact.MediaType,
-                descriptor.Layout, await File.ReadAllBytesAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false), descriptor.Artifact.CreatedUtc,
+                descriptor.Layout, rawPayload, descriptor.Artifact.CreatedUtc,
                 descriptor.Controls.EffectiveExposure, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor), descriptor.Capture.CaptureSequence,
                 descriptor.Artifact.SourceArtifactIds, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc)
             { CaptureId = id, DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
@@ -155,7 +157,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(baseOutput);
             CollectionAssert.AreEqual(preview.Payload.ToArray(), await SiloInfrastructureFixture.ReadArtifactBytesAsync(SiloInfrastructureFixture.ProductStore(root), baseOutput.ArtifactId,
                     CancellationToken.None).ConfigureAwait(false));
-            Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(raw.Payload), ProcessingIdentity.ComputePayloadSha256(await File.ReadAllBytesAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false)));
+            CollectionAssert.AreEqual(rawPayload, await persistence.Silo.ReadRawAsync(descriptor, CancellationToken.None).ConfigureAwait(false));
             if (evidenceRoot is not null)
                 await File.WriteAllTextAsync(Path.Combine(root, "viewer-fixture.json"), JsonSerializer.Serialize(new
                 {
@@ -196,7 +198,9 @@ public sealed partial class DurableCaptureProcessingTests
                     3, CancellationToken.None).ConfigureAwait(false)).Count);
                 Assert.AreEqual(2, (await store.ReadCaptureProductsAsync(id, HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.CurrentSchemaVersion,
                     3, CancellationToken.None).ConfigureAwait(false)).Count, "A new parent revision reuses the existing diagnostic payloads.");
-                await File.AppendAllTextAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath), " ").ConfigureAwait(false);
+                var rawMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, raw.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(descriptor), CancellationToken.None).ConfigureAwait(false);
+                rawMember.FlipByte();
                 var invalidated = await layers.GetCurrentAsync(id, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, invalidated.Status);
                 Assert.IsEmpty(invalidated.Presentation!.Layers, "A cached measured SVG must disappear after its source becomes invalid.");

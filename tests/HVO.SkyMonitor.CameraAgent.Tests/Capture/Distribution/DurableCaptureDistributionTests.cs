@@ -1750,7 +1750,7 @@ public sealed partial class DurableCaptureDistributionTests
             Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, config.Pipeline.DependencyPolicy);
             Assert.IsEmpty(config.Pipeline.Steps);
             return new CaptureProcessingGraph([
-                new CaptureProcessingGraphNode("auto-included", Step, [], true, null, null, null)
+                new CaptureProcessingGraphNode("auto-included", Step, [], true, null, null, null, new string('A', 64))
             ]);
         }
 
