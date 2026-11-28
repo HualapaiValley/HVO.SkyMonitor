@@ -230,7 +230,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             var headerConsumers = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken)
                 .ConfigureAwait(false);
             if (headerConsumers.Any(static product => product.Unavailable) ||
-                await AnyRetainedAsync(silo, headerConsumers, cancellationToken).ConfigureAwait(false) ||
+                await AnyRetainedAsync(silo, headerConsumers.Select(static item => item.ArtifactId), cancellationToken).ConfigureAwait(false) ||
                 await discovery.HasArchivedCaptureAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
             if (header.ManifestSha256 is { } manifest)
                 await orbital.RemoveReferenceAsync(manifest, Holder(header.Key), cancellationToken).ConfigureAwait(false);
@@ -270,7 +270,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                     CaptureSatelliteProducts.MaximumInputBytes, cancellationToken).ConfigureAwait(false));
                 var inventory = await processing.ReadSceneConsumersAsync(orphan.Descriptor.Capture.CaptureId, Guid.Empty,
                     AccountOrphanBytes, cancellationToken).ConfigureAwait(false);
-                if (inventory is null || await AnyRetainedAsync(inventory.CanonicalPayloadPaths, cancellationToken).ConfigureAwait(false) ||
+                if (inventory is null || await AnyRetainedAsync(silo, inventory, cancellationToken).ConfigureAwait(false) ||
                     await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Artifact.ArtifactId,
                         cancellationToken).ConfigureAwait(false)) reclaim = false;
                 var consumers = await processing.ReadSatelliteConsumersAsync(orphan.Descriptor.Capture.CaptureId,
@@ -385,11 +385,11 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
         return path;
     }
     private static async ValueTask<bool> AnyRetainedAsync(SiloArtifactStorage storage,
-        IReadOnlyList<SqliteCaptureProcessingStore.SatelliteConsumer> consumers, CancellationToken cancellationToken)
+        IEnumerable<Guid> artifactIds, CancellationToken cancellationToken)
     {
-        foreach (var consumer in consumers)
+        foreach (var artifactId in artifactIds)
         {
-            if (await storage.IsArtifactRetainedAsync(consumer.ArtifactId, cancellationToken).ConfigureAwait(false)) return true;
+            if (await storage.IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false)) return true;
         }
         return false;
     }

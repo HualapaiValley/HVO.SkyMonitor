@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 internal sealed partial class SqliteTimeLapseStore
 {
     /// <summary>Called under the exclusive worker lease before taking new work. Silo owns recovery of the exact video versions.</summary>
-    private async ValueTask RecoverPublicationsAsync(SqliteConnection connection, CancellationToken token)
+    private static async ValueTask RecoverPublicationsAsync(SqliteConnection connection, CancellationToken token)
     {
         var pending = new List<string>();
         using (var command = Command(connection, null, "SELECT product_id FROM publications LIMIT 65;"))

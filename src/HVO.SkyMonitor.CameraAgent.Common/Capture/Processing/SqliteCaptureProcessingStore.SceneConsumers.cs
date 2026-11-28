@@ -1,12 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-
-internal sealed record SceneConsumerInventory(
-    ArtifactManifestV2 Raw,
-    IReadOnlyList<string> CanonicalPayloadPaths);
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
@@ -60,7 +55,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         return rows;
     }
-    internal async ValueTask<SceneConsumerInventory?> ReadSceneConsumersAsync(
+    internal async ValueTask<IReadOnlyList<Guid>?> ReadSceneConsumersAsync(
         Guid captureId, Guid sceneArtifactId, Action<long> accountBytes, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -78,23 +73,20 @@ internal sealed partial class SqliteCaptureProcessingStore
             raw = parsed.IsValid && parsed.Document is not null ? parsed.Document.Manifest
                 : throw new InvalidDataException("Scene retention cannot authenticate the source raw manifest.");
         }
-        var paths = new List<string>
-        {
-            _silo is null ? raw.RelativeArtifactPath : SiloArtifactStorage.RawReference(raw.Descriptor.Artifact.ArtifactId, ".bin")
-        };
+        var artifactIds = new List<Guid> { raw.Descriptor.Artifact.ArtifactId };
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
-                SELECT payload_relative_path FROM processing_outputs
+                SELECT artifact_id FROM processing_outputs
                 WHERE capture_id = $capture AND artifact_id <> $scene
                 LIMIT 4097;
                 """;
             command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
             command.Parameters.AddWithValue("$scene", sceneArtifactId.ToString("N"));
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) paths.Add(reader.GetString(0));
-            if (paths.Count > 4097) throw new InvalidDataException("Scene consumer inventory exceeds its safety bound.");
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) artifactIds.Add(Guid.ParseExact(reader.GetString(0), "N"));
+            if (artifactIds.Count > 4097) throw new InvalidDataException("Scene consumer inventory exceeds its safety bound.");
         }
-        return new(raw, paths);
+        return artifactIds;
     }
 }
