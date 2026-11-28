@@ -19,7 +19,18 @@ internal static class SiloFilesystemObservation
                 ? null : capacity.GetCapacity(stateRoot);
             return new(silo.TotalBytes, silo.AvailableBytes, StateCapacity: state);
         }, captureReserve, SiloDiskBudget.GiB / 4, SiloDiskBudget.GiB / 4, SiloDiskBudget.GiB, exactAllocation,
-            captureHourBytes, dataRoot is null ? null : () => ReadTrashBytes(dataRoot));
+            captureHourBytes, dataRoot is null ? null : () => ReadTrashBytes(dataRoot),
+            OperatingSystem.IsLinux() ? () => ReadReclaimRoot(capacityRoot, dataRoot is not null) : null);
+    }
+
+    private const int CurrentDirectory = -100;
+
+    private static SiloReclaimRoot? ReadReclaimRoot(string path, bool tracksTrash)
+    {
+        const uint inodeMask = 0x100;
+        return Statx(CurrentDirectory, path, 0, inodeMask, out var stat) == 0 && (stat.Mask & inodeMask) != 0
+            ? new(stat.DeviceMajor, stat.DeviceMinor, stat.Inode, tracksTrash)
+            : null;
     }
 
     private static long? ReadTrashBytes(string dataRoot)
@@ -58,10 +69,9 @@ internal static class SiloFilesystemObservation
 
     private static bool TryReadBlocks(string path, out long blocks)
     {
-        const int currentDirectory = -100;
         const int noFollow = 0x100;
         const uint blocksMask = 0x400;
-        var status = Statx(currentDirectory, path, noFollow, blocksMask, out var stat);
+        var status = Statx(CurrentDirectory, path, noFollow, blocksMask, out var stat);
         blocks = stat.Blocks;
         return status == 0 && (stat.Mask & blocksMask) != 0 && blocks >= 0;
     }
@@ -70,7 +80,10 @@ internal static class SiloFilesystemObservation
     private struct StatxResult
     {
         [FieldOffset(0)] public uint Mask;
+        [FieldOffset(32)] public ulong Inode;
         [FieldOffset(48)] public long Blocks;
+        [FieldOffset(136)] public uint DeviceMajor;
+        [FieldOffset(140)] public uint DeviceMinor;
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "SYSLIB1054:Use LibraryImportAttribute instead of DllImportAttribute",

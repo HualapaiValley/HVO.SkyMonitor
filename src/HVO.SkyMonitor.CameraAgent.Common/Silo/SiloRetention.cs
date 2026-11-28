@@ -385,15 +385,21 @@ internal sealed class SiloRetention(
                     cancellationToken).ConfigureAwait(false);
         }
 
-        await publisher.WithPublicationLockAsync(async () =>
+        var issued = await publisher.WithPublicationLockAsync(async () =>
         {
+            using (var maintenance = enterMaintenance?.Invoke())
+            {
+                if ((enterMaintenance is not null && maintenance is null) || canIssue?.Invoke() == false) return false;
+            }
             await AppendAsync([AttemptRecord(attempt, "issued")], "retention-issued:" + attempt.Id, cancellationToken).ConfigureAwait(false);
             attempt = attempt with { Issued = true };
             await (SiloRetentionState.Read(root) with { Attempt = attempt }).WriteAsync(root, cancellationToken).ConfigureAwait(false);
             return true;
         }, cancellationToken).ConfigureAwait(false);
+        if (!issued)
+            return await RecordOutcomeAsync(attempt, SiloExpiryOutcome.NotDeleted, "maintenance-held", cancellationToken).ConfigureAwait(false);
 
-        // A pause can close the dispatch gate while protection or journal I/O is in flight.
+        // A pause can close the dispatch gate during journal I/O.
         // An accepted request is covered by the durable issued fence until exact absence is proven.
         Task<bool>? request = null;
         using (var maintenance = enterMaintenance?.Invoke())
@@ -553,11 +559,12 @@ internal sealed class SiloRetention(
             if (!await archive.IsAuthorityExpiredAsync(target, cancellationToken).ConfigureAwait(false)) continue;
             await publisher.WithPublicationLockAsync(async () =>
             {
+                await CatchUpAsync(cancellationToken).ConfigureAwait(false);
                 var suffix = SiloHash.Sha256(SiloJson.Serialize(target));
                 var now = clock.GetUtcNow();
                 const string evidence = "archive-custody-and-exact-absence";
                 var records = new List<SiloJournalRecord> { new SiloExpiryDispositionRecord(intent, target, SiloExpiryOutcome.AlreadyAbsent, now, evidence) };
-                if (await index.IsFinalExpiryTargetAsync(intent, target, cancellationToken).ConfigureAwait(false))
+                if (await index.IsFinalExpiryTargetAsync(intent, identity.Role, target, cancellationToken).ConfigureAwait(false))
                     records.Add(new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
                         now, evidence, IntentId: intent));
                 await AppendAsync(records, $"retention-archive-absence:{intent}:{suffix}", cancellationToken).ConfigureAwait(false);

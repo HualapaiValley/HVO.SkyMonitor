@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using static HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests;
@@ -25,6 +26,23 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
 public sealed partial class SiloRawEvidenceRecoveryTests
 {
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DirectRetentionReaderInitializesProcessingSchema(bool readSceneLineage)
+    {
+        using var fixture = CreateFixture(new());
+        var token = CancellationToken.None;
+        await new SqliteRawCaptureJournal(Path.Combine(fixture.Root, "journal", "raw-ingress.db"), 1)
+            .InitializeAsync(token).ConfigureAwait(false);
+        using var processing = new SqliteCaptureProcessingStore(fixture.Options);
+
+        if (readSceneLineage)
+            Assert.IsEmpty(await processing.ReadSiloSceneLineageAsync(token).ConfigureAwait(false));
+        else
+            Assert.IsEmpty(await processing.ReadSavedSiloViewHoldsAsync(token).ConfigureAwait(false));
+    }
+
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
@@ -318,7 +336,9 @@ public sealed partial class SiloRawEvidenceRecoveryTests
     }
 
     [TestMethod]
-    public async Task HostedRetentionClearsExpiredCacheBeforeApplyingHeldExpiryPolicy()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HostedRetentionCleansCacheAndSurvivesCatalogDivergence(bool diverged)
     {
         using var fixture = CreateFixture(new());
         var token = CancellationToken.None;
@@ -357,11 +377,44 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         using var orbital = new SqliteOrbitalElementsStore(OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(fixture.Options.Value),
             fixture.Time, NullLogger<SqliteOrbitalElementsStore>.Instance);
         var satelliteWork = new CaptureSatelliteWorkStore(fixture.Options, processing, orbital, fixture.Time, artifacts);
+        var logger = new RetentionDivergenceLogger();
         using var worker = new SiloRetentionWorker(storage, ingress, fixture.Options, new CaptureMaintenanceGate(),
-            services, archive, satelliteWork, fixture.Time, NullLogger<SiloRetentionWorker>.Instance);
-        Assert.AreEqual("held", await worker.RunAsync(token).ConfigureAwait(false));
+            services, archive, satelliteWork, fixture.Time, logger);
+        if (diverged)
+        {
+            using var connection = await storage.Index.OpenConnectionAsync(token).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE catalog_cursor SET generation = MAX(generation, 1), sequence = sequence + 1, sha256 = $sha WHERE cursor_key = 1;";
+            command.Parameters.AddWithValue("$sha", SiloHash.Sha256("diverged-cursor"u8));
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await worker.StartAsync(deadline.Token).ConfigureAwait(false);
+            Assert.IsInstanceOfType<SiloCatalogDivergedException>(await logger.Divergence.Task.WaitAsync(deadline.Token).ConfigureAwait(false));
+            Assert.IsFalse(worker.ExecuteTask!.IsCompleted);
+            await worker.StopAsync(deadline.Token).ConfigureAwait(false);
+            Assert.IsTrue(worker.ExecuteTask.IsCompletedSuccessfully);
+        }
+        else
+        {
+            Assert.AreEqual("held", await worker.RunAsync(token).ConfigureAwait(false));
+        }
         Assert.IsFalse(File.Exists(expired));
         Assert.IsTrue(File.Exists(fresh));
+    }
+
+    private sealed class RetentionDivergenceLogger : ILogger<SiloRetentionWorker>
+    {
+        public TaskCompletionSource<Exception?> Divergence { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name == "ReportCatalogDivergence") Divergence.TrySetResult(exception);
+        }
     }
 
     private sealed class StalledArchive(Func<CancellationToken, Task> stall) : ISiloRetentionArchive

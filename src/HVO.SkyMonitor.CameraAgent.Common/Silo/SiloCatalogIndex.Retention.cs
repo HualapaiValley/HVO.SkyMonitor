@@ -251,15 +251,12 @@ internal sealed partial class SiloCatalogIndex
         return result;
     }
 
-    internal async ValueTask<bool> IsFinalExpiryTargetAsync(string intentId, SiloExactLocator target, CancellationToken cancellationToken)
+    internal async ValueTask<bool> IsFinalExpiryTargetAsync(string intentId, SiloRoleKey role, SiloExactLocator target,
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        return await ScalarLongAsync(connection, null, """
-            SELECT NOT EXISTS (SELECT 1 FROM expiry_targets WHERE intent_id = $intent
-                AND COALESCE(outcome, '') NOT IN ('deleted','already-absent')
-                AND (store_id, bucket, key, version_id) <> ($store, $bucket, $key, $version));
-            """, cancellationToken, ("$intent", intentId), ("$store", target.StoreId), ("$bucket", target.Bucket), ("$key", target.Key),
-            ("$version", target.VersionId)).ConfigureAwait(false) != 0;
+        return await RoleExpirySettledAsync(connection, null, role, intentId, cancellationToken, settlingTarget: target)
+            .ConfigureAwait(false) is null;
     }
 
     internal ValueTask<bool> HasActiveRetentionLocatorAsync(SiloExactLocator locator, CancellationToken cancellationToken) =>

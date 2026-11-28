@@ -1,5 +1,5 @@
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
@@ -87,8 +87,13 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             {
                 return;
             }
+            catch (SiloCatalogDivergedException exception)
+            {
+                status = "catalog-diverged";
+                ReportCatalogDivergence(logger, exception);
+            }
             catch (Exception exception) when (exception is IOException or InvalidDataException or System.Text.Json.JsonException or UnauthorizedAccessException or
-                SiloConflictException or SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
+                SiloConflictException or SiloDataException or Microsoft.Data.Sqlite.SqliteException)
             {
                 status = "reconciliation-blocked";
                 ReportFailure(logger, exception);
@@ -112,8 +117,12 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             {
                 return;
             }
+            catch (SiloCatalogDivergedException exception)
+            {
+                ReportCatalogDivergence(logger, exception);
+            }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SiloConflictException or
-                SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
+                SiloDataException or Microsoft.Data.Sqlite.SqliteException)
             {
                 ReportFailure(logger, exception);
             }
@@ -243,4 +252,7 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
 
     [LoggerMessage(7399, LogLevel.Warning, "CameraAgent Silo retention reconciliation is blocked")]
     private static partial void ReportFailure(ILogger logger, Exception exception);
+
+    [LoggerMessage(7400, LogLevel.Warning, "CameraAgent Silo retention is blocked because the catalog diverged from the journal")]
+    private static partial void ReportCatalogDivergence(ILogger logger, Exception exception);
 }

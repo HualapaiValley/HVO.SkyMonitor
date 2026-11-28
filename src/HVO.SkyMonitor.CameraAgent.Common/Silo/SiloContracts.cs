@@ -187,8 +187,8 @@ internal static class SiloText
 }
 
 /// <summary>Bytes or a database that cannot be accepted as a supported new-layout format.</summary>
-[SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Internal Silo exception; every instance carries the evidence its handlers need.")]
-internal abstract class SiloDataException(string message, Exception? inner = null) : FormatException(message, inner);
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Concrete Silo exceptions carry the evidence their handlers need.")]
+public abstract class SiloDataException(string message, Exception? inner = null) : FormatException(message, inner);
 
 /// <summary>A clear, read-only refusal of a format this CameraAgent does not support. Nothing was mutated.</summary>
 [SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Internal Silo exception; every instance carries the evidence its handlers need.")]

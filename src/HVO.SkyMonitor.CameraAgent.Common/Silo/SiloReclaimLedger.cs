@@ -25,10 +25,19 @@ internal sealed record SiloReclaimLedger(
         SiloPhysicalHeadroom previous, SiloPhysicalHeadroom current, DateTimeOffset now)
     {
         var floor = ledger?.Floor ?? previous;
-        if (floor.TotalBytes != current.TotalBytes) return (ledger, 0);
-
         // An empty trash sample accounts for all prior entries independently of other writes on the mount.
-        if (floor.TrashBytes is > 0 && current.TrashBytes == 0) return (null, 0);
+        var rootChanged = RootChanged(floor, current);
+        if (current.TrashBytes == 0 && (floor.TrashBytes is > 0 || rootChanged)) return (null, 0);
+        if (CountersChanged(floor, current))
+        {
+            // Neither added capacity nor a different root's lower trash count proves a drain.
+            var baseline = current with
+            {
+                TrashBytes = rootChanged ? current.TrashBytes : current.TrashBytes ?? floor.TrashBytes,
+                ReclaimRoot = current.ReclaimRoot ?? floor.ReclaimRoot
+            };
+            return (ledger is null ? null : ledger with { Floor = baseline, PartialDrainBytes = 0 }, 0);
+        }
         var gained = floor.TrashBytes is not > 0 && current.TrashBytes is not > 0
             ? Math.Max(0, current.AvailableBytes - floor.AvailableBytes) : 0;
         if (ledger is null) return (null, gained);
@@ -36,7 +45,12 @@ internal sealed record SiloReclaimLedger(
         var drained = floor.TrashBytes is { } priorTrash && current.TrashBytes is { } trash ? Math.Max(0, priorTrash - trash) : 0;
         var progress = Math.Max(drained, gained);
         var availableFloor = progress > 0 ? current.AvailableBytes : Math.Min(floor.AvailableBytes, current.AvailableBytes);
-        var nextFloor = current with { AvailableBytes = availableFloor, TrashBytes = current.TrashBytes ?? floor.TrashBytes };
+        var nextFloor = current with
+        {
+            AvailableBytes = availableFloor,
+            TrashBytes = current.TrashBytes ?? floor.TrashBytes,
+            ReclaimRoot = current.ReclaimRoot ?? floor.ReclaimRoot
+        };
         if (progress == 0) return (nextFloor == floor ? ledger : ledger with { Floor = nextFloor }, 0);
 
         var remainingProgress = (decimal)ledger.PartialDrainBytes + progress;
@@ -44,6 +58,10 @@ internal sealed record SiloReclaimLedger(
         var settledUnknown = false;
         foreach (var entry in ledger.Entries)
         {
+            // Stock Silo trash includes xl.meta blocks, which can cover several tiny logical estimates
+            // even when only one object drained. Keep unmeasured charges until trash is observed empty.
+            if (entry.Allocation is null && nextFloor.TrashBytes is > 0) break;
+
             var bound = entry.Allocation?.Bytes ?? entry.UpperBoundBytes;
             if (bound is > 0 && bound <= remainingProgress)
             {
@@ -76,7 +94,7 @@ internal sealed record SiloReclaimLedger(
         var limit = Math.Min(physical.TotalBytes / 20, captureHourBytes);
         var bytes = (decimal)(allocation ?? 0);
         if (ledger is null) return bytes <= limit;
-        if (ledger.Floor.TotalBytes != physical.TotalBytes || now - ledger.LastProgressUtc >= StallWindow ||
+        if (CountersChanged(ledger.Floor, physical) || now - ledger.LastProgressUtc >= StallWindow ||
             ledger.Entries.Count >= MaximumEntries ||
             (allocation is null && ledger.Entries.Count(static entry => entry.Allocation is null) >= MaximumUnknownAllocations))
             return false;
@@ -92,21 +110,34 @@ internal sealed record SiloReclaimLedger(
             attempt.Allocation is not null && entry.Allocation?.Id == attempt.Allocation.Id) == true;
         ledger = Observe(ledger, before, observed);
 
-        var observedAfterDelete = attempt.AfterDelete is { } sample && sample.TotalBytes == before.TotalBytes ? sample : (SiloPhysicalHeadroom?)null;
+        var observedAfterDelete = attempt.AfterDelete is { } sample && !CountersChanged(before, sample) ? sample : (SiloPhysicalHeadroom?)null;
         var postDelete = observedAfterDelete ?? before;
-        if (after.TotalBytes != before.TotalBytes) after = postDelete;
+        var latest = after;
+        var countersChanged = CountersChanged(before, latest);
+        if (countersChanged) after = postDelete;
         var (prior, firstFreeBytes) = Observe(ledger, before, postDelete, observed);
         var (pending, lastFreeBytes) = Observe(prior, postDelete, after, now);
         if (alreadyCharged || observedAfterDelete?.TrashBytes is > 0 && after.TrashBytes == 0)
-            return pending;
+            return countersChanged ? Observe(pending, latest, now) : pending;
 
         // Only the free-space gain left over after settling prior deletes can credit the new entry.
         var freeBytes = after.TrashBytes is > 0 ? 0 : (long)Math.Min(long.MaxValue, (decimal)firstFreeBytes + lastFreeBytes);
         if (pending is null && freeBytes >= (attempt.Allocation?.Bytes ?? 1))
             return null;
 
-        after = after with { TrashBytes = after.TrashBytes ?? postDelete.TrashBytes ?? pending?.Floor.TrashBytes };
-        return new([.. pending?.Entries ?? [], new(attempt.Id, attempt.Allocation, attempt.ReclaimUpperBoundBytes)], after,
+        after = after with
+        {
+            TrashBytes = after.TrashBytes ?? postDelete.TrashBytes ?? pending?.Floor.TrashBytes,
+            ReclaimRoot = after.ReclaimRoot ?? postDelete.ReclaimRoot ?? pending?.Floor.ReclaimRoot
+        };
+        var charged = new SiloReclaimLedger([.. pending?.Entries ?? [], new(attempt.Id, attempt.Allocation, attempt.ReclaimUpperBoundBytes)], after,
             pending?.LastProgressUtc ?? (prior is not null || lastFreeBytes > 0 ? now : observed), pending?.PartialDrainBytes ?? freeBytes);
+        return countersChanged ? Observe(charged, latest, now) : charged;
     }
+
+    private static bool RootChanged(SiloPhysicalHeadroom floor, SiloPhysicalHeadroom current) =>
+        floor.ReclaimRoot is { } prior && current.ReclaimRoot is { } next && prior != next;
+
+    private static bool CountersChanged(SiloPhysicalHeadroom floor, SiloPhysicalHeadroom current) =>
+        floor.TotalBytes != current.TotalBytes || current.ReclaimRoot is { } next && floor.ReclaimRoot != next;
 }

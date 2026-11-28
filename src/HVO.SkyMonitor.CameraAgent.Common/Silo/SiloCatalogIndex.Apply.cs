@@ -453,7 +453,7 @@ internal sealed partial class SiloCatalogIndex
     /// authorized intent. A copy found unexpectedly missing stays a member until an intent covers it and proves it absent.
     /// </summary>
     private static async ValueTask<HashSet<SiloExactLocator>> AuthoritativeCopiesAsync(
-        SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction? transaction, SiloRoleKey role, CancellationToken cancellationToken)
     {
         using var command = CreateCommand(connection, transaction, """
             SELECT store_id, bucket, key, version_id FROM locators
@@ -668,7 +668,8 @@ internal sealed partial class SiloCatalogIndex
     /// intent's earlier disposition of a copy that has since returned, original target or not, is stale.
     /// </summary>
     private static async ValueTask<string?> RoleExpirySettledAsync(
-        SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, string? intentId, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction? transaction, SiloRoleKey role, string? intentId, CancellationToken cancellationToken,
+        SiloExactLocator? settlingTarget = null)
     {
         if (intentId is null)
         {
@@ -700,19 +701,25 @@ internal sealed partial class SiloCatalogIndex
                 SELECT COUNT(*) FROM locators l
                 WHERE l.kind = $kind AND l.id = $id AND l.revision = $revision AND l.eligible = 1
                     AND (l.entered_generation, l.entered_sequence, l.entered_index) > ($g, $s, $i)
+                    AND ($store IS NULL OR (l.store_id, l.bucket, l.key, l.version_id) <> ($store, $bucket, $key, $version))
                     AND NOT {FreshAbsenceUnderIntent};
                 """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
-                ("$g", intentGeneration), ("$s", intentSequence), ("$i", intentIndex), ("$intent", intentId)).ConfigureAwait(false) != 0)
+                ("$g", intentGeneration), ("$s", intentSequence), ("$i", intentIndex), ("$intent", intentId),
+                ("$store", settlingTarget?.StoreId), ("$bucket", settlingTarget?.Bucket), ("$key", settlingTarget?.Key),
+                ("$version", settlingTarget?.VersionId)).ConfigureAwait(false) != 0)
         {
             return "role-expiry-copy-arrived-after-intent";
         }
         if (await ScalarLongAsync(connection, transaction, """
-                SELECT COUNT(*) FROM expiry_targets WHERE intent_id = $intent AND COALESCE(outcome, '') NOT IN ('deleted', 'already-absent');
-                """, cancellationToken, ("$intent", intentId)).ConfigureAwait(false) != 0)
+                SELECT COUNT(*) FROM expiry_targets WHERE intent_id = $intent AND COALESCE(outcome, '') NOT IN ('deleted', 'already-absent')
+                    AND ($store IS NULL OR (store_id, bucket, key, version_id) <> ($store, $bucket, $key, $version));
+                """, cancellationToken, ("$intent", intentId), ("$store", settlingTarget?.StoreId), ("$bucket", settlingTarget?.Bucket),
+                ("$key", settlingTarget?.Key), ("$version", settlingTarget?.VersionId)).ConfigureAwait(false) != 0)
         {
             return "role-expiry-unsettled";
         }
         var remaining = await AuthoritativeCopiesAsync(connection, transaction, role, cancellationToken).ConfigureAwait(false);
+        if (settlingTarget is not null) remaining.Remove(settlingTarget);
         return remaining.Count == 0 ? null : "role-expiry-copy-outside-intent";
     }
 
