@@ -418,9 +418,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
         var root = silo.RootPath;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 });
         var master = (await CreateLibraryMastersAsync(root, options).ConfigureAwait(false))[0];
-        var (settings, installed) = await Distribution.SiloRawEvidenceRecoveryTests.CreateRecoverySiloAsync().ConfigureAwait(false);
-        using var storage = new SiloInstalledStorage(settings, options, silo.Clock, null, null, installed, null);
-        var artifacts = new SiloArtifactStorage(storage, silo.Clock);
+        var artifacts = CalibrationSiloFixture.Storage(root);
         using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, silo.Clock) { Silo = artifacts };
         var loader = new CameraAgentClearReferenceLoader(options, artifacts, library);
         var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);

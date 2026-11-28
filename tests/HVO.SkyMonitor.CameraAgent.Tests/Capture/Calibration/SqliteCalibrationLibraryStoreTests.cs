@@ -40,9 +40,9 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             Assert.AreEqual(adopted.BundleIdentitySha256, duplicate.BundleIdentitySha256);
             Assert.AreEqual("published", adopted.PublicationState);
             var holds = await store.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.HasCount(6, holds);
-            Assert.Contains(new ProcessingRetentionHold(Guid.ParseExact(adopted.BundleIdentitySha256[..32], "N")), holds);
-            Assert.Contains(new ProcessingRetentionHold(Guid.ParseExact(adopted.BundleIdentitySha256[32..], "N")), holds);
+            var heldIds = fixture.Bundle.Artifacts.Select(static artifact => artifact.ArtifactId)
+                .Append(CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundle)).ToArray();
+            CollectionAssert.AreEquivalent(heldIds, holds.Select(static hold => hold.ArtifactId).ToArray());
             Assert.IsNull((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).ActiveBundle);
 
             using var restarted = CreateStore(root);
