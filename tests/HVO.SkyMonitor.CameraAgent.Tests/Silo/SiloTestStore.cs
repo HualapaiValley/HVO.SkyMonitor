@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
@@ -19,6 +20,8 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     private int _counter;
 
     private sealed record StoredVersion(string VersionId, byte[] Bytes, IReadOnlyDictionary<string, string> Metadata);
+
+    private sealed record StoreSnapshot(int LastVersion, SortedDictionary<string, List<StoredVersion>> Objects);
 
     public SiloStoreDescriptor Descriptor { get; } = new(storeId, bucket, storeClass, SiloRetrieval.Online, qualified);
 
@@ -191,6 +194,27 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     }
 
     // ----- Fixture controls ------------------------------------------------------------------------------------
+
+    internal byte[] ExportVersions()
+    {
+        lock (_gate)
+        {
+            return JsonSerializer.SerializeToUtf8Bytes(new StoreSnapshot(_counter, _objects));
+        }
+    }
+
+    internal void ImportVersions(ReadOnlySpan<byte> bytes)
+    {
+        var snapshot = JsonSerializer.Deserialize<StoreSnapshot>(bytes)
+            ?? throw new InvalidDataException("The fixture's exact Silo versions are missing.");
+        lock (_gate)
+        {
+            _objects.Clear();
+            foreach (var (key, versions) in snapshot.Objects)
+                _objects.Add(key, versions);
+            _counter = snapshot.LastVersion;
+        }
+    }
 
     /// <summary>Create a version directly, bypassing create-only: a replica, an import, or a foreign writer.</summary>
     public string Plant(string key, byte[] bytes, IReadOnlyDictionary<string, string>? metadata = null)

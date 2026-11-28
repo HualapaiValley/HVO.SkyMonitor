@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,6 +66,9 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
         {
             // No acquisition, retention, reconciliation, or worker writes during the measured reads.
             services.RemoveAll<IHostedService>();
+            // This fixture measures the location ledger over staged admissions and the raw journal.
+            // Installed Silo catalog verification is exercised by the Stock Silo host cases.
+            services.RemoveAll<ICameraAgentSiloVerification>();
             if (clock is not null) services.AddSingleton(clock);
             if (startupServices)
             {

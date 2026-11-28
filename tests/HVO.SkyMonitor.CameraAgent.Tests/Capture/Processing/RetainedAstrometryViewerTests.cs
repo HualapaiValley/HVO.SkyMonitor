@@ -33,7 +33,8 @@ public sealed partial class DurableCaptureProcessingTests
         }
         try
         {
-            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario is "no-data" or "stack" ? "accepted" : scenario, hostCompatible: true, captureSequence: scenario == "stack" ? 61 : 1).ConfigureAwait(false);
+            var f = await CreateAstrometryDurabilityFixtureAsync(root, scenario is "no-data" or "stack" ? "accepted" : scenario,
+                hostCompatible: true, captureSequence: scenario == "stack" ? 61 : 1, settledSiloJournal: evidenceRoot is not null).ConfigureAwait(false);
             var descriptor = f.Fixture.Manifest.Descriptor;
             var id = descriptor.Capture.CaptureId;
             using var telemetry = new CaptureProcessingTelemetry();
@@ -159,6 +160,10 @@ public sealed partial class DurableCaptureProcessingTests
                     CancellationToken.None).ConfigureAwait(false));
             CollectionAssert.AreEqual(rawPayload, await persistence.Silo.ReadRawAsync(descriptor, CancellationToken.None).ConfigureAwait(false));
             if (evidenceRoot is not null)
+            {
+                var bucket = SiloInfrastructureFixture.GetOrCreateBucket(root);
+                await File.WriteAllBytesAsync(Path.Combine(root, SiloInfrastructureFixture.VersionSnapshotFileName),
+                    bucket.Store.ExportVersions()).ConfigureAwait(false);
                 await File.WriteAllTextAsync(Path.Combine(root, "viewer-fixture.json"), JsonSerializer.Serialize(new
                 {
                     Scenario = scenario,
@@ -169,10 +174,12 @@ public sealed partial class DurableCaptureProcessingTests
                     BaseChecksum = baseOutput.Artifact.ChecksumSha256,
                     RawChecksum = descriptor.Artifact.ChecksumSha256,
                     RawRelativePath = f.Fixture.Manifest.RelativeArtifactPath,
+                    SiloInstance = bucket.Instance,
                     DescriptorSha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor),
                     HostCompatible = true,
                     Root = root
                 }, AstrometryEvidenceJson)).ConfigureAwait(false);
+            }
             else if (scenario == "accepted")
             {
                 // A sibling composition (for example refreshed measured trails) changes the parent manifest while

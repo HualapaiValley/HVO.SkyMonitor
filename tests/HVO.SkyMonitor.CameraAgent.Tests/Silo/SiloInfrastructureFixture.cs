@@ -22,6 +22,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 internal static class SiloInfrastructureFixture
 {
+    internal const string VersionSnapshotFileName = "silo-fixture-versions.json";
+
     private static readonly Dictionary<string, Bucket> Buckets = new(StringComparer.Ordinal);
     private static readonly List<DirectoryInfo> TemporaryRoots = [];
     private static readonly Lock Gate = new();
@@ -300,9 +302,13 @@ internal static class SiloInfrastructureFixture
 
     internal sealed class Bucket
     {
-        public Bucket()
+        public Bucket() : this(Guid.NewGuid())
         {
-            var instance = Guid.NewGuid();
+        }
+
+        internal Bucket(Guid instance)
+        {
+            Instance = instance;
             var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
                 CameraAgentSiloBinding.BucketFor(instance));
             const string accessKey = "testfixturewriter";
@@ -336,6 +342,8 @@ internal static class SiloInfrastructureFixture
                 writerAccessKeyId = accessKey
             });
         }
+
+        public Guid Instance { get; }
 
         public IReadOnlyDictionary<string, string?> Configuration { get; }
 

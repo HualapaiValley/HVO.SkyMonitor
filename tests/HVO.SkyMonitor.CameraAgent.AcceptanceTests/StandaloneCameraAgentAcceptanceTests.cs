@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
@@ -45,7 +46,8 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
     [TestMethod]
     public async Task VirtualSkyCapturesAndRecoversWithoutCentralIntegrationAsync()
     {
-        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
+        // Leave enough time for each real Silo publication before another frame arrives.
+        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(captureInterval: "00:00:04").ConfigureAwait(false);
         var firstCapture = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         var firstOwner = await ReadOwnerAsync(fixture.Services).ConfigureAwait(false);
         var firstLocation = ReadActiveLocation(fixture.Services);
@@ -324,7 +326,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
     public async Task VirtualSkyProjectedScenePersistsAndRecoversStandaloneAsync()
     {
         await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(
-            useProjectedScene: true).ConfigureAwait(false);
+            useProjectedScene: true, captureInterval: "00:00:04").ConfigureAwait(false);
         var capture = await WaitForProjectedSceneCaptureAsync(fixture.Services).ConfigureAwait(false);
         var raw = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
         var product = capture.Artifacts.Single(static artifact =>
@@ -425,12 +427,12 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var restartedCoordinator = fixture.Services.GetRequiredService<CaptureAdmissionCoordinator>();
         await restartedCoordinator.ResumeAsync($"issue-435-resume-{Guid.NewGuid():N}", restartedCoordinator.Snapshot.Version,
             owner.Id, "reclaim retained projected-scene stages", CancellationToken.None).ConfigureAwait(false);
-        var ingress = fixture.Services.GetRequiredService<IRawCaptureIngress>();
+        var reconciler = fixture.Services.GetServices<IHostedService>().OfType<ProjectedSceneStageReconciliationService>().Single();
         await WaitForConditionAsync(async () =>
         {
-            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await reconciler.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
             return retainedStages.All(static path => !File.Exists(path));
-        }, "retained projected-scene stages to be reclaimed after resume", TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }, "retained projected-scene stages to be reclaimed after resume").ConfigureAwait(false);
         await fixture.StopAsync().ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
     }
@@ -502,6 +504,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         await WaitForConditionAsync(async () =>
         {
             var gallery = services.GetRequiredService<ICameraAgentGallery>();
+            var silo = services.GetRequiredService<SiloArtifactStorage>();
             var page = await gallery.GetPageAsync(
                 new CameraAgentGalleryQuery(PageSize: 100, MinimumSequence: minimumSequence + 1, EvidenceOrigin: GalleryEvidenceOrigin.Simulated),
                 CancellationToken.None).ConfigureAwait(false);
@@ -520,6 +523,10 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
                 {
                     continue;
                 }
+                var raw = detail.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
+                if (!await silo.HasMemberAsync(raw.ArtifactId, SiloArtifactStorage.RawEvidenceRevision, CancellationToken.None)
+                    .ConfigureAwait(false))
+                    continue;
 
                 selected = detail;
                 return true;
@@ -815,7 +822,15 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var evidence = await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.RawEvidenceRevision).ConfigureAwait(false)
             ?? await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.ProductEvidenceRevision).ConfigureAwait(false)
             ?? await ReadSiloEvidenceAsync(services, artifactId, CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
-        Assert.IsNotNull(evidence, $"Artifact {artifactId:D} has no retained Silo manifest.");
+        if (evidence is null)
+        {
+            await WaitForConditionAsync(async () =>
+            {
+                evidence = await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.RawEvidenceRevision).ConfigureAwait(false);
+                return evidence is not null;
+            }, $"the raw Silo manifest for {artifactId:D} to settle").ConfigureAwait(false);
+        }
+        Assert.IsNotNull(evidence);
         var parsed = CaptureContractJson.ParseManifest(evidence);
         Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
         return parsed.Document!.Manifest!;
@@ -827,12 +842,25 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
 
     private static async Task WaitForDurableConvergenceAsync(string root)
     {
-        await WaitForConditionAsync(
-            () => ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE state <> 'committed';") == 0 &&
-                ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';") == 0 &&
-                ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';") == 0 &&
-                ReadJournalCount(root, "SELECT COUNT(*) FROM silo_raw_admissions;") == 0,
-            "standalone durable work to converge").ConfigureAwait(false);
+        (long UncommittedRaw, long IncompleteLanes, long IncompleteNodes, long PendingAdmissions) pending = default;
+        try
+        {
+            await WaitForConditionAsync(() =>
+            {
+                pending = (
+                    ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE state <> 'committed';"),
+                    ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';"),
+                    ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';"),
+                    ReadJournalCount(root, "SELECT COUNT(*) FROM silo_raw_admissions;"));
+                return pending == (0, 0, 0, 0);
+            }, "standalone durable work to converge").ConfigureAwait(false);
+        }
+        catch (AssertFailedException)
+        {
+            Console.WriteLine($"Uncommitted raw: {pending.UncommittedRaw}; incomplete lanes: {pending.IncompleteLanes}; " +
+                $"incomplete processing nodes: {pending.IncompleteNodes}; pending Silo admissions: {pending.PendingAdmissions}.");
+            throw;
+        }
         Assert.AreEqual(0L, ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;"));
         Assert.AreEqual(0L, ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'upload';"));
     }

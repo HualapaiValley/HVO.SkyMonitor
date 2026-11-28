@@ -2292,20 +2292,14 @@ same finite 120-second budget. A request timeout or caller cancellation does not
 cancel the host-owned scrub. Older installers fail on pending state; retry their
 lifecycle command after qualification completes. No identity comparison is bypassed.
 
-Startup checks fresh configuration/protected authority plus the newest 48 hours
-in the production `frames/YYYY/MM/DD` and `derived/YYYY/MM/DD` partitions and an
-indexed recent raw-journal query. It never recurses through older partitions or
-unknown layouts before Kestrel starts. Limits are 400,000 filesystem entries,
-20,000 recent journal rows, 4 GiB total JSON and 8 MiB per JSON file; exceeding a
-limit refuses recent readiness. Recent retained-data schema/provenance/tamper failures leave
-the host and recovery UI available, report unhealthy location readiness, and do
-not admit capture. Unknown/older/quarantined evidence remains subject to the full
-background verification. Date partitions are limited to at most three UTC dates.
-The entry budget counts all files in those date partitions before timestamp
-filtering. At a 20-second cadence and 24 files per capture, the worst nearly
-72-hour enumeration is about 311,040 files plus directory entries: approximately
-78% of the 400,000 cap, leaving about 22% headroom (roughly 88,900 entries).
-Unexpected fan-out, extra files or faster cadence consumes that margin.
+Startup checks the configuration and protected location authority, validates the
+local Silo admission sidecars, and queries the newest 48 hours of the raw journal
+through its capture-time index. It checks at most 20,000 admission sidecars and
+20,000 recent journal rows, with a 4 GiB shared JSON budget and an 8 MiB limit per
+manifest. Exceeding a limit refuses recent readiness. Recent evidence failures
+leave the host and recovery UI available, report unhealthy location readiness,
+and prevent capture admission. Older and quarantined evidence is checked during
+background verification.
 An unsupported or structurally drifted raw-journal SQLite contract still refuses
 host startup; deferred worker failure can surface through a host-cancellation
 wrapper. The underlying journal validator retains its schema-specific refusal.

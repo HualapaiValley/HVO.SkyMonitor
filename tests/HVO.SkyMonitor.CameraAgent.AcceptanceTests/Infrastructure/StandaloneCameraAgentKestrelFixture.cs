@@ -79,7 +79,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         bool useSidingSpringLocation = false,
         bool useSyntheticCalibration = false,
         bool useEnvironmentalAcquisition = false,
-        bool useProjectedScene = false)
+        bool useProjectedScene = false,
+        string? captureInterval = null)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -91,7 +92,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         {
             var configPath = Path.Combine(root, "cameraagent.standalone.json");
             await WriteConfigurationAsync(configPath, root, useSyntheticCalibration, useProjectedScene,
-                useSidingSpringLocation).ConfigureAwait(false);
+                useSidingSpringLocation, captureInterval).ConfigureAwait(false);
             var environmentalSettingsPath = useEnvironmentalAcquisition
                 ? Path.Combine(root, "environmental.settings.json")
                 : null;
@@ -493,7 +494,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         string root,
         bool useSyntheticCalibration,
         bool useProjectedScene,
-        bool useSidingSpringLocation)
+        bool useSidingSpringLocation,
+        string? captureInterval)
     {
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
@@ -506,6 +508,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var configuration = JsonNode.Parse(json)?.AsObject()
             ?? throw new InvalidDataException("The standalone CameraAgent fixture configuration is invalid.");
         configuration["agentId"] = AgentId;
+        if (captureInterval is not null)
+        {
+            configuration["rig"]!["pipeline"]!["captureInterval"] = captureInterval;
+            foreach (var profile in configuration["schedule"]!["setpointProfiles"]!.AsArray())
+                profile!["captureInterval"] = captureInterval;
+        }
         if (useSidingSpringLocation)
         {
             // This restart test requires visible catalog geometry, independently of host wall time.

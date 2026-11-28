@@ -55,12 +55,13 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         string root,
         CatalogFixtureInstallation catalog,
         Dictionary<string, string?> overrides,
-        Action<IServiceCollection>? configureServices)
+        Action<IServiceCollection>? configureServices,
+        SiloInfrastructureFixture.Bucket? installedBucket)
     {
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
-        _silo = SiloInfrastructureFixture.GetOrCreateBucket(root);
+        _silo = installedBucket ?? SiloInfrastructureFixture.GetOrCreateBucket(root);
         _silo.Configure(overrides);
         _configureServices = configureServices;
     }
@@ -93,7 +94,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool preserveRoot = false,
         string? productionCatalogRoot = null,
         IReadOnlyDictionary<string, string?>? settingsOverrides = null,
-        bool reloadConfigurationOnChange = true)
+        bool reloadConfigurationOnChange = true,
+        SiloInfrastructureFixture.Bucket? installedBucket = null)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -189,7 +191,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
         }
 
-        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices)
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices, installedBucket)
         {
             _preserveRoot = preserveRoot,
             _reloadConfigurationOnChange = reloadConfigurationOnChange

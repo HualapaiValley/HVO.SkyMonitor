@@ -580,7 +580,7 @@ public sealed partial class DurableCaptureProcessingTests
         MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null,
         Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null,
         MeasuredAstrometryOptions? recipe = null,
-        SqliteRawCaptureJournal? benchmarkJournal = null)
+        SqliteRawCaptureJournal? benchmarkJournal = null, bool settledSiloJournal = false)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         recipe ??= MeasuredAstrometryFixture.Options;
@@ -649,7 +649,7 @@ public sealed partial class DurableCaptureProcessingTests
         await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
         await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
         var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1,
-            usesSilo: commit is not null);
+            usesSilo: commit is not null || settledSiloJournal);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
@@ -666,7 +666,7 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreEqual(RawIngressOutcome.Committed, outcome);
         await SiloInfrastructureFixture.PublishRawFixtureAsync(
             SiloInfrastructureFixture.ProductStorage(root), entry, manifest, bytes, CancellationToken.None).ConfigureAwait(false);
-        if (commit is not null)
+        if (commit is not null || settledSiloJournal)
             await journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, siloVisible: true, CancellationToken.None)
                 .ConfigureAwait(false);
         else if (hostCompatible && benchmarkJournal is null)
@@ -676,6 +676,11 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual((prior?.Count ?? 0) + 1, recovered.Inspected);
             Assert.AreEqual(0, recovered.Quarantined);
             Assert.AreEqual(0, recovered.MissingEvidence);
+        }
+        if (settledSiloJournal)
+        {
+            File.Delete(paths.PayloadAbsolutePath);
+            File.Delete(paths.SidecarAbsolutePath);
         }
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
             new StoredFrameReference(payloadRelativePath, Path.Combine(root, payloadRelativePath), descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw), CaptureContractJson.ComputeManifestSha256(manifestBytes));

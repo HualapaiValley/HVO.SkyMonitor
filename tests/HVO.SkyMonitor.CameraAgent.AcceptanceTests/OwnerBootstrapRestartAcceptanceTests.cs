@@ -2,7 +2,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Data;
+using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
@@ -19,8 +21,12 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
     [TestMethod]
     public async Task InstallerStyleBootstrapAndReplacementSurviveHostRestarts()
     {
-        await using var host = await CameraAgentKestrelFixture.CreateAsync(
-            requireOwnerPasswordReplacement: true).ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
+        {
+            // Keep Silo startup active while this case exercises owner and installer state.
+            services.Remove(services.Single(descriptor =>
+                descriptor.ServiceType == typeof(IHostedService) && descriptor.ImplementationType == typeof(CameraCaptureService)));
+        }, requireOwnerPasswordReplacement: true).ConfigureAwait(false);
         using (var seededClient = await host.CreateOwnerClientAsync().ConfigureAwait(false))
         {
             Assert.AreEqual(
@@ -57,7 +63,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
             Assert.AreEqual("hyg-v44-fixture", json.RootElement.GetProperty("catalogId").GetString());
         }
         using (var healthClient = new HttpClient { BaseAddress = host.BaseAddress })
-        using (var health = await healthClient.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false))
+        using (var health = await WaitForHealthAsync(healthClient).ConfigureAwait(false))
         {
             var healthJson = await health.Content.ReadAsStringAsync().ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.OK, health.StatusCode, healthJson);
@@ -107,6 +113,19 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         using var operations = await replacementClient.GetAsync(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, operations.StatusCode);
+    }
+
+    private static async Task<HttpResponseMessage> WaitForHealthAsync(HttpClient client)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        while (true)
+        {
+            var response = await client.GetAsync(new Uri("/health", UriKind.Relative), timeout.Token).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.ServiceUnavailable || timeout.Token.IsCancellationRequested)
+                return response;
+            response.Dispose();
+            await Task.Delay(TimeSpan.FromMilliseconds(200), timeout.Token).ConfigureAwait(false);
+        }
     }
 
     private static async Task AssertSamePasswordRejectedAsync(HttpClient client)

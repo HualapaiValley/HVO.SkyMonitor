@@ -30,7 +30,11 @@ internal sealed partial class InstallationReadAttributionFixture
         bool stageRawAdmission = false)
     {
         Assert.IsTrue(Path.GetFileName(Host.Root).StartsWith("iv-", StringComparison.Ordinal));
+#if HVO_BASELINE
         var config = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+#else
+        var config = await Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
+#endif
         var location = Locations.Active!;
         var state = Path.Combine(IngressRoot, ".location");
         var historyPath = Path.Combine(state, "deployment-location.v1.protected");

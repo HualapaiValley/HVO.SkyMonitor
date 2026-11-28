@@ -150,8 +150,11 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 services.Remove(hostedService);
             }
             // Endpoint-only hosts share the parent's state root and its installed Silo owner.
+            // Register both aliases as instances so the endpoint host does not dispose the shared owner.
             services.RemoveAll<SiloInstalledStorage>();
             services.AddSingleton(installedStorage);
+            services.RemoveAll<ICameraAgentSiloVerification>();
+            services.AddSingleton<ICameraAgentSiloVerification>(installedStorage);
             configureServices(services);
         }));
     }
