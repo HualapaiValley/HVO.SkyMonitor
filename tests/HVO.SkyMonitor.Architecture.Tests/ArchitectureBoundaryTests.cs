@@ -381,8 +381,9 @@ public sealed partial class ArchitectureBoundaryTests
         Assert.IsFalse(graph.Projects.Keys.Any(name => name == retiredProject || name == retiredProject + ".Tests"));
         Assert.IsFalse(graph.Projects.Values.Any(project => project.References.Contains(retiredProject)));
         var retiredTypes = new System.Text.RegularExpressions.Regex(
-            @"\b(class|interface)\s+(FileSystemFrameStorageService|IFrameStorageService|LocalArchiveReader|RetentionBackgroundService)\b");
-        var violations = snapshot.CSharpFiles.Where(file => retiredTypes.IsMatch(file.Text))
+            @"\b(class|interface)\s+(FileSystemFrameStorageService|IFrameStorageService|LocalArchiveReader|RetentionBackgroundService|ArtifactOutboxDrainService|DerivedProductReconciliationService)\b");
+        var retiredReads = new System.Text.RegularExpressions.Regex(@"\bStoredFrame\.(?:AbsolutePath|RelativePath)\b");
+        var violations = snapshot.CSharpFiles.Where(file => retiredTypes.IsMatch(file.Text) || retiredReads.IsMatch(file.Text))
             .Select(file => file.RelativePath).ToArray();
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }

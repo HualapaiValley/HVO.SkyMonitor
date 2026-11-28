@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel.DataAnnotations;
@@ -107,7 +108,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             var captureSequences = new HashSet<long>();
             foreach (var artifact in bundle.Artifacts)
             {
-                var manifest = await ReadManifestAsync(root, artifact.ManifestRelativePath).ConfigureAwait(false);
+                var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, artifact.ArtifactId).ConfigureAwait(false);
                 Assert.IsGreaterThan((long.MaxValue / 2) - 1, manifest.Descriptor.Capture.CaptureSequence);
                 Assert.IsTrue(captureSequences.Add(manifest.Descriptor.Capture.CaptureSequence));
             }
@@ -121,12 +122,14 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             }
             foreach (var source in sources)
             {
-                var bytes = await File.ReadAllBytesAsync(ResolvePayload(root, source.ManifestRelativePath)).ConfigureAwait(false);
+                var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, source.ArtifactId).ConfigureAwait(false);
+                var bytes = await CalibrationSiloFixture.ReadMemberAsync(root, source.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor)).ConfigureAwait(false);
                 Assert.IsTrue(MaximumSample(bytes) <= 4095, source.ManifestRelativePath);
             }
             foreach (var master in masters)
             {
-                var manifest = await ReadManifestAsync(root, master.ManifestRelativePath).ConfigureAwait(false);
+                var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, master.ArtifactId).ConfigureAwait(false);
                 Assert.AreEqual(16, manifest.Descriptor.Layout.SampleDepthBits);
                 Assert.AreEqual(ushort.MaxValue, manifest.Descriptor.Layout.WhiteLevel);
                 Assert.AreEqual(FrameStoredCodeTransform.IdentityV1, manifest.Descriptor.Layout.StoredCodeTransform);
@@ -248,8 +251,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             var job = await fixture.Coordinator.AcquireAsync(
                 Request("processing-inputs"), CancellationToken.None).ConfigureAwait(false);
             var bundle = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
-            using var silo = SiloInfrastructureFixture.OpenStore(root);
-            await CalibrationSiloFixture.PublishAsync(silo, root, bundle.Bundle).ConfigureAwait(false);
+            var silo = SiloInfrastructureFixture.ProductStore(root);
             var loader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
 
             var inputs = await loader.LoadAsync(bundle, CancellationToken.None).ConfigureAwait(false);
@@ -293,7 +295,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 job.Plan.SourceModel);
             var sourceArtifact = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false))
                 .Single().Bundle.Artifacts.First(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source);
-            var template = await ReadManifestAsync(root, sourceArtifact.ManifestRelativePath).ConfigureAwait(false);
+            var template = await CalibrationSiloFixture.ReadManifestAsync(root, sourceArtifact.ArtifactId).ConfigureAwait(false);
             var started = job.Plan.EffectiveFromUtc.AddDays(1);
             var ended = started.Add(job.Plan.ApplicableLightExposure);
             var rawArtifactId = Guid.NewGuid();
@@ -354,9 +356,8 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 new StoredFrameReference("light.bin", Path.Combine(root, "light.bin"), started, FrameArtifactRole.Raw),
                 CaptureContractJson.ComputeManifestSha256(manifest));
             var context = new CaptureProcessingContext(Configuration(), submission, receipt);
-            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            var silo = SiloInfrastructureFixture.ProductStore(root);
             var bundle = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
-            await CalibrationSiloFixture.PublishAsync(silo, root, bundle.Bundle).ConfigureAwait(false);
             var inputLoader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var step = new CalibrationCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("calibration", "calibration", 0),
@@ -393,11 +394,11 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 await Assert.ThrowsExactlyAsync<IOException>(async () =>
                     await interrupted.Coordinator.AcquireAsync(Request("restart-marker"), CancellationToken.None)
                         .ConfigureAwait(false)).ConfigureAwait(false);
-                Assert.IsFalse(File.Exists(Path.Combine(
-                    root, "calibration", "virtual", OneShotFaultInjector.JobDirectoryName(root), "reference-calibration-profile.json")));
+                Assert.IsFalse(await HasProfileAsync(root).ConfigureAwait(false));
                 Assert.IsEmpty(await interrupted.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
             }
-            var before = HashFiles(Path.Combine(root, "calibration", "virtual"), "sources");
+            var before = CalibrationSiloFixture.Objects(root).Keys("p/")
+                .ToDictionary(key => key, key => CalibrationSiloFixture.Objects(root).Current(key), StringComparer.Ordinal);
 
             using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
             var resumed = await restarted.Coordinator.ResumePendingAsync(CancellationToken.None).ConfigureAwait(false);
@@ -405,11 +406,8 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             Assert.IsNotNull(resumed);
             Assert.AreEqual(CalibrationAcquisitionStates.Published, resumed.State);
             Assert.HasCount(1, await restarted.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
-            CollectionAssert.AreEquivalent(before.Keys.ToArray(), HashFiles(Path.Combine(root, "calibration", "virtual"), "sources").Keys.ToArray());
-            foreach (var pair in before)
-            {
-                Assert.AreEqual(pair.Value, HashFiles(Path.Combine(root, "calibration", "virtual"), "sources")[pair.Key]);
-            }
+            foreach (var (key, version) in before)
+                Assert.AreEqual(version, CalibrationSiloFixture.Objects(root).Current(key));
 
             var replay = await restarted.Coordinator.AcquireAsync(Request("restart-marker"), CancellationToken.None)
                 .ConfigureAwait(false);
@@ -509,10 +507,13 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                     await interrupted.Coordinator.AcquireAsync(Request("immutable-conflict"), CancellationToken.None)
                         .ConfigureAwait(false)).ConfigureAwait(false);
             }
-            var payload = Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Single();
-            var conflicting = await File.ReadAllBytesAsync(payload).ConfigureAwait(false);
+            var objects = CalibrationSiloFixture.Objects(root);
+            var key = Assert.ContainsSingle(objects.Keys("p/full/"));
+            var exact = objects.Current(key)!;
+            var conflicting = objects.Read(key, exact);
             conflicting[0] ^= 0xFF;
-            await File.WriteAllBytesAsync(payload, conflicting).ConfigureAwait(false);
+            objects.ReadContentOverride = locator => locator.Key == key && locator.VersionId == exact
+                ? new MemoryStream(conflicting, writable: false) : null;
 
             using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
             var exception = await Assert.ThrowsExactlyAsync<CalibrationLibraryAcquisitionException>(async () =>
@@ -520,8 +521,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 .ConfigureAwait(false);
 
             Assert.AreEqual(CalibrationLibraryReasonCodes.PublicationConflict, exception.ReasonCode);
-            Assert.IsTrue(File.Exists(payload));
-            CollectionAssert.AreEqual(conflicting, await File.ReadAllBytesAsync(payload).ConfigureAwait(false));
+            Assert.AreEqual(exact, Assert.ContainsSingle(objects.VersionsOf(key)));
             var failed = await restarted.Store.GetAcquisitionJobAsync(
                 (await ReadOnlyJobAsync(root).ConfigureAwait(false)), CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CalibrationAcquisitionStates.Failed, failed?.State);
@@ -549,8 +549,11 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                         .ConfigureAwait(false)).ConfigureAwait(false);
                 Assert.IsEmpty(await interrupted.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
             }
-            var missing = Directory.EnumerateFiles(root, "dark-1.json", SearchOption.AllDirectories).Single();
-            File.Delete(missing);
+            var objects = CalibrationSiloFixture.Objects(root);
+            var missing = Assert.ContainsSingle(objects.Keys("p/meta/").Where(key =>
+                CaptureContractJson.ParseManifest(objects.Read(key, objects.Current(key)!)).Document?.Manifest.RelativeArtifactPath
+                    .EndsWith("/dark-1.bin", StringComparison.Ordinal) == true).ToArray());
+            objects.Delete(missing, objects.Current(missing)!);
 
             using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
             var exception = await Assert.ThrowsExactlyAsync<CalibrationLibraryAcquisitionException>(async () =>
@@ -558,7 +561,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 .ConfigureAwait(false);
 
             Assert.AreEqual(CalibrationLibraryReasonCodes.PublicationConflict, exception.ReasonCode);
-            Assert.IsFalse(File.Exists(missing));
+            Assert.IsEmpty(objects.VersionsOf(missing));
             Assert.IsEmpty(await restarted.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
             using var connection = await OpenAsync(root).ConfigureAwait(false);
             Assert.AreEqual("failed", await ScalarStringAsync(
@@ -660,8 +663,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
                 fixture.Coordinator.AcquireAsync(Request("recover-committed-marker"), CancellationToken.None))
                 .ConfigureAwait(false);
-            Assert.IsNotEmpty(Directory.EnumerateFiles(
-                root, "reference-calibration-profile.json", SearchOption.AllDirectories));
+            Assert.IsTrue(await HasProfileAsync(root).ConfigureAwait(false));
             Assert.IsEmpty(await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
 
             using var service = new VirtualCalibrationAcquisitionRecoveryService(fixture.Coordinator);
@@ -953,9 +955,10 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             await Assert.ThrowsExactlyAsync<IOException>(() =>
                 fixture.Coordinator.AcquireAsync(Request("missing-marker"), CancellationToken.None))
                 .ConfigureAwait(false);
-            var marker = Directory.EnumerateFiles(
-                root, "reference-calibration-profile.json", SearchOption.AllDirectories).Single();
-            File.Delete(marker);
+            var id = await JobBundleArtifactIdAsync(root).ConfigureAwait(false);
+            var marker = await CalibrationSiloFixture.FindMemberAsync(root, id, CalibrationArtifactPublisher.SiloBundleRevision)
+                .ConfigureAwait(false);
+            CalibrationSiloFixture.Objects(root).Delete(marker);
             using (var connection = await OpenAsync(root).ConfigureAwait(false))
             using (var command = connection.CreateCommand())
             {
@@ -970,7 +973,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 fixture.Coordinator.ResumePendingAsync(CancellationToken.None)).ConfigureAwait(false);
 
             Assert.AreEqual(CalibrationLibraryReasonCodes.PublicationConflict, exception.ReasonCode);
-            Assert.IsFalse(File.Exists(marker));
+            Assert.IsEmpty(CalibrationSiloFixture.Objects(root).VersionsOf(marker.Key));
         }
         finally
         {
@@ -1115,16 +1118,12 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             AgentId: agentId);
     }
 
-    private static async Task<ArtifactManifestV2> ReadManifestAsync(string root, string relativePath)
-    {
-        var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
-            Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar))).ConfigureAwait(false));
-        Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
-        return parsed.Document!.Manifest!;
-    }
+    private static async Task<Guid> JobBundleArtifactIdAsync(string root)
+        => CalibrationArtifactPublisher.VirtualBundleArtifactId("bundle-" + await ReadOnlyJobAsync(root).ConfigureAwait(false));
 
-    private static string ResolvePayload(string root, string manifestRelativePath)
-        => Path.Combine(root, manifestRelativePath[..^5].Replace('/', Path.DirectorySeparatorChar) + ".bin");
+    private static async Task<bool> HasProfileAsync(string root)
+        => await CalibrationSiloFixture.Storage(root).HasMemberAsync(await JobBundleArtifactIdAsync(root).ConfigureAwait(false),
+            CalibrationArtifactPublisher.SiloProfileRevision, CancellationToken.None).ConfigureAwait(false);
 
     private static ushort MaximumSample(ReadOnlySpan<byte> bytes)
     {
@@ -1135,14 +1134,6 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
         }
         return maximum;
     }
-
-    private static Dictionary<string, string> HashFiles(string root, string directorySegment)
-        => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(path => path.Split(Path.DirectorySeparatorChar).Contains(directorySegment, StringComparer.Ordinal))
-            .ToDictionary(
-                path => Path.GetRelativePath(root, path),
-                path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
-                StringComparer.Ordinal);
 
     private static string CreateRoot()
     {
@@ -1252,12 +1243,11 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             var admission = new CaptureAdmissionCoordinator(
                 ingress, options, timeProvider, telemetry, lifecycleControls: lifecycleControls);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
+            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(configuration ?? Configuration());
-            var publisher = new CalibrationArtifactPublisher(
-                options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
+            var publisher = CalibrationSiloFixture.Publisher(options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
                 store, publisher, admission, configurationAccessor ?? accessor, timeProvider, telemetry: calibrationTelemetry);
             return new Fixture(store, admission, telemetry, coordinator);

@@ -1996,7 +1996,7 @@ public sealed partial class RawCaptureIngressTests
                     Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup,
                     silo: InstalledSilo,
                     siloSettings: siloProvider.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
-                .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
+                .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock) { Silo = Silo })
                 .BuildServiceProvider();
             Factory = new(_services,
                 [new("Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, false),

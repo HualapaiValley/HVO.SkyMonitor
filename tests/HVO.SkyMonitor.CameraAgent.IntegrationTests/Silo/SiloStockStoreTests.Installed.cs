@@ -448,7 +448,7 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual(flat.ArtifactId, loaded.ArtifactId);
         Assert.AreEqual(flat.PayloadSha256, PayloadChecksum.ComputeSha256(loaded.Payload.Span));
         Assert.IsFalse(Directory.Exists(Path.Combine(root, "calibration")));
-        Assert.HasCount(0, bundle.EvidenceFiles);
+        Assert.HasCount(4, bundle.ReferenceManifests);
         var library = services.GetRequiredService<SqliteCalibrationLibraryStore>();
         var state = await library.GetStateAsync(token).ConfigureAwait(false);
         await library.ActivateAsync(bundle.LibraryBundle.BundleId, "silo-test-calibration", state.Version, "operator", null, token)

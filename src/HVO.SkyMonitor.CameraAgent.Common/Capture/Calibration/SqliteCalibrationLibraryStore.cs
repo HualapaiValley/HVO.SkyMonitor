@@ -103,6 +103,8 @@ public sealed partial class SqliteCalibrationLibraryStore(
 {
     internal const int MaximumAcquisitionAttempts = 3;
     internal SiloArtifactStorage? Silo { get; init; }
+    private SiloArtifactStorage ArtifactStorage =>
+        Silo ?? throw new InvalidOperationException("Calibration evidence requires Silo.");
     private readonly IRawCaptureIngress _rawCaptureIngress = rawCaptureIngress;
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly string _databasePath = Path.Combine(
@@ -1413,7 +1415,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT bundle_identity_sha256, source, bundle_json
+                    SELECT bundle_identity_sha256, bundle_json
                     FROM calibration_library_bundles b WHERE retention_hold = 1 OR EXISTS (
                         SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
                           AND (run.closed_reason IS NULL OR EXISTS (
@@ -1429,24 +1431,12 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    if (Silo is not null)
-                    {
-                        var parsed = CalibrationLibraryContractJson.Parse((byte[])reader[2]);
-                        if (!parsed.Validation.IsValid || parsed.Value is not { } bundle ||
-                            !string.Equals(CalibrationLibraryContractJson.ComputeIdentitySha256(bundle), reader.GetString(0),
-                                StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidDataException("The retained calibration bundle is invalid.");
-                        holds.Add(new(CalibrationArtifactPublisher.BundleArtifactId(bundle)));
-                        continue;
-                    }
-                    holds.Add(new(Guid.ParseExact(reader.GetString(0)[..32], "N")));
-                    if (string.Equals(
-                            reader.GetString(1),
-                            CalibrationLibraryBundleSources.SyntheticReferencesV1,
-                            StringComparison.Ordinal))
-                    {
-                        holds.Add(new(Guid.ParseExact(reader.GetString(0)[32..], "N")));
-                    }
+                    var parsed = CalibrationLibraryContractJson.Parse((byte[])reader[1]);
+                    if (!parsed.Validation.IsValid || parsed.Value is not { } bundle ||
+                        !string.Equals(CalibrationLibraryContractJson.ComputeIdentitySha256(bundle), reader.GetString(0),
+                            StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("The retained calibration bundle is invalid.");
+                    holds.Add(new(CalibrationArtifactPublisher.BundleArtifactId(bundle)));
                 }
             }
             return holds;
@@ -1586,14 +1576,12 @@ public sealed partial class SqliteCalibrationLibraryStore(
         var virtualPlan = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
             ? await ReadVirtualAcquisitionPlanAsync(bundle, cancellationToken).ConfigureAwait(false)
             : null;
-        var files = new List<EvidenceFileFingerprint>(2 + bundle.Artifacts.Count * 2);
-        var bundleArtifactId = Silo is null ? Guid.Empty : CalibrationArtifactPublisher.BundleArtifactId(bundle);
-        if (Silo is not null && bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
-            !await Silo.HasMemberAsync(bundleArtifactId, CalibrationArtifactPublisher.SiloBundleRevision, cancellationToken).ConfigureAwait(false))
+        var bundleArtifactId = CalibrationArtifactPublisher.BundleArtifactId(bundle);
+        if (bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
+            !await ArtifactStorage.HasMemberAsync(bundleArtifactId, CalibrationArtifactPublisher.SiloBundleRevision, cancellationToken).ConfigureAwait(false))
             bundleArtifactId = CalibrationArtifactPublisher.EnvelopeArtifactId(bundle);
-        var profileJson = await ReadLibraryMetadataAsync(bundle.ProfileRelativePath, bundleArtifactId,
-            CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileIdentitySha256, files, cancellationToken)
-            .ConfigureAwait(false);
+        var profileJson = await ReadLibraryMetadataAsync(bundleArtifactId,
+            CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(
                 PayloadChecksum.ComputeSha256(profileJson), bundle.ProfileIdentitySha256,
                 StringComparison.OrdinalIgnoreCase) || ReferenceCalibrationProfileJson.Parse(profileJson) is not { } profile)
@@ -1603,26 +1591,16 @@ public sealed partial class SqliteCalibrationLibraryStore(
 
         ValidateProfile(profile, bundle);
         var evidence = new List<PublishedArtifactEvidence>(bundle.Artifacts.Count);
-        if (Silo is not null || bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
-        {
-            var separator = bundle.ProfileRelativePath.LastIndexOf('/');
-            var bundleRelativePath = string.Concat(
-                bundle.ProfileRelativePath.AsSpan(0, separator + 1),
-                CalibrationLibraryEvidenceNames.BundleEnvelope);
-            var envelope = CalibrationLibraryContractJson.Serialize(bundle);
-            var bundleEvidence = await ReadLibraryMetadataAsync(bundleRelativePath, bundleArtifactId,
-                CalibrationArtifactPublisher.SiloBundleRevision, SiloHash.Sha256(envelope), files, cancellationToken)
-                .ConfigureAwait(false);
-            if (!bundleEvidence.AsSpan().SequenceEqual(envelope))
-            {
-                throw new InvalidDataException("The canonical calibration bundle envelope is invalid.");
-            }
-        }
+        var envelope = CalibrationLibraryContractJson.Serialize(bundle);
+        var bundleEvidence = await ReadLibraryMetadataAsync(bundleArtifactId,
+            CalibrationArtifactPublisher.SiloBundleRevision, SiloHash.Sha256(envelope), cancellationToken).ConfigureAwait(false);
+        if (!bundleEvidence.AsSpan().SequenceEqual(envelope))
+            throw new InvalidDataException("The canonical calibration bundle envelope is invalid.");
         foreach (var artifact in bundle.Artifacts)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var manifestJson = await ReadLibraryMetadataAsync(artifact.ManifestRelativePath, artifact.ArtifactId,
-                CalibrationArtifactPublisher.SiloEvidenceRevision, sha256: null, files, cancellationToken).ConfigureAwait(false);
+            var manifestJson = await ReadLibraryMetadataAsync(artifact.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision, sha256: null, cancellationToken).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(manifestJson);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
                 manifest.Descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
@@ -1669,7 +1647,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
             {
                 throw new InvalidDataException("A committed calibration manifest conflicts with its library envelope.");
             }
-            var payload = await ReadLibraryPayloadAsync(manifest, files, cancellationToken).ConfigureAwait(false);
+            var payload = await ReadLibraryPayloadAsync(manifest, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(PayloadChecksum.ComputeSha256(payload), artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase) ||
                 !FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out _).IsValid ||
                 bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
@@ -1692,7 +1670,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
                 cancellationToken).ConfigureAwait(false);
         }
 
-        return new PublishedBundleEvidence(evidence, files, Now().ToUnixTimeMilliseconds());
+        return new PublishedBundleEvidence(evidence, Now().ToUnixTimeMilliseconds());
     }
 
     internal async Task<Guid?> FindArtifactByManifestPathAsync(string relativePath, CancellationToken cancellationToken)
@@ -1718,27 +1696,32 @@ public sealed partial class SqliteCalibrationLibraryStore(
         return id;
     }
 
-    private async Task<byte[]> ReadLibraryMetadataAsync(string relativePath, Guid artifactId, string revision,
-        string? sha256, List<EvidenceFileFingerprint>? files, CancellationToken cancellationToken)
+    private async Task<byte[]> ReadLibraryMetadataAsync(Guid artifactId, string revision,
+        string? sha256, CancellationToken cancellationToken)
     {
-        if (Silo is not null)
-            return await Silo.ReadMetadataAsync(artifactId, revision, CalibrationLibraryContractJson.MaximumBundleBytes,
+        try
+        {
+            return await ArtifactStorage.ReadMetadataAsync(artifactId, revision, CalibrationLibraryContractJson.MaximumBundleBytes,
                 sha256, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("Calibration metadata has no settled Silo publication.");
-        var local = await ReadStableFileAsync(ResolveSafePath(relativePath), cancellationToken).ConfigureAwait(false);
-        files?.Add(local.Fingerprint);
-        return local.Bytes;
+        }
+        catch (FileNotFoundException exception)
+        {
+            throw new InvalidDataException("Calibration metadata is missing from Silo.", exception);
+        }
     }
 
-    private async Task<byte[]> ReadLibraryPayloadAsync(ArtifactManifestV2 manifest, List<EvidenceFileFingerprint>? files,
-        CancellationToken cancellationToken)
+    private async Task<byte[]> ReadLibraryPayloadAsync(ArtifactManifestV2 manifest, CancellationToken cancellationToken)
     {
-        if (Silo is not null)
-            return await Silo.ReadRawAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false)
+        try
+        {
+            return await ArtifactStorage.ReadRawAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("Calibration payload has no settled Silo publication.");
-        var local = await ReadStableFileAsync(ResolveSafePath(manifest.RelativeArtifactPath), cancellationToken).ConfigureAwait(false);
-        files?.Add(local.Fingerprint);
-        return local.Bytes;
+        }
+        catch (FileNotFoundException exception)
+        {
+            throw new InvalidDataException("Calibration payload is missing from Silo.", exception);
+        }
     }
 
     private static void ValidateProfile(
@@ -2005,21 +1988,11 @@ public sealed partial class SqliteCalibrationLibraryStore(
             var sourceFrames = new List<CalibrationSourceFrame>(sourceArtifacts.Length);
             foreach (var sourceArtifact in sourceArtifacts)
             {
-                byte[] source;
-                if (Silo is null)
-                {
-                    source = (await ReadStableFileAsync(ResolveSafePath(PayloadPathForManifest(sourceArtifact.ManifestRelativePath)),
-                        cancellationToken).ConfigureAwait(false)).Bytes;
-                }
-                else
-                {
-                    var manifestBytes = await ReadLibraryMetadataAsync(sourceArtifact.ManifestRelativePath, sourceArtifact.ArtifactId,
-                        CalibrationArtifactPublisher.SiloEvidenceRevision, sha256: null, files: null, cancellationToken)
-                        .ConfigureAwait(false);
-                    var manifest = CaptureContractJson.ParseManifest(manifestBytes).Document?.Manifest
-                        ?? throw new InvalidDataException("Virtual calibration source manifest is unavailable.");
-                    source = await ReadLibraryPayloadAsync(manifest, files: null, cancellationToken).ConfigureAwait(false);
-                }
+                var manifestBytes = await ReadLibraryMetadataAsync(sourceArtifact.ArtifactId,
+                    CalibrationArtifactPublisher.SiloEvidenceRevision, sha256: null, cancellationToken).ConfigureAwait(false);
+                var manifest = CaptureContractJson.ParseManifest(manifestBytes).Document?.Manifest
+                    ?? throw new InvalidDataException("Virtual calibration source manifest is unavailable.");
+                var source = await ReadLibraryPayloadAsync(manifest, cancellationToken).ConfigureAwait(false);
                 var generated = VirtualCalibrationSourceGenerator.Generate(
                     ToVirtualSourceKind(kind),
                     sourceArtifact.SourceIndex ?? throw new InvalidDataException("A virtual source index is missing."),
@@ -2122,8 +2095,7 @@ public sealed partial class SqliteCalibrationLibraryStore(
         bool forceValidation = false)
     {
         if (!forceValidation && _validatedEvidence.TryGetValue(bundle.BundleIdentitySha256, out var cached) &&
-            Now().ToUnixTimeMilliseconds() - cached.ValidatedUnixMs < TimeSpan.FromMinutes(10).TotalMilliseconds &&
-            cached.Files.All(FingerprintMatches))
+            Now().ToUnixTimeMilliseconds() - cached.ValidatedUnixMs < TimeSpan.FromMinutes(10).TotalMilliseconds)
         {
             return;
         }
@@ -2184,43 +2156,6 @@ public sealed partial class SqliteCalibrationLibraryStore(
             _evidenceFailureGenerations[bundleIdentity] = _evidenceFailureGenerations.GetValueOrDefault(bundleIdentity) + 1;
             _validatedEvidence.TryRemove(bundleIdentity, out _);
         }
-    }
-
-    private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)
-    {
-        var path = ResolveSafePath(fingerprint.RelativePath);
-        var info = new FileInfo(path);
-        return info.Exists && info.Length == fingerprint.Length &&
-               info.LastWriteTimeUtc.Ticks == fingerprint.LastWriteUtcTicks;
-    }
-
-    private async Task<StableEvidenceFile> ReadStableFileAsync(
-        string path,
-        CancellationToken cancellationToken)
-    {
-        var before = new FileInfo(path);
-        if (!before.Exists || before.Length > int.MaxValue)
-        {
-            throw new InvalidDataException("Calibration evidence is missing or too large.");
-        }
-        var bytes = new byte[checked((int)before.Length)];
-        var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.Read,
-            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using (stream.ConfigureAwait(false))
-        {
-            await stream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
-        }
-        var after = new FileInfo(path);
-        if (!after.Exists || before.Length != after.Length ||
-            before.LastWriteTimeUtc != after.LastWriteTimeUtc)
-        {
-            throw new InvalidDataException("Calibration evidence changed while it was being validated.");
-        }
-        return new StableEvidenceFile(bytes, new EvidenceFileFingerprint(
-            Path.GetRelativePath(_storageRoot, path).Replace(Path.DirectorySeparatorChar, '/'),
-            after.Length,
-            after.LastWriteTimeUtc.Ticks));
     }
 
     internal async Task<CalibrationLibrarySelectionResult> SelectFrozenAsync(
@@ -3460,11 +3395,8 @@ public sealed partial class SqliteCalibrationLibraryStore(
         string PayloadRelativePath,
         string ManifestSha256,
         long PayloadBytes);
-    private sealed record EvidenceFileFingerprint(string RelativePath, long Length, long LastWriteUtcTicks);
-    private sealed record StableEvidenceFile(byte[] Bytes, EvidenceFileFingerprint Fingerprint);
     private sealed record PublishedBundleEvidence(
         IReadOnlyList<PublishedArtifactEvidence> Artifacts,
-        IReadOnlyList<EvidenceFileFingerprint> Files,
         long ValidatedUnixMs);
     private sealed record PersistedBundle(CalibrationLibraryBundleSnapshot Snapshot, byte[] BundleJson)
     {

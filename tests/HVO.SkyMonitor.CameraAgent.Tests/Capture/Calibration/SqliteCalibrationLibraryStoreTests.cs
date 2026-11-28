@@ -277,10 +277,9 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 }
                 else
                 {
-                    var manifestPath = Path.Combine(
-                        root,
-                        fixture.Bundle.Artifacts[0].ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
-                    File.Delete(manifestPath);
+                    var missing = await CalibrationSiloFixture.FindMemberAsync(root, fixture.Bundle.Artifacts[0].ArtifactId,
+                        CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
+                    CalibrationSiloFixture.Objects(root).Delete(missing);
                     await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                         await store.AdoptPublishedBundleAsync(
                             fixture.Bundle, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -344,10 +343,8 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             Assert.IsTrue((await store.SelectAsync(
                 fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
             var artifact = fixture.Bundle.Artifacts[0];
-            var manifestPath = Path.Combine(
-                root, artifact.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var originalTimestamp = File.GetLastWriteTimeUtc(manifestPath);
-            var originalBytes = await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false);
+            var originalBytes = await CalibrationSiloFixture.ReadMemberAsync(root, artifact.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(originalBytes);
             Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
             var manifest = parsed.Document!.Manifest!;
@@ -371,8 +368,8 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             var tamperedBytes = CaptureContractJson.Serialize(tampered);
             Assert.AreEqual(originalBytes.Length, tamperedBytes.Length);
             Assert.IsTrue(CaptureContractJson.ParseManifest(tamperedBytes).IsValid);
-            await File.WriteAllBytesAsync(manifestPath, tamperedBytes).ConfigureAwait(false);
-            File.SetLastWriteTimeUtc(manifestPath, originalTimestamp);
+            await CalibrationSiloFixture.OverrideMemberAsync(root, artifact.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision, tamperedBytes).ConfigureAwait(false);
             timeProvider.Advance(TimeSpan.FromMinutes(11));
 
             var result = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
@@ -396,18 +393,12 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             using var store = fixture.Store;
             var snapshot = await store.AdoptPublishedBundleAsync(
                 fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
-            using var silo = SiloInfrastructureFixture.OpenStore(root);
-            await CalibrationSiloFixture.PublishAsync(silo, root, fixture.Bundle).ConfigureAwait(false);
+            var silo = SiloInfrastructureFixture.ProductStore(root);
             var baseline = await silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>()
                 .LoadAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(4, baseline.References);
             var artifact = fixture.Bundle.Artifacts[0];
-            var manifestPath = Path.Combine(
-                root, artifact.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
-            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
-            var manifest = parsed.Document!.Manifest!;
+            var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, artifact.ArtifactId).ConfigureAwait(false);
             var tampered = manifest with
             {
                 Descriptor = manifest.Descriptor with
@@ -418,11 +409,10 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                     }
                 }
             };
-            await File.WriteAllBytesAsync(manifestPath, CaptureContractJson.Serialize(tampered)).ConfigureAwait(false);
+            await CalibrationSiloFixture.OverrideMemberAsync(root, artifact.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision, CaptureContractJson.Serialize(tampered)).ConfigureAwait(false);
 
-            using var tamperedSilo = SiloInfrastructureFixture.OpenStore(Path.Combine(root, "tampered-silo"));
-            await CalibrationSiloFixture.PublishAsync(tamperedSilo, root, fixture.Bundle).ConfigureAwait(false);
-            var loader = tamperedSilo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
+            var loader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
                 loader.LoadAsync(snapshot, CancellationToken.None)).ConfigureAwait(false);
         }
@@ -442,16 +432,13 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             using var store = fixture.Store;
             var first = fixture.Bundle.Artifacts[0];
             var second = fixture.Bundle.Artifacts[1];
-            var manifestPath = Path.Combine(
-                root, first.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
-            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
-            var redirected = parsed.Document!.Manifest! with
+            var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, first.ArtifactId).ConfigureAwait(false);
+            var redirected = manifest with
             {
                 RelativeArtifactPath = second.ManifestRelativePath.Replace(".json", ".bin", StringComparison.Ordinal)
             };
-            await File.WriteAllBytesAsync(manifestPath, CaptureContractJson.Serialize(redirected)).ConfigureAwait(false);
+            await CalibrationSiloFixture.OverrideMemberAsync(root, first.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision, CaptureContractJson.Serialize(redirected)).ConfigureAwait(false);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
                 store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None)).ConfigureAwait(false);
@@ -463,169 +450,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
-    public async Task ReconcileAsync_AdoptsCanonicalSyntheticBundleWithoutChangingEvidenceAndIsRestartStable()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = fixture.Store;
-            var before = Directory.EnumerateFiles(
-                    Path.Combine(root, "calibration", "synthetic"), "*", SearchOption.AllDirectories)
-                .ToDictionary(
-                    path => Path.GetRelativePath(root, path),
-                    path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
-                    StringComparer.Ordinal);
-            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
-
-            var first = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-            var second = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(1, first.Adopted);
-            Assert.AreEqual(0, first.Failed);
-            Assert.AreEqual(1, second.Adopted);
-            var after = Directory.EnumerateFiles(
-                    Path.Combine(root, "calibration", "synthetic"), "*", SearchOption.AllDirectories)
-                .ToDictionary(
-                    path => Path.GetRelativePath(root, path),
-                    path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
-                    StringComparer.Ordinal);
-            CollectionAssert.AreEquivalent(before.Keys.ToArray(), after.Keys.ToArray());
-            foreach (var pair in before)
-            {
-                Assert.AreEqual(pair.Value, after[pair.Key]);
-            }
-            Assert.HasCount(1, await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
-            using var connection = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
-                SELECT COUNT(*) FROM calibration_library_reconciliation
-                WHERE outcome = 'adopted' AND operation_state = 'completed';
-                """).ConfigureAwait(false));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
-    public async Task ReconcileAsync_DurablyQuarantinesPreMarkerRemnantsAndResumesCleanly()
-    {
-        var root = CreateRoot();
-        try
-        {
-            Directory.CreateDirectory(root);
-            await new SqliteRawCaptureJournal(
-                Path.Combine(root, "journal", "raw-ingress.db"), 1)
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var source = Path.Combine(root, "calibration", "synthetic", new string('A', 64));
-            Directory.CreateDirectory(source);
-            await File.WriteAllBytesAsync(Path.Combine(source, "bias.bin"), [1, 2, 3, 4]).ConfigureAwait(false);
-            using var store = new SqliteCalibrationLibraryStore(
-                new InitializedIngress(), CreateOptions(root), TimeProvider.System);
-            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
-
-            var first = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-            var second = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(1, first.Quarantined);
-            Assert.AreEqual(0, first.Failed);
-            Assert.AreEqual(0, second.Inspected);
-            Assert.IsFalse(Directory.Exists(source));
-            Assert.HasCount(1, Directory.EnumerateFiles(
-                Path.Combine(root, "quarantine", "calibration"), "bias.bin", SearchOption.AllDirectories).ToArray());
-            using var connection = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
-                SELECT COUNT(*) FROM calibration_library_reconciliation
-                WHERE outcome = 'quarantined' AND operation_state = 'completed';
-                """).ConfigureAwait(false));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
-    public async Task ReconcileAsync_UnderADurablePause_MovesNoRemnantUntilAStartWithoutOne()
-    {
-        // A candidate started under the installer's pause moves no calibration evidence a restore could need; the move
-        // is made at the next start without a pause (#1314 R10).
-        var root = CreateRoot();
-        try
-        {
-            Directory.CreateDirectory(root);
-            await new SqliteRawCaptureJournal(
-                Path.Combine(root, "journal", "raw-ingress.db"), 1)
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var source = Path.Combine(root, "calibration", "synthetic", new string('B', 64));
-            Directory.CreateDirectory(source);
-            await File.WriteAllBytesAsync(Path.Combine(source, "bias.bin"), [1, 2, 3, 4]).ConfigureAwait(false);
-            await SetCaptureStateAsync(root, "paused").ConfigureAwait(false);
-            using var store = new SqliteCalibrationLibraryStore(
-                new InitializedIngress(), CreateOptions(root), TimeProvider.System);
-            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
-
-            var held = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(0, held.Quarantined);
-            Assert.AreEqual(1, held.Held);
-            Assert.IsTrue(Directory.Exists(source));
-            await SetCaptureStateAsync(root, "running").ConfigureAwait(false);
-            var moved = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(1, moved.Quarantined);
-            Assert.IsFalse(Directory.Exists(source));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    private static async Task SetCaptureStateAsync(string root, string state)
-    {
-        using var connection = await OpenAsync(root).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE capture_control_state SET state = $state WHERE state_key = 1;";
-        command.Parameters.AddWithValue("$state", state);
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task ReconcileAsync_MissingMarkerForAdoptedBundleFailsWithoutMovingRetainedEvidence()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = fixture.Store;
-            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
-            _ = await store.ActivateAsync(
-                fixture.Bundle.BundleId, "activate-before-marker-loss", 0, "operator", null,
-                CancellationToken.None).ConfigureAwait(false);
-            var profilePath = Path.Combine(
-                root, fixture.Bundle.ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var evidenceDirectory = Path.GetDirectoryName(profilePath)!;
-            File.Delete(profilePath);
-
-            var summary = await new CalibrationLibraryReconciler(store, CreateOptions(root))
-                .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(0, summary.Quarantined);
-            Assert.AreEqual(1, summary.Failed);
-            Assert.IsTrue(Directory.Exists(evidenceDirectory));
-            Assert.IsFalse((await store.SelectAsync(
-                fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
-            Assert.IsFalse(Directory.Exists(Path.Combine(root, "quarantine", "calibration")));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
-    public async Task SelectAsync_RehashesAfterBoundedIntervalAndDetectsTimestampPreservingCorruption()
+    public async Task SelectAsync_RechecksExactPayloadAfterBoundedInterval()
     {
         var root = CreateRoot();
         try
@@ -639,16 +464,12 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue((await store.SelectAsync(
                 fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
-            var payloadPath = Path.Combine(
-                root,
-                fixture.Bundle.Artifacts[0].ManifestRelativePath
-                    .Replace(".json", ".bin", StringComparison.Ordinal)
-                    .Replace('/', Path.DirectorySeparatorChar));
-            var originalTimestamp = File.GetLastWriteTimeUtc(payloadPath);
-            var bytes = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
-            bytes[0] ^= 0xFF;
-            await File.WriteAllBytesAsync(payloadPath, bytes).ConfigureAwait(false);
-            File.SetLastWriteTimeUtc(payloadPath, originalTimestamp);
+            var artifact = fixture.Bundle.Artifacts[0];
+            var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, artifact.ArtifactId).ConfigureAwait(false);
+            var revision = CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor);
+            var bytes = await CalibrationSiloFixture.ReadMemberAsync(root, artifact.ArtifactId, revision).ConfigureAwait(false);
+            bytes[0] ^= 0x01;
+            await CalibrationSiloFixture.OverrideMemberAsync(root, artifact.ArtifactId, revision, bytes).ConfigureAwait(false);
             timeProvider.Advance(TimeSpan.FromMinutes(11));
 
             var result = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
@@ -663,7 +484,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
-    public async Task SelectAsync_DetectsTimestampPreservingCanonicalBundleTampering()
+    public async Task SelectAsync_DetectsCorruptedSiloBundleEnvelope()
     {
         var root = CreateRoot();
         try
@@ -677,88 +498,16 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue((await store.SelectAsync(
                 fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
-            var bundlePath = Path.Combine(
-                root,
-                Path.GetDirectoryName(fixture.Bundle.ProfileRelativePath)!,
-                CalibrationLibraryEvidenceNames.BundleEnvelope);
-            var originalTimestamp = File.GetLastWriteTimeUtc(bundlePath);
-            var bytes = await File.ReadAllBytesAsync(bundlePath).ConfigureAwait(false);
-            bytes[^1] ^= 0x01;
-            await File.WriteAllBytesAsync(bundlePath, bytes).ConfigureAwait(false);
-            File.SetLastWriteTimeUtc(bundlePath, originalTimestamp);
+            var id = CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundle);
+            var bytes = await CalibrationSiloFixture.ReadMemberAsync(root, id, CalibrationArtifactPublisher.SiloBundleRevision).ConfigureAwait(false);
+            bytes[0] ^= 0x01;
+            await CalibrationSiloFixture.OverrideMemberAsync(root, id, CalibrationArtifactPublisher.SiloBundleRevision, bytes).ConfigureAwait(false);
             timeProvider.Advance(TimeSpan.FromMinutes(11));
 
             var result = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsFalse(result.IsSelected);
             Assert.AreEqual(CalibrationLibraryReasonCodes.Corrupt, result.ReasonCode);
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
-    public async Task ReconcileAsync_MalformedCommittedBundleRecordsFailureWithoutThrowing()
-    {
-        var root = CreateRoot();
-        try
-        {
-            Directory.CreateDirectory(root);
-            await new SqliteRawCaptureJournal(
-                Path.Combine(root, "journal", "raw-ingress.db"), 1)
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var source = Path.Combine(root, "calibration", "synthetic", new string('A', 64));
-            Directory.CreateDirectory(source);
-            await File.WriteAllTextAsync(
-                Path.Combine(source, "reference-calibration-profile.json"), "{not-json").ConfigureAwait(false);
-            await File.WriteAllTextAsync(
-                Path.Combine(source, CalibrationLibraryEvidenceNames.BundleEnvelope), "{not-json").ConfigureAwait(false);
-            using var store = new SqliteCalibrationLibraryStore(
-                new InitializedIngress(), CreateOptions(root), TimeProvider.System);
-            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
-
-            var summary = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(1, summary.Failed);
-            Assert.IsTrue(Directory.Exists(source));
-            using var connection = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
-                SELECT COUNT(*) FROM calibration_library_reconciliation
-                WHERE outcome = 'failed' AND operation_state = 'completed';
-                """).ConfigureAwait(false));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
-    public async Task ReconcileAsync_NullProfileReferencesRecordFailureWithoutAbortingStartup()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = fixture.Store;
-            var profilePath = Path.Combine(
-                root,
-                fixture.Bundle.ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var profile = JsonNode.Parse(await File.ReadAllTextAsync(profilePath).ConfigureAwait(false))!.AsObject();
-            profile["References"] = null;
-            await File.WriteAllTextAsync(profilePath, profile.ToJsonString()).ConfigureAwait(false);
-            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
-
-            var summary = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(1, summary.Failed);
-            using var connection = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ScalarLongAsync(connection, """
-                SELECT COUNT(*) FROM calibration_library_reconciliation
-                WHERE outcome = 'failed' AND operation_state = 'completed';
-                """).ConfigureAwait(false));
         }
         finally
         {
@@ -807,14 +556,14 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                     SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var syntheticStore = new SyntheticCalibrationReferenceStore(
-            options);
+        var syntheticStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
         var synthetic = await syntheticStore.GetOrCreateAsync(
             light, model, CancellationToken.None).ConfigureAwait(false);
         var bundle = synthetic.LibraryBundle;
         Assert.IsTrue(CalibrationLibraryContract.Validate(bundle).IsValid);
         return new Fixture(new SqliteCalibrationLibraryStore(
-            new InitializedIngress(), options, timeProvider ?? TimeProvider.System), bundle, light);
+            new InitializedIngress(), options, timeProvider ?? TimeProvider.System)
+        { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) }, bundle, light);
     }
 
     private static async Task<Fixture> CreateVirtualFixtureAsync(string root)
@@ -833,13 +582,14 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             new InitializedIngress(), options, TimeProvider.System, telemetry);
         await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var store = new SqliteCalibrationLibraryStore(
-            new InitializedIngress(), options, TimeProvider.System);
+            new InitializedIngress(), options, TimeProvider.System)
+        { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
         _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var accessor = new CameraAgentConfigurationAccessor();
         accessor.SetConfiguration(CreateVirtualConfiguration());
         using var coordinator = new VirtualCalibrationAcquisitionCoordinator(
             store,
-            new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
+            CalibrationSiloFixture.Publisher(options, NullCalibrationPublicationFaultInjector.Instance),
             admission,
             accessor,
             TimeProvider.System);
@@ -865,15 +615,10 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         var bundle = (await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single().Bundle;
         var source = bundle.Artifacts.First(static artifact =>
             artifact.Role == CalibrationLibraryArtifactRoles.Source);
-        var manifestPath = Path.Combine(
-            root,
-            source.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
-        var parsed = CaptureContractJson.ParseManifest(
-            await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
-        Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+        var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, source.ArtifactId).ConfigureAwait(false);
         var started = effectiveFrom.AddHours(1);
         var ended = started.Add(job.Plan.ApplicableLightExposure);
-        var sourceDescriptor = parsed.Document!.Manifest!.Descriptor;
+        var sourceDescriptor = manifest.Descriptor;
         var light = sourceDescriptor with
         {
             Timing = new CaptureTimingDescriptor(started, started, ended, ended, ended),
@@ -919,7 +664,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             RawIngressRoot = root,
             RawIngressSqliteBusyTimeoutSeconds = 1
         });
-        return new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
+        return new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
     }
 
     private static IOptions<CameraAgentHostOptions> CreateOptions(string root)

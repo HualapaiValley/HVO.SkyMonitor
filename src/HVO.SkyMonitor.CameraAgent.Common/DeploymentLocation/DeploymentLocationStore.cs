@@ -1279,7 +1279,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
     }
 
     private static bool IsRetiredCaptureRoot(string relativePath)
-        => relativePath.Split(Path.DirectorySeparatorChar, 2)[0] is "frames" or "derived" or "nightly-products";
+        => relativePath.Split(Path.DirectorySeparatorChar, 2)[0] is "frames" or "derived" or "index" or "nightly-products" or "calibration";
 
     private static bool IsRawAdmissionSidecar(string root, string path)
         => Path.GetRelativePath(root, path).StartsWith(

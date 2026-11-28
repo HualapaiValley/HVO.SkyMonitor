@@ -5,39 +5,27 @@ using System.Text.Json;
 using System.Collections.Concurrent;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed record SyntheticCalibrationBundle(
     CalibrationLibraryBundleV1 LibraryBundle,
     ReferenceCalibrationProfileV1 Profile,
-    ReadOnlyMemory<byte> ProfileJson,
+    byte[] ProfileJson,
     string ProfileIdentitySha256,
     IReadOnlyDictionary<string, ProcessingArtifact> References,
     IReadOnlyDictionary<string, ArtifactManifestV2> ReferenceManifests,
-    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs,
-    IReadOnlyList<SyntheticCalibrationEvidenceFile> EvidenceFiles);
-
-internal sealed record SyntheticCalibrationEvidenceFile(
-    string RelativePath,
-    long Length,
-    DateTime LastWriteUtc,
-    string Sha256);
+    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs);
 
 internal sealed class SyntheticCalibrationReferenceStore(
-    IOptions<CameraAgentHostOptions> options,
-    CalibrationArtifactPublisher? publisher = null,
+    CalibrationArtifactPublisher publisher,
     SqliteCalibrationLibraryStore? calibrationLibrary = null)
 {
-    private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
-    private readonly CalibrationArtifactPublisher _publisher = publisher ??
-        new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance);
+    private readonly CalibrationArtifactPublisher _publisher = publisher;
     private readonly SqliteCalibrationLibraryStore? _calibrationLibrary = calibrationLibrary;
     private readonly ConcurrentDictionary<string, Task<SyntheticCalibrationBundle>> _cache = new(StringComparer.Ordinal);
 
@@ -71,7 +59,14 @@ internal sealed class SyntheticCalibrationReferenceStore(
         try
         {
             var bundle = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            await ValidateCachedBundleAsync(bundle, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await ValidateCachedBundleAsync(bundle, cancellationToken).ConfigureAwait(false);
+            }
+            catch (FileNotFoundException exception)
+            {
+                throw new InvalidDataException("The synthetic calibration bundle is missing an exact Silo member.", exception);
+            }
             return bundle;
         }
         catch when (task.IsFaulted || task.IsCanceled)
@@ -92,8 +87,6 @@ internal sealed class SyntheticCalibrationReferenceStore(
         var relativeDirectory = Path.Combine("calibration", "synthetic", publicationIdentity.ToUpperInvariant());
         var bundleRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.BundleEnvelope));
         var profileRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.ProfileMarker));
-        if (_publisher.Silo is null)
-            EnsureCommittedBundleIsComplete(relativeDirectory, bundleRelativePath, profileRelativePath);
         var generated = SyntheticCalibrationReferenceGenerator.Generate(
             layout.Width, layout.Height, layout.PixelFormat, model);
         var referenceInputs = new Dictionary<string, ProcessingArtifact>(StringComparer.Ordinal);
@@ -200,16 +193,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 DateTimeOffset.UnixEpoch,
                 null),
             libraryArtifacts);
-        if (_publisher.Silo is null)
-        {
-            await _publisher.PublishBundleEnvelopeAsync(bundleRelativePath, CalibrationLibraryContractJson.Serialize(bundle),
-                cancellationToken).ConfigureAwait(false);
-            await _publisher.PublishProfileMarkerAsync(profileRelativePath, profileJson, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
-        }
+        await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
         if (_calibrationLibrary is not null)
         {
             _ = await _calibrationLibrary.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
@@ -236,10 +220,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
             profileIdentity,
             referenceInputs,
             referenceManifests,
-            auxiliaryInputs,
-            _publisher.Silo is null
-                ? await CaptureEvidenceFilesAsync(relativeDirectory, cancellationToken).ConfigureAwait(false)
-                : []);
+            auxiliaryInputs);
     }
 
     private static ReconstructionDescriptor CreateDescriptor(
@@ -301,126 +282,31 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 payloadSha256));
     }
 
-    private void EnsureCommittedBundleIsComplete(
-        string relativeDirectory,
-        string bundleRelativePath,
-        string profileRelativePath)
-    {
-        var directory = ResolvePath(Normalize(relativeDirectory));
-        var profileExists = File.Exists(ResolvePath(profileRelativePath));
-        if (!profileExists)
-        {
-            if (Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any())
-            {
-                throw new InvalidDataException("Synthetic calibration evidence exists without its commit marker.");
-            }
-            return;
-        }
-        var required = CalibrationReferenceKinds.All
-            .SelectMany(kind => new[]
-            {
-                Normalize(Path.Combine(relativeDirectory, $"{kind}.bin")),
-                Normalize(Path.Combine(relativeDirectory, $"{kind}.json"))
-            })
-            .Append(bundleRelativePath)
-            .Append(profileRelativePath);
-        if (required.Any(path => !File.Exists(ResolvePath(path))))
-        {
-            throw new InvalidDataException("Committed synthetic calibration evidence is incomplete.");
-        }
-    }
-
-    private async Task<SyntheticCalibrationEvidenceFile[]> CaptureEvidenceFilesAsync(
-        string relativeDirectory,
-        CancellationToken cancellationToken)
-    {
-        var paths = CalibrationReferenceKinds.All
-            .SelectMany(kind => new[]
-            {
-                Normalize(Path.Combine(relativeDirectory, $"{kind}.bin")),
-                Normalize(Path.Combine(relativeDirectory, $"{kind}.json"))
-            })
-            .Append(Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.BundleEnvelope)))
-            .Append(Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.ProfileMarker)))
-            .ToArray();
-        var evidence = new SyntheticCalibrationEvidenceFile[paths.Length];
-        for (var index = 0; index < paths.Length; index++)
-        {
-            var path = ResolvePath(paths[index]);
-            var info = new FileInfo(path);
-            evidence[index] = new(
-                paths[index],
-                info.Length,
-                info.LastWriteTimeUtc,
-                await ComputeFileSha256Async(path, cancellationToken).ConfigureAwait(false));
-        }
-        return evidence;
-    }
-
     private async Task ValidateCachedBundleAsync(
         SyntheticCalibrationBundle bundle,
         CancellationToken cancellationToken)
     {
-        if (_publisher.Silo is { } silo)
-        {
-            var envelope = CalibrationLibraryContractJson.Serialize(bundle.LibraryBundle);
-            var bundleId = CalibrationArtifactPublisher.BundleArtifactId(bundle.LibraryBundle);
-            if (!await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloBundleRevision, envelope.LongLength,
-                    SiloHash.Sha256(envelope), cancellationToken).ConfigureAwait(false) ||
-                !await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileJson.Length,
-                    bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false))
-                throw new InvalidDataException("The cached synthetic calibration bundle has no settled Silo evidence.");
+        var silo = _publisher.Silo;
+        var envelope = CalibrationLibraryContractJson.Serialize(bundle.LibraryBundle);
+        var bundleId = CalibrationArtifactPublisher.BundleArtifactId(bundle.LibraryBundle);
+        if (!await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloBundleRevision, envelope.LongLength,
+                SiloHash.Sha256(envelope), cancellationToken).ConfigureAwait(false) ||
+            !await silo.VerifyMemberAsync(bundleId, CalibrationArtifactPublisher.SiloProfileRevision, bundle.ProfileJson.Length,
+                bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("The cached synthetic calibration bundle has no settled Silo evidence.");
 
-            foreach (var manifest in bundle.ReferenceManifests.Values)
-            {
-                var descriptor = manifest.Descriptor;
-                var artifact = descriptor.Artifact;
-                var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
-                var evidence = CaptureContractJson.Serialize(manifest);
-                if (!await silo.VerifyMemberAsync(artifact.ArtifactId, revision, descriptor.Layout.ByteLength,
-                        artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false) ||
-                    !await silo.VerifyMemberAsync(artifact.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision, evidence.LongLength,
-                        SiloHash.Sha256(evidence), cancellationToken).ConfigureAwait(false))
-                    throw new InvalidDataException("The cached synthetic calibration reference has no settled Silo evidence.");
-            }
-            return;
-        }
-        foreach (var evidence in bundle.EvidenceFiles)
+        foreach (var manifest in bundle.ReferenceManifests.Values)
         {
-            var path = ResolvePath(evidence.RelativePath);
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length != evidence.Length || info.LastWriteTimeUtc != evidence.LastWriteUtc ||
-                !string.Equals(
-                    await ComputeFileSha256Async(path, cancellationToken).ConfigureAwait(false),
-                    evidence.Sha256,
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Cached synthetic calibration evidence changed after publication.");
-            }
+            var descriptor = manifest.Descriptor;
+            var artifact = descriptor.Artifact;
+            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+            var evidence = CaptureContractJson.Serialize(manifest);
+            if (!await silo.VerifyMemberAsync(artifact.ArtifactId, revision, descriptor.Layout.ByteLength,
+                    artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false) ||
+                !await silo.VerifyMemberAsync(artifact.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision, evidence.LongLength,
+                    SiloHash.Sha256(evidence), cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("The cached synthetic calibration reference has no settled Silo evidence.");
         }
-    }
-
-    private static async Task<string> ComputeFileSha256Async(string path, CancellationToken cancellationToken)
-    {
-        var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using (stream.ConfigureAwait(false))
-        {
-            return Convert.ToHexString(
-                await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-        }
-    }
-
-    private string ResolvePath(string relativePath)
-    {
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath));
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Synthetic calibration reference path escapes CameraAgent storage.");
-        }
-        return path;
     }
 
     private static IEnumerable<(string Kind, Linear16Frame Frame, TimeSpan Exposure)> CreateReferences(

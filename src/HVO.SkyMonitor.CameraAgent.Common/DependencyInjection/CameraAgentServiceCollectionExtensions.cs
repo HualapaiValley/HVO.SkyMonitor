@@ -155,8 +155,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SqliteCalibrationFamilyStore>();
         services.AddSingleton<CalibrationFamilyActivationService>();
         services.AddSingleton(static provider => new CalibrationArtifactPublisher(
-            provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), provider.GetRequiredService<ICalibrationPublicationFaultInjector>())
-        { Silo = provider.GetRequiredService<SiloArtifactStorage>() });
+            provider.GetRequiredService<ICalibrationPublicationFaultInjector>(),
+            provider.GetRequiredService<SiloArtifactStorage>()));
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
         services.AddSingleton<CameraModuleOwnership>();

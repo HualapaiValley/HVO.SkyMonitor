@@ -1343,13 +1343,13 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
             var telemetry = new CaptureControlTelemetry();
             var admission = new CaptureAdmissionCoordinator(ingress, options, timeProvider, telemetry);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
+            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(configuration);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
                 store,
-                new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
+                CalibrationSiloFixture.Publisher(options, NullCalibrationPublicationFaultInjector.Instance),
                 admission,
                 accessor,
                 timeProvider);
@@ -1359,7 +1359,8 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
         internal static async Task<SqliteCalibrationLibraryStore> CreateStoreAsync(string root)
         {
             var store = new SqliteCalibrationLibraryStore(
-                new InitializingIngress(root), CreateOptions(root), new FixedTimeProvider(FixtureUtc));
+                new InitializingIngress(root), CreateOptions(root), new FixedTimeProvider(FixtureUtc))
+            { Silo = CalibrationSiloFixture.Storage(CreateOptions(root).Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             return store;
         }

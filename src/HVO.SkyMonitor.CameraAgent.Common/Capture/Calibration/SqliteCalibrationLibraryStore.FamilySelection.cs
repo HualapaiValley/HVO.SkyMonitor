@@ -1,6 +1,4 @@
-using System.Buffers;
 using System.Diagnostics;
-using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -32,7 +30,6 @@ internal sealed record CalibrationFamilySelectionResult(
 
 public sealed partial class SqliteCalibrationLibraryStore
 {
-    private const int FamilyMasterHashBufferBytes = 64 * 1024;
 
     /// <summary>
     /// Selects the family member for one light and checks each master it names against the library before use.
@@ -155,7 +152,7 @@ public sealed partial class SqliteCalibrationLibraryStore
     /// published bundle with the frozen kind and payload hash, its payload hashes to it, and its bundle's committed
     /// evidence passes the check <see cref="SelectFamilyMastersAsync"/> applies. Returns null, or the stable reason
     /// the first master fails. Each payload is always hashed again. By default the bundle evidence check bypasses the
-    /// file-metadata cache so unchanged length and timestamp cannot hide corrupt bytes; a caller that confirms on
+    /// bounded validation cache so a changed exact version cannot hide corrupt bytes; a caller that confirms on
     /// every window may pass <paramref name="forceEvidenceValidation"/> false to reuse it. Conditions and effective
     /// windows were settled when the selection was frozen and are not evaluated again.
     /// </summary>
@@ -241,7 +238,7 @@ public sealed partial class SqliteCalibrationLibraryStore
 
     /// <summary>
     /// Validates the committed evidence of each distinct bundle the masters come from, as <see cref="SelectAsync"/>
-    /// validates the active bundle. Selection may reuse the file-metadata cache; frozen-master confirmation always
+    /// validates the active bundle. Selection may reuse a recent validation; frozen-master confirmation always
     /// verifies the bytes again. Any failure is <c>master-corrupt</c>.
     /// </summary>
     private async Task<string?> VerifyFamilyBundleEvidenceAsync(
@@ -348,75 +345,39 @@ public sealed partial class SqliteCalibrationLibraryStore
         CancellationToken cancellationToken)
     {
         var expectedLength = master.Bundle.Bundle.Applicability.OutputLayout.ByteLength;
-        if (Silo is { } silo)
-        {
-            try
-            {
-                var id = master.Artifact.ArtifactId;
-                var bytes = await silo.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloEvidenceRevision,
-                    CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
-                if (bytes is null) return CalibrationFamilyReasonCodes.MasterMissing;
-                var parsed = CaptureContractJson.ParseManifest(bytes);
-                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
-                    manifest.Descriptor.Artifact.ArtifactId != id || manifest.Descriptor.Layout.ByteLength != expectedLength ||
-                    !string.Equals(manifest.Descriptor.Artifact.ChecksumSha256, master.Artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase))
-                    return CalibrationFamilyReasonCodes.MasterCorrupt;
-                return await silo.VerifyMemberAsync(id, CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),
-                    expectedLength, master.Artifact.PayloadSha256, cancellationToken).ConfigureAwait(false)
-                    ? null : CalibrationFamilyReasonCodes.MasterMissing;
-            }
-            catch (FileNotFoundException) { return CalibrationFamilyReasonCodes.MasterMissing; }
-            catch (InvalidDataException) { return CalibrationFamilyReasonCodes.MasterCorrupt; }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                return CalibrationFamilyReasonCodes.MasterUnreadable;
-            }
-        }
-        var buffer = ArrayPool<byte>.Shared.Rent(FamilyMasterHashBufferBytes);
+        var silo = ArtifactStorage;
+        var id = master.Artifact.ArtifactId;
+        byte[]? bytes;
         try
         {
-            var path = ResolveSafePath(PayloadPathForManifest(master.Artifact.ManifestRelativePath));
-            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.Read,
-                bufferSize: 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await using (stream.ConfigureAwait(false))
-            {
-                if (stream.Length != expectedLength)
-                {
-                    return CalibrationFamilyReasonCodes.MasterCorrupt;
-                }
-                for (var remaining = expectedLength; remaining > 0;)
-                {
-                    var read = await stream.ReadAsync(
-                        buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
-                    if (read == 0)
-                    {
-                        return CalibrationFamilyReasonCodes.MasterCorrupt;
-                    }
-                    hash.AppendData(buffer, 0, read);
-                    remaining -= read;
-                }
-            }
-            return string.Equals(
-                    Convert.ToHexString(hash.GetHashAndReset()),
-                    master.Artifact.PayloadSha256,
-                    StringComparison.OrdinalIgnoreCase)
-                ? null
-                : CalibrationFamilyReasonCodes.MasterCorrupt;
+            bytes = await silo.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException)
         {
-            // A pruned payload is missing, not unreadable (#1475).
-            return CalibrationFamilyReasonCodes.MasterMissing;
+            return CalibrationFamilyReasonCodes.MasterCorrupt;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return CalibrationFamilyReasonCodes.MasterUnreadable;
         }
-        finally
+        if (bytes is null) return CalibrationFamilyReasonCodes.MasterCorrupt;
+        try
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            var parsed = CaptureContractJson.ParseManifest(bytes);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+                manifest.Descriptor.Artifact.ArtifactId != id || manifest.Descriptor.Layout.ByteLength != expectedLength ||
+                !string.Equals(manifest.Descriptor.Artifact.ChecksumSha256, master.Artifact.PayloadSha256, StringComparison.OrdinalIgnoreCase))
+                return CalibrationFamilyReasonCodes.MasterCorrupt;
+            return await silo.VerifyMemberAsync(id, CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor),
+                expectedLength, master.Artifact.PayloadSha256, cancellationToken).ConfigureAwait(false)
+                ? null : CalibrationFamilyReasonCodes.MasterMissing;
+        }
+        catch (FileNotFoundException) { return CalibrationFamilyReasonCodes.MasterMissing; }
+        catch (InvalidDataException) { return CalibrationFamilyReasonCodes.MasterCorrupt; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return CalibrationFamilyReasonCodes.MasterUnreadable;
         }
     }
 

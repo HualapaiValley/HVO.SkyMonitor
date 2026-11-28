@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -39,7 +40,7 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                 Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.Seed);
             var light = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.SyntheticLight(model);
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var store = new SyntheticCalibrationReferenceStore(options);
+            var store = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
 
             var bundle = await store.GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
 
@@ -50,14 +51,14 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                 Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticBundleId,
                 bundle.LibraryBundle.BundleId);
             var expectedFiles = Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.ExpectedSyntheticFiles;
-            var actualFiles = bundle.EvidenceFiles.ToDictionary(
-                static file => Path.GetFileName(file.RelativePath),
-                static file => new Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.FileIdentity(file.Length, file.Sha256),
-                StringComparer.Ordinal);
-            CollectionAssert.AreEquivalent(expectedFiles.Keys.ToArray(), actualFiles.Keys.ToArray());
-            foreach (var file in expectedFiles)
+            var members = CalibrationSiloFixture.SyntheticMembers(bundle);
+            CollectionAssert.AreEquivalent(expectedFiles.Keys.ToArray(), members.Keys.ToArray());
+            foreach (var (name, member) in members)
             {
-                Assert.AreEqual(file.Value, actualFiles[file.Key], file.Key);
+                var bytes = await CalibrationSiloFixture.ReadMemberAsync(root, member.ArtifactId, member.Revision).ConfigureAwait(false);
+                var actual = new Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.FileIdentity(
+                    bytes.LongLength, PayloadChecksum.ComputeSha256(bytes));
+                Assert.AreEqual(expectedFiles[name], actual, name);
             }
         }
         finally
@@ -93,10 +94,10 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             };
             descriptor = WithSyntheticProfile(descriptor, model);
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var store = new SyntheticCalibrationReferenceStore(options);
+            var store = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
 
             var first = await store.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
-            var restartedStore = new SyntheticCalibrationReferenceStore(options);
+            var restartedStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
             var restarted = await restartedStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(first.ProfileIdentitySha256, restarted.ProfileIdentitySha256);
@@ -115,21 +116,18 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                     first.ReferenceManifests[kind].Descriptor.Artifact.ArtifactId);
                 Assert.AreEqual(FrameArtifactRole.Raw, first.ReferenceManifests[kind].Descriptor.Artifact.Role);
             }
-            Assert.HasCount(4, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).ToArray());
-            Assert.HasCount(6, Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories).ToArray());
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "calibration")));
             Assert.AreEqual(CalibrationLibraryBundleSources.SyntheticReferencesV1, first.LibraryBundle.Source);
             Assert.IsTrue(CalibrationLibraryContract.Validate(first.LibraryBundle).IsValid);
-            var persistedBundle = Directory.EnumerateFiles(
-                root, CalibrationLibraryEvidenceNames.BundleEnvelope, SearchOption.AllDirectories).Single();
-            var persistedBundleJson = await File.ReadAllBytesAsync(persistedBundle).ConfigureAwait(false);
+            var bundleId = CalibrationArtifactPublisher.BundleArtifactId(first.LibraryBundle);
+            var persistedBundleJson = await CalibrationSiloFixture.ReadMemberAsync(root, bundleId, CalibrationArtifactPublisher.SiloBundleRevision)
+                .ConfigureAwait(false);
             Assert.IsNotNull(CalibrationLibraryContractJson.Parse(persistedBundleJson).Value);
             CollectionAssert.AreEqual(
                 CalibrationLibraryContractJson.Serialize(first.LibraryBundle),
                 persistedBundleJson);
 
-            using var silo = SiloInfrastructureFixture.OpenStore(root);
-            await HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.CalibrationSiloFixture.PublishAsync(silo, root, first.LibraryBundle)
-                .ConfigureAwait(false);
+            var silo = SiloInfrastructureFixture.ProductStore(root);
             var library = silo.GetRequiredService<SqliteCalibrationLibraryStore>();
             await library.AdoptPublishedBundleAsync(first.LibraryBundle, CancellationToken.None).ConfigureAwait(false);
             var holds = await library.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
@@ -218,8 +216,7 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                 }
             };
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var store = new SyntheticCalibrationReferenceStore(
-                options);
+            var store = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
 
             var bundles = new[]
             {
@@ -275,21 +272,20 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             };
             descriptor = WithSyntheticProfile(descriptor, model);
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var firstStore = new SyntheticCalibrationReferenceStore(
-                options);
-            _ = await firstStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
-            var biasPath = Directory.EnumerateFiles(root, "bias.bin", SearchOption.AllDirectories).Single();
-            var expectedBias = await File.ReadAllBytesAsync(biasPath).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(biasPath, [0, 1, 2, 3]).ConfigureAwait(false);
-            var restartedStore = new SyntheticCalibrationReferenceStore(
-                options);
+            var firstStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
+            var first = await firstStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
+            var bias = CalibrationSiloFixture.SyntheticMembers(first)["bias.bin"];
+            var locator = await CalibrationSiloFixture.FindMemberAsync(root, bias.ArtifactId, bias.Revision).ConfigureAwait(false);
+            var objects = CalibrationSiloFixture.Objects(root);
+            await CalibrationSiloFixture.OverrideMemberAsync(root, bias.ArtifactId, bias.Revision, [0, 1, 2, 3]).ConfigureAwait(false);
+            var restartedStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await firstStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<CalibrationPublicationConflictException>(async () =>
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await restartedStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            CollectionAssert.AreEqual(new byte[] { 0, 1, 2, 3 }, await File.ReadAllBytesAsync(biasPath).ConfigureAwait(false));
-            await File.WriteAllBytesAsync(biasPath, expectedBias).ConfigureAwait(false);
+            CollectionAssert.AreEqual(new[] { locator.VersionId }, objects.VersionsOf(locator.Key).ToArray());
+            objects.ReadContentOverride = null;
             var recovered = await restartedStore.GetOrCreateAsync(
                 descriptor, model, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(4, recovered.References);
@@ -321,22 +317,22 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                 var template = ReconstructableCaptureContractTests.CreateManifest(
                     CameraPixelFormat.Mono16, 2, 2, 4, Bytes([500, 500, 500, 500]));
                 var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-                var firstStore = new SyntheticCalibrationReferenceStore(
-                    options);
+                var firstStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
                 var descriptor = WithSyntheticProfile(template.Descriptor, model);
-                _ = await firstStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
-                var missingPath = Directory.EnumerateFiles(root, missingFile, SearchOption.AllDirectories).Single();
-                File.Delete(missingPath);
+                var first = await firstStore.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
+                var member = CalibrationSiloFixture.SyntheticMembers(first)[missingFile];
+                var locator = await CalibrationSiloFixture.FindMemberAsync(root, member.ArtifactId, member.Revision).ConfigureAwait(false);
+                var objects = CalibrationSiloFixture.Objects(root);
+                objects.Delete(locator);
 
                 await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await firstStore.GetOrCreateAsync(
                         descriptor, model, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-                var restartedStore = new SyntheticCalibrationReferenceStore(
-                    options);
+                var restartedStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
                 await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await restartedStore.GetOrCreateAsync(
                         descriptor, model, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-                Assert.IsFalse(File.Exists(missingPath));
+                Assert.IsEmpty(objects.VersionsOf(locator.Key));
             }
             finally
             {
@@ -358,7 +354,9 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             var template = ReconstructableCaptureContractTests.CreateManifest(
                 CameraPixelFormat.Mono16, 2, 2, 4, Bytes([500, 500, 500, 500]));
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var store = new SyntheticCalibrationReferenceStore(options);
+            var store = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
+            var objects = CalibrationSiloFixture.Objects(root);
+            var puts = objects.Puts;
             using var cancellation = new CancellationTokenSource();
             await cancellation.CancelAsync().ConfigureAwait(false);
 
@@ -366,7 +364,7 @@ public sealed class SyntheticCalibrationReferenceStoreTests
                 await store.GetOrCreateAsync(
                     template.Descriptor, new SyntheticCalibrationModelV1(), cancellation.Token).ConfigureAwait(false))
                 .ConfigureAwait(false);
-            Assert.IsEmpty(Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToArray());
+            Assert.AreEqual(puts, objects.Puts);
         }
         finally
         {
@@ -378,23 +376,20 @@ public sealed class SyntheticCalibrationReferenceStoreTests
     }
 
     [TestMethod]
-    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 1, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 2, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 3, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 4, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 1, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 2, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 3, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 4, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.BeforeBundleWrite, 1, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterBundlePublished, 1, 0, 1)]
-    [DataRow(CalibrationPublicationFaultPoint.AfterProfilePublished, 1, 1, 0)]
-    [DataRow(CalibrationPublicationFaultPoint.DirectorySynced, 1, 1, 0)]
-    public async Task GetOrCreateAsync_EnvelopeFaultConvergesByAdoptionOrQuarantine(
+    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 1)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 2)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 3)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterPayloadPublished, 4)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 1)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 2)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 3)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterManifestPublished, 4)]
+    [DataRow(CalibrationPublicationFaultPoint.BeforeBundleWrite, 1)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterBundlePublished, 1)]
+    [DataRow(CalibrationPublicationFaultPoint.AfterProfilePublished, 1)]
+    public async Task GetOrCreateAsync_EnvelopeFaultConvergesThroughSiloOnRetry(
         CalibrationPublicationFaultPoint faultPoint,
-        int occurrence,
-        int expectedAdopted,
-        int expectedQuarantined)
+        int occurrence)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-synthetic-calibration", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -408,12 +403,11 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
                 .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var library = new SqliteCalibrationLibraryStore(
-                       new InitializedIngress(), options, TimeProvider.System))
+                       new InitializedIngress(), options, TimeProvider.System)
+            { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
             {
-                var publisher = new CalibrationArtifactPublisher(
-                    options, new OneShotFaultInjector(faultPoint, occurrence));
-                var store = new SyntheticCalibrationReferenceStore(
-                    options, publisher, library);
+                var publisher = CalibrationSiloFixture.Publisher(options, new OneShotFaultInjector(faultPoint, occurrence));
+                var store = new SyntheticCalibrationReferenceStore(publisher, library);
 
                 await Assert.ThrowsExactlyAsync<IOException>(async () =>
                     await store.GetOrCreateAsync(
@@ -423,25 +417,16 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             }
 
             using var restarted = new SqliteCalibrationLibraryStore(
-                new InitializedIngress(), options, TimeProvider.System);
-            var summary = await new CalibrationLibraryReconciler(restarted, options)
-                .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(expectedAdopted, summary.Adopted);
-            Assert.AreEqual(expectedQuarantined, summary.Quarantined);
-            Assert.AreEqual(0, summary.Failed);
-            Assert.HasCount(expectedAdopted, await restarted.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
-            if (faultPoint is CalibrationPublicationFaultPoint.BeforeBundleWrite or
-                CalibrationPublicationFaultPoint.AfterBundlePublished)
+                new InitializedIngress(), options, TimeProvider.System)
+            { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
+            var reopened = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options), restarted);
+            var bundle = await reopened.GetOrCreateAsync(CreateSyntheticDescriptor(), new SyntheticCalibrationModelV1(),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, await restarted.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
+            foreach (var member in CalibrationSiloFixture.SyntheticMembers(bundle).Values)
             {
-                var scenarioId = faultPoint == CalibrationPublicationFaultPoint.BeforeBundleWrite
-                    ? "calibration-before-bundle-write"
-                    : "calibration-bundle-publication";
-                await Phase14ScenarioEvidence.RecordAsync(
-                    scenarioId,
-                    $"synthetic-{faultPoint}",
-                    faultPoint.ToString(),
-                    ["bundle-boundary-fault-observed", "uncommitted-bundle-not-adopted", "restart-quarantined-remnants"])
-                    .ConfigureAwait(false);
+                var locator = await CalibrationSiloFixture.FindMemberAsync(root, member.ArtifactId, member.Revision).ConfigureAwait(false);
+                CollectionAssert.AreEqual(new[] { locator.VersionId }, CalibrationSiloFixture.Objects(root).VersionsOf(locator.Key).ToArray());
             }
         }
         finally
@@ -468,12 +453,11 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
                 .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var library = new SqliteCalibrationLibraryStore(
-                       new InitializedIngress(), options, TimeProvider.System))
+                       new InitializedIngress(), options, TimeProvider.System)
+            { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
             {
-                var publisher = new CalibrationArtifactPublisher(
-                    options, new OneShotFaultInjector(CalibrationPublicationFaultPoint.AfterSqlitePublication));
-                var store = new SyntheticCalibrationReferenceStore(
-                    options, publisher, library);
+                var publisher = CalibrationSiloFixture.Publisher(options, new OneShotFaultInjector(CalibrationPublicationFaultPoint.AfterSqlitePublication));
+                var store = new SyntheticCalibrationReferenceStore(publisher, library);
 
                 await Assert.ThrowsExactlyAsync<IOException>(async () =>
                     await store.GetOrCreateAsync(
@@ -484,11 +468,11 @@ public sealed class SyntheticCalibrationReferenceStoreTests
             }
 
             using var restarted = new SqliteCalibrationLibraryStore(
-                new InitializedIngress(), options, TimeProvider.System);
-            var summary = await new CalibrationLibraryReconciler(restarted, options)
-                .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(1, summary.Adopted);
-            Assert.AreEqual(0, summary.Failed);
+                new InitializedIngress(), options, TimeProvider.System)
+            { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
+            var reopened = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options), restarted);
+            _ = await reopened.GetOrCreateAsync(CreateSyntheticDescriptor(), new SyntheticCalibrationModelV1(),
+                CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, await restarted.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
         }
         finally

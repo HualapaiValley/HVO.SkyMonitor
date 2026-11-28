@@ -170,6 +170,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             var descriptor = new DescriptorOnlyStep();
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
             var pixel = new ProducingStep();
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
@@ -178,7 +179,7 @@ public sealed partial class DurableCaptureProcessingTests
                     CreateNode(pixel),
                     CreateNode(descriptor) with { Dependencies = ["normalize"] }
                 ]),
-                null,
+                CreatePersistence(fixture.Options, store, telemetry),
                 telemetry,
                 1,
                 NullLogger.Instance,
@@ -261,12 +262,13 @@ public sealed partial class DurableCaptureProcessingTests
                 fixture.Item.RawCapture!.StoredFrame.AbsolutePath,
                 [1]).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateNode(new ProducingStep())]),
-                    null,
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
