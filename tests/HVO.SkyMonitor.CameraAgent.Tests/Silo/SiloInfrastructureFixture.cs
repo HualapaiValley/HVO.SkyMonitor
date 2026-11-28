@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,33 +25,38 @@ internal static class SiloInfrastructureFixture
 {
     internal const string VersionSnapshotFileName = "silo-fixture-versions.json";
 
-    private static readonly Dictionary<string, Bucket> Buckets = new(StringComparer.Ordinal);
-    private static readonly List<DirectoryInfo> TemporaryRoots = [];
+    // A root can be registered before setup creates it and reopened after its host is disposed.
+    // Keep its bucket and cached provider until assembly cleanup, when all tests have finished.
     private static readonly Lock Gate = new();
+    private static readonly Dictionary<string, Bucket> Buckets = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, ServiceProvider> ProductStores = new(StringComparer.Ordinal);
+    private static readonly List<string> TemporaryRoots = [];
 
     internal static void ReleaseTemporaryRoots()
     {
-        foreach (var store in ProductStores.Values)
-            store.Dispose();
-        ProductStores.Clear();
-        Buckets.Clear();
-        foreach (var directory in TemporaryRoots)
+        lock (Gate)
         {
-            if (directory.Exists) directory.Delete(recursive: true);
+            foreach (var store in ProductStores.Values)
+                store.Dispose();
+            ProductStores.Clear();
+            Buckets.Clear();
+            foreach (var root in TemporaryRoots)
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            }
+            TemporaryRoots.Clear();
         }
     }
 
     internal static Bucket GetOrCreateBucket(string root)
     {
+        var key = StorageRootIdentity.Key(root);
         lock (Gate)
         {
-            foreach (var unused in Buckets.Keys.Where(path => !Directory.Exists(path)).ToArray())
-                Buckets.Remove(unused);
-            if (!Buckets.TryGetValue(root, out var bucket))
+            if (!Buckets.TryGetValue(key, out var bucket))
             {
                 bucket = new Bucket();
-                Buckets.Add(root, bucket);
+                Buckets.Add(key, bucket);
             }
             return bucket;
         }
@@ -64,13 +70,15 @@ internal static class SiloInfrastructureFixture
 
         var root = configuration[rootSetting];
         if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) ||
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) == Path.TrimEndingDirectorySeparator(Path.GetTempPath()))
+            StorageRootIdentity.AreEqual(root, Path.GetTempPath()))
         {
-            var temporary = Directory.CreateTempSubdirectory("hvo-silo-test-");
-            lock (Gate) TemporaryRoots.Add(temporary);
-            root = temporary.FullName;
+            lock (Gate)
+            {
+                root = Directory.CreateTempSubdirectory("hvo-silo-test-").FullName;
+                TemporaryRoots.Add(root);
+            }
         }
-        root = Path.GetFullPath(root);
+        root = StorageRootIdentity.CanonicalPath(root);
         var bucket = GetOrCreateBucket(root);
 
         var settings = new ConfigurationBuilder()
@@ -157,18 +165,14 @@ internal static class SiloInfrastructureFixture
     // Several journal fixtures construct and reopen stores directly rather than host services.
     internal static IServiceProvider ProductStore(string root)
     {
-        root = Path.GetFullPath(root);
+        root = StorageRootIdentity.CanonicalPath(root);
+        var key = StorageRootIdentity.Key(root);
         lock (Gate)
         {
-            foreach (var unused in ProductStores.Keys.Where(path => !Directory.Exists(path)).ToArray())
-            {
-                ProductStores[unused].Dispose();
-                ProductStores.Remove(unused);
-            }
-            if (!ProductStores.TryGetValue(root, out var provider))
+            if (!ProductStores.TryGetValue(key, out var provider))
             {
                 provider = OpenStore(root);
-                ProductStores.Add(root, provider);
+                ProductStores.Add(key, provider);
             }
             return provider;
         }
