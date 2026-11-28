@@ -3305,7 +3305,8 @@ public sealed partial class RawCaptureIngressTests
         ILogger<RawCaptureIngress>? logger = null,
         CaptureMaintenanceGate? maintenanceGate = null,
         HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.IProjectedSceneStagingReconciler? projectedSceneStaging = null,
-        IServiceProvider? siloProvider = null)
+        IServiceProvider? siloProvider = null,
+        IServiceProvider? storagePolicyServices = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -3324,7 +3325,8 @@ public sealed partial class RawCaptureIngressTests
             maintenanceGate: maintenanceGate,
             silo: siloProvider?.GetRequiredService<SiloInstalledStorage>(),
             siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(),
-            siloArtifacts: siloProvider?.GetRequiredService<SiloArtifactStorage>());
+            siloArtifacts: siloProvider?.GetRequiredService<SiloArtifactStorage>(),
+            storagePolicyServices: storagePolicyServices);
     }
 
     private static CameraModuleConfig CreateConfiguration()

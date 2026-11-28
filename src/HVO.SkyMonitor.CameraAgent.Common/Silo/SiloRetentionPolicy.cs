@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
@@ -27,8 +28,14 @@ internal sealed record SiloCaptureCondition(string? WindowId = null, string? Sky
         value.Equals("night", StringComparison.OrdinalIgnoreCase);
 }
 
+internal sealed record SiloCaptureVariantRetention(string Role, [property: JsonRequired] TimeSpan MaximumAge,
+    string? MediaType = null, string? Variant = null);
+
+internal sealed record SiloCaptureRetentionProfile(string Name, IReadOnlyList<SiloCaptureVariantRetention> Variants,
+    IReadOnlyList<string>? WindowIds = null, IReadOnlyList<string>? SkyConditions = null);
+
 internal sealed record SiloRetentionPolicy(bool ExpiryHeld, IReadOnlyList<SiloRoleRetention> Roles,
-    IReadOnlyList<CameraAgentSiloCaptureRetentionProfile>? CaptureProfiles = null)
+    IReadOnlyList<SiloCaptureRetentionProfile>? CaptureProfiles = null)
 {
     internal const string PolicyId = "tier-retention-v1";
     internal static SiloRetentionPolicy Held { get; } = new(true, []);
@@ -104,7 +111,7 @@ internal sealed record SiloRetentionPolicy(bool ExpiryHeld, IReadOnlyList<SiloRo
         if (profile is null) return default;
 
         var role = reference.GroupKind is "centered-view" or "centered-archive" ? reference.GroupKind : reference.Role;
-        CameraAgentSiloCaptureVariantRetention? rule = null;
+        SiloCaptureVariantRetention? rule = null;
         var specificity = -1;
         foreach (var variant in profile.Variants)
         {

@@ -15,6 +15,18 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
+    [DataRow(FrameArtifactRole.Raw)]
+    [DataRow(FrameArtifactRole.Calibrated)]
+    [DataRow(FrameArtifactRole.Combined)]
+    [DataRow(FrameArtifactRole.Metadata)]
+    public void JpegEncodingRejectsScienceAndMetadataSourceRoles(FrameArtifactRole role)
+    {
+        var options = new JpegEncodingProcessingStepOptions { SourceRole = role };
+        var result = Assert.ContainsSingle(options.Validate(new ValidationContext(options)));
+        Assert.AreEqual(nameof(options.SourceRole), Assert.ContainsSingle(result.MemberNames));
+    }
+
+    [TestMethod]
     [DataRow(null, "1", 1, false)]
     [DataRow(1, "", 2, false)]
     [DataRow(null, "1", 2, true)]

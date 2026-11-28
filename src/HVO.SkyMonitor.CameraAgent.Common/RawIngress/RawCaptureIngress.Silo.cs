@@ -377,7 +377,7 @@ internal sealed partial class RawCaptureIngress
         }
     }
 
-    private SiloCaptureCondition? ReadCaptureCondition(ReconstructionDescriptor descriptor)
+    internal SiloCaptureCondition? ReadCaptureCondition(ReconstructionDescriptor descriptor)
     {
         var window = descriptor.RetainedScheduleAdmission is
         {

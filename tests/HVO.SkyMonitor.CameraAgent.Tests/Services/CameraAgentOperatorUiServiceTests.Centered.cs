@@ -27,6 +27,59 @@ public sealed partial class CameraAgentOperatorUiServiceTests
     private static readonly JsonSerializerOptions CenteredWebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    public async Task EntirelyExpiredCenteredArchiveResolvesExactTargetsWithoutLeakingOtherCaptures(
+        bool savedSelection, bool matchingCapture)
+    {
+        const string owner = "policy-reader";
+        var capture = OperatorUiTestData.Capture();
+        var baseId = new string('A', 64);
+        var revisionId = new string('B', 64);
+        var selectionId = Guid.NewGuid();
+        var principal = CanonicalOwnerPrincipal(owner);
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(a => a.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var gallery = new Mock<ICameraAgentGallery>(MockBehavior.Strict);
+        gallery.Setup(g => g.GetCaptureAsync(capture.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync(capture);
+        var presentations = new Mock<ICameraAgentCurrentImagePresentationService>(MockBehavior.Strict);
+        presentations.Setup(p => p.ProjectCaptureAsync(capture, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentCapturePresentation(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages));
+        var lookup = new Mock<ICenteredViewLookup>(MockBehavior.Strict);
+        lookup.Setup(l => l.ReadArchiveAsync(capture.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        var index = new Mock<ICenteredViewReadIndex>(MockBehavior.Strict);
+        index.Setup(i => i.ReadSavedAsync(owner, selectionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CenteredViewSavedSelection(selectionId, baseId, revisionId, [], OperatorUiTestData.Now));
+        index.Setup(i => i.ReadRevisionAsync(baseId, revisionId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new CenteredViewReopenException(matchingCapture ? capture.CaptureId : Guid.NewGuid(),
+                CameraAgentArtifactReadStatus.Gone, policyExpired: true));
+        var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            gallery: gallery.Object, presentations: presentations.Object, centeredViewLookup: lookup.Object,
+            centeredViewIndex: index.Object, centeredViewPresentation: Mock.Of<ICenteredViewPresentationReader>());
+
+        var request = savedSelection ? new CameraAgentCenteredArchiveRequest(SelectionId: selectionId) : new(baseId, revisionId);
+        var result = await service.GetCaptureDetailViewAsync(capture.CaptureId, request, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        var archive = result.Value?.CenteredArchive;
+        Assert.IsNotNull(archive);
+        Assert.IsNull(archive.SelectedView);
+        Assert.IsEmpty(archive.Bases);
+        Assert.AreEqual(matchingCapture ? CameraAgentLayeredPresentationStatus.PolicyExpired
+            : CameraAgentLayeredPresentationStatus.NotRetained, archive.PresentationStatus);
+        Assert.AreEqual(matchingCapture ? "Centered view expired by storage policy."
+            : "The requested centered view revision or saved selection was not found for this capture.", archive.SelectionError);
+        if (matchingCapture)
+        {
+            var overlays = await service.GetCenteredPresentationAsync(baseId, revisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.PolicyExpired, overlays.Value?.Status);
+            Assert.AreEqual(archive.SelectionError, overlays.Value?.Reason);
+        }
+    }
+
+    [TestMethod]
     [DataRow(CameraPixelFormat.Mono16)]
     [DataRow(CameraPixelFormat.BayerRggb16)]
     public async Task CenteredServiceReopensSingleStackSavedSelectionAndPreventsLateTrailOn103FromReplacing104Async(
@@ -214,6 +267,15 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         Assert.IsTrue(reopenedSaved.IsSuccess);
         Assert.AreEqual(saved.Value.SelectionId, reopenedSaved.Value!.CenteredArchive!.SavedSelection?.SelectionId);
         CollectionAssert.AreEqual(new[] { trailLayerId }, reopenedSaved.Value.CenteredArchive.SavedSelection!.EnabledLayerIds.ToArray());
+
+        var retainedStack = centeredArchive.Bases[1].ArchiveBase with { InitialRevisionVisible = false, LastLiveRevisionId = null };
+        lookup.Setup(l => l.ReadArchiveAsync(input103.Key.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync([retainedStack]);
+        var retainedDefault = await service.GetCaptureDetailViewAsync(input103.Key.CaptureId, null, token).ConfigureAwait(false);
+        Assert.AreEqual(enrichedRevId, retainedDefault.Value?.CenteredArchive?.SelectedView?.Revision.RevisionId);
+        var retainedSaved = await service.GetCaptureDetailViewAsync(input103.Key.CaptureId,
+            new CameraAgentCenteredArchiveRequest(SelectionId: saved.Value.SelectionId), token).ConfigureAwait(false);
+        Assert.AreEqual(enrichedRevId, retainedSaved.Value?.CenteredArchive?.SelectedView?.Revision.RevisionId);
+        Assert.AreEqual(saved.Value.SelectionId, retainedSaved.Value?.CenteredArchive?.SavedSelection?.SelectionId);
 
         // 5. Mismatched capture/base pair fails closed with explicit SelectionError!
         var mismatched = await service.GetCaptureDetailViewAsync(

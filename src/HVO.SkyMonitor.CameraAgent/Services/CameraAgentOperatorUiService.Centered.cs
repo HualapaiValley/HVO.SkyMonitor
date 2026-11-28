@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 internal sealed partial class CameraAgentOperatorUiService
 {
     private const int ArchiveRevisionPageSize = 128;
+    private const string CenteredPolicyExpiredMessage = "Centered view expired by storage policy.";
 
     private async ValueTask<ClaimsPrincipal?> GetAuthorizedReadPrincipalAsync()
     {
@@ -187,26 +188,13 @@ internal sealed partial class CameraAgentOperatorUiService
             return null;
         }
 
+        var summaries = new List<CameraAgentCenteredArchiveBaseSummary>();
         try
         {
             var archiveBases = await centeredViewLookup.ReadArchiveAsync(captureId, cancellationToken).ConfigureAwait(false);
-            if (archiveBases.Count == 0)
-            {
-                if (request?.HasExplicitTarget == true)
-                {
-                    var explicitError = request.SelectionId == Guid.Empty
-                        ? "The requested saved personal selection is invalid."
-                        : "The requested centered view revision or saved personal selection was not found for this capture.";
-                    return new CameraAgentCenteredArchiveView(
-                        captureId, [], null, null, CameraAgentLayeredPresentationStatus.NotRetained,
-                        null, null,
-                        explicitError,
-                        null);
-                }
+            if (archiveBases.Count == 0 && request?.HasExplicitTarget != true)
                 return null;
-            }
 
-            var summaries = new List<CameraAgentCenteredArchiveBaseSummary>(archiveBases.Count);
             foreach (var archiveBase in archiveBases)
             {
                 var revisions = await ReadAllRevisionsAsync(archiveBase.Base.BaseId, cancellationToken).ConfigureAwait(false);
@@ -299,6 +287,16 @@ internal sealed partial class CameraAgentOperatorUiService
                 PresentationDeferred = selectedView is not null
             };
         }
+        catch (CenteredViewReopenException exception) when (exception.ReferenceCaptureId != captureId)
+        {
+            return new(captureId, summaries.AsReadOnly(), null, null, CameraAgentLayeredPresentationStatus.NotRetained,
+                null, null, "The requested centered view revision or saved selection was not found for this capture.", null);
+        }
+        catch (CenteredViewReopenException exception) when (exception.PolicyExpired)
+        {
+            return new(captureId, summaries.AsReadOnly(), null, null, CameraAgentLayeredPresentationStatus.PolicyExpired,
+                CenteredPolicyExpiredMessage, null, CenteredPolicyExpiredMessage, null);
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -363,6 +361,11 @@ internal sealed partial class CameraAgentOperatorUiService
                 ? NotFound<CenteredViewSavedSelection>("The selected centered view revision was not found.")
                 : OperatorUiResult<CenteredViewSavedSelection>.Success(saved);
         }
+        catch (CenteredViewReopenException exception) when (exception.PolicyExpired)
+        {
+            return NotFound<CenteredViewSavedSelection>(exception.ReferenceCaptureId == referenceCaptureId
+                ? CenteredPolicyExpiredMessage : "The selected centered view revision was not found for this capture.");
+        }
         catch (ArgumentException)
         {
             return OperatorUiResult<CenteredViewSavedSelection>.Failure(
@@ -412,7 +415,7 @@ internal sealed partial class CameraAgentOperatorUiService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is not CenteredViewReopenException { PolicyExpired: true })
         {
             logger.LogWarning(exception, "CameraAgent centered overlay presentation read failed for base {BaseId} revision {RevisionId}.",
                 view.Base.BaseId, view.Revision.RevisionId);
@@ -505,6 +508,11 @@ internal sealed partial class CameraAgentOperatorUiService
             }
             var (presentation, status, reason) = await TryReadCenteredPresentationAsync(view, cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(new(status, presentation, reason));
+        }
+        catch (CenteredViewReopenException exception) when (exception.PolicyExpired)
+        {
+            return OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+                new(CameraAgentLayeredPresentationStatus.PolicyExpired, null, CenteredPolicyExpiredMessage));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

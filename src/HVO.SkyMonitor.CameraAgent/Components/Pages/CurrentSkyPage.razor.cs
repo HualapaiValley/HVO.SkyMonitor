@@ -1183,6 +1183,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         "NotProduced" => "This stage was not produced.",
         "ProcessingFailed" => "This stage could not be created.",
         "ProcessingSkipped" => "This stage was skipped because required input was unavailable.",
+        "PolicyExpired" => "This stage expired by storage policy.",
         "ArtifactUnavailable" => "The produced artifact is unavailable.",
         _ => "This stage is currently unavailable."
     };

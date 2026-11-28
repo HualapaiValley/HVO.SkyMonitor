@@ -875,7 +875,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain only bounded ordinals; identities remain parameterized.")]
-    private static async Task<IReadOnlyList<CameraAgentProduct>> HydrateProductsAsync(
+    private async Task<IReadOnlyList<CameraAgentProduct>> HydrateProductsAsync(
         SqliteConnection connection,
         IReadOnlyList<ProductKey> keys,
         CancellationToken cancellationToken)
@@ -945,7 +945,13 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                 key.ExecutionClass,
                 row.NodeId.StartsWith(MaterializationNodePrefix, StringComparison.Ordinal)));
         }
-        return products;
+        if (_silo is null || products.Count == 0) return products;
+        var expired = await _silo.ReadPolicyExpiredArtifactsAsync(products.Select(static product => product.ArtifactId).ToArray(),
+            cancellationToken).ConfigureAwait(false);
+        if (expired.Count == 0) return products;
+        return products.Select(product => expired.Contains(product.ArtifactId)
+            ? product with { Availability = "Expired", AvailabilityReason = "policy-expired" }
+            : product).ToArray();
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain only bounded ordinals; artifact identities remain parameterized.")]

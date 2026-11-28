@@ -1,6 +1,7 @@
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,6 +12,30 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestProperty("Area", "Ui")]
 public sealed partial class CurrentSkyPageTests
 {
+    [TestMethod]
+    public void ExpiredStagesExplainPolicyOnCurrentSkySelectorAndArchiveCard()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var current = OperatorUiTestData.CurrentImage();
+        var expired = new CameraAgentPresentationSlot(CameraAgentPresentationStage.Raw, "Raw",
+            CameraAgentPresentationSlotAvailability.Unavailable, "PolicyExpired");
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
+            current with { Stages = current.Stages.Select(slot => slot.Stage == expired.Stage ? expired : slot).ToArray() }));
+
+        var sky = context.Render<CurrentSkyPage>();
+        StringAssert.Contains(sky.WaitForElement("#stage-unavailable").TextContent, "Raw: This stage expired by storage policy.",
+            StringComparison.Ordinal);
+        var selector = context.Render<ImageStageSelector>(parameters => parameters.Add(component => component.Stages, [expired]));
+        StringAssert.Contains(selector.Find(".stage-selector__reason").TextContent, "Raw: This stage expired by storage policy.",
+            StringComparison.Ordinal);
+        var card = context.Render<ArchiveCard>(parameters => parameters
+            .Add(component => component.Capture, OperatorUiTestData.Capture())
+            .Add(component => component.Presentation, new CameraAgentCapturePresentation(null, [expired]))
+            .Add(component => component.DetailUrl, new Uri("/gallery/capture", UriKind.Relative)));
+        StringAssert.Contains(card.Find(".capture-image-placeholder").TextContent, "Preview expired by storage policy", StringComparison.Ordinal);
+    }
+
     [TestMethod]
     public void ConstellationSettingsLinkTargetsTheActiveGraphOverlaySection()
     {

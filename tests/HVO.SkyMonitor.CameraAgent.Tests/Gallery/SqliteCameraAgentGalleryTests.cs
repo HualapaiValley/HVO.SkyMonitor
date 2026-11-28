@@ -1,5 +1,7 @@
 using HVO.SkyMonitor.Astronomy;
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -10,8 +12,12 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -50,6 +56,70 @@ public sealed class SqliteCameraAgentGalleryTests
 
     private static readonly string[] SourceDependency = ["source"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
+    [TestMethod]
+    public async Task GalleryCaptureAndProductEndpointsProjectSettledSiloPolicyExpiry()
+    {
+        using var fixture = await GalleryFixture.CreateAsync(withSilo: true).ConfigureAwait(false);
+        var token = CancellationToken.None;
+        var raw = await fixture.AddRawAsync(Utc(1), "Physical", null).ConfigureAwait(false);
+        var preview = await fixture.AddProcessingOutputAsync(raw, "Preview", DurableProcessingNodeStatus.Completed,
+            encodedWidth: 2, encodedHeight: 2).ConfigureAwait(false);
+        var captureId = raw.Descriptor.Capture.CaptureId;
+        var rawId = raw.Descriptor.Artifact.ArtifactId;
+        var productId = preview.Artifact.ArtifactId;
+        await fixture.ExpireSiloArtifactsAsync(rawId, productId).ConfigureAwait(false);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddAuthorizationBuilder().AddPolicy(CameraAgentAuthorizationPolicyNames.OperationsReadV1,
+            policy => policy.RequireClaim(ClaimTypes.NameIdentifier, "reader"));
+        var projector = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()));
+        builder.Services.AddSingleton<ICameraAgentGallery>(fixture.Gallery);
+        builder.Services.AddSingleton<ICameraAgentArchive>(fixture.Gallery);
+        builder.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(projector);
+        builder.Services.AddSingleton(Mock.Of<ICameraAgentCurrentImagePresentationService>());
+        builder.Services.AddSingleton(Mock.Of<ICameraAgentLayeredPresentationService>());
+        builder.Services.AddSingleton(Mock.Of<ICameraAgentPresentationMaterializer>());
+        builder.Services.AddSingleton(Mock.Of<ICameraAgentRetainedAstrometryService>());
+        var app = builder.Build();
+        await using var appLease = app.ConfigureAwait(false);
+        app.Use((context, next) =>
+        {
+            context.User = new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "reader")], "test"));
+            return next(context);
+        });
+        app.UseAuthorization();
+        app.MapCameraAgentGalleryEndpoints();
+        await app.StartAsync(token).ConfigureAwait(false);
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+        const string route = "/api/v1/operations/gallery";
+        var capture = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
+            new Uri($"{route}/{captureId:D}", UriKind.Relative), token).ConfigureAwait(false);
+        Assert.IsNotNull(capture);
+        Assert.HasCount(2, capture.Artifacts);
+        foreach (var artifact in capture.Artifacts)
+        {
+            Assert.AreEqual("Expired", artifact.Availability);
+            Assert.AreEqual("policy-expired", artifact.AvailabilityReason);
+        }
+        var slots = projector.Project(capture).Stages;
+        Assert.AreEqual("PolicyExpired", slots.Single(static slot => slot.Stage == CameraAgentPresentationStage.Raw).Reason);
+        Assert.AreEqual("PolicyExpired", slots.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).Reason);
+
+        var page = await client.GetFromJsonAsync<CameraAgentProductPage>(
+            new Uri($"{route}/products", UriKind.Relative), token).ConfigureAwait(false);
+        var detail = await client.GetFromJsonAsync<CameraAgentProductDetail>(
+            new Uri($"{route}/products/{productId:D}", UriKind.Relative), token).ConfigureAwait(false);
+        Assert.IsNotNull(page);
+        Assert.IsNotNull(detail);
+        foreach (var product in new[] { Assert.ContainsSingle(page.Items), detail.Product })
+        {
+            Assert.AreEqual(productId, product.ArtifactId);
+            Assert.AreEqual("Expired", product.Availability);
+            Assert.AreEqual("policy-expired", product.AvailabilityReason);
+        }
+    }
 
     [TestMethod]
     public async Task CaptureProfileReadsOnlyTheOriginalBoundEnvelopeAndRejectsRecoveredSettings()
@@ -1444,6 +1514,47 @@ public sealed class SqliteCameraAgentGalleryTests
         internal string? SecondaryRoot { get; private init; }
 
         internal SqliteCameraAgentGallery Gallery { get; }
+
+        internal async Task ExpireSiloArtifactsAsync(Guid rawId, Guid productId)
+        {
+            var token = CancellationToken.None;
+            var services = _siloProvider!;
+            var storage = services.GetRequiredService<SiloInstalledStorage>();
+            var clock = services.GetRequiredService<TimeProvider>();
+            var now = clock.GetUtcNow();
+            var spool = (SiloFilePayloadSpool)storage.Spool;
+            var members = new List<SiloDraftMember>();
+            foreach (var (id, role, payload) in new (Guid, string, byte[])[]
+            {
+                (rawId, "raw", [1, 0, 2, 0, 3, 0, 4, 0]),
+                (productId, "preview", [1, 2, 3, 4])
+            })
+            {
+                var sha = SiloHash.Sha256(payload);
+                var member = new SiloDraftMember(id.ToString("D"), "r1", role, SiloRetentionClass.Full,
+                    "application/octet-stream", payload.Length, sha, false, SiloFilePayloadSpool.TokenOf(sha));
+                await spool.StageAsync(member, (_, _) => ValueTask.FromResult<Stream>(new MemoryStream(payload)), token)
+                    .ConfigureAwait(false);
+                members.Add(member);
+            }
+            var draft = new SiloGroupDraft("gallery-test", "gallery-evidence", "r1", now, now.AddSeconds(-1), now,
+                members, [], new([]));
+            await storage.Publisher.StageAsync(draft, token).ConfigureAwait(false);
+            await storage.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, token).ConfigureAwait(false);
+            var retention = SiloRetentionTests.OpenForFixture(storage, services.GetRequiredService<SiloTestStore>(), clock);
+            await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, false, true),
+                new("preview", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+            foreach (var member in members)
+            {
+                var status = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision),
+                    token).ConfigureAwait(false);
+                Assert.IsNotNull(status);
+                var locator = Assert.ContainsSingle(status.Locators).Locator;
+                Assert.AreEqual("deleted", await retention.SweepAsync(true,
+                    static _ => ValueTask.FromResult<IReadOnlyList<SiloRetentionHold>>([]),
+                    null, token, select: target => target == locator).ConfigureAwait(false));
+            }
+        }
 
         internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false,
             IDeploymentLocationStore? deploymentLocation = null, bool withSilo = false)

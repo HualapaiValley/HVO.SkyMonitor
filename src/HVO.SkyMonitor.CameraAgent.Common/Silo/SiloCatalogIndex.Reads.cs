@@ -145,6 +145,21 @@ internal sealed partial class SiloCatalogIndex
             """, cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false) != 0;
     }
 
+    internal async ValueTask<IReadOnlySet<string>> ReadVisibleViewRevisionsAsync(string groupId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT p.revision_id FROM publications p
+            JOIN roles r ON r.kind = 'manifest' AND r.id = p.group_id AND r.revision = p.revision_id
+            WHERE p.group_id = $group AND p.state = 'visible' AND COALESCE(r.journaled, '') <> 'policy-expired';
+            """, ("$group", groupId));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var revisions = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            revisions.Add(reader.GetString(0));
+        return revisions;
+    }
+
     /// <summary>Every committed revision of a group in publish order, original revisions included.</summary>
     public async ValueTask<IReadOnlyList<SiloIndexedPublication>> ReadRevisionsAsync(string groupId, CancellationToken cancellationToken)
     {

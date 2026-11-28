@@ -21,7 +21,8 @@ public enum CameraAgentLayeredPresentationStatus
     Unavailable,
     Malformed,
     TooLarge,
-    NotRetained
+    NotRetained,
+    PolicyExpired
 }
 
 public sealed record CameraAgentPresentationLayer(

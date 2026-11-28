@@ -138,7 +138,9 @@ public sealed record CenteredViewCurrent(CenteredView View, CenteredViewLiveInte
 public sealed record CenteredViewArchiveBase(
     CenteredViewBase Base, string InitialRevisionId, string LatestRevisionId, string? LastLiveRevisionId)
 {
-    public string DefaultRevisionId => LastLiveRevisionId ?? InitialRevisionId;
+    internal bool InitialRevisionVisible { get; init; } = true;
+
+    public string DefaultRevisionId => LastLiveRevisionId ?? (InitialRevisionVisible ? InitialRevisionId : LatestRevisionId);
 }
 
 public sealed record CenteredViewChange(
@@ -191,6 +193,7 @@ public interface ICenteredViewReadIndex
     ValueTask<IReadOnlyList<CenteredViewChange>> ReadChangesAsync(
         CenteredViewStream stream, long afterOrder, int limit, CancellationToken cancellationToken = default);
 
+    /// <summary>Reads the account's saved target. Reopen the exact revision to determine evidence availability.</summary>
     ValueTask<CenteredViewSavedSelection?> ReadSavedAsync(
         string owner, Guid selectionId, CancellationToken cancellationToken = default);
 }

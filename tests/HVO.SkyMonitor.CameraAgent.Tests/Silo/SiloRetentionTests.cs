@@ -348,6 +348,10 @@ public sealed partial class SiloRetentionTests
 
     internal static SiloRetention OpenForFixture(SiloHarness silo) => Open(silo, new TestRemoval(silo.Local));
 
+    internal static SiloRetention OpenForFixture(SiloInstalledStorage storage, SiloTestStore store, TimeProvider clock) =>
+        new(storage.State, storage.Index, storage.Publisher, storage.Catalog, storage.ArchiveJournal,
+            storage.PhysicalState, new TestRemoval(store), Budget(() => Healthy), clock);
+
     private static SiloRetention Open(SiloHarness silo, TestRemoval store, ISiloDiskBudget? budget = null) =>
         new(silo.State, silo.Index, silo.Publisher, silo.Catalog, silo.Journal, silo.StateRoot.Root, store,
             budget ?? Budget(() => Healthy), silo.Clock);

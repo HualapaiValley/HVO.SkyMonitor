@@ -368,19 +368,22 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
     // Formats are declared here so new exports only add an entry; unsupported ones stay visible but disabled.
     private IEnumerable<DownloadOption> DownloadOptions(CameraAgentGalleryArtifact artifact)
     {
+        var expired = IsPolicyExpired(artifact);
+        var originalDescription = expired ? "Policy expired" : OriginalDescription(artifact.MediaType);
+        var originalUrl = expired ? null : ContentUrl(artifact.ArtifactId);
         if (artifact.Role is FrameArtifactRole.Metadata)
         {
             // Metadata and overlay layers are structured JSON; image formats do not apply.
-            yield return new("original", "JSON file", OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+            yield return new("original", "JSON file", originalDescription, originalUrl);
             yield break;
         }
         var jpeg = string.Equals(artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
         if (!jpeg)
         {
-            yield return IsProjectedArtifact(artifact.ArtifactId)
+            yield return !expired && IsProjectedArtifact(artifact.ArtifactId)
                 ? new("jpeg", "JPEG image", "8-bit, adjusted for display",
                     FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview?download=1"))
-                : new("jpeg", "JPEG image", "Not available for this artifact", null);
+                : new("jpeg", "JPEG image", expired ? "Policy expired" : "Not available for this artifact", null);
         }
         var reason = ScientificDownloadUnavailable(artifact);
         var exportUrl = _capture is null ? null :
@@ -389,7 +392,7 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
         yield return ScientificOption("fits.fz", "Compressed FITS (.fits.fz)", "Lossless GZIP tile compression");
         yield return ScientificOption("xisf", "XISF (.xisf)", "Linear pixels with SHA-256 attachment checksum");
         yield return new("original", jpeg ? "JPEG image (original)" : "Original file",
-            OriginalDescription(artifact.MediaType), ContentUrl(artifact.ArtifactId));
+            originalDescription, originalUrl);
 
         DownloadOption ScientificOption(string format, string label, string description)
             => new(format, label, reason ?? description, reason is null ? $"{exportUrl}/{format}" : null);
@@ -398,6 +401,8 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
     private string? ScientificDownloadUnavailable(CameraAgentGalleryArtifact artifact)
     {
         var raw = _capture?.Artifacts.FirstOrDefault(static item => item.Role == FrameArtifactRole.Raw);
+        if (IsPolicyExpired(artifact) || raw is not null && IsPolicyExpired(raw))
+            return "Policy expired";
         if (raw is null || _capture?.RawState == "missing_evidence" || raw.Availability == "Missing")
             return "The raw capture artifact is missing.";
         if (_capture?.RawState == "quarantined" || raw.Availability == "Quarantined")
@@ -410,6 +415,9 @@ public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
             return "The raw capture exceeds the scientific export size limit.";
         return raw.ArtifactId == artifact.ArtifactId ? null : "Choose the raw capture artifact to export linear pixels.";
     }
+
+    private static bool IsPolicyExpired(CameraAgentGalleryArtifact artifact) =>
+        artifact.Availability == "Expired" || artifact.AvailabilityReason == "policy-expired";
 
     private static string OriginalDescription(string? mediaType) => mediaType?.ToUpperInvariant() switch
     {

@@ -254,6 +254,10 @@ public sealed partial class ArchiveCard : SiteTimeComponent
         get
         {
             var reasons = Presentation.Stages.Select(static slot => slot.Reason).ToArray();
+            if (reasons.Contains("PolicyExpired", StringComparer.Ordinal))
+            {
+                return "Preview expired by storage policy";
+            }
             if (reasons.Contains("ProcessingFailed", StringComparer.Ordinal))
             {
                 return "Processing could not create a displayable image";

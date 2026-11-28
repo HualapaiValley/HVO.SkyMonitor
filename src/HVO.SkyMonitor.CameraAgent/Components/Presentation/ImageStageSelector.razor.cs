@@ -33,6 +33,7 @@ public sealed partial class ImageStageSelector : ComponentBase
         "PreviewBoundsExceeded" => "The preview exceeds safe display limits.",
         "ArtifactInvalid" => "The produced artifact failed validation.",
         "UnsupportedMediaType" => "This artifact type cannot be previewed.",
+        "PolicyExpired" => "This stage expired by storage policy.",
         "ArtifactUnavailable" => "The produced artifact is unavailable.",
         "ProcessingFailed" => "This stage could not be created.",
         "ProcessingSkipped" => "This stage was skipped because required input was unavailable.",

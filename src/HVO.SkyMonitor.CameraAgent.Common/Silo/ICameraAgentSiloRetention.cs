@@ -2,15 +2,19 @@ using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentSiloRolePolicy(string Role, TimeSpan? MaximumAge, bool ExpireUnderPressure, bool AllowLastCopyExpiry);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentSiloCaptureVariantRetention(string Role, [property: JsonRequired] TimeSpan MaximumAge,
     string? MediaType = null, string? Variant = null);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentSiloCaptureRetentionProfile(string Name,
     IReadOnlyList<CameraAgentSiloCaptureVariantRetention> Variants,
     IReadOnlyList<string>? WindowIds = null, IReadOnlyList<string>? SkyConditions = null);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record CameraAgentSiloRetentionPolicy(bool ExpiryHeld, IReadOnlyList<CameraAgentSiloRolePolicy> Roles,
     IReadOnlyList<CameraAgentSiloCaptureRetentionProfile>? CaptureProfiles = null);
 

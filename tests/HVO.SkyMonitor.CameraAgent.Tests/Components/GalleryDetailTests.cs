@@ -517,6 +517,34 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
+    [DataRow("Expired", null)]
+    [DataRow("Unavailable", "policy-expired")]
+    public void PolicyExpiredRawDisablesOriginalAndScientificDownloads(string availability, string? reason)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var sample = OperatorUiTestData.Capture();
+        var capture = sample with
+        {
+            Artifacts = [sample.Artifacts[0] with { Availability = availability, AvailabilityReason = reason }, sample.Artifacts[1]]
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement("#evidence-tab-Artifacts").Click();
+        cut.Find(".download-menu__toggle").Click();
+        foreach (var format in ScientificFormats.Append("original").Append("jpeg"))
+        {
+            var option = cut.Find($"[data-format='{format}']");
+            Assert.AreEqual("true", option.GetAttribute("aria-disabled"));
+            Assert.IsNull(option.GetAttribute("href"));
+            StringAssert.Contains(option.TextContent, "Policy expired", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
     public void DownloadMenuClosesOnOutsideClickSelectionEscapeAndTabChange()
     {
         using var context = new BunitContext();

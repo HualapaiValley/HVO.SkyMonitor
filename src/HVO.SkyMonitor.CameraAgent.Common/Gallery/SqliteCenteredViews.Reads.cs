@@ -113,24 +113,32 @@ internal sealed partial class SqliteCenteredViews
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var viewBase = ReadBase(reader);
-            var initial = reader.GetString(3);
-            if (!await IsSiloViewVisibleAsync(viewBase.BaseId, initial, cancellationToken).ConfigureAwait(false)) continue;
-            var latest = reader.GetString(4);
+            if (ReadNullableText(reader, 3) is not { } initial) continue;
+            string? latest = reader.GetString(4);
             var live = ReadNullableText(reader, 5);
+            var initialVisible = true;
             if (silo is not null)
             {
+                if (!silo.BindingVerified) continue;
+                var visible = await silo.Index.ReadVisibleViewRevisionsAsync(viewBase.BaseId, cancellationToken).ConfigureAwait(false);
+                if (visible.Count == 0) continue;
+                initialVisible = visible.Contains(initial);
+                latest = null;
                 using var revisions = CreateCommand(connection, null, """
                     SELECT revision_id FROM processing_centered_view_revisions WHERE base_id = $base ORDER BY change_order DESC;
                     """, ("$base", viewBase.BaseId));
                 using var candidates = await revisions.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await candidates.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    latest = candidates.GetString(0);
-                    if (await IsSiloViewVisibleAsync(viewBase.BaseId, latest, cancellationToken).ConfigureAwait(false)) break;
+                    var candidate = candidates.GetString(0);
+                    if (!visible.Contains(candidate)) continue;
+                    latest = candidate;
+                    break;
                 }
+                if (latest is null) continue;
                 live = await silo.Index.ReadLastVisibleLiveRevisionAsync(viewBase.BaseId, cancellationToken).ConfigureAwait(false);
             }
-            values.Add(new(viewBase, initial, latest, live));
+            values.Add(new(viewBase, initial, latest, live) { InitialRevisionVisible = initialVisible });
         }
         return values.AsReadOnly();
     }
@@ -158,8 +166,9 @@ internal sealed partial class SqliteCenteredViews
                     reopened.ClosedOutcome is SiloDisposition.Missing or SiloDisposition.PolicyExpired ? CameraAgentArtifactReadStatus.Gone
                 : CameraAgentArtifactReadStatus.Unavailable;
             throw new CenteredViewReopenException(view.Base.Definition.Reference.Capture.CaptureId, status,
-                status == CameraAgentArtifactReadStatus.Gone && (reopened.ClosedOutcome == SiloDisposition.PolicyExpired ||
-                    blocking.Any(static item => item.Disposition == SiloDisposition.PolicyExpired)));
+                status == CameraAgentArtifactReadStatus.Gone &&
+                (reopened.ClosedOutcome == SiloDisposition.PolicyExpired || reopened.ClosedOutcome is null && blocking.Length > 0) &&
+                blocking.All(static item => item.Disposition == SiloDisposition.PolicyExpired));
         }
         return view;
     }
@@ -303,10 +312,9 @@ internal sealed partial class SqliteCenteredViews
     {
         ValidateText(owner);
         ArgumentOutOfRangeException.ThrowIfEqual(selectionId, Guid.Empty);
+        if (silo is { BindingVerified: false }) return null;
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var saved = await ReadSavedAsync(connection, null, owner, selectionId, cancellationToken).ConfigureAwait(false);
-        return saved is not null && await IsSiloViewVisibleAsync(saved.BaseId, saved.RevisionId, cancellationToken).ConfigureAwait(false)
-            ? saved : null;
+        return await ReadSavedAsync(connection, null, owner, selectionId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<bool> HasVisibleBaseAsync(string baseId, CancellationToken cancellationToken) =>

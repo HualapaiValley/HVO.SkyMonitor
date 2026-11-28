@@ -1,14 +1,24 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
@@ -113,8 +123,80 @@ public sealed partial class RawCaptureIngressTests
             var bytes = new byte[checked((int)reopened.Content.ByteLength)];
             await reopened.Content.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
             Assert.AreEqual(initial.View.Base.Definition.Preview.PayloadSha256, PayloadChecksum.ComputeSha256(bytes));
+
+            await VerifyExpiredInitialCenteredRevisionAsync(restarted.InstalledSilo, silo.GetRequiredService<SiloTestStore>(),
+                reopenedProcessing, afterRestart, reader, enriched, token).ConfigureAwait(false);
         }
         finally { DeleteRoot(root); }
+    }
+
+    private static async Task VerifyExpiredInitialCenteredRevisionAsync(SiloInstalledStorage storage, SiloTestStore store,
+        SqliteCaptureProcessingStore processing, SqliteCenteredViews views, CenteredViewPresentationReader reader,
+        CenteredViewArchiveBase archive, CancellationToken token)
+    {
+        const string owner = "saved-archive-reader";
+        var selectionId = Guid.NewGuid();
+        var baseId = archive.Base.BaseId;
+        var captureId = archive.Base.Definition.Reference.Capture.CaptureId;
+        var initialId = archive.InitialRevisionId;
+        var latestId = archive.LatestRevisionId;
+        Assert.IsNotNull(await views.SaveAsync(owner, selectionId, baseId, latestId, [], token).ConfigureAwait(false));
+        var manifest = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Manifest, baseId, initialId), token).ConfigureAwait(false);
+        Assert.IsNotNull(manifest);
+        var initialLocator = Assert.ContainsSingle(manifest.Locators).Locator;
+        var original = await storage.Catalog.ReopenAsync(baseId, initialId, token).ConfigureAwait(false);
+        var preview = original.Items.Single(item => item.Required &&
+            item.Role.Id == archive.Base.Definition.Preview.Product.ArtifactId.ToString("D"));
+        Assert.IsNotNull(preview.ServedFrom);
+
+        var retention = SiloRetentionTests.OpenForFixture(storage, store, TimeProvider.System);
+        await retention.SetPolicyAsync(new(false, [new("manifest", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+        var holds = await processing.ReadSavedSiloViewHoldsAsync(token).ConfigureAwait(false);
+        var candidates = await retention.DryRunAsync(TimeProvider.System.GetUtcNow(), false, holds, token).ConfigureAwait(false);
+        Assert.AreEqual("held-reference", candidates.Single(candidate => candidate.References.Any(reference =>
+            reference.Identity.Kind == SiloIdentityKind.Manifest && reference.Identity.Id == baseId &&
+            reference.Identity.Revision == latestId)).Decision);
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, processing.ReadSavedSiloViewHoldsAsync,
+            null, token, select: target => target == initialLocator).ConfigureAwait(false));
+        var remaining = Assert.ContainsSingle(await views.ReadArchiveAsync(archive.Base.Definition.Stream, captureId, token).ConfigureAwait(false));
+        Assert.AreEqual(initialId, remaining.InitialRevisionId);
+        Assert.AreEqual(latestId, remaining.LatestRevisionId);
+        Assert.AreEqual(latestId, remaining.DefaultRevisionId);
+        Assert.IsNull(remaining.LastLiveRevisionId);
+        var saved = await views.ReadSavedAsync(owner, selectionId, token).ConfigureAwait(false);
+        Assert.IsNotNull(saved);
+        Assert.AreEqual(latestId, (await views.ReadRevisionAsync(saved.BaseId, saved.RevisionId, token).ConfigureAwait(false))?.Revision.RevisionId);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddAuthorizationBuilder().AddPolicy(CameraAgentAuthorizationPolicyNames.OperationsReadV1,
+            policy => policy.RequireClaim(ClaimTypes.NameIdentifier, owner));
+        builder.Services.AddSingleton<ICenteredViewReadIndex>(views);
+        builder.Services.AddSingleton<ICenteredViewPresentationReader>(reader);
+        var app = builder.Build();
+        await using var appLease = app.ConfigureAwait(false);
+        app.Use((context, next) =>
+        {
+            context.User = new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, owner)], "test"));
+            return next(context);
+        });
+        app.UseAuthorization();
+        app.MapCameraAgentCenteredViewEndpoints();
+        await app.StartAsync(token).ConfigureAwait(false);
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+        var uri = new Uri(CenteredViewLinks.Revision(captureId, baseId, initialId), UriKind.Relative);
+        using var expired = await client.GetAsync(uri, token).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Gone, expired.StatusCode);
+        var problem = await expired.Content.ReadFromJsonAsync<ProblemDetails>(token).ConfigureAwait(false);
+        Assert.AreEqual("Centered view expired by storage policy.", problem?.Title);
+
+        store.Delete(preview.ServedFrom);
+        var mixed = await storage.Catalog.ReopenAsync(baseId, initialId, token).ConfigureAwait(false);
+        CollectionAssert.AreEquivalent(new[] { SiloDisposition.PolicyExpired, SiloDisposition.Missing },
+            mixed.Blocking.Select(static item => item.Disposition).ToArray());
+        using var missing = await client.GetAsync(uri, token).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Gone, missing.StatusCode);
+        Assert.AreEqual(string.Empty, await missing.Content.ReadAsStringAsync(token).ConfigureAwait(false));
     }
 
     private static CenteredViewTrailPublication CreateCenteredTrailPublisher(CenteredFixture fixture,

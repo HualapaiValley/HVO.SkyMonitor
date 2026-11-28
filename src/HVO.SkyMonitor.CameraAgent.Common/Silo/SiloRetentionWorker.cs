@@ -30,9 +30,19 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
         ArgumentNullException.ThrowIfNull(policy.Roles);
         if (policy.Roles.Count > 128 || policy.Roles.Any(static item => item is null))
             throw new ArgumentException("Invalid Silo role policies.", nameof(policy));
+        var profiles = policy.CaptureProfiles?.Select(static profile =>
+        {
+            ArgumentNullException.ThrowIfNull(profile);
+            ArgumentNullException.ThrowIfNull(profile.Variants);
+            return new SiloCaptureRetentionProfile(profile.Name, profile.Variants.Select(static variant =>
+            {
+                ArgumentNullException.ThrowIfNull(variant);
+                return new SiloCaptureVariantRetention(variant.Role, variant.MaximumAge, variant.MediaType, variant.Variant);
+            }).ToArray(), profile.WindowIds, profile.SkyConditions);
+        }).ToArray();
         return storage.Retention.SetPolicyAsync(new(policy.ExpiryHeld, policy.Roles.Select(static role =>
             new SiloRoleRetention(role.Role, role.MaximumAge, role.ExpireUnderPressure, role.AllowLastCopyExpiry)).ToArray(),
-            policy.CaptureProfiles),
+            profiles),
             cancellationToken);
     }
 

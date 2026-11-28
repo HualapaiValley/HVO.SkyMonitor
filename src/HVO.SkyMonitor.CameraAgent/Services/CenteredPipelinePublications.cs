@@ -36,8 +36,9 @@ internal static partial class CenteredPipelinePublications
             if (!MatchesExecution(archive.Base.Definition))
                 continue;
 
-            var firstRevision = archive.LastLiveRevisionId ?? archive.InitialRevisionId;
-            var role = archive.LastLiveRevisionId is null ? "Initial archived revision" : "Last issued live";
+            var firstRevision = archive.DefaultRevisionId;
+            var role = archive.LastLiveRevisionId is not null ? "Last issued live"
+                : firstRevision == archive.InitialRevisionId ? "Initial archived revision" : "Later archived revision";
             await AddRevisionAsync(archive.Base, firstRevision, role).ConfigureAwait(false);
             if (archive.LatestRevisionId != firstRevision)
             {
