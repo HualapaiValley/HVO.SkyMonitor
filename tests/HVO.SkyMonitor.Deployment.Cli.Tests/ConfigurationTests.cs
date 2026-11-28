@@ -98,7 +98,7 @@ public sealed class ConfigurationTests
     public async Task Install_RefusesRetiredFilesystemStorageBeforePreflight()
     {
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
-            new InstallRequest { StorageLayout = CameraAgentStorageLayout.Filesystem }, CancellationToken.None));
+            new InstallRequest { FriendlyName = "Camera", StorageLayout = CameraAgentStorageLayout.Filesystem }, CancellationToken.None));
         Assert.IsTrue(exception.IsRefusal);
         StringAssert.Contains(exception.Message, "Install a fresh CameraAgent instance with Silo.", StringComparison.Ordinal);
     }

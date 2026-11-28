@@ -34,10 +34,9 @@ public sealed partial class InstallationVerificationStartupTests
 
         await host.RunWithHostStoppedAsync(async root =>
         {
-            var raw = Path.Combine(root, "frames", DateTimeOffset.UtcNow.ToString("yyyy/MM/dd",
-                System.Globalization.CultureInfo.InvariantCulture), "Raw");
+            var raw = Path.Combine(root, ".silo", "raw-admissions");
             Directory.CreateDirectory(raw);
-            await File.WriteAllTextAsync(Path.Combine(raw, "torn.json"), "{").ConfigureAwait(false);
+            await File.WriteAllTextAsync(Path.Combine(raw, "01010101010101010101010101010101.json"), "{").ConfigureAwait(false);
         }).ConfigureAwait(false);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var loader = host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
@@ -59,7 +58,7 @@ public sealed partial class InstallationVerificationStartupTests
     [TestMethod]
     [DataRow("quarantine/torn.json", "{")]
     [DataRow("quarantine/invalid-v2.json", "{\"schemaVersion\":\"v2\"}")]
-    [DataRow("frames/2026/11/10/Raw/torn.json", "{")]
+    [DataRow(".silo/raw-admissions/01010101010101010101010101010101.json", "{")]
     public async Task StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence(string relative, string json)
     {
         await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>

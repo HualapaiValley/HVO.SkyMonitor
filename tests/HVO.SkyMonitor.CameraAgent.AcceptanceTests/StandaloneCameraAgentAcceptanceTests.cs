@@ -6,6 +6,8 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -240,9 +242,9 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(first.ToObservatoryLocation(), restarted.ToObservatoryLocation());
         Assert.AreEqual(firstConfig.ResolveObservatory(), restartedConfig.ResolveObservatory());
         Assert.AreEqual(firstConfig.Rig, restartedConfig.Rig);
-        var restartedRawManifest = ReadManifest(
-            fixture.Root,
-            restartedCapture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId);
+        var restartedRawManifest = await ReadManifestAsync(
+            fixture.Services,
+            restartedCapture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw).ArtifactId).ConfigureAwait(false);
         Assert.AreEqual(restarted.ToProvenance(), restartedRawManifest.Descriptor.Location);
         Assert.IsNotNull(restartedRawManifest.Scene);
         Assert.IsFalse(string.IsNullOrWhiteSpace(restartedRawManifest.Scene.ProjectionModel));
@@ -277,8 +279,8 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var first = await WaitForCompleteCaptureAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         var raw = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
         var calibrated = first.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
-        var rawManifest = ReadManifest(fixture.Root, raw.ArtifactId);
-        var calibratedManifest = ReadManifest(fixture.Root, calibrated.ArtifactId);
+        var rawManifest = await ReadManifestAsync(fixture.Services, raw.ArtifactId).ConfigureAwait(false);
+        var calibratedManifest = await ReadManifestAsync(fixture.Services, calibrated.ArtifactId).ConfigureAwait(false);
 
         Assert.AreEqual(BuiltInProcessingRecipes.ReferenceCalibration, calibratedManifest.Descriptor.Artifact.Recipe.Name);
         Assert.AreEqual("synthetic-corrected", calibratedManifest.Descriptor.Artifact.Variant);
@@ -298,13 +300,12 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual("calibration-defect-mask", calibratedManifest.Descriptor.Profiles.Mask.Name);
         foreach (var referenceId in calibratedManifest.Descriptor.Artifact.SourceArtifactIds.Skip(1))
         {
-            var reference = ReadManifest(fixture.Root, referenceId);
+            var reference = await ReadManifestAsync(fixture.Services, referenceId).ConfigureAwait(false);
             Assert.AreEqual(FrameArtifactRole.Raw, reference.Descriptor.Artifact.Role);
             CollectionAssert.Contains(CalibrationReferenceKinds.All.ToArray(), reference.Descriptor.Artifact.Variant);
         }
         Assert.AreNotEqual(raw.ChecksumSha256, calibrated.ChecksumSha256);
-        Assert.HasCount(4, Directory.EnumerateFiles(
-            Path.Combine(fixture.Root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
+        await AssertSyntheticReferencesAsync(fixture.Services, calibratedManifest).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
 
         await fixture.RestartHostAsync().ConfigureAwait(false);
@@ -313,9 +314,9 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var restartedCalibrated = restarted.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Calibrated);
         Assert.AreEqual(
             BuiltInProcessingRecipes.ReferenceCalibration,
-            ReadManifest(fixture.Root, restartedCalibrated.ArtifactId).Descriptor.Artifact.Recipe.Name);
-        Assert.HasCount(4, Directory.EnumerateFiles(
-            Path.Combine(fixture.Root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
+            (await ReadManifestAsync(fixture.Services, restartedCalibrated.ArtifactId).ConfigureAwait(false)).Descriptor.Artifact.Recipe.Name);
+        var restartedManifest = await ReadManifestAsync(fixture.Services, restartedCalibrated.ArtifactId).ConfigureAwait(false);
+        await AssertSyntheticReferencesAsync(fixture.Services, restartedManifest).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
     }
 
@@ -328,7 +329,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         var raw = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
         var product = capture.Artifacts.Single(static artifact =>
             artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion);
-        var rawManifest = ReadManifest(fixture.Root, raw.ArtifactId);
+        var rawManifest = await ReadManifestAsync(fixture.Services, raw.ArtifactId).ConfigureAwait(false);
         var provenance = rawManifest.Scene;
         Assert.IsNotNull(provenance);
         Assert.IsTrue(provenance.RequiresProjectedScene);
@@ -341,7 +342,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, product.ProductSchemaVersion);
         Assert.AreEqual("Available", capture.CanonicalSceneAvailability);
         Assert.AreEqual(DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
-            ReadDurableProductManifest(fixture.Root, product.ArtifactId).SchemaVersion);
+            (await ReadDurableProductManifestAsync(fixture.Services, product.ArtifactId).ConfigureAwait(false)).SchemaVersion);
         CollectionAssert.AreEqual(new[] { raw.ArtifactId }, product.SourceArtifactIds.ToArray());
 
         var beforeRestart = await ReadArtifactBytesAsync(fixture.Services, product.ArtifactId).ConfigureAwait(false);
@@ -452,20 +453,24 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         return selected!;
     }
 
-    private static IDurableProcessingProductManifest ReadDurableProductManifest(string root, Guid artifactId)
+    private static async Task<IDurableProcessingProductManifest> ReadDurableProductManifestAsync(
+        IServiceProvider services, Guid artifactId)
     {
-        foreach (var path in Directory.EnumerateFiles(root, "*.manifest.json", SearchOption.AllDirectories))
+        var bytes = await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.ProductEvidenceRevision).ConfigureAwait(false);
+        Assert.IsNotNull(bytes, $"Artifact {artifactId:D} has no durable Silo product manifest.");
+        return DurableProcessingProductManifestJson.Parse(bytes);
+    }
+
+    private static async Task AssertSyntheticReferencesAsync(IServiceProvider services, ArtifactManifestV2 calibrated)
+    {
+        var references = calibrated.Descriptor.Artifact.SourceArtifactIds.Skip(1).ToArray();
+        Assert.HasCount(4, references);
+        var silo = services.GetRequiredService<SiloArtifactStorage>();
+        foreach (var id in references)
         {
-            try
-            {
-                var manifest = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(path));
-                if (manifest.Artifact.ArtifactId == artifactId) return manifest;
-            }
-            catch (InvalidDataException)
-            {
-            }
+            var reference = await ReadManifestAsync(services, id).ConfigureAwait(false);
+            Assert.IsNotNull(await silo.ReadRawAsync(reference.Descriptor, CancellationToken.None).ConfigureAwait(false));
         }
-        throw new AssertFailedException($"Artifact {artifactId:D} has no durable product manifest.");
     }
 
     private static async Task<byte[]> ReadArtifactBytesAsync(IServiceProvider services, Guid artifactId)
@@ -536,7 +541,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             !string.IsNullOrWhiteSpace(artifact.Recipe.ImplementationVersion) &&
             !string.IsNullOrWhiteSpace(artifact.Recipe.OptionsSha256) &&
             !string.IsNullOrWhiteSpace(artifact.Recipe.IdentitySha256)));
-        AssertLocalArtifactContracts(root, selected);
+        await AssertLocalArtifactContractsAsync(services, selected).ConfigureAwait(false);
         foreach (var artifact in selected.Artifacts.Where(static artifact => artifact.Role != FrameArtifactRole.Raw))
         {
             AssertLineageReachesRaw(artifact, selected.Artifacts);
@@ -544,20 +549,28 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         return selected;
     }
 
-    private static void AssertLocalArtifactContracts(
-        string root,
+    private static async Task AssertLocalArtifactContractsAsync(
+        IServiceProvider services,
         CameraAgentGalleryCapture capture)
     {
-        var manifests = Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
-            .Select(static path => CaptureContractJson.ParseManifest(File.ReadAllBytes(path)))
-            .Where(static parsed => parsed.IsValid && parsed.Document?.Manifest is not null)
-            .Select(static parsed => parsed.Document!.Manifest!)
-            .GroupBy(static manifest => manifest.Descriptor.Artifact.ArtifactId)
-            .ToDictionary(static group => group.Key, static group => group.First());
-        var products = capture.Artifacts.Where(static artifact => artifact.ProductSchemaVersion is not null)
-            .ToDictionary(static artifact => artifact.ArtifactId,
-                artifact => ReadDurableProductManifest(root, artifact.ArtifactId));
+        var manifests = new Dictionary<Guid, ArtifactManifestV2>();
+        var products = new Dictionary<Guid, IDurableProcessingProductManifest>();
+        foreach (var artifact in capture.Artifacts)
+        {
+            if (artifact.ProductSchemaVersion is not null)
+                products.Add(artifact.ArtifactId, await ReadDurableProductManifestAsync(services, artifact.ArtifactId).ConfigureAwait(false));
+            else
+                manifests.Add(artifact.ArtifactId, await ReadManifestAsync(services, artifact.ArtifactId).ConfigureAwait(false));
+        }
         var knownArtifactIds = manifests.Keys.Concat(products.Keys).ToHashSet();
+        foreach (var sourceId in capture.Artifacts.SelectMany(static artifact => artifact.SourceArtifactIds).Distinct())
+        {
+            if (knownArtifactIds.Contains(sourceId)) continue;
+            if (await ReadSiloEvidenceAsync(services, sourceId, SiloArtifactStorage.RawEvidenceRevision).ConfigureAwait(false) is not null ||
+                await ReadSiloEvidenceAsync(services, sourceId, SiloArtifactStorage.ProductEvidenceRevision).ConfigureAwait(false) is not null ||
+                await ReadSiloEvidenceAsync(services, sourceId, CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false) is not null)
+                knownArtifactIds.Add(sourceId);
+        }
         var captureLocations = manifests.Values
             .Where(manifest => manifest.Descriptor.Capture.CaptureId == capture.CaptureId)
             .Select(static manifest => manifest.Descriptor.Location)
@@ -728,7 +741,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             Assert.AreEqual(
                 HttpStatusCode.OK,
                 response.StatusCode,
-                DescribeArtifactEvidence(root, artifact.ArtifactId));
+                DescribeAvailability(root, artifact.ArtifactId));
             var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             Assert.AreEqual(artifact.ByteLength, payload.LongLength);
             Assert.AreEqual(
@@ -749,7 +762,7 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(
             HttpStatusCode.OK,
             preview.StatusCode,
-            DescribeArtifactEvidence(root, previewArtifact.ArtifactId));
+            DescribeAvailability(root, previewArtifact.ArtifactId));
         Assert.AreEqual("image/jpeg", preview.Content.Headers.ContentType?.MediaType);
         Assert.IsGreaterThan(0, (await preview.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Length);
     }
@@ -779,38 +792,6 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         Assert.Fail($"Artifact {artifact.ArtifactId:D} lineage did not reach the capture's raw artifact.");
     }
 
-    private static string DescribeArtifactEvidence(string root, Guid artifactId)
-    {
-        foreach (var sidecarPath in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
-        {
-            ArtifactManifestParseResult parsed;
-            try
-            {
-                parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
-            }
-            catch (IOException)
-            {
-                continue;
-            }
-            var manifest = parsed.Document?.Manifest;
-            if (manifest?.Descriptor.Artifact.ArtifactId != artifactId)
-            {
-                continue;
-            }
-            var payloadPath = Path.Combine(root, manifest.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(payloadPath))
-            {
-                return $"Artifact sidecar exists but payload is missing: {manifest.RelativeArtifactPath}";
-            }
-            var reconstruction = FrameReconstructor.TryReconstruct(
-                manifest.Descriptor,
-                File.ReadAllBytes(payloadPath),
-                out _);
-            return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}; {DescribeAvailability(root, artifactId)}";
-        }
-        return $"Artifact {artifactId:D} has no local manifest.";
-    }
-
     private static string DescribeAvailability(string root, Guid artifactId)
     {
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -829,27 +810,28 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             : "processing availability row missing";
     }
 
-    private static ArtifactManifestV2 ReadManifest(string root, Guid artifactId)
+    private static async Task<ArtifactManifestV2> ReadManifestAsync(IServiceProvider services, Guid artifactId)
     {
-        foreach (var sidecarPath in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
-        {
-            var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(sidecarPath));
-            if (parsed.Document?.Manifest is { } manifest &&
-                manifest.Descriptor.Artifact.ArtifactId == artifactId)
-            {
-                return manifest;
-            }
-        }
-        throw new AssertFailedException($"Artifact {artifactId:D} has no local manifest.");
+        var evidence = await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.RawEvidenceRevision).ConfigureAwait(false)
+            ?? await ReadSiloEvidenceAsync(services, artifactId, SiloArtifactStorage.ProductEvidenceRevision).ConfigureAwait(false)
+            ?? await ReadSiloEvidenceAsync(services, artifactId, CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
+        Assert.IsNotNull(evidence, $"Artifact {artifactId:D} has no retained Silo manifest.");
+        var parsed = CaptureContractJson.ParseManifest(evidence);
+        Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+        return parsed.Document!.Manifest!;
     }
 
+    private static ValueTask<byte[]?> ReadSiloEvidenceAsync(IServiceProvider services, Guid artifactId, string revision)
+        => services.GetRequiredService<SiloArtifactStorage>().ReadMetadataAsync(
+            artifactId, revision, SiloJson.MaximumMetadataObjectBytes, sha256: null, CancellationToken.None);
 
     private static async Task WaitForDurableConvergenceAsync(string root)
     {
         await WaitForConditionAsync(
             () => ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE state <> 'committed';") == 0 &&
                 ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state <> 'completed';") == 0 &&
-                ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';") == 0,
+                ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status <> 'Completed';") == 0 &&
+                ReadJournalCount(root, "SELECT COUNT(*) FROM silo_raw_admissions;") == 0,
             "standalone durable work to converge").ConfigureAwait(false);
         Assert.AreEqual(0L, ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;"));
         Assert.AreEqual(0L, ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'upload';"));

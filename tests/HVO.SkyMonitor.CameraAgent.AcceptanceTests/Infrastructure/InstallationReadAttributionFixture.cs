@@ -110,8 +110,7 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
             if (!string.IsNullOrEmpty(ownerConfiguration))
             {
                 var generated = JsonNode.Parse(await File.ReadAllTextAsync(ownerConfiguration).ConfigureAwait(false))!;
-                foreach (var step in generated["pipeline"]!["steps"]!.AsArray())
-                    if (step!["type"]!.GetValue<string>() == "Storage") step["options"]!["storageRoot"] = step["id"]!.GetValue<string>() == "ArchiveStorage" ? Path.Combine(root, "attribution-archive") : ingressRoot;
+                InstallerCameraModuleFixture.ConfigureSiloStorage(generated);
                 await File.WriteAllTextAsync(path, generated.ToJsonString(EvidenceJson)).ConfigureAwait(false);
             }
             else if (solar)
@@ -201,7 +200,7 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
 
     // Bulk disposable metadata construction: real v15 schema and contract bytes, one transaction.
     // No payload files, acquisition, production data, or durability-throughput claim.
-    internal async Task<FixtureIdentity> SeedScaleAsync(int count, int productsPerCapture = 1)
+    internal async Task<FixtureIdentity> SeedScaleAsync(int count, int productsPerCapture = 1, bool stageRawAdmissions = false)
     {
         var config = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
         var location = config.DeploymentLocation!;
@@ -244,7 +243,7 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
             var artifactId = new Guid(index, 1041, 2, new byte[8]);
             var rawArtifactId = new Guid((captureSequence - 1) * productsPerCapture + 1, 1041, 2, new byte[8]);
             var role = product == 0 ? FrameArtifactRole.Raw : product == 1 ? FrameArtifactRole.Preview : FrameArtifactRole.AnnotatedPreview;
-            var relative = $"frames/2026/11/10/{role}/{index:D6}";
+            var relative = stageRawAdmissions ? $".silo/raw-admissions/{artifactId:N}" : $"frames/2026/11/10/{role}/{index:D6}";
             var manifest = original with
             {
                 Descriptor = original.Descriptor with

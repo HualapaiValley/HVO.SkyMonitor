@@ -341,6 +341,25 @@ internal static class SiloInfrastructureFixture
 
         public SiloTestStore Store { get; }
 
+        internal void Configure(IDictionary<string, string?> overrides)
+        {
+            foreach (var setting in Configuration) overrides[setting.Key] = setting.Value;
+        }
+
+        internal void RegisterInstalledStorage(IServiceCollection services)
+        {
+            services.AddSingleton(Store);
+            services.AddSingleton(provider =>
+            {
+                var installed = provider.GetRequiredService<SiloInstalledSettings>();
+                return new SiloInstalledStorage(
+                    installed, provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
+                    provider.GetRequiredService<TimeProvider>(), provider.GetService<ISiloFaults>(),
+                    provider.GetService<Func<ISiloObjectStore, ISiloObjectStore>>(),
+                    new SiloInstalledStore(installed, Store, _ => ValueTask.FromResult(true)), payloadSpool: null);
+            });
+        }
+
         private void Put(string key, object definition)
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(definition);

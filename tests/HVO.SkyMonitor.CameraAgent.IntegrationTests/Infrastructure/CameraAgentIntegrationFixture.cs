@@ -2,11 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
-using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.CameraAgent.Tests.Silo;
-using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.TestSupport;
@@ -78,11 +75,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var fixtureBucket = overrides.ContainsKey("CameraAgent:Silo:StoreId")
             ? null
             : SiloInfrastructureFixture.GetOrCreateBucket(_storageRoot);
-        if (fixtureBucket is not null)
-        {
-            foreach (var setting in fixtureBucket.Configuration)
-                overrides[setting.Key] = setting.Value;
-        }
+        fixtureBucket?.Configure(overrides);
 
         _agentBaseFactory = new WebApplicationFactory<Program>();
         _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
@@ -106,18 +99,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                         IntegrationUserAuthenticationHandler.SchemeName,
                         _ => { });
 
-                if (fixtureBucket is not null)
-                {
-                    services.AddSingleton(provider =>
-                    {
-                        var installed = provider.GetRequiredService<SiloInstalledSettings>();
-                        return new SiloInstalledStorage(
-                            installed, provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), TimeProvider.System,
-                            faults: null, decorateReadStore: null,
-                            installedStore: new SiloInstalledStore(installed, fixtureBucket.Store, _ => ValueTask.FromResult(true)),
-                            payloadSpool: null);
-                    });
-                }
+                fixtureBucket?.RegisterInstalledStorage(services);
                 configureServices?.Invoke(services);
             });
         });

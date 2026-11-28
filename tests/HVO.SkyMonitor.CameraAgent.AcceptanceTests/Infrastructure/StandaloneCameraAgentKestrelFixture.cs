@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -29,7 +30,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
 
     private readonly string _root;
     private readonly CatalogFixtureInstallation? _catalog;
-    private readonly IReadOnlyDictionary<string, string?> _overrides;
+    private readonly Dictionary<string, string?> _overrides;
+    private readonly SiloInfrastructureFixture.Bucket _silo;
     private readonly string? _environmentalSettingsPath;
     private readonly string _configurationPath;
     private readonly TimeProvider? _timeProvider;
@@ -40,7 +42,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private StandaloneCameraAgentKestrelFixture(
         string root,
         CatalogFixtureInstallation? catalog,
-        IReadOnlyDictionary<string, string?> overrides,
+        Dictionary<string, string?> overrides,
         string configurationPath,
         string? environmentalSettingsPath = null,
         TimeProvider? timeProvider = null,
@@ -49,6 +51,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
+        _silo = SiloInfrastructureFixture.GetOrCreateBucket(root);
+        _silo.Configure(overrides);
         _configurationPath = configurationPath;
         _environmentalSettingsPath = environmentalSettingsPath;
         _timeProvider = timeProvider;
@@ -161,7 +165,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         try
         {
             var configPath = Path.Combine(root, "cameraagent.standalone-production-smoke.json");
-            await WriteProductionSmokeConfigurationAsync(configPath, root).ConfigureAwait(false);
+            await WriteProductionSmokeConfigurationAsync(configPath).ConfigureAwait(false);
             var overrides = new Dictionary<string, string?>
             {
                 ["CameraAgent:CaptureDistribution:ShutdownDrainSeconds"] = "1",
@@ -457,6 +461,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var factory = new StandaloneWebApplicationFactory(
             _root,
             _overrides,
+            _silo,
             _environmentalSettingsPath,
             _outboundAttempts,
             _timeProvider,
@@ -557,16 +562,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             configuration.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
     }
 
-    private static async Task WriteProductionSmokeConfigurationAsync(string configPath, string root)
+    private static async Task WriteProductionSmokeConfigurationAsync(string configPath)
     {
         var configuration = JsonNode.Parse(await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-production-smoke.json")).ConfigureAwait(false))?.AsObject()
             ?? throw new InvalidDataException("The production smoke CameraAgent configuration is invalid.");
         configuration["agentId"] = AgentId;
-        var localStorage = configuration["pipeline"]!["steps"]!.AsArray()
-            .Select(static node => node!.AsObject())
-            .Single(static step => step["id"]!.GetValue<string>() == "LocalStorage");
-        localStorage["options"]!["storageRoot"] = root;
         await File.WriteAllTextAsync(
             configPath,
             configuration.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
@@ -614,6 +615,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private sealed class StandaloneWebApplicationFactory(
         string root,
         IReadOnlyDictionary<string, string?> overrides,
+        SiloInfrastructureFixture.Bucket silo,
         string? environmentalSettingsPath,
         ConcurrentQueue<OutboundHttpAttempt> outboundAttempts,
         TimeProvider? timeProvider,
@@ -638,6 +640,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             });
             builder.ConfigureServices(services =>
             {
+                silo.RegisterInstalledStorage(services);
                 if (timeProvider is not null)
                 {
                     services.AddSingleton(timeProvider);

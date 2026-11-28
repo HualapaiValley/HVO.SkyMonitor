@@ -26,7 +26,8 @@ internal sealed partial class InstallationReadAttributionFixture
     // metadata payload/sidecar pairs. Payload shapes/sizes are synthetic; no claim
     // is made that this executes acquisition or all processing recipes.
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1849:Call async methods when in an async method", Justification = "Synthetic corpus construction deliberately uses synchronous tiny-file writes outside all startup timers.")]
-    internal async Task<ProductionCorpus> SeedProductionStartupAsync(int captures, DateTimeOffset now, Action? beforeHostStart = null)
+    internal async Task<ProductionCorpus> SeedProductionStartupAsync(int captures, DateTimeOffset now, Action? beforeHostStart = null,
+        bool stageRawAdmission = false)
     {
         Assert.IsTrue(Path.GetFileName(Host.Root).StartsWith("iv-", StringComparison.Ordinal));
         var config = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
@@ -96,7 +97,7 @@ internal sealed partial class InstallationReadAttributionFixture
                     var artifactId = new Guid(capture * 16 + product, 1041, 6, new byte[8]);
                     var role = product == 0 ? FrameArtifactRole.Raw : product == 2 ? FrameArtifactRole.AnnotatedPreview : FrameArtifactRole.Preview;
                     var exposure = scheduled.AddSeconds(1);
-                    var relative = string.Create(CultureInfo.InvariantCulture,
+                    var relative = product == 0 && stageRawAdmission ? $".silo/raw-admissions/{artifactId:N}" : string.Create(CultureInfo.InvariantCulture,
                         $"frames/{exposure:yyyy/MM/dd}/{role}/{exposure:yyyy-MM-dd_HH-mm-ss.fff'Z'}-{artifactId:N}");
                     var item = original with
                     {
