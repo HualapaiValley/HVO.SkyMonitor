@@ -136,7 +136,8 @@ public sealed class FullDayStillProductQualificationTests
             MaximumSegmentsPerRun = 128
         };
         var host = NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options);
-        using var store = new SqliteNightlyProductStore(host, clock);
+        using var silo = new NightlySiloFixture(host.Value.RawIngressRoot);
+        using var store = silo.OpenStore(host, clock);
         using var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(configuration), reader,
             store, Ephemeris, static () => null, clock);
         var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
@@ -289,7 +290,9 @@ public sealed class FullDayStillProductQualificationTests
         using var provider = Provider(Path.Combine(root, "runtime"), clock);
         var reader = provider.GetRequiredService<INightlyProductSourceReader>();
         var source = (await reader.RestoreAsync([candidate], CancellationToken.None)).Single();
-        using var store = new SqliteNightlyProductStore(NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options), clock);
+        var host = NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options);
+        using var silo = new NightlySiloFixture(host.Value.RawIngressRoot);
+        using var store = silo.OpenStore(host, clock);
         var final = await store.GetAsync(productId, CancellationToken.None);
         Assert.IsNotNull(final);
         var packed = await store.ReadStoredProductAsync(productId, CancellationToken.None);

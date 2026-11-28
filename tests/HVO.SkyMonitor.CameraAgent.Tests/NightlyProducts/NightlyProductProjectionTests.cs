@@ -723,20 +723,22 @@ public sealed class NightlyProductProjectionTests
         _roots.Add(root);
         var host = NightlyProductFixture.HostOptions(root, options);
         var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
-        return new(host, clock, new SqliteNightlyProductStore(host, clock), reader);
+        return new(host, clock, new NightlySiloFixture(root), reader);
     }
 
     private sealed class HarnessState : IDisposable
     {
         private readonly Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions> _host;
         private readonly List<NightlyProductGenerator> _generators = [];
+        private readonly NightlySiloFixture _silo;
 
         internal HarnessState(Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions> host, NightlyClock clock,
-            SqliteNightlyProductStore store, InMemoryNightlySourceReader reader)
+            NightlySiloFixture silo, InMemoryNightlySourceReader reader)
         {
             _host = host;
             Clock = clock;
-            Store = store;
+            _silo = silo;
+            Store = silo.OpenStore(host, clock);
             Generator(reader);
         }
 
@@ -763,6 +765,7 @@ public sealed class NightlyProductProjectionTests
         {
             foreach (var generator in _generators) generator.Dispose();
             Store.Dispose();
+            _silo.Dispose();
         }
     }
 }

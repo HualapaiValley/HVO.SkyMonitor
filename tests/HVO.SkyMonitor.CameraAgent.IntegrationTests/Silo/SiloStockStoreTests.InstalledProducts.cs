@@ -211,7 +211,7 @@ public sealed partial class SiloStockStoreTests
         using var document = JsonDocument.Parse(provenance.Content);
         Assert.AreEqual(product.OutputIdentitySha256, document.RootElement.GetProperty("outputIdentitySha256").GetString());
         Assert.AreEqual(lineage.Length, document.RootElement.GetProperty("sources").GetArrayLength());
-        Assert.IsFalse(Directory.Exists(Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName)));
+        Assert.IsFalse(Directory.Exists(Path.Combine(root, "nightly-products")));
     }
 
     private static async Task AssertSiloReplayPinsAsync(IServiceProvider services, Guid captureId, string root, CancellationToken token)
