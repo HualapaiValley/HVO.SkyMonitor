@@ -221,7 +221,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 .ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 10, deadline.Token).ConfigureAwait(false))
                 .Single(row => row.CaptureId == accepted.CaptureId);
             Assert.AreEqual(revision, captureExecution.GraphRevisionId);
-            var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1);
+            var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1, usesSilo: true);
             var committed = (await journal.ReadAllAsync(deadline.Token).ConfigureAwait(false)).Single(row => row.CaptureId == accepted.CaptureId);
             Assert.AreEqual(61L, committed.CaptureSequence);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "accepted-fit.json"),
@@ -328,7 +328,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
 
     private static async Task ReserveThroughNextPresetFitAsync(CameraAgentKestrelFixture host)
     {
-        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1, usesSilo: true);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var config = await host.Services.GetRequiredService<ICameraAgentConfigurationAccessor>()
             .WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);

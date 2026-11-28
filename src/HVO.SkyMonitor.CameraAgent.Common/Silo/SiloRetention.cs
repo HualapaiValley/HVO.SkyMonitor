@@ -51,13 +51,14 @@ internal sealed class SiloRetention(
         ISiloRetentionArchive? archive, CancellationToken cancellationToken,
         Func<SiloExactLocator, bool>? select = null, Func<CancellationToken, ValueTask>? cleanExpiredCache = null,
         Func<SiloExactLocator, bool>? verifiedStoreExit = null, Func<bool>? canIssue = null,
-        SemaphoreSlim? lifecycle = null, Func<IDisposable?>? enterMaintenance = null)
+        SemaphoreSlim? lifecycle = null, Func<IDisposable?>? enterMaintenance = null,
+        Func<CancellationToken, ValueTask>? reclaimAuxiliary = null)
     {
         await publisher.RetentionSweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await SweepLocalAsync(canStartDelete, readHolds, archive, select, cleanExpiredCache,
-                verifiedStoreExit, canIssue, lifecycle, enterMaintenance, cancellationToken).ConfigureAwait(false);
+                verifiedStoreExit, canIssue, lifecycle, enterMaintenance, reclaimAuxiliary, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -69,14 +70,16 @@ internal sealed class SiloRetention(
         Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds, ISiloRetentionArchive? archive,
         Func<SiloExactLocator, bool>? select, Func<CancellationToken, ValueTask>? cleanExpiredCache,
         Func<SiloExactLocator, bool>? verifiedStoreExit, Func<bool>? canIssue, SemaphoreSlim? lifecycle,
-        Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken)
+        Func<IDisposable?>? enterMaintenance, Func<CancellationToken, ValueTask>? reclaimAuxiliary, CancellationToken cancellationToken)
     {
         if (SiloRetentionState.Read(root).Attempt is { } outstanding)
             return await ReconcileAsync(outstanding, verifiedStoreExit, cancellationToken).ConfigureAwait(false);
 
-        if (!canStartDelete || local is not ISiloVersionRemoval)
-            return "held";
+        if (!canStartDelete) return "held";
+        if (reclaimAuxiliary is not null)
+            await reclaimAuxiliary(cancellationToken).ConfigureAwait(false);
 
+        if (local is not ISiloVersionRemoval) return "held";
         if (cleanExpiredCache is not null)
             await cleanExpiredCache(cancellationToken).ConfigureAwait(false);
         await publisher.CleanupRetentionSpoolAsync(enterMaintenance, cancellationToken).ConfigureAwait(false);

@@ -57,7 +57,7 @@ internal sealed partial class InstallationReadAttributionFixture
                 var file = Path.Combine(state, name);
                 foreach (var suffix in ProductionSqliteSuffixes) File.Delete(file + suffix);
             }
-            var journal = new SqliteRawCaptureJournal(JournalPath, 10);
+            var journal = new SqliteRawCaptureJournal(JournalPath, 10, usesSilo: true);
             await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
             using var connection = new SqliteConnection($"Data Source={JournalPath};Pooling=False;Foreign Keys=True");
             await connection.OpenAsync().ConfigureAwait(false);

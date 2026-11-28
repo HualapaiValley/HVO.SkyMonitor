@@ -148,7 +148,7 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
         var location = config.DeploymentLocation!;
         var directory = Path.Combine(IngressRoot, "fixtures");
         Directory.CreateDirectory(directory);
-        var journal = new SqliteRawCaptureJournal(JournalPath, 10);
+        var journal = new SqliteRawCaptureJournal(JournalPath, 10, usesSilo: true);
         await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         long bytes = 0;
@@ -217,7 +217,7 @@ internal sealed partial class InstallationReadAttributionFixture(CameraAgentKest
             Assert.AreEqual(0L, await check.ExecuteScalarAsync().ConfigureAwait(false), "Bulk legacy import is allowed only into this empty disposable fixture.");
         }
 #endif
-        var journal = new SqliteRawCaptureJournal(JournalPath, 10);
+        var journal = new SqliteRawCaptureJournal(JournalPath, 10, usesSilo: true);
         await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
         using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={JournalPath};Pooling=False;Foreign Keys=True");
         await connection.OpenAsync().ConfigureAwait(false);

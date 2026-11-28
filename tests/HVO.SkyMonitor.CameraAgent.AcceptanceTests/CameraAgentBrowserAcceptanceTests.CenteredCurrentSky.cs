@@ -67,7 +67,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         var token = CancellationToken.None;
         var hostOptions = host.Services.GetRequiredService<IOptions<CameraAgentHostOptions>>();
-        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 30);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 30, usesSilo: true);
         await journal.InitializeAsync(token).ConfigureAwait(false);
         var processingStore = host.Services.GetRequiredService<SqliteCaptureProcessingStore>();
         var artifactService = host.Services.GetRequiredService<ICameraAgentArtifactService>();

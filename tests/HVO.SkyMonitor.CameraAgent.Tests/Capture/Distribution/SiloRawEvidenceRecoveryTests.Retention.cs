@@ -3,8 +3,10 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
@@ -351,8 +353,12 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         File.SetLastWriteTimeUtc(fresh, fixture.Time.GetUtcNow().UtcDateTime);
         using var services = new ServiceCollection().AddSingleton<StoragePressureState>().BuildServiceProvider();
         using var archive = new SiloArchiveWorker(new ConfigurationManager(), services, fixture.Time, NullLogger<SiloArchiveWorker>.Instance);
+        using var processing = new SqliteCaptureProcessingStore(fixture.Options, fixture.Time);
+        using var orbital = new SqliteOrbitalElementsStore(OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(fixture.Options.Value),
+            fixture.Time, NullLogger<SqliteOrbitalElementsStore>.Instance);
+        var satelliteWork = new CaptureSatelliteWorkStore(fixture.Options, processing, orbital, fixture.Time, artifacts);
         using var worker = new SiloRetentionWorker(storage, ingress, fixture.Options, new CaptureMaintenanceGate(),
-            services, archive, fixture.Time, NullLogger<SiloRetentionWorker>.Instance);
+            services, archive, satelliteWork, fixture.Time, NullLogger<SiloRetentionWorker>.Instance);
         Assert.AreEqual("held", await worker.RunAsync(token).ConfigureAwait(false));
         Assert.IsFalse(File.Exists(expired));
         Assert.IsTrue(File.Exists(fresh));
