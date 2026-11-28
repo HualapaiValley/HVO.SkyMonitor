@@ -8,7 +8,6 @@
     "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs",
     "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs",
     "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs",
-    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs",
-    "HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs"
+    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs"
   ]
 }
