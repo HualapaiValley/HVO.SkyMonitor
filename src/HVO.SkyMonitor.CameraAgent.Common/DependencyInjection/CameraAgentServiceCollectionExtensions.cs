@@ -70,8 +70,6 @@ public static class CameraAgentServiceCollectionExtensions
             .ValidateDataAnnotations()
             .Validate(options => options.CentralIntegration.Mode == CentralIntegrationMode.Disabled,
                 "The Silo storage layout requires disabled central integration.")
-            .Validate(options => options.ProcessingGraphs.ReplayProfile != ReplayExecutionProfile.LocalRunner,
-                "The Silo storage layout requires in-process replay.")
             .ValidateOnStart();
         services.AddSingleton(_ => SiloInstalledSettings.ReadHostConfiguration(configuration));
         services.AddSingleton<SiloInstalledStorage>();

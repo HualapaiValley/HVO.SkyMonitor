@@ -4,12 +4,14 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
@@ -1281,10 +1283,12 @@ public sealed partial class RawCaptureIngressTests
         var root = CreateRoot();
         try
         {
-            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
-            Directory.CreateDirectory(rawDirectory);
-            var temporaryPath = Path.Combine(rawDirectory, "capture.bin.temporary.tmp");
-            var orphanPath = Path.Combine(rawDirectory, "capture.bin");
+            var id = Guid.NewGuid();
+            var paths = RawIngressFileStore.GetPaths(root, Timestamp(4), id);
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+            var temporaryPath = Path.ChangeExtension(paths.PayloadAbsolutePath, ".partial.tmp");
+            var orphanPath = paths.PayloadAbsolutePath;
+            await WriteRawAdmissionIntentAsync(root, id, Timestamp(4)).ConfigureAwait(false);
             await File.WriteAllBytesAsync(temporaryPath, [1, 2]).ConfigureAwait(false);
             await File.WriteAllBytesAsync(orphanPath, [3, 4]).ConfigureAwait(false);
             var state = new RawIngressState(TimeProvider.System);
@@ -1296,7 +1300,7 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
                 Assert.AreEqual(1, state.Snapshot.QuarantineCount);
                 Assert.AreEqual(2, state.Snapshot.QuarantineBytes);
-                Assert.HasCount(1, Directory.EnumerateFiles(Path.Combine(root, "quarantine"), "capture.bin", SearchOption.AllDirectories));
+                Assert.HasCount(1, Directory.EnumerateFiles(Path.Combine(root, "quarantine"), Path.GetFileName(orphanPath), SearchOption.AllDirectories));
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
                 Assert.AreEqual(2L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_ingress_reconciliation;").ConfigureAwait(false));
             }
@@ -1452,8 +1456,6 @@ public sealed partial class RawCaptureIngressTests
                     RawIngressFaultPoint.BeforeJournalCommit => "raw-boundary-before-journal-transaction",
                     RawIngressFaultPoint.AfterJournalTransactionBegan => "raw-boundary-journal-transaction-began",
                     RawIngressFaultPoint.AfterJournalRowInserted => "raw-boundary-journal-row-inserted",
-                    RawIngressFaultPoint.BeforeIndexProjection => "raw-boundary-before-index-projection",
-                    RawIngressFaultPoint.AfterIndexProjection => "raw-boundary-after-index-projection",
                     _ => null
                 };
                 if (scenarioId is not null)
@@ -1482,7 +1484,6 @@ public sealed partial class RawCaptureIngressTests
                      (RawIngressFaultPoint.SidecarDirectorySynced, RawCapturePublicationState.Unknown),
                      (RawIngressFaultPoint.BeforeJournalCommit, RawCapturePublicationState.Unknown),
                      (RawIngressFaultPoint.AfterJournalCommit, RawCapturePublicationState.Committed),
-                     (RawIngressFaultPoint.BeforeIndexProjection, RawCapturePublicationState.Committed),
                      (RawIngressFaultPoint.BeforeWakeUpNotification, RawCapturePublicationState.Committed)
                  })
         {
@@ -1691,7 +1692,8 @@ public sealed partial class RawCaptureIngressTests
                 Artifact = accepted.Manifest.Descriptor.Artifact with { ArtifactId = Guid.NewGuid() }
             };
             var conflicting = accepted.Manifest with { Descriptor = descriptor };
-            var extraSidecar = Path.Combine(Path.GetDirectoryName(accepted.StoredFrame.AbsolutePath)!, "conflicting.json");
+            var extraSidecar = RawIngressFileStore.GetPaths(root, descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId).SidecarAbsolutePath;
+            await WriteRawAdmissionIntentAsync(root, descriptor.Artifact.ArtifactId, descriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
             await File.WriteAllBytesAsync(extraSidecar, CaptureContractJson.Serialize(conflicting)).ConfigureAwait(false);
             var state = new RawIngressState(TimeProvider.System);
             using var restarted = CreateIngress(root, state);
@@ -1746,6 +1748,8 @@ public sealed partial class RawCaptureIngressTests
                     CreateConfiguration(), CreateSubmission(Timestamp(12), [12, 12, 12, 12]),
                     CancellationToken.None).ConfigureAwait(false);
                 sidecarPath = Path.ChangeExtension(accepted!.StoredFrame.AbsolutePath, ".json");
+                var descriptor = accepted.Manifest.Descriptor;
+                await WriteRawAdmissionIntentAsync(root, descriptor.Artifact.ArtifactId, descriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
                 File.Delete(accepted.StoredFrame.AbsolutePath);
             }
             SqliteConnection.ClearAllPools();
@@ -1937,6 +1941,8 @@ public sealed partial class RawCaptureIngressTests
                     Capture = accepted.Manifest.Descriptor.Capture with { AgentId = "conflicting-agent" }
                 }
             };
+            await WriteRawAdmissionIntentAsync(root, accepted.Manifest.Descriptor.Artifact.ArtifactId,
+                accepted.Manifest.Descriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
             await File.WriteAllBytesAsync(sidecarPath, CaptureContractJson.Serialize(conflicting)).ConfigureAwait(false);
             var state = new RawIngressState(TimeProvider.System);
             using var restarted = CreateIngress(root, state);
@@ -2104,10 +2110,12 @@ public sealed partial class RawCaptureIngressTests
         var root = CreateRoot();
         try
         {
-            var rawDirectory = Path.Combine(root, "frames", "2026", "07", "14", "Raw");
-            Directory.CreateDirectory(rawDirectory);
-            var payloadPath = Path.Combine(rawDirectory, "malformed.bin");
-            var sidecarPath = Path.Combine(rawDirectory, "malformed.json");
+            var id = Guid.NewGuid();
+            var paths = RawIngressFileStore.GetPaths(root, Timestamp(4), id);
+            var payloadPath = paths.PayloadAbsolutePath;
+            var sidecarPath = paths.SidecarAbsolutePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+            await WriteRawAdmissionIntentAsync(root, id, Timestamp(4)).ConfigureAwait(false);
             await File.WriteAllBytesAsync(payloadPath, [1, 2]).ConfigureAwait(false);
             await File.WriteAllTextAsync(sidecarPath, """
                 {"artifactId":null,"role":"Raw","timestampUtc":"invalid","width":0,"height":2,"pixelFormat":"Mono8"}
@@ -2628,9 +2636,9 @@ public sealed partial class RawCaptureIngressTests
                 Assert.IsFalse(File.Exists(GetNotificationMarker(root)), point.ToString());
                 var temporaryFiles = Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).ToArray();
                 var publishedPayloads = Directory.EnumerateFiles(
-                    Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).ToArray();
+                    Path.Combine(root, ".silo", RawIngressFileStore.AdmissionStageDirectory), "*.bin", SearchOption.AllDirectories).ToArray();
                 var publishedSidecars = Directory.EnumerateFiles(
-                    Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories).ToArray();
+                    Path.Combine(root, ".silo", RawIngressFileStore.AdmissionStageDirectory), "*.json", SearchOption.AllDirectories).ToArray();
                 long preRestartJournalRows;
                 using (var crashedJournal = await OpenJournalAsync(root).ConfigureAwait(false))
                 {
@@ -2674,7 +2682,7 @@ public sealed partial class RawCaptureIngressTests
                     point.ToString());
                 Assert.HasCount(
                     2,
-                    Directory.EnumerateFiles(Path.Combine(root, "frames"), "*", SearchOption.AllDirectories).ToArray(),
+                    Directory.EnumerateFiles(Path.Combine(root, ".silo", RawIngressFileStore.AdmissionStageDirectory), "*", SearchOption.AllDirectories).ToArray(),
                     point.ToString());
                 long postRestartJournalRows;
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
@@ -3245,6 +3253,14 @@ public sealed partial class RawCaptureIngressTests
         }
     }
 
+    private static Task WriteRawAdmissionIntentAsync(string root, Guid artifactId, DateTimeOffset exposureStartedUtc)
+    {
+        var directory = Path.Combine(root, ".silo", "raw-admission-intents");
+        Directory.CreateDirectory(directory);
+        return File.WriteAllBytesAsync(Path.Combine(directory, $"{artifactId:N}.json"),
+            JsonSerializer.SerializeToUtf8Bytes(new { ArtifactId = artifactId, ExposureStartedUtc = exposureStartedUtc }));
+    }
+
     private static RawCaptureIngress CreateIngress(
         string root,
         RawIngressState state,
@@ -3252,7 +3268,8 @@ public sealed partial class RawCaptureIngressTests
         TimeProvider? timeProvider = null,
         ILogger<RawCaptureIngress>? logger = null,
         CaptureMaintenanceGate? maintenanceGate = null,
-        HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.IProjectedSceneStagingReconciler? projectedSceneStaging = null)
+        HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.IProjectedSceneStagingReconciler? projectedSceneStaging = null,
+        IServiceProvider? siloProvider = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -3268,7 +3285,10 @@ public sealed partial class RawCaptureIngressTests
             logger ?? NullLogger<RawCaptureIngress>.Instance,
             faultInjector ?? new NullRawIngressFaultInjector(),
             projectedSceneStaging: projectedSceneStaging,
-            maintenanceGate: maintenanceGate);
+            maintenanceGate: maintenanceGate,
+            silo: siloProvider?.GetRequiredService<SiloInstalledStorage>(),
+            siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(),
+            siloArtifacts: siloProvider?.GetRequiredService<SiloArtifactStorage>());
     }
 
     private static CameraModuleConfig CreateConfiguration()

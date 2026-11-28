@@ -338,20 +338,23 @@ public sealed partial class RawCaptureIngressTests
         try
         {
             var configuration = CreateConfiguration();
-            using (var committed = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using (var committed = CreateIngress(root, new RawIngressState(TimeProvider.System), siloProvider: silo))
             {
                 await committed.AcceptAsync(
                     configuration, CreateSubmission(Timestamp(4), [4, 4, 4, 4]), CancellationToken.None).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(committed, CancellationToken.None).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();
             using (var crashed = CreateIngress(
-                root, new RawIngressState(TimeProvider.System), new OneShotFaultInjector(RawIngressFaultPoint.BeforeJournalCommit)))
+                root, new RawIngressState(TimeProvider.System), new OneShotFaultInjector(RawIngressFaultPoint.BeforeJournalCommit),
+                siloProvider: silo))
             {
                 await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() => crashed.AcceptAsync(
                     configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).AsTask()).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();
-            var orphan = Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories)
+            var orphan = Directory.EnumerateFiles(Path.Combine(root, ".silo", RawIngressFileStore.AdmissionStageDirectory), "*.bin")
                 .Single(path => File.ReadAllBytes(path).SequenceEqual(new byte[] { 5, 5, 5, 5 }));
             if (corrupt)
             {
@@ -359,7 +362,7 @@ public sealed partial class RawCaptureIngressTests
             }
             var state = new RawIngressState(TimeProvider.System);
             var reads = new PayloadReadCounter();
-            using var restarted = CreateIngress(root, state, reads);
+            using var restarted = CreateIngress(root, state, reads, siloProvider: silo);
 
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 

@@ -22,8 +22,6 @@ internal enum RawIngressFaultPoint
     AfterJournalRowInserted,
     BeforeJournalTransactionCommit,
     AfterJournalCommit,
-    BeforeIndexProjection,
-    AfterIndexProjection,
     BeforeWakeUpNotification,
     BeforeAcceptanceLifecycleLock
 }

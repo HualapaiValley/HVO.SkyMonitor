@@ -105,7 +105,7 @@ internal static class SiloInfrastructureFixture
     internal static async ValueTask SettleRawAdmissionsAsync(IServiceProvider services, CancellationToken token)
         => await SettleRawAdmissionsAsync(services.GetRequiredService<RawCaptureIngress>(), token).ConfigureAwait(false);
 
-    private static async ValueTask SettleRawAdmissionsAsync(RawCaptureIngress ingress, CancellationToken token)
+    internal static async ValueTask SettleRawAdmissionsAsync(RawCaptureIngress ingress, CancellationToken token)
     {
         await ingress.InitializeAsync(token).ConfigureAwait(false);
         while (true)
@@ -143,6 +143,32 @@ internal static class SiloInfrastructureFixture
         using var buffer = new MemoryStream();
         await result.Content.CopyToAsync(buffer, token).ConfigureAwait(false);
         return buffer.ToArray();
+    }
+
+    internal static ServiceProvider OpenStore(string rawIngressRoot)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = rawIngressRoot }).Build());
+        return services.BuildServiceProvider();
+    }
+
+    internal static async ValueTask PublishArtifactAsync(
+        SiloArtifactStorage storage, ReconstructionDescriptor descriptor, string revision, ReadOnlyMemory<byte> payload,
+        string evidenceRevision, byte[] evidence, CancellationToken token)
+    {
+        var artifact = descriptor.Artifact;
+        var member = SiloArtifactStorage.Member(artifact.ArtifactId, revision, artifact.Role == FrameArtifactRole.Raw ? "raw" : artifact.Role.ToString(),
+            SiloRetentionClass.Full, artifact.MediaType, payload.Length, artifact.ChecksumSha256);
+        var metadata = SiloArtifactStorage.Member(artifact.ArtifactId, evidenceRevision, "fixture-evidence",
+            SiloRetentionClass.Metadata, "application/json", evidence.Length, SiloHash.Sha256(evidence));
+        var draft = new SiloGroupDraft("fixture-artifact", artifact.ArtifactId.ToString("N"), "1",
+            descriptor.Timing.DurableIngressUtc, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc,
+            [member, metadata], [], new([]));
+        await storage.PublishAsync(draft,
+            (item, ct) => SiloArtifactStorage.OpenMemoryAsync(item == member ? payload : evidence, ct), token)
+            .ConfigureAwait(false);
     }
 
     internal static async ValueTask<SiloExactLocator> ReadLocalLocatorAsync(

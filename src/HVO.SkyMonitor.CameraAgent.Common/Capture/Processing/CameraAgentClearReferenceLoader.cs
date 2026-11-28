@@ -40,10 +40,12 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             var manifestPath = ResolveSafePath(relativeManifestPath);
             if (silo is not null)
             {
-                if (calibration is not null &&
-                    await calibration.FindArtifactByManifestPathUnderLifecycleLockAsync(relativeManifestPath, cancellationToken)
-                        .ConfigureAwait(false) is { } id)
-                    holds.Add(new(id));
+                var id = ParseSiloRawReference(relativeManifestPath);
+                if (id is null && calibration is not null)
+                    id = await calibration.FindArtifactByManifestPathUnderLifecycleLockAsync(relativeManifestPath, cancellationToken)
+                        .ConfigureAwait(false);
+                if (id is { } retained)
+                    holds.Add(new(retained));
                 continue;
             }
             byte[] manifestBytes;
@@ -78,11 +80,13 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         }
         else
         {
-            var id = artifactId ?? (calibration is null ? null :
+            var rawId = ParseSiloRawReference(relativeManifestPath);
+            var id = artifactId ?? rawId ?? (calibration is null ? null :
                 await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
             if (id is null)
                 throw new FileNotFoundException("The configured clear reference has no Silo calibration identity.");
-            manifestBytes = await silo.ReadMetadataAsync(id.Value, CalibrationArtifactPublisher.SiloEvidenceRevision,
+            manifestBytes = await silo.ReadMetadataAsync(id.Value,
+                rawId is not null ? SiloArtifactStorage.RawEvidenceRevision : CalibrationArtifactPublisher.SiloEvidenceRevision,
                 CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false)
                 ?? throw new FileNotFoundException("The configured clear reference has no settled Silo evidence.");
         }
@@ -92,6 +96,16 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
             throw new InvalidDataException("Configured clear-reference manifest is invalid.");
         }
         return await LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static Guid? ParseSiloRawReference(string reference)
+    {
+        const string prefix = "silo/raw/";
+        const string suffix = ".json";
+        return reference.Length == prefix.Length + 32 + suffix.Length &&
+            reference.StartsWith(prefix, StringComparison.Ordinal) && reference.EndsWith(suffix, StringComparison.Ordinal) &&
+            Guid.TryParseExact(reference.AsSpan(prefix.Length, 32), "N", out var id) && id != Guid.Empty
+            ? id : null;
     }
 
     internal async ValueTask<ProcessingArtifact> LoadAsync(

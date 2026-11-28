@@ -48,7 +48,7 @@ internal sealed class SiloInstalledSettings
 
         DataRoot = section["DataRoot"] is { Length: > 0 } path ? Path.GetFullPath(path) : null;
         MaximumStagedBytes = section.GetValue("MaximumStagedBytes", 2L * 1024 * 1024 * 1024);
-        MaximumStagedFiles = section.GetValue("MaximumStagedFiles", 4096);
+        MaximumStagedFiles = section.GetValue("MaximumStagedFiles", DefaultMaximumStagedFiles);
         ReclaimCaptureHourBytes = section.GetValue("ReclaimCaptureHourBytes", MaximumStagedBytes / 2);
         if (ReclaimCaptureHourBytes <= 0 || MaximumStagedBytes <= 0 || MaximumStagedFiles is < 2 or int.MaxValue)
             throw new InvalidOperationException("The installed Silo spool requires a positive byte limit and room for an admission pair.");
@@ -70,6 +70,8 @@ internal sealed class SiloInstalledSettings
     public long MaximumStagedBytes { get; }
 
     public int MaximumStagedFiles { get; }
+
+    internal const int DefaultMaximumStagedFiles = 4096;
 
     internal static SiloInstalledSettings ReadHostConfiguration(IConfiguration configuration)
     {

@@ -46,7 +46,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
         using var telemetry = new CaptureProcessingTelemetry();
         var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var publisher = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var rawArtifact = new ProcessingArtifact(raw.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
             ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256, descriptor.Artifact.MediaType,

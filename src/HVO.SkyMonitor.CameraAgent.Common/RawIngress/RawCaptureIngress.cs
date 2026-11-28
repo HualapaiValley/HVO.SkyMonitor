@@ -205,7 +205,7 @@ internal sealed partial class RawCaptureIngress :
                         _telemetry.RecordDirectorySync,
                         _lanePolicy.Definitions,
                         _faultInjector.OpenPayloadForVerification,
-                        PrepareRecoveredCenteredAdmissionAsync, siloIntents, _siloSettings?.MaximumStagedFiles ?? 0)
+                        PrepareRecoveredCenteredAdmissionAsync, siloIntents, _siloSettings?.MaximumStagedFiles)
                          .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
                     : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
                 if (siloIntents is not null && reconciliation.MaintenanceDeferred == 0)

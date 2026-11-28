@@ -1337,10 +1337,11 @@ public sealed partial class ProtectedDeploymentLocationStore(
         if (key.StartsWith("F|", StringComparison.Ordinal))
         {
             var path = Path.GetFullPath(Path.Combine(_options.RawIngressRoot, key[2..]));
+            var relative = Path.GetRelativePath(_options.RawIngressRoot, path);
+            if (relative.Split(Path.DirectorySeparatorChar, 2)[0] is "frames" or "derived") return null;
             RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, path);
             if (!File.Exists(path)) return null;
             bytes = File.ReadAllBytes(path);
-            frame = IsFrameSidecar(_options.RawIngressRoot, path);
         }
         else
         {
@@ -1405,75 +1406,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return;
         }
-        if (silo is not null)
-        {
-            ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
-            cancellationToken.ThrowIfCancellationRequested();
-            return;
-        }
-        scrub?.LoadFileMetadata(summary, cancellationToken);
-        var enumeration = new EnumerationOptions
-        {
-            RecurseSubdirectories = true,
-            AttributesToSkip = FileAttributes.ReparsePoint,
-            IgnoreInaccessible = false
-        };
-        using (var fileActivity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-files"))
-        {
-            using var attribution = DeploymentLocationReadAttribution.Create(fileActivity);
-            IEnumerator<string> paths;
-            using (attribution?.Measure(ReadStage.Enumeration))
-                paths = Directory.EnumerateFiles(root, "*.json", enumeration).GetEnumerator();
-            using var retainedPaths = paths;
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                bool hasNext;
-                string? path;
-                using (attribution?.Measure(ReadStage.Enumeration))
-                {
-                    hasNext = retainedPaths.MoveNext();
-                    path = hasNext ? retainedPaths.Current : null;
-                }
-                if (!hasNext) break;
-                using var observation = scrub?.Observe(cancellationToken);
-                try
-                {
-                    using (attribution?.Measure(ReadStage.Security))
-                        RawIngressFileStore.EnsureNoSymbolicLinks(root, path!);
-                    var key = RetainedIntegrityLedger.FileKey(root, path!);
-                    var file = new FileInfo(path!);
-                    var stamp = new RetainedIntegrityLedger.FileStamp(file.Length, file.LastWriteTimeUtc.Ticks);
-                    if (scrub?.Reuse(key, stamp) is not null) continue;
-                    byte[] manifestJson;
-                    using (attribution?.Measure(ReadStage.Read))
-                    {
-                        manifestJson = File.ReadAllBytes(path!);
-                        attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
-                    }
-                    BeforeRetainedManifestValidationForTest?.Invoke();
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var result = ValidateRetainedManifest(history, manifestJson, summary, attribution,
-                        requireManifest: IsFrameSidecar(root, path!), strict,
-                        digest => scrub?.ParsedKind(RetainedIntegrityLedger.FileKey(root, path!), digest));
-                    file.Refresh();
-                    if (file.Length != stamp.Length || file.LastWriteTimeUtc.Ticks != stamp.ModifiedUtcTicks)
-                        throw new InvalidDataException("Retained evidence changed while being verified.");
-                    scrub?.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind) { Stamp = stamp }, index: summary);
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    throw new InvalidDataException(
-                        "Existing capture evidence could not be inspected for location provenance.", exception);
-                }
-            }
-        }
         ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
         cancellationToken.ThrowIfCancellationRequested();
     }
-
-    private static bool IsFrameSidecar(string root, string path)
-        => Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar)[0] == "frames";
 
     private static (byte[] Digest, int Kind) ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
         RetainedManifestValidationIndex summary, DeploymentLocationReadAttribution? attribution, bool requireManifest, bool strict,
@@ -1666,38 +1601,11 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return false;
         }
-        if (silo is not null)
-        {
-            var admissions = Path.Combine(root, ".silo", "raw-admission-intents");
-            RawIngressFileStore.EnsureNoSymbolicLinks(root, admissions);
-            return JournalContainsLocationEvidence(root) ||
-                Directory.Exists(admissions) && Directory.EnumerateFiles(admissions, "*.json").Any();
-        }
-        var enumeration = new EnumerationOptions
-        {
-            RecurseSubdirectories = true,
-            AttributesToSkip = FileAttributes.ReparsePoint,
-            IgnoreInaccessible = false
-        };
-        foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                var parsed = CaptureContractJson.ParseManifest(File.ReadAllBytes(path));
-                if (parsed.Document?.Manifest?.Descriptor.Location is not null)
-                {
-                    return true;
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw new InvalidDataException(
-                    "Existing capture evidence could not be inspected for location provenance.", exception);
-            }
-        }
-        return JournalContainsLocationEvidence(root);
+        cancellationToken.ThrowIfCancellationRequested();
+        var admissions = Path.Combine(root, ".silo", "raw-admission-intents");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, admissions);
+        return JournalContainsLocationEvidence(root) ||
+            Directory.Exists(admissions) && Directory.EnumerateFiles(admissions, "*.json").Any();
     }
 
     private static bool JournalContainsLocationEvidence(string root)

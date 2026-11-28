@@ -9,9 +9,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -675,7 +677,7 @@ public sealed class SqliteCameraAgentGalleryTests
         string expectedStatus,
         bool expectedMask)
     {
-        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await GalleryFixture.CreateAsync(withSilo: true).ConfigureAwait(false);
         var raw = await fixture.AddRawAsync(Utc(8), "Physical", null).ConfigureAwait(false);
         var assessment = CreateCloudAssessment(raw, status, includeMask);
         await fixture.AddCloudAssessmentAsync(raw, assessment).ConfigureAwait(false);
@@ -1456,17 +1458,20 @@ public sealed class SqliteCameraAgentGalleryTests
     {
         private readonly SqliteRawCaptureJournal _journal;
         private readonly SqliteCaptureProcessingStore _processingStore;
+        private readonly ServiceProvider? _siloProvider;
 
         private GalleryFixture(
             string root,
             SqliteRawCaptureJournal journal,
             SqliteCaptureProcessingStore processingStore,
-            SqliteCameraAgentGallery gallery)
+            SqliteCameraAgentGallery gallery,
+            ServiceProvider? siloProvider)
         {
             Root = root;
             _journal = journal;
             _processingStore = processingStore;
             Gallery = gallery;
+            _siloProvider = siloProvider;
         }
 
         internal string Root { get; }
@@ -1476,7 +1481,7 @@ public sealed class SqliteCameraAgentGalleryTests
         internal SqliteCameraAgentGallery Gallery { get; }
 
         internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false,
-            IDeploymentLocationStore? deploymentLocation = null)
+            IDeploymentLocationStore? deploymentLocation = null, bool withSilo = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -1496,11 +1501,14 @@ public sealed class SqliteCameraAgentGalleryTests
                     new("raw-ingress", root),
                     new("storage-1", secondaryRoot)
                 ]);
+            var siloProvider = withSilo ? SiloInfrastructureFixture.OpenStore(root) : null;
             return new GalleryFixture(
                 root,
                 journal,
                 processingStore,
-                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation))
+                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation,
+                    silo: siloProvider?.GetRequiredService<SiloArtifactStorage>()),
+                siloProvider)
             {
                 SecondaryRoot = secondaryRoot
             };
@@ -1803,10 +1811,12 @@ public sealed class SqliteCameraAgentGalleryTests
                     productSchemaVersion,
                     new string('D', 64));
             var evidence = DurableProcessingProductManifestJson.Serialize(manifest);
-            var path = Path.Combine(Root, relativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.ChangeExtension(path, ".manifest.json"), evidence).ConfigureAwait(false);
+            if (_siloProvider is not null)
+            {
+                await SiloInfrastructureFixture.PublishArtifactAsync(_siloProvider.GetRequiredService<SiloArtifactStorage>(),
+                    raw.Descriptor with { Artifact = artifact }, outputIdentity, payload,
+                    SiloArtifactStorage.ProductEvidenceRevision, evidence, CancellationToken.None).ConfigureAwait(false);
+            }
 
             using var connection = await OpenAsync().ConfigureAwait(false);
             using (var node = connection.CreateCommand())
@@ -1925,6 +1935,7 @@ public sealed class SqliteCameraAgentGalleryTests
 
         public void Dispose()
         {
+            _siloProvider?.Dispose();
             _processingStore.Dispose();
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))

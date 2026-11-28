@@ -272,8 +272,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     Assert.AreEqual(DurableProcessingNodeStatus.Completed, solve.Status, solve.Reason);
                     var output = solve.Outputs.Single(value => value.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-                    var assessment = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(
-                        Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false)).Assessment;
+                    var assessment = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false)).Assessment;
                     Assert.AreEqual(AstrometricAssessmentStatus.Rejected, assessment.Status);
                     Assert.AreEqual("insufficient-detections", assessment.ReasonCode);
                     CollectionAssert.AreEqual(new[] { raw.Manifest.Descriptor.Artifact.ArtifactId, solverMeasurement.ArtifactId, independent.ArtifactId },
@@ -309,7 +308,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
             async Task<MeasuredStellarAssociationsV1> ReadAssociationAsync(DurableProcessingOutput output)
             {
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false);
                 var product = MeasuredStellarAssociationJson.Parse(bytes).Associations;
                 Assert.IsNotNull(product);
                 return product;

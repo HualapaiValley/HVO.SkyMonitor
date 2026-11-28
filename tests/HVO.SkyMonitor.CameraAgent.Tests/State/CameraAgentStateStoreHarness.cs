@@ -13,7 +13,6 @@ using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -29,43 +28,25 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// </summary>
 internal sealed class CameraAgentStateStoreHarness : IDisposable
 {
-    private static readonly (string Container, string Directory)[] Mounts =
-        [("/app/App_Data", "identity"), ("/app/data/raw", "raw"), ("/app/data/archive", "archive")];
-
-    private CameraAgentStateStoreHarness(string root, IReadOnlyList<string> storageRoots)
+    private CameraAgentStateStoreHarness(string root)
     {
         Root = root;
         StateRoot = Path.Combine(root, "state");
-        StorageRoots = storageRoots;
     }
 
     public string Root { get; }
 
-    /// <summary>The instance state root, holding the <c>identity</c>, <c>raw</c> and <c>archive</c> bind sources.</summary>
     public string StateRoot { get; }
-
-    /// <summary>The configured FileStorage roots, as container paths.</summary>
-    public IReadOnlyList<string> StorageRoots { get; }
 
     public string RawRoot => Path.Combine(StateRoot, "raw");
 
-    /// <summary>A state tree whose FileStorage steps write to <paramref name="storageRoots"/>, given as container paths.</summary>
-    public static CameraAgentStateStoreHarness Create(IReadOnlyList<string> storageRoots)
+    public static CameraAgentStateStoreHarness Create()
     {
         var harness = new CameraAgentStateStoreHarness(
-            Path.Combine(Path.GetTempPath(), $"hvo-store-harness-{Guid.NewGuid():N}"), storageRoots);
-        foreach (var directory in Mounts.Select(mount => Path.Combine(harness.StateRoot, mount.Directory)))
-        {
-            Directory.CreateDirectory(directory);
-        }
+            Path.Combine(Path.GetTempPath(), $"hvo-store-harness-{Guid.NewGuid():N}"));
+        Directory.CreateDirectory(harness.RawRoot);
+        Directory.CreateDirectory(Path.Combine(harness.StateRoot, "identity"));
         return harness;
-    }
-
-    /// <summary>The host directory a container storage root maps to.</summary>
-    public string HostPath(string containerRoot)
-    {
-        var (container, directory) = Mounts.Single(mount => containerRoot == mount.Container || containerRoot.StartsWith(mount.Container + "/", StringComparison.Ordinal));
-        return Path.Combine(StateRoot, directory, containerRoot[container.Length..].TrimStart('/'));
     }
 
     /// <summary>Initializes every store; over existing stores this is what an upgraded instance does on startup.</summary>
@@ -85,10 +66,6 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
             .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteCaptureProcessingStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         await provider.GetRequiredService<SqliteTransientRuntimeStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        foreach (var storageRoot in StorageRoots)
-        {
-            await new SqliteArtifactOutbox().InitializeAsync(HostPath(storageRoot), CancellationToken.None).ConfigureAwait(false);
-        }
         using (var fleet = new SqliteFleetStatusOutbox())
         {
             _ = await fleet.GetSnapshotAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);

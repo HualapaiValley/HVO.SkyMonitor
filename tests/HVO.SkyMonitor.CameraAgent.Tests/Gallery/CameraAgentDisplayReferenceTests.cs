@@ -87,7 +87,7 @@ public sealed partial class CameraAgentArtifactServiceTests
             Assert.AreEqual(reference.ArtifactId, slot.DisplayReferenceId);
             StringAssert.Contains(slot.DisplayPolicy!, "black=0.5 white=0.9997 asinh=8", StringComparison.Ordinal);
         }
-        File.Delete(reference.PayloadPath);
+        fixture.Objects.Delete(reference.PayloadLocator);
         var fallback = await current.GetAsync(CancellationToken.None).ConfigureAwait(false);
         foreach (var slot in fallback.Stages.Where(static slot => slot.Stage != CameraAgentPresentationStage.Annotated))
         {
@@ -163,10 +163,10 @@ public sealed partial class CameraAgentArtifactServiceTests
             target = await fixture.AddOutputAsync(wrongRig, FrameArtifactRole.Calibrated,
                 pixelFormat: CameraPixelFormat.Mono16, payload: raw.Payload).ConfigureAwait(false);
         }
-        if (scenario == "missing-reference") File.Delete(reference.PayloadPath);
-        if (scenario == "missing-source") File.Delete(combined.PayloadPath);
-        if (scenario == "corrupt-reference") await File.WriteAllBytesAsync(reference.PayloadPath, new byte[reference.Payload.Length]).ConfigureAwait(false);
-        if (scenario == "truncated-reference") await File.WriteAllBytesAsync(reference.PayloadPath, reference.Payload[..^1]).ConfigureAwait(false);
+        if (scenario == "missing-reference") fixture.Objects.Delete(reference.PayloadLocator);
+        if (scenario == "missing-source") fixture.Objects.Delete(combined.PayloadLocator);
+        if (scenario == "corrupt-reference") fixture.Objects.ReadContentOverride = locator => locator == reference.PayloadLocator ? new MemoryStream(new byte[reference.Payload.Length], writable: false) : null;
+        if (scenario == "truncated-reference") fixture.Objects.ReadContentOverride = locator => locator == reference.PayloadLocator ? new MemoryStream(reference.Payload[..^1], writable: false) : null;
         if (scenario == "journal-recipe")
             await fixture.ExecuteAsync($"UPDATE processing_outputs SET recipe_identity_sha256 = '{new string('0', 64)}' WHERE artifact_id = '{reference.ArtifactId:N}';").ConfigureAwait(false);
         if (scenario == "journal-output")
@@ -250,7 +250,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         await fixture.Service.GetPreviewAsync(raw.ArtifactId, CancellationToken.None, first.ArtifactId).ConfigureAwait(false);
         await fixture.Service.GetPreviewAsync(copy.ArtifactId, CancellationToken.None, second.ArtifactId).ConfigureAwait(false);
         Assert.AreEqual(2, encoder.Count, "Both policy caches must survive without colliding.");
-        File.Delete(first.PayloadPath);
+        fixture.Objects.Delete(first.PayloadLocator);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict,
             (await fixture.Service.GetPreviewAsync(raw.ArtifactId, CancellationToken.None, first.ArtifactId).ConfigureAwait(false)).Status,
             "Reference evidence is revalidated before using cached display bytes.");
@@ -275,7 +275,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         var source = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Combined,
             pixelFormat: CameraPixelFormat.Mono16, payload: raw.Payload).ConfigureAwait(false);
         var reference = await AddDisplayReferenceAsync(fixture, raw, source, new(OutputEncoding: "Packed")).ConfigureAwait(false);
-        if (corruptReference) await File.WriteAllBytesAsync(reference.PayloadPath, new byte[reference.Payload.Length]).ConfigureAwait(false);
+        if (corruptReference) fixture.Objects.ReadContentOverride = locator => locator == reference.PayloadLocator ? new MemoryStream(new byte[reference.Payload.Length], writable: false) : null;
 
         var lifecycle = StorageLifecycleLock.ForRoot(fixture.Root);
         await lifecycle.WaitAsync().ConfigureAwait(false);
@@ -293,12 +293,12 @@ public sealed partial class CameraAgentArtifactServiceTests
             ? CameraAgentArtifactReadStatus.Conflict : CameraAgentArtifactReadStatus.Found)));
         Assert.AreEqual(corruptReference ? 1L : 4L, fixture.Service.PayloadValidationReads,
             "Overlapping requests must share reference/source/target/core checksums, not only encoding.");
-        Assert.AreEqual(corruptReference ? 1L : 3L, fixture.Service.EvidenceValidationReads);
+        Assert.AreEqual(corruptReference ? 1L : 4L, fixture.Service.EvidenceValidationReads);
         Assert.AreEqual(corruptReference ? 0 : 1, encoder.Count);
         Assert.AreEqual(0, fixture.Service.PreviewRequestWaiters);
 
         // A new request is not part of the completed flight and must revalidate evidence even on failure.
-        await File.WriteAllBytesAsync(reference.PayloadPath, reference.Payload).ConfigureAwait(false);
+        fixture.Objects.ReadContentOverride = null;
         var before = fixture.Service.PayloadValidationReads;
         var retry = await fixture.Service.GetPreviewAsync(raw.ArtifactId, CancellationToken.None, reference.ArtifactId).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, retry.Status);

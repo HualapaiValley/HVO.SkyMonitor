@@ -780,7 +780,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
         foreach (var input in selected)
         {
-            await EnsureFrozenOutputFilesExistAsync(
+            await EnsureFrozenOutputMembersExistAsync(
                 connection, null, input.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
         }
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -801,7 +801,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         await InsertFrozenOutputPinsAsync(
             connection, transaction, execution.ExecutionId, nodeId, selected, cancellationToken,
-            validateRetainedFiles: false).ConfigureAwait(false);
+            validateRetainedMembers: false).ConfigureAwait(false);
         var outputs = await ReadPinnedOutputsAsync(
             connection, transaction, execution.ExecutionId, nodeId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

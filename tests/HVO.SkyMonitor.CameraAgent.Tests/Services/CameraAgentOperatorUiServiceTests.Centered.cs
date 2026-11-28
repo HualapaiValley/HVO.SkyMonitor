@@ -37,7 +37,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
         using var telemetry = new CaptureProcessingTelemetry();
         var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -314,7 +314,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
         using var telemetry = new CaptureProcessingTelemetry();
         var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);

@@ -146,7 +146,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         Assert.AreEqual(HttpStatusCode.Conflict, unknown.StatusCode);
         var unknownBody = await unknown.Content.ReadAsStringAsync().ConfigureAwait(false);
         Assert.IsFalse(unknownBody.Contains(fixture.Root, StringComparison.Ordinal));
-        File.Delete(first.PayloadPath);
+        fixture.Objects.Delete(first.PayloadLocator);
         using var deletedRequest = new HttpRequestMessage(HttpMethod.Get, query);
         deletedRequest.Headers.IfNoneMatch.Add(explicitPolicy.Headers.ETag!);
         using var deleted = await client.SendAsync(deletedRequest).ConfigureAwait(false);

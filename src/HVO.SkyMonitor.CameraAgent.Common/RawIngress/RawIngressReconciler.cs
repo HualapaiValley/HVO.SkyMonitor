@@ -14,7 +14,7 @@ internal sealed class RawIngressReconciler(
     Func<string, Stream>? openPayload = null,
     Func<ArtifactManifestV2, CancellationToken, Task<RecoveredCenteredAdmission>>? prepareCentered = null,
     IReadOnlyList<(Guid ArtifactId, RawIngressPaths Paths)>? siloIntents = null,
-    int siloMaximumStagedFiles = 0)
+    int? siloMaximumStagedFiles = null)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
@@ -101,7 +101,7 @@ internal sealed class RawIngressReconciler(
         // A durable plan still owns its paths, even if a newer companion could otherwise be recovered.
         var claimedPayloads = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
         var claimedSidecars = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
-        var reportedCaptures = siloIntents is null
+        var reportedCaptures = siloMaximumStagedFiles is null
             ? await _journal.ReadReportedEvidenceFailuresAsync(inspectionToken).ConfigureAwait(false)
             : null;
         await foreach (var entry in EnumerateReconciliationEntriesAsync(inspectionToken).ConfigureAwait(false))
@@ -125,7 +125,7 @@ internal sealed class RawIngressReconciler(
             }
             if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
             {
-                if (siloIntents is null && !entry.RetentionHold)
+                if (siloMaximumStagedFiles is null && !entry.RetentionHold)
                 {
                     continue;
                 }
@@ -280,13 +280,13 @@ internal sealed class RawIngressReconciler(
     private async IAsyncEnumerable<RawIngressJournalEntry> EnumerateReconciliationEntriesAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (siloIntents is null)
+        if (siloMaximumStagedFiles is not { } limit)
         {
             await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false)) yield return entry;
             yield break;
         }
-        var staged = await _journal.ReadPendingSiloAdmissionsAsync(siloMaximumStagedFiles + 1, cancellationToken).ConfigureAwait(false);
-        if (staged.Count > siloMaximumStagedFiles)
+        var staged = await _journal.ReadPendingSiloAdmissionsAsync(limit + 1, cancellationToken).ConfigureAwait(false);
+        if (staged.Count > limit)
             throw new InvalidDataException("The retained Silo raw admission inventory exceeds its configured bound.");
         var known = new HashSet<Guid>();
         foreach (var entry in staged)
@@ -294,7 +294,7 @@ internal sealed class RawIngressReconciler(
             known.Add(entry.ArtifactId);
             yield return entry;
         }
-        foreach (var (artifact, _) in siloIntents)
+        foreach (var (artifact, _) in siloIntents ?? [])
         {
             if (!known.Contains(artifact) && await _journal.ReadSiloAdmissionByArtifactAsync(artifact, cancellationToken).ConfigureAwait(false) is { } entry)
                 yield return entry;

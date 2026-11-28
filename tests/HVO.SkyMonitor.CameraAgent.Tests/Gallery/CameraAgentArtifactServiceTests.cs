@@ -6,13 +6,14 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Sqlite;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -64,7 +65,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         await AssertStatusAfterMutationAsync(
             static fixture =>
             {
-                File.Delete(fixture.Raw!.SidecarPath);
+                fixture.Objects.Delete(fixture.Raw!.SidecarLocator);
                 return Task.CompletedTask;
             },
             CameraAgentArtifactReadStatus.Gone, useHistory).ConfigureAwait(false);
@@ -75,38 +76,22 @@ public sealed partial class CameraAgentArtifactServiceTests
             static fixture => fixture.ExecuteAsync($"UPDATE raw_captures SET payload_sha256 = '{new string('0', 64)}';"),
             CameraAgentArtifactReadStatus.Conflict, useHistory).ConfigureAwait(false);
         await AssertStatusAfterMutationAsync(
-            static fixture => File.WriteAllTextAsync(fixture.Raw!.SidecarPath, "{}"),
+            static fixture =>
+            {
+                fixture.Objects.Damage(fixture.Raw!.SidecarLocator);
+                return Task.CompletedTask;
+            },
             CameraAgentArtifactReadStatus.Conflict, useHistory).ConfigureAwait(false);
     }
 
     [TestMethod]
-    public async Task TraversalAndSymbolicLinkEvidenceIsRejectedAsync()
+    public async Task JournalPathTamperingCannotRedirectSiloReadsAsync()
     {
-        using (var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false))
-        {
-            var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-            await fixture.ExecuteAsync("UPDATE raw_captures SET payload_relative_path = '../outside.bin';").ConfigureAwait(false);
-            var result = await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, result.Status);
-        }
-
-        using (var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false))
-        {
-            var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-            var outside = Path.Combine(Path.GetTempPath(), $"hvo-artifact-outside-{Guid.NewGuid():N}.bin");
-            await File.WriteAllBytesAsync(outside, raw.Payload).ConfigureAwait(false);
-            try
-            {
-                File.Delete(raw.PayloadPath);
-                File.CreateSymbolicLink(raw.PayloadPath, outside);
-                var result = await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-                Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, result.Status);
-            }
-            finally
-            {
-                File.Delete(outside);
-            }
-        }
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        await fixture.ExecuteAsync("UPDATE raw_captures SET payload_relative_path = '../outside.bin';").ConfigureAwait(false);
+        var result = await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, result.Status);
     }
 
     [TestMethod]
@@ -135,7 +120,7 @@ public sealed partial class CameraAgentArtifactServiceTests
             selected = fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None).AsTask();
             await cancellation.CancelAsync().ConfigureAwait(false);
             await Assert.ThrowsAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
-            File.Delete(raw.PayloadPath);
+            fixture.Objects.Delete(raw.PayloadLocator);
             history?.Dispose();
         }
         finally
@@ -164,67 +149,9 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
-    public async Task StalledOverlayArtifactReadHashDoesNotBlockConcurrentBasePreviewReadAsync()
-    {
-        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
-        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-        var preview = await fixture.AddOutputAsync(
-            raw.Manifest,
-            FrameArtifactRole.Preview,
-            mediaType: "image/jpeg").ConfigureAwait(false);
-        var overlay = await fixture.AddOutputAsync(
-            raw.Manifest,
-            FrameArtifactRole.Metadata,
-            payloadSeed: 42,
-            mediaType: PresentationLayerPayloadJson.MediaType,
-            recipeName: "overlay-layer-probe",
-            variant: "overlay-probe").ConfigureAwait(false);
-
-        var overlayHashEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOverlayHash = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Service.PayloadChecksumReader = async (stream, artifactId, token) =>
-        {
-            if (artifactId == overlay.ArtifactId)
-            {
-                overlayHashEntered.TrySetResult();
-                await releaseOverlayHash.Task.WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
-            }
-            return await PayloadChecksum.ComputeSha256Async(stream, token).ConfigureAwait(false);
-        };
-
-        var overlayReadTask = fixture.Service.OpenContentAsync(overlay.ArtifactId, CancellationToken.None).AsTask();
-        await overlayHashEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        Assert.IsFalse(overlayReadTask.IsCompleted);
-
-        // Concurrent base preview content read AND GetPreviewAsync MUST complete immediately
-        // without waiting on the stalled overlay read/hash!
-        var previewContentResult = await fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None)
-            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewContentResult.Status);
-        await using (previewContentResult.Content!.ConfigureAwait(false))
-        {
-            CollectionAssert.AreEqual(preview.Payload, await ReadAllAsync(previewContentResult.Content!).ConfigureAwait(false));
-        }
-
-        var previewResult = await fixture.Service.GetPreviewAsync(preview.ArtifactId, CancellationToken.None)
-            .AsTask().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, previewResult.Status);
-        CollectionAssert.AreEqual(preview.Payload, previewResult.Content.ToArray());
-        Assert.IsFalse(overlayReadTask.IsCompleted, "Overlay read should still be gated while preview reads completed.");
-
-        releaseOverlayHash.SetResult();
-        var overlayResult = await overlayReadTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, overlayResult.Status);
-        await using (overlayResult.Content!.ConfigureAwait(false))
-        {
-            CollectionAssert.AreEqual(overlay.Payload, await ReadAllAsync(overlayResult.Content!).ConfigureAwait(false));
-        }
-    }
-
-    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task ValidatedMetadataCacheAvoidsConditionalHeadAndRangeRescansAsync(bool useHistory)
+    public async Task VerifiedSiloContentSupportsRepeatedAndRangeReadsAsync(bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
@@ -234,9 +161,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         {
             var result = history is null
                 ? await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)
-                : request > 0 && OperatingSystem.IsLinux()
-                    ? await ReadWithoutOpeningConnectionAsync(history, raw.ArtifactId).ConfigureAwait(false)
-                    : await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+                : await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
             var content = result.Content!;
             await using (content.ConfigureAwait(false))
@@ -251,25 +176,13 @@ public sealed partial class CameraAgentArtifactServiceTests
             }
         }
 
-        Assert.AreEqual(1L, fixture.Service.EvidenceValidationReads);
+        Assert.AreEqual(4L, fixture.Service.EvidenceValidationReads);
         Assert.AreEqual(4L, fixture.Service.PayloadValidationReads);
+        if (useHistory && OperatingSystem.IsLinux())
+            Assert.AreEqual(1L, fixture.Service.JournalConnectionOpens);
         var lifecycleGate = StorageLifecycleLock.ForRoot(fixture.Root);
         await lifecycleGate.WaitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         lifecycleGate.Release();
-    }
-
-    private static async Task<CameraAgentArtifactContentResult> ReadWithoutOpeningConnectionAsync(
-        CameraAgentArtifactService.RetainedHistoryRead history, Guid artifactId)
-    {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        CameraAgentArtifactContentResult? result = null;
-        await SqliteConnectionConfigurationGate.RunAsync(async () =>
-        {
-            // A physical open needs the configuration gate even when the schema is in the OS cache.
-            // The primed history reader must be able to query without reopening its SQLite handle.
-            result = await history.OpenContentAsync(artifactId, deadline.Token).ConfigureAwait(false);
-        }, deadline.Token).ConfigureAwait(false);
-        return result!;
     }
 
     private static SqliteConnection GetIdleHistoryHandle(CameraAgentArtifactService.RetainedHistoryRead history)
@@ -292,7 +205,7 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         await fixture.ExecuteAsync("ALTER TABLE processing_outputs RENAME TO temporary_outputs;").ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable,
-            (await ReadWithoutOpeningConnectionAsync(history, raw.ArtifactId).ConfigureAwait(false)).Status);
+            (await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Status);
         Assert.AreEqual(ConnectionState.Closed, failedConnection.State);
 
         await fixture.ExecuteAsync("ALTER TABLE temporary_outputs RENAME TO processing_outputs;").ConfigureAwait(false);
@@ -405,22 +318,19 @@ public sealed partial class CameraAgentArtifactServiceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task ValidationCacheRehashesWhenPayloadChangesWithoutMetadataIdentityChangeAsync(bool useHistory)
+    public async Task RepeatedReadVerifiesTheSameSiloVersionAsync(bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
         using var history = useHistory ? fixture.Service.BeginRetainedHistoryRead() : null;
         var first = await OpenAsync().ConfigureAwait(false);
         await first.Content!.DisposeAsync().ConfigureAwait(false);
-        var lastWriteUtc = File.GetLastWriteTimeUtc(raw.PayloadPath);
-        await File.WriteAllBytesAsync(raw.PayloadPath, raw.Payload.Select(static value => (byte)(value ^ 0xFF)).ToArray())
-            .ConfigureAwait(false);
-        File.SetLastWriteTimeUtc(raw.PayloadPath, lastWriteUtc);
+        fixture.Objects.Damage(raw.PayloadLocator);
 
         var corrupt = await OpenAsync().ConfigureAwait(false);
 
         Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, corrupt.Status);
-        Assert.AreEqual(1L, fixture.Service.EvidenceValidationReads);
+        Assert.AreEqual(2L, fixture.Service.EvidenceValidationReads);
         Assert.AreEqual(2L, fixture.Service.PayloadValidationReads);
 
         ValueTask<CameraAgentArtifactContentResult> OpenAsync() =>
@@ -832,12 +742,12 @@ public sealed partial class CameraAgentArtifactServiceTests
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
         var combined = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Combined).ConfigureAwait(false);
         var derivative = await fixture.AddOutputAsync(
-            raw.Manifest, FrameArtifactRole.Preview, sourceArtifactId: combined.ArtifactId,
+            raw.Manifest, FrameArtifactRole.Preview, payloadSeed: 17, sourceArtifactId: combined.ArtifactId,
             recipeName: BuiltInProcessingRecipes.EncodedPreview).ConfigureAwait(false);
         if (missing)
-            File.Delete(derivative.PayloadPath);
+            fixture.Objects.Delete(derivative.PayloadLocator);
         else
-            await File.WriteAllBytesAsync(derivative.PayloadPath, new byte[derivative.Payload.Length]).ConfigureAwait(false);
+            fixture.Objects.Damage(derivative.PayloadLocator);
 
         var capture = await fixture.Gallery.GetCaptureAsync(raw.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None)
             .ConfigureAwait(false);
@@ -921,15 +831,20 @@ public sealed partial class CameraAgentArtifactServiceTests
         private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
         private readonly SqliteRawCaptureJournal _journal;
         private readonly SqliteCaptureProcessingStore _processingStore;
+        private readonly ServiceProvider _provider;
+        private readonly SiloArtifactStorage _storage;
 
         private ArtifactFixture(
             string root,
             SqliteRawCaptureJournal journal,
             SqliteCaptureProcessingStore processingStore,
             CameraAgentArtifactService service,
-            ICameraAgentGallery gallery)
+            ICameraAgentGallery gallery,
+            ServiceProvider provider)
         {
             Root = root;
+            _provider = provider;
+            _storage = provider.GetRequiredService<SiloArtifactStorage>();
             _journal = journal;
             _processingStore = processingStore;
             Service = service;
@@ -943,6 +858,10 @@ public sealed partial class CameraAgentArtifactServiceTests
         internal CameraAgentArtifactService Service { get; }
 
         internal ICameraAgentGallery Gallery { get; }
+
+        internal SiloTestStore Objects => _provider.GetRequiredService<SiloTestStore>();
+
+        internal SiloArtifactStorage Storage => _storage;
 
         internal ValueTask<CameraAgentLayeredPresentationResult> ReadLayersAsync(Guid captureId)
             => new CameraAgentLayeredPresentationService(_processingStore, Service).GetAsync(captureId, CancellationToken.None);
@@ -964,13 +883,13 @@ public sealed partial class CameraAgentArtifactServiceTests
             });
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var processingStore = new SqliteCaptureProcessingStore(options);
+            var provider = SiloInfrastructureFixture.OpenStore(root);
+            var storage = provider.GetRequiredService<SiloArtifactStorage>();
+            var processingStore = new SqliteCaptureProcessingStore(options, silo: storage);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var service = new CameraAgentArtifactService(
-                options,
-                processingStore,
-                encoder ?? new CameraAgentPreviewEncoder());
-            return new ArtifactFixture(root, journal, processingStore, service, new SqliteCameraAgentGallery(options, processingStore));
+            var service = new CameraAgentArtifactService(options, processingStore, encoder ?? new CameraAgentPreviewEncoder(), silo: storage);
+            return new ArtifactFixture(root, journal, processingStore, service,
+                new SqliteCameraAgentGallery(options, processingStore, silo: storage), provider);
         }
 
         internal async Task<StoredArtifact> AddRawAsync(byte[]? payload = null, int width = 2, int height = 2,
@@ -1000,15 +919,13 @@ public sealed partial class CameraAgentArtifactServiceTests
                     ChecksumSha256 = PayloadChecksum.ComputeSha256(payload)
                 }
             };
-            var relativePath = $"frames/{artifactId:N}.bin";
-            var sidecarRelativePath = $"frames/{artifactId:N}.json";
+            var relativePath = SiloArtifactStorage.RawReference(artifactId, ".bin");
+            var sidecarRelativePath = SiloArtifactStorage.RawReference(artifactId, ".json");
             var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
             var sidecar = CaptureContractJson.Serialize(manifest);
-            var payloadPath = Path.Combine(Root, relativePath);
-            var sidecarPath = Path.Combine(Root, sidecarRelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
-            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(sidecarPath, sidecar).ConfigureAwait(false);
+            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+            await SiloInfrastructureFixture.PublishArtifactAsync(_storage, descriptor, revision, payload,
+                SiloArtifactStorage.RawEvidenceRevision, sidecar, CancellationToken.None).ConfigureAwait(false);
             await _journal.CommitAsync(new RawIngressJournalEntry(
                 identity.AgentId,
                 identity.CaptureSequence,
@@ -1027,8 +944,9 @@ public sealed partial class CameraAgentArtifactServiceTests
                 artifactId,
                 payload,
                 descriptor.Artifact.ChecksumSha256,
-                payloadPath,
-                sidecarPath,
+                await SiloInfrastructureFixture.ReadLocalLocatorAsync(_provider, artifactId, revision, CancellationToken.None).ConfigureAwait(false),
+                await SiloInfrastructureFixture.ReadLocalLocatorAsync(_provider, artifactId, SiloArtifactStorage.RawEvidenceRevision, CancellationToken.None)
+                    .ConfigureAwait(false),
                 manifest);
             return Raw;
         }
@@ -1092,8 +1010,8 @@ public sealed partial class CameraAgentArtifactServiceTests
                 mediaType,
                 PayloadChecksum.ComputeSha256(payload));
             var descriptor = raw.Descriptor with { Layout = layout, Artifact = artifact };
-            var relativePath = $"derived/{artifactId:N}.bin";
-            var sidecarRelativePath = $"derived/{artifactId:N}.json";
+            var relativePath = $"silo/products/{artifactId:N}.bin";
+            var sidecarRelativePath = $"silo/products/{artifactId:N}.json";
             var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
             var sidecar = string.Equals(mediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)
                 ? DurableProcessingProductManifestJson.Serialize(new DurableEncodedProductManifestV2(
@@ -1113,11 +1031,8 @@ public sealed partial class CameraAgentArtifactServiceTests
                     pixelFormat,
                     artifactId.ToString("N")))
                 : CaptureContractJson.Serialize(manifest);
-            var payloadPath = Path.Combine(Root, relativePath);
-            var sidecarPath = Path.Combine(Root, sidecarRelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
-            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(sidecarPath, sidecar).ConfigureAwait(false);
+            await SiloInfrastructureFixture.PublishArtifactAsync(_storage, descriptor, outputIdentity, payload,
+                SiloArtifactStorage.ProductEvidenceRevision, sidecar, CancellationToken.None).ConfigureAwait(false);
 
             using var connection = await OpenAsync().ConfigureAwait(false);
             using (var node = connection.CreateCommand())
@@ -1174,8 +1089,9 @@ public sealed partial class CameraAgentArtifactServiceTests
                 artifactId,
                 payload,
                 artifact.ChecksumSha256,
-                payloadPath,
-                sidecarPath,
+                await SiloInfrastructureFixture.ReadLocalLocatorAsync(_provider, artifactId, outputIdentity, CancellationToken.None).ConfigureAwait(false),
+                await SiloInfrastructureFixture.ReadLocalLocatorAsync(_provider, artifactId, SiloArtifactStorage.ProductEvidenceRevision, CancellationToken.None)
+                    .ConfigureAwait(false),
                 manifest);
         }
 
@@ -1199,6 +1115,7 @@ public sealed partial class CameraAgentArtifactServiceTests
         {
             Service.Dispose();
             _processingStore.Dispose();
+            _provider.Dispose();
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))
             {
@@ -1211,8 +1128,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         Guid ArtifactId,
         byte[] Payload,
         string ChecksumSha256,
-        string PayloadPath,
-        string SidecarPath,
+        SiloExactLocator PayloadLocator,
+        SiloExactLocator SidecarLocator,
         ArtifactManifestV2 Manifest);
 
     private class CountingPreviewEncoder : ICameraAgentPreviewEncoder
