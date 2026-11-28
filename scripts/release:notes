@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The notes a release carries (install contract section 3, #1310). A final release, X.Y.Z, needs both of these, which
-# the release PR adds: its CHANGELOG.md section, "## [X.Y.Z]", the [Unreleased] section renamed, and its upgrade notes,
+# the release PR adds: its assembled CHANGELOG.md section, "## [X.Y.Z]", and its upgrade notes,
 # a non-empty docs/upgrade-notes/X.Y.Z.md. The release tool copies every release's upgrade notes up to this one's into
-# release.json (scripts/release:assets). A release candidate or a pre-release needs neither.
+# release.json (scripts/release:assets). Pre-releases, including betas and release candidates, need neither.
 #
 #   scripts/release:notes --check <version>   succeeds when <version>'s release has the notes it needs, and fails naming
 #                                             what is missing otherwise
@@ -27,7 +27,7 @@ fail() {
 mode="$1"
 version="$2"
 [[ "$version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-[0-9A-Za-z.-]+)?$ ]] ||
-    fail "'$version' is not a release version such as 0.9.0 or 0.9.0-rc.1."
+    fail "'$version' is not a release version such as 0.10.0, 0.10.0-beta.1 or 0.10.0-rc.1."
 release="${BASH_REMATCH[1]}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 changelog="$repo_root/CHANGELOG.md"
@@ -55,7 +55,7 @@ case "$mode" in
     --check)
         if [[ "$version" != *-* ]]; then
             written "$(section)" ||
-                fail "CHANGELOG.md has no '## [$release]' section with text: a final release renames [Unreleased] to it first."
+                fail "CHANGELOG.md has no '## [$release]' section with text: run scripts/release:changelog in the release PR."
             [[ -f "$notes" ]] && written "$(cat "$notes")" ||
                 fail "docs/upgrade-notes/$release.md is missing or empty: a final release's notes say what someone upgrading must do."
         fi

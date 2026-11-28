@@ -1,20 +1,20 @@
 using System.Reflection;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
-using HVO.SkyMonitor.Fleet.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Telemetry")]
 public sealed class BoundedRuntimeSnapshotTests
 {
     [TestMethod]
     public void FleetTrySnapshotPreservesCaptureAndTimingStateAndReleasesGate()
     {
-        var state = new FleetRuntimeState(TimeProvider.System);
+        var state = new CaptureRuntimeState(TimeProvider.System);
         state.CaptureFailed("failure");
         state.ProcessingCompleted(TimeSpan.FromMilliseconds(4));
         var expected = state.Snapshot;
@@ -49,7 +49,7 @@ public sealed class BoundedRuntimeSnapshotTests
     {
         var sink = new CaptureTelemetrySink();
         var sample = new CaptureTelemetrySample(DateTimeOffset.UnixEpoch, TimeSpan.FromSeconds(1),
-            TimeSpan.FromMilliseconds(10), 1, null, CaptureMode.Still, false, true,
+            TimeSpan.FromMilliseconds(10), 1, null, CaptureMode.Still, true,
             TimeSpan.FromMilliseconds(2), TimeSpan.FromMilliseconds(3), []);
         sink.Report(sample);
 
@@ -76,7 +76,7 @@ public sealed class BoundedRuntimeSnapshotTests
     {
         object state = source switch
         {
-            "fleet" => new FleetRuntimeState(TimeProvider.System),
+            "fleet" => new CaptureRuntimeState(TimeProvider.System),
             "telemetry" => new CaptureTelemetrySink(),
             _ => new CaptureProcessingState()
         };
@@ -124,7 +124,7 @@ public sealed class BoundedRuntimeSnapshotTests
     {
         object state = source switch
         {
-            "fleet" => new FleetRuntimeState(TimeProvider.System),
+            "fleet" => new CaptureRuntimeState(TimeProvider.System),
             "telemetry" => new CaptureTelemetrySink(),
             _ => new CaptureProcessingState()
         };
@@ -138,11 +138,11 @@ public sealed class BoundedRuntimeSnapshotTests
     [TestMethod]
     public void FleetTrySnapshotPropagatesProjectionExceptionAndReleasesGate()
     {
-        var state = new FleetRuntimeState(TimeProvider.System);
-        var timings = (Dictionary<FleetTimingSegment, Queue<double>>)typeof(FleetRuntimeState)
+        var state = new CaptureRuntimeState(TimeProvider.System);
+        var timings = (Dictionary<CaptureTimingSegment, Queue<double>>)typeof(CaptureRuntimeState)
             .GetField("_timings", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(state)!;
         // An empty timing queue makes the percentile projection throw inside TrySnapshot's critical section.
-        timings.Add(FleetTimingSegment.Processing, new Queue<double>());
+        timings.Add(CaptureTimingSegment.Processing, new Queue<double>());
 
         Assert.ThrowsExactly<IndexOutOfRangeException>(() => state.TrySnapshot(TimeSpan.Zero, out _));
 
@@ -152,7 +152,7 @@ public sealed class BoundedRuntimeSnapshotTests
 
     private static bool TryRead(object state, TimeSpan timeout) => state switch
     {
-        FleetRuntimeState fleet => fleet.TrySnapshot(timeout, out _),
+        CaptureRuntimeState fleet => fleet.TrySnapshot(timeout, out _),
         CaptureTelemetrySink telemetry => telemetry.TryGetLatest(timeout, out _),
         CaptureProcessingState processing => processing.TrySnapshot(timeout, out _),
         _ => throw new InvalidOperationException("Unknown bounded snapshot source.")

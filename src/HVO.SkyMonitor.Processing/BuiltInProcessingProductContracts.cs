@@ -26,13 +26,14 @@ internal static class BuiltInProcessingProductContracts
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
-            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene or AstrometryPrediction or MeasuredStellarAssociations or MeasuredAstrometry =>
+            ImageQuality or ExposureMeasurement or NoOpAnalyzer or CloudAssessment or ProjectedScene or AstrometryPrediction or MeasuredStellarAssociations or MeasuredAstrometry =>
                 FrameArtifactRole.Metadata,
             _ => throw new InvalidOperationException("The built-in recipe output contract is unavailable.")
         };
         IReadOnlyList<ProcessingArtifact> sources = request.RecipeName switch
         {
             MeasuredAstrometry when primary is not null => MeasuredAstrometryRecipe.Sources(request, primary),
+            ExposureMeasurement => request.Inputs,
             RollingMean => RollingMeanRecipe.SelectWindow(
                 ProcessingRecipeSupport.ResolveMany(request, out _),
                 ProcessingRecipeSupport.ParseOptions<RollingMeanOptions>(
@@ -106,6 +107,23 @@ internal static class BuiltInProcessingProductContracts
                 JpegImageCodec.ValidateJpeg(payload, cancellationToken);
             }
             catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
+            {
+                return false;
+            }
+        }
+        if (string.Equals(request.RecipeName, ExposureMeasurement, StringComparison.Ordinal))
+        {
+            try
+            {
+                var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                    request.RecipeName, request.Options, request.Input);
+                var measurement = ExposureMeasurementProducts.Read(contract.Role, request.OutputVariant, contract.Kind,
+                    contract.MediaType, contract.SchemaVersion, payload, contentIdentitySha256, recipe, contract.SourceArtifactIds);
+                var (_, policy) = ExposureMeasurementRecipe.Parameters(recipe);
+                return recipe.IdentitySha256 == recipeIdentitySha256 &&
+                    algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input, policy));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
             {
                 return false;
             }
@@ -219,7 +237,7 @@ internal static class BuiltInProcessingProductContracts
                         MeasuredAstrometryJson.Catalog(frozenContext)) is not null) return false;
                 if (solution.Uncertainty is { } uncertainty)
                 {
-                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload);
+                    var qualified = MeasuredAstrometryRecipe.Qualified(measuredPayload, normalized.UseScientificAssociations);
                     HVO.SkyMonitor.Astronomy.AstrometricUncertaintyEvidence.ValidateInputs(uncertainty, solution.Assessment,
                         new(frozenContext.Projection, frozenContext.CalibrationVersion, frozenContext.ReadoutIdentitySha256),
                         MeasuredAstrometryRecipe.Detections(qualified), MeasuredAstrometryRecipe.Covariances(qualified),
@@ -351,7 +369,7 @@ internal static class BuiltInProcessingProductContracts
             FixedPreview => PixelDetails("application/x-hvo-packed-image", true,
                 ProcessingRecipeSupport.CreatePackedLayout(primary.Layout!.Width, primary.Layout.Height,
                     primary.Layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.Mono8 ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24),
-                FixedPreviewRecipe.Algorithms(primary.Layout.PixelFormat), primary),
+                FixedPreviewRecipe.Algorithms(primary.Layout), primary),
             EncodedPreview => CreateEncodedPreviewDetails(identity, primary),
             JpegEncoding => CreateJpegDetails(identity, primary),
             Annotation => CreateAnnotationDetails(request, identity, primary),
@@ -371,6 +389,7 @@ internal static class BuiltInProcessingProductContracts
                 "application/json",
                 [new("image-statistics", ImageStatisticsCalculator.AlgorithmVersion)],
                 primary),
+            ExposureMeasurement => CreateExposureMeasurementDetails(identity, primary),
             NoOpAnalyzer => MetadataDetails(
                 "application/json",
                 [new("no-op", "v1")],
@@ -386,6 +405,17 @@ internal static class BuiltInProcessingProductContracts
                 primary.Integration, primary.Compatibility, null, null),
             _ => throw new InvalidOperationException("The built-in recipe output details are unavailable.")
         };
+
+    private static ProductDetails CreateExposureMeasurementDetails(
+        ProcessingRecipeIdentity identity,
+        ProcessingArtifact primary)
+    {
+        var (input, policy) = ExposureMeasurementRecipe.Parameters(identity);
+        return new(ExposureMeasurementProducts.MediaType, false, null,
+            ExposureMeasurementProducts.SchemaVersion, true, null,
+            ExposureMeasurementRecipe.Algorithms(input, policy),
+            primary.Integration, primary.Compatibility, null, null);
+    }
 
     private static ProductDetails CreateEncodedPreviewDetails(
         ProcessingRecipeIdentity identity,
@@ -405,7 +435,7 @@ internal static class BuiltInProcessingProductContracts
             case CameraPixelFormat.BayerRggb16:
                 format = CameraPixelFormat.Rgb24;
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
+                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(BayerRggb16Demosaicer.ResolvePattern(layout))));
                 break;
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:
@@ -663,7 +693,7 @@ internal static class BuiltInProcessingProductContracts
             case CameraPixelFormat.BayerRggb16:
                 format = CameraPixelFormat.Rgb24;
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
+                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(BayerRggb16Demosaicer.ResolvePattern(layout))));
                 break;
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:

@@ -37,7 +37,9 @@ internal static class PipelineRunPresentation
     {
         // A frozen recipe or recorded variant supplies the semantic name; a stage with neither keeps its node identity.
         var recipes = node.OutputContracts.Select(static contract => contract.Recipe?.Name).ToArray();
+        if (node.NodeId == ExposureMeasurementProducts.StepAlias) return "Exposure measurement";
         if (recipes.Contains(BuiltInProcessingRecipes.CloudAssessment, StringComparer.Ordinal)) return "Cloud assessment";
+        if (recipes.Contains(RegionalStellarVisibilityProducts.RecipeName, StringComparer.Ordinal)) return "Regional stellar visibility";
         if (recipes.Contains("projected-scene", StringComparer.Ordinal)) return "Scene projection";
         if (recipes.Contains("linear-normalization", StringComparer.Ordinal)) return "Calibration";
         if (recipes.Contains("rolling-mean", StringComparer.Ordinal)) return "Rolling combination";

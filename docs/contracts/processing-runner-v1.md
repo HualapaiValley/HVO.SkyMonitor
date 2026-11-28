@@ -1,5 +1,7 @@
 # Processing Runner v1
 
+> Historical contract for the retired central integration. See the [current CameraAgent architecture](../project-plan.md#current-application-topology).
+
 `processing-runner-v1` is the provider-neutral protocol between LogicHost and
 self-hosted processing runners (`src/HVO.SkyMonitor.ProcessingRunner`). It moves
 optional central recipe execution out of the LogicHost process onto separately

@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -25,7 +26,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     internal const int MaximumProcessingNodesPerCapture = 64;
     internal const int MaximumArtifactsPerCapture = 128;
     private const int CursorVersion = 1;
-    private const int MaximumDetailArtifacts = MaximumArtifactsPerCapture;
     private const long MaximumCloudAssessmentBytes = 4L * 1024 * 1024;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -42,30 +42,28 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
-    private readonly bool _centralIntegrationDisabled;
     private readonly SqliteCaptureProcessingStore _processingStore;
-    private readonly ICameraAgentStorageResolver? _storageResolver;
     private readonly IObservingDayCalendarProvider _observingDays;
     private readonly IDeploymentLocationStore? _deploymentLocation;
+    private readonly SiloArtifactStorage? _silo;
 
     public SqliteCameraAgentGallery(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
-        ICameraAgentStorageResolver? storageResolver = null,
         IObservingDayCalendarProvider? observingDays = null,
         IDeploymentLocationStore? deploymentLocation = null,
-        Microsoft.Extensions.Logging.ILogger<SqliteCameraAgentGallery>? logger = null)
+        Microsoft.Extensions.Logging.ILogger<SqliteCameraAgentGallery>? logger = null,
+        SiloArtifactStorage? silo = null)
     {
+        _silo = silo;
         _logger = logger;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
-        _storageResolver = storageResolver;
         _observingDays = observingDays ?? new DeploymentObservingDayCalendarProvider();
         _deploymentLocation = deploymentLocation;
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = options.Value.RawIngressSqliteBusyTimeoutSeconds;
-        _centralIntegrationDisabled = options.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
     }
 
     public async ValueTask<CameraAgentGalleryPage> GetPageAsync(
@@ -146,22 +144,13 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             row.CaptureId, cancellationToken).ConfigureAwait(false);
         var retention = await _processingStore.ReadGalleryRetentionStatesAsync(
             row.CaptureId, cancellationToken).ConfigureAwait(false);
-        var delivery = await ReadDeliveryStatusesAsync(
-            capture.Artifacts.Select(static artifact => artifact.ArtifactId).ToArray(), cancellationToken)
-            .ConfigureAwait(false);
         var artifactStates = capture.Artifacts.Select(artifact => new CameraAgentGalleryArtifactState(
             artifact.ArtifactId,
             artifact.Role == FrameArtifactRole.Raw
                 ? row.RetentionHold ? "Held" : "Released"
                 : retention.TryGetValue(artifact.ArtifactId, out var held)
                     ? held ? "Held" : "Unpinned"
-                    : "Unavailable",
-             delivery.Availability,
-             delivery.Availability != "Unavailable"
-                 ? delivery.Statuses.TryGetValue(artifact.ArtifactId, out var statuses)
-                     ? statuses
-                     : []
-                 : []))
+                    : "Unavailable"))
             .ToArray();
         var nodeDetails = processingDetails.Select(detail => new CameraAgentGalleryProcessingNodeDetail(
             detail.NodeId,
@@ -186,7 +175,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             CaptureProfile = await ReadCaptureProfileAsync(row, manifest?.Descriptor, cancellationToken).ConfigureAwait(false),
             Location = CameraAgentCaptureLocationProjector.Project(manifest?.Descriptor, _deploymentLocation),
-            Schedule = manifest?.Descriptor.CycleEvidence?.ScheduleAdmission is { } schedule
+            Schedule = manifest?.Descriptor.RetainedScheduleAdmission is { } schedule
                 ? new CameraAgentCaptureScheduleFacts(schedule.ScheduleRevisionId, schedule.ScheduleRevisionSha256,
                     schedule.SetpointProfileId, schedule.Reason.ToString(), schedule.DecisionUtc)
                 : null
@@ -295,14 +284,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         await StorageLifecycleLock.WaitAsync(lifecycleGate, "gallery", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
-            var path = ResolveSafePath(output.PayloadRelativePath);
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length != expectedLength.Value)
-            {
+            var payload = _silo is null ? null :
+                await _silo.ReadMemberAsync(output.Artifact.ArtifactId, output.OutputIdentitySha256, expectedLength.Value,
+                    output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
+            if (payload is null)
                 return UnavailableCloudAssessment("Unavailable");
-            }
-            var payload = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(
                     PayloadChecksum.ComputeSha256(payload),
                     output.Artifact.ChecksumSha256,
@@ -327,6 +313,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                 assessment.Mask?.Height,
                 assessment.Mask is null ? null : PayloadChecksum.ComputeSha256(assessment.Mask.Bits.Span));
         }
+        catch (Exception exception) when (exception is SiloStoreUnavailableException or FileNotFoundException)
+        {
+            return UnavailableCloudAssessment("Unavailable");
+        }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
         {
             return UnavailableCloudAssessment("Malformed");
@@ -335,117 +325,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             lifecycleGate.Release();
         }
-    }
-
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain bounded integer ordinals and all artifact identities remain parameterized.")]
-    private async ValueTask<DeliveryStatusLookup> ReadDeliveryStatusesAsync(
-        Guid[] artifactIds,
-        CancellationToken cancellationToken)
-    {
-        if (artifactIds.Length is 0 or > MaximumDetailArtifacts)
-        {
-            return new("Unavailable", new Dictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>>());
-        }
-        if (_centralIntegrationDisabled)
-        {
-            return new("Disabled", new Dictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>>());
-        }
-        IReadOnlyList<CameraAgentStorageLocation> locations = _storageResolver is null
-            ? new[] { new CameraAgentStorageLocation("raw-ingress", _root) }
-            : await _storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false);
-        if (locations.Count == 0)
-        {
-            return new("Unavailable", new Dictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>>());
-        }
-        var statuses = artifactIds.ToDictionary(
-            static artifactId => artifactId,
-            static _ => new List<CameraAgentGalleryArtifactDelivery>());
-        var availableRoots = 0;
-        foreach (var location in locations)
-        {
-            var root = Path.GetFullPath(location.Root);
-            var path = Path.Combine(root, "outbox", "artifact-outbox.db");
-            if (!File.Exists(path))
-            {
-                foreach (var artifactId in artifactIds)
-                {
-                    statuses[artifactId].Add(new(location.Alias, "Unavailable"));
-                }
-                continue;
-            }
-            try
-            {
-                RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-                {
-                    DataSource = path,
-                    Mode = SqliteOpenMode.ReadOnly,
-                    Pooling = false
-                }.ToString());
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-                using var command = connection.CreateCommand();
-                var placeholders = string.Join(", ", Enumerable.Range(0, artifactIds.Length).Select(static index => $"$artifact{index}"));
-                command.CommandText = $"SELECT artifact_id, status FROM artifact_outbox_records WHERE artifact_id IN ({placeholders}) ORDER BY record_id;";
-                for (var index = 0; index < artifactIds.Length; index++)
-                {
-                    command.Parameters.AddWithValue($"$artifact{index}", artifactIds[index].ToString("N"));
-                }
-                var rootStatuses = new Dictionary<Guid, HashSet<string>>();
-                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    if (Guid.TryParseExact(reader.GetString(0), "N", out var artifactId))
-                    {
-                        if (!rootStatuses.TryGetValue(artifactId, out var values))
-                        {
-                            values = new(StringComparer.Ordinal);
-                            rootStatuses.Add(artifactId, values);
-                        }
-                        values.Add(SanitizeDeliveryStatus(reader.GetString(1)));
-                    }
-                }
-                foreach (var artifactId in artifactIds)
-                {
-                    if (rootStatuses.TryGetValue(artifactId, out var values))
-                    {
-                        statuses[artifactId].AddRange(values.Select(status =>
-                            new CameraAgentGalleryArtifactDelivery(location.Alias, status)));
-                    }
-                    else
-                    {
-                        statuses[artifactId].Add(new(location.Alias, "NotQueued"));
-                    }
-                }
-                availableRoots++;
-            }
-            catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
-            {
-                foreach (var artifactId in artifactIds)
-                {
-                    statuses[artifactId].Add(new(location.Alias, "Unavailable"));
-                }
-            }
-        }
-        var availability = availableRoots == locations.Count ? "Available" : availableRoots == 0 ? "Unavailable" : "Partial";
-        return new(availability, statuses.ToDictionary(
-            static pair => pair.Key,
-            static pair => (IReadOnlyList<CameraAgentGalleryArtifactDelivery>)pair.Value.ToArray()));
-    }
-
-    private string ResolveSafePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains('\\', StringComparison.Ordinal) ||
-            Path.IsPathRooted(relativePath) || relativePath.Contains('\0', StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Artifact path is invalid.");
-        }
-        var fullPath = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!fullPath.StartsWith(prefix, PathComparison))
-        {
-            throw new InvalidDataException("Artifact path is invalid.");
-        }
-        return fullPath;
     }
 
     private static string? SanitizeFailureCategory(string? reason)
@@ -457,17 +336,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
            reason.All(static character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '-')
             ? reason
             : reason is null ? null : "unavailable";
-
-    private static string SanitizeDeliveryStatus(string status) => status switch
-    {
-        "pending" => "Pending",
-        "leased" => "Leased",
-        "retry" => "Retry",
-        "acknowledged" => "Acknowledged",
-        "quarantined" => "Quarantined",
-        "abandoned" => "Abandoned",
-        _ => "Unknown"
-    };
 
     private static CameraAgentGalleryCloudAssessment UnavailableCloudAssessment(string availability)
         => new(availability, null, null, null, null, [], null, null, null, null);
@@ -1739,10 +1607,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         string RawState,
         GalleryEvidenceOrigin EvidenceOrigin,
         bool RetentionHold);
-
-    private sealed record DeliveryStatusLookup(
-        string Availability,
-        IReadOnlyDictionary<Guid, IReadOnlyList<CameraAgentGalleryArtifactDelivery>> Statuses);
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

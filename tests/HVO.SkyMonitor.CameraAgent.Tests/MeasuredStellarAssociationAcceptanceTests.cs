@@ -35,6 +35,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class MeasuredStellarAssociationAcceptanceTests
 {
@@ -49,7 +50,7 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
     private const int Measured = 30;
     private const string AgentId = "issue1187-msa-acceptance";
     private const string SchemaVersion = "issue1541-msa-acceptance-evidence-v2";
-    private const string CatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
+    private const string CatalogSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
     private const string SceneNode = "ProjectedScene";
     private const string MeasuredNode = "MeasuredStellarAssociations";
     private static readonly TimeSpan Exposure = TimeSpan.FromSeconds(1);
@@ -284,12 +285,11 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(snapshot.Catalog);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = ingressRoot,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = AgentId,
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
         var provider = services.BuildServiceProvider();

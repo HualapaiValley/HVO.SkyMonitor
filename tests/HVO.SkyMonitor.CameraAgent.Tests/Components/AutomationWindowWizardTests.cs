@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class AutomationWindowWizardTests
 {
@@ -80,6 +81,60 @@ public sealed class AutomationWindowWizardTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RunHistory_UsesTheRecordedRevisionForRetryAvailability(bool recordedTargetAccepted)
+    {
+        using var fixture = new AutomationWizardFixture();
+        var request = AutomationWizardFixture.Request();
+        var saved = await fixture.Service.SaveAsync(request, CancellationToken.None);
+        var original = saved.Value!.State.Definitions.Single().NextOccurrence!;
+        fixture.Clock.Advance(original.ScheduledForUtc - fixture.Clock.GetUtcNow());
+        Assert.IsTrue(await fixture.Store.TryBeginOccurrenceAsync(original, CancellationToken.None));
+        await fixture.Store.CompleteRunAsync(original.RunKey, LocalAutomationRunOutcome.Failed, "Fixture failure", CancellationToken.None);
+
+        var edited = await fixture.Service.SaveAsync(request with
+        {
+            TaskTarget = "star-trail",
+            SourceWindow = request.SourceWindow! with { Selection = LocalAutomationSourceSelection.DarkNightActualSources },
+            ExpectedVersion = 1,
+            IdempotencyKey = "edit-target"
+        }, CancellationToken.None);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, edited.Value!.Status);
+        if (recordedTargetAccepted)
+        {
+            fixture.Registry.Targets.Remove("star-trail");
+        }
+        else
+        {
+            fixture.Registry.KeogramSelection = LocalAutomationSourceSelection.DarkNightActualSources;
+        }
+
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentAutomationUiService>(fixture.Service);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-definition-daily");
+        await cut.FindAll(".automation-tabs button")[2].ClickAsync(new());
+        Assert.Contains("keogram", cut.Find(".automation-run-provenance").TextContent, StringComparison.Ordinal);
+        Assert.AreEqual(recordedTargetAccepted, cut.FindAll(".automation-run-control summary").Any(summary => summary.TextContent == "Retry"));
+        if (!recordedTargetAccepted)
+        {
+            return;
+        }
+
+        await cut.Find(".automation-run-control input[maxlength]").InputAsync(new ChangeEventArgs { Value = "Retry retained source" });
+        await cut.Find(".automation-run-control button").ClickAsync(new());
+        var state = await fixture.Store.GetStateAsync(CancellationToken.None);
+        var queued = state.ActiveRuns.Single();
+        Assert.AreEqual(original, queued.Occurrence);
+        Assert.AreEqual(2, queued.Attempt);
+        Assert.AreEqual("wizard-owner", queued.Preparation!.Actor);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".automation-run-control")));
+    }
+
+    [TestMethod]
     public void Wizard_FailedPreviewStaysInEditorAndPolicyChangeGetsANewCommandKey()
     {
         using var context = Context(out var service);
@@ -122,7 +177,8 @@ public sealed class AutomationWindowWizardTests
         {
             Registry = new AutomationWizardFixture.WizardRegistry { Available = false }.Describe(),
             Definitions = [new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
-                DateTimeOffset.UnixEpoch, "owner", null, null, null, null, [])]
+                DateTimeOffset.UnixEpoch, "owner", null, null, null, null, [])
+                { RegistryRejection = new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget") }]
         };
         context.Services.AddSingleton<ICameraAgentAutomationUiService>(new AutomationsPageTests.AutomationUiService(state));
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
@@ -183,7 +239,7 @@ public sealed class AutomationWindowWizardTests
     private const string GenericCombinationMessage = "That task and trigger combination is not registered on this CameraAgent.";
 
     [TestMethod]
-    public async Task Wizard_DailySummaryWithAnHourlyPeriodNamesTheSelectedPeriodAndTheOneItNeeds()
+    public async Task Wizard_DailySummaryOffersOnlyTheSunriseDayAndItsRegisteredParameters()
     {
         await WithStillProductWizardAsync(async (fixture, targets) =>
         {
@@ -195,22 +251,14 @@ public sealed class AutomationWindowWizardTests
             Start(cut, "summary");
             await cut.Find("#automation-back-task").ClickAsync(new());
             await cut.Find("#automation-target").ChangeAsync(new ChangeEventArgs { Value = targets[NightlyProductKind.DailySummary] });
+            Assert.Contains("Source node", cut.Find("[aria-label='Pinned producer parameters']").TextContent);
+            Assert.AreEqual("Daily summary", cut.Find($"#automation-target option[value='{targets[NightlyProductKind.DailySummary]}']").TextContent);
             await cut.Find("#automation-save").ClickAsync(new());
-            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
-            { Value = nameof(LocalAutomationSourceWindowKind.CompletedCivilHour) });
-            await cut.Find("#automation-save").ClickAsync(new());
-
-            var alert = cut.WaitForElement("[role=alert]").TextContent;
-            StringAssert.Contains(alert, "The source period \"Completed site-local hour\" is not accepted by this task target.", StringComparison.Ordinal);
-            StringAssert.Contains(alert, "Choose \"Sunrise to next sunrise\" for this producer.", StringComparison.Ordinal);
-            Assert.DoesNotContain(GenericCombinationMessage, alert, StringComparison.Ordinal);
-            // The rejected preview saved nothing and left the editor open on the same step.
-            Assert.IsEmpty(cut.FindAll("#automation-confirm"));
+            Assert.AreEqual("Sunrise to next sunrise", cut.WaitForElement("#automation-source-window option").TextContent);
+            Assert.HasCount(1, cut.FindAll("#automation-source-window option"));
+            Assert.HasCount(1, cut.FindAll("#automation-source-selection option"));
             Assert.IsEmpty((await fixture.Store.GetStateAsync(CancellationToken.None)).Definitions);
 
-            // Choosing the named period is the whole correction: the same definition then previews and saves.
-            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
-            { Value = nameof(LocalAutomationSourceWindowKind.SunriseDay) });
             await cut.Find("#automation-save").ClickAsync(new());
             cut.WaitForElement("#automation-window-preview");
             await cut.Find("#automation-confirm").ClickAsync(new());
@@ -284,7 +332,8 @@ public sealed class AutomationWindowWizardTests
         {
             var options = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
             var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
-            using var store = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var store = silo.OpenStore(options, clock);
             using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
                 new InMemoryNightlySourceReader(), store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
             var adapter = new NightlyProductAutomationTaskRegistry(generator, options);
@@ -326,8 +375,16 @@ public sealed class AutomationWindowWizardTests
                 mismatch == "target" ? ["new-preset"] : [definition.TaskTarget], true, null)
                 { SupportedSourceWindows = mismatch == "source" ? [LocalAutomationSourceWindowKind.CompletedCivilHour] : [LocalAutomationSourceWindowKind.SunriseDay] }],
             Definitions = [new(definition, 1, LocalAutomationContract.ComputeRevisionSha256(definition),
-                definition.TriggerEpochUtc, "owner", null, due, null, null, [])],
-            Calendar = [new(definition.DefinitionId, definition.Name, definition.TaskKind, definition.TaskTarget, due)]
+                definition.TriggerEpochUtc, "owner", null, due, null, null, [])
+                {
+                    RegistryRejection = mismatch switch
+                    {
+                        "target" => new(LocalAutomationContract.UnregisteredTargetReasonCode, "definition.taskTarget"),
+                        "source" => new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.sourceWindow.kind"),
+                        _ => new(LocalAutomationContract.UnregisteredCombinationReasonCode, "definition.triggerKind")
+                    }
+                }],
+            Calendar = []
         };
         service = new(state);
         context.Services.AddSingleton<ICameraAgentAutomationUiService>(service);

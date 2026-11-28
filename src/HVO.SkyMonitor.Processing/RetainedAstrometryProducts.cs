@@ -9,7 +9,7 @@ public sealed record AstrometryCatalogSnapshotV1(CatalogMetadata Metadata, IRead
     AstrometricCatalogProvenance Package, bool Complete, double CompletenessMagnitudeLimit,
     string CoordinateModel = AstrometricConventions.CoordinateModel);
 
-/// <summary>Shared edge/central reconstruction of the same frozen request. No scheduling or persistence ownership.</summary>
+/// <summary>Shared reconstruction of the same frozen request. No scheduling or persistence ownership.</summary>
 public static class RetainedAstrometryProducts
 {
     public const string ContextRecipe = "retained-astrometry-context";
@@ -43,12 +43,13 @@ public static class RetainedAstrometryProducts
     {
         ArgumentNullException.ThrowIfNull(artifact);
         var identity = ProcessingIdentity.CreateRecipeIdentity(artifact.RecipeDescriptor ?? throw new ArgumentException("Missing producer descriptor."));
-        if (!MeasuredAstrometryJson.Same(identity.IdentitySha256, artifact.RecipeIdentitySha256))
-            throw new ArgumentException("Invalid retained producer identity.");
+        if (!MeasuredAstrometryJson.Same(identity.IdentitySha256, artifact.RecipeIdentitySha256) ||
+            artifact.SourceArtifactIds is not { Count: > 0 } lineage)
+            throw new ArgumentException("Invalid retained producer identity or lineage.");
         return ProcessingRecipeSupport.CreateProduct(artifact.Role, artifact.Variant, artifact.MediaType, artifact.Layout,
             artifact.Payload, identity,
             artifact.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion ? MeasuredAstrometryRecipe.Algorithms : [new(ContextRecipe, Version)],
-            artifact.SourceArtifactIds!.Select(id => artifact with { ArtifactId = id }).ToArray(), artifact.Integration,
+            lineage.Select(id => artifact with { ArtifactId = id }).ToArray(), artifact.Integration,
             artifact.Compatibility, artifact.ProductKind, artifact.SchemaVersion, artifact.ContentIdentitySha256);
     }
 
@@ -131,5 +132,20 @@ public static class RetainedAstrometryProducts
                 solution.ContentIdentitySha256, solution.Recipe.IdentitySha256, solution.Algorithms, cancellationToken))
             throw new ArgumentException("Retained astrometry differs from its frozen evidence.");
         return MeasuredAstrometryJson.Parse(solution.Payload);
+    }
+
+    /// <summary>Converts verified retained associations into native-session input without remeasuring pixels.</summary>
+    public static OpticalCalibrationFrame CreateOpticalCalibrationFrame(MeasuredAstrometryContextV1 context,
+        FrameLayoutDescriptor layout, MeasuredStellarAssociationsV1 measured)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(measured);
+        if (layout.Readout is not { } readout ||
+            !MeasuredAstrometryJson.Same(context.ReadoutIdentitySha256, MeasuredAstrometryJson.ComputeReadoutIdentity(layout)) ||
+            !MeasuredAstrometryJson.Same(context.MeasuredIdentitySha256, measured.AssociationIdentitySha256))
+            throw new ArgumentException("Optical calibration requires the capture's exact associations and documented readout geometry.");
+        return new(context.Frame, readout, context.ReadoutIdentitySha256,
+            Array.AsReadOnly(MeasuredAstrometryRecipe.Detections(MeasuredAstrometryRecipe.Qualified(measured, scientific: true))));
     }
 }

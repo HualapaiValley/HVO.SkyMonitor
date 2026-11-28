@@ -4,6 +4,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -74,7 +75,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Failed, failed!.Execution.Status);
                 Assert.IsNotEmpty(failed.Nodes.Single(node => node.NodeId == "scene").Outputs);
                 Assert.IsEmpty(failed.Nodes.Single(node => node.NodeId == "measured").Outputs);
-                Assert.IsFalse(Directory.Exists(Path.Combine(root, "artifacts")));
+                Assert.IsFalse(provider.GetRequiredService<ILatestFrameAccessor>().TryGetSnapshot(out _));
                 Assert.AreEqual(checksum, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false))));
                 return;
             }
@@ -102,7 +103,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
             }
             Assert.IsNotEmpty(detail.Nodes.Single(node => node.NodeId == "scene").Outputs);
             Assert.IsNotEmpty(detail.Nodes.Single(node => node.NodeId == "measured").Outputs);
-            Assert.IsTrue(Directory.EnumerateFiles(Path.Combine(root, "artifacts"), "*.json", SearchOption.AllDirectories).Any());
+            Assert.IsTrue(provider.GetRequiredService<ILatestFrameAccessor>().TryGetSnapshot(out _));
             Assert.AreEqual(checksum, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false))));
             TestContext.WriteLine($"VirtualSky raw SHA256={checksum}; immutable revision={registry.ActiveRevisionId}");
         }

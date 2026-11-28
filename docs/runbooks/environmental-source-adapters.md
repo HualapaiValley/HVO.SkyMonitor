@@ -3,8 +3,7 @@
 The RM-009 software slice (#1089–#1092) is explicitly activated by the operator's
 2026-11-08 assignment. No device or provider is enabled by default. Configure
 `CameraAgent:EnvironmentalAcquisition` in the existing operator settings file;
-keep `Sources` empty when acquisition is disabled. LogicHost only receives facts
-through the existing durable outbox and never polls these sources.
+keep `Sources` empty when acquisition is disabled. Readings are retained in the local environmental journal.
 
 ## Hardware transport and simulation
 
@@ -92,12 +91,9 @@ The `sky-ambient-linear-v1` model maps sky minus ambient between
 [0,1], and retains both thresholds and version in provenance. Thresholds require
 site qualification. Temperature input facts are durably published before the
 derived cloud fact; retries are idempotent. Synthetic temperature inputs carry
-`readingRole: "lineage-input"` in provenance. They remain in history and delivery
-but do not compete with configured station readings in current, capture or central
-correlation selection. The outbox waits for both inputs to be acknowledged before
-claiming the cloud fact; missing-lineage conflicts are retryable, and an unresolved
-waiting projection does not block independent records. Sensor and image cloud-cover facts
-keep separate source identities. The bridge owns heater control and must assert
+`readingRole: "lineage-input"` in provenance. The local journal keeps them for
+lineage and excludes them when choosing the current reading or capture context.
+Sensor and image cloud-cover facts keep separate source identities. The bridge owns heater control and must assert
 `drying` throughout heater-driven drying/warm-up until a valid dry reading is
 qualified; the adapter never commands a heater or assumes it has finished. Active
 `rain: true` takes precedence over `drying: true` and reports RainState true.
@@ -110,10 +106,8 @@ Only IR facts include `modelVersion`, `clearDeltaCelsius` and
 `protocol`, `deviceGroup`, `acquisitionSourceId` and `readingRole`. Removing the
 irrelevant fields changes their parameter digest and source-version digest;
 `environmental-adapter-v1` and the `environmental-adapter` / `adapter-v1` method
-label remain valid. LogicHost validates the parameter digest and bounded method
-identity without an adapter-version allowlist. IR parameters and source-version
-digests stay byte-identical. Retained station/SQM facts and queued deliveries
-keep their original parameters, identities and payloads; they are not rewritten.
+label remain valid. IR parameters and source-version
+digests stay byte-identical. Retained station and SQM facts keep their original parameters, identities and payloads.
 
 An input that is terminal, quarantined or discarded cannot leave its dependent
 v3 cloud delivery pending indefinitely. The derivative becomes terminal with
@@ -255,15 +249,8 @@ the selected current reading for each kind. Failed slots say `Unavailable`.
 `environmental-observation-v3` adds SkyTemperature and SeaLevelPressure and
 optional typed sample metadata for device receipt time and SQM sensor temperature.
 V1/V2 keep their serialization and hash domains; null metadata is omitted. New
-kinds and metadata are rejected in older envelopes. LogicHost accepts v3 through
-the normal authenticated environmental delivery endpoint. POST/read-back/hash
-validation tests cover the metadata, including an explicitly empty metadata object.
-LogicHost stores bounded sample-metadata JSON and a normalized lineage-input role.
-The canonical initial migration, designer and model snapshot are updated together
-under the repository's unreleased-schema contract. An already-applied older initial
-migration does not add these columns: pre-fix unreleased databases need a current
-schema provisioned through that contract before adoption. This PR does not alter
-running databases or deploy anything.
+kinds and metadata are rejected in older envelopes. CameraAgent stores local facts
+with their original metadata and lineage.
 
 Unit evidence starts with failing-first missing-adapter builds, then behavioral
 parsing regressions. Integration tests use the real factory, coordinator,
@@ -361,15 +348,7 @@ lock between batches and yielding between bounded bursts, so failed-read history
 can drain even when no observations are produced. Schema 3 upgrades transactionally
 to schema 4 by adding retention indexes after validating the prior schema; fact
 and receipt payloads remain unchanged. The image declares writes 4 / reads 3–4.
-The earlier strict schema-3 reader cannot open schema 4; downgrade uses the paired
-SQLite checkpoint selected before candidate startup by the installer-recognized
-minimum-compatible-revision boundary. That boundary advances from
-`ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c` to
-`419f45b0fd61ae2caba2654b71ff1853080ab693` for this transition; the numeric
-`state-contracts` label alone does not select a checkpoint. The three-object
-snapshot-rollback exception records the actual schema-3 image labels from
-`5f5d253dd38308b8e62be9a1e32194dd675d0b60`. Frozen previous-release SQL images
-stay unchanged.
+The installer lifecycle starts with the [0.10.0-beta.1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
 
 An unassociated capture whose entire receipt set has expired reports unavailable
 evidence, even if other associations still pin old facts. If a shorter caller wait
@@ -396,7 +375,4 @@ exposure ending exactly at `StaleAfterUtc` is fresh; a point at that instant is 
 
 Current-reading queries filter lineage-only and unavailable sources before selecting
 the newest primary per kind. A newer IR housing or sky input cannot hide a configured
-primary reading; all input evidence remains in history. LogicHost observatory detail
-uses the same lineage-only exclusion. Each waiting-projection pass attempts a row at
-most once and stops at the first outbox-capacity refusal, so an outage cannot multiply
-one refusal into a full batch of overflow counts.
+primary reading. All input evidence remains in local history.

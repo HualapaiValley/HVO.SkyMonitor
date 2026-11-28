@@ -9,7 +9,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/coverage:component <shared|cameraagent|logichost|combined|delivery>
+Usage: scripts/coverage:component <shared|cameraagent|delivery>
        scripts/coverage:component --list-slots <component>
        scripts/coverage:component --list-components
 USAGE
@@ -19,18 +19,13 @@ USAGE
 component_slots() {
   case "$1" in
     shared)
-      # TestResults/unit/processing-runner is intentionally absent: the aggregate
-      # rollup has never counted it, and changing the aggregate slot set is not
-      # part of component gating.
       printf '%s\n' \
         'TestResults/unit/astronomy' \
         'TestResults/unit/imaging' \
         'TestResults/unit/processing' \
         'TestResults/unit/catalog-sqlite' \
-        'TestResults/unit/storage-filesystem' \
         'TestResults/unit/agent-core' \
         'TestResults/unit/common' \
-        'TestResults/unit/fleet-contracts' \
         'TestResults/unit/test-support' \
         'TestResults/integration/astronomy'
       ;;
@@ -41,16 +36,6 @@ component_slots() {
         'TestResults/integration/cameraagent-storage' \
         'TestResults/integration/cameraagent-standalone' \
         'TestResults/integration/cameraagent'
-      ;;
-    logichost)
-      printf '%s\n' \
-        'TestResults/unit/logichost' \
-        'TestResults/integration/logichost'
-      ;;
-    combined)
-      printf '%s\n' \
-        'TestResults/unit/cameraagent-logichost' \
-        'TestResults/integration/cameraagent-logichost'
       ;;
     delivery)
       printf '%s\n' \
@@ -64,23 +49,19 @@ component_slots() {
   esac
 }
 
-# A host lane measures only the assemblies it owns, as ci:classify's project
-# lists assign them. Coverlet instruments every HVO assembly in a test project's
-# output, so unfiltered, shared code a host references but never calls would
-# count against the host's floor (#1420); the shared lane and the aggregate
-# rollup measure it. Shared suites reference only shared assemblies, and the
-# combined baseline floors shared contracts, so neither lane is filtered.
+# Coverlet instruments every HVO assembly in a test project's output. CameraAgent
+# and delivery measure their own assemblies so shared dependencies do not count
+# against their floors (#1420). The shared lane and aggregate rollup measure them.
 component_assembly_filter() {
   case "$1" in
     cameraagent) printf '%s\n' '+HVO.SkyMonitor.CameraAgent;+HVO.SkyMonitor.CameraAgent.*' ;;
-    logichost) printf '%s\n' '+HVO.SkyMonitor.LogicHost' ;;
     delivery) printf '%s\n' '+HVO.SkyMonitor.Deployment.*;+HVO.SkyMonitor.TerminalUi' ;;
   esac
 }
 
 case "${1:-}" in
   --list-components)
-    printf '%s\n' shared cameraagent logichost combined delivery
+    printf '%s\n' shared cameraagent delivery
     exit 0
     ;;
   --list-slots)
@@ -96,7 +77,8 @@ esac
 [[ "$#" -eq 1 ]] || usage
 component="$1"
 
-mapfile -t slots < <(component_slots "$component")
+slot_list="$(component_slots "$component")"
+mapfile -t slots <<< "$slot_list"
 reports=()
 for slot in "${slots[@]}"; do
   mapfile -t matches < <(compgen -G "$slot/*/coverage.cobertura.xml" || true)

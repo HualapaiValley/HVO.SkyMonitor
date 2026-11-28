@@ -67,7 +67,7 @@ public sealed class FramesController : ControllerBase
             CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
                 snapshot.Width, snapshot.Height, snapshot.PixelData),
             CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
-                snapshot.Width, snapshot.Height, snapshot.PixelData),
+                snapshot.Width, snapshot.Height, snapshot.PixelData, pattern: snapshot.BayerPattern),
             _ => throw new UnreachableException()
         };
         if (encodeResult.IsFailure)

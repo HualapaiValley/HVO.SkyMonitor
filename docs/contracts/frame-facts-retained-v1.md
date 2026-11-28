@@ -24,7 +24,7 @@ An invalid required descriptor is a caller error, rejected with an argument
 exception. Optional unsupported evidence is unavailable. The builder copies
 scalars and provenance into immutable dictionaries; it holds no input records,
 JSON documents, lists, pixel buffers, options, services or delegates. There is
-no host selector: CameraAgent and LogicHost consume the identical context.
+a single CameraAgent context shared by the local consumers.
 Changing a current profile, provider, catalogue, zone database or rig cannot
 change an already constructed context. Re-evaluation requires no I/O or clock.
 

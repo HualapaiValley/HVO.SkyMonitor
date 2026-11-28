@@ -76,6 +76,26 @@ public sealed class AstrometricUncertaintyEstimatorTests
     }
 
     [TestMethod]
+    public void QualificationResult_UsesProductionNumericsAndCannotBePublished()
+    {
+        var frame = Accepted.Value;
+        var covariances = Covariances(frame, Sigma);
+        var shared = Shared(frame.Calibration.Projection);
+        var production = Estimate(frame, covariances, shared: shared, readout: FullFrame);
+        var diagnostic = AstrometricUncertaintyEstimator.EstimateForLongExposureQualification(frame.Calibration, frame.Catalog,
+            new(), frame.Result, frame.Detections, covariances, FullFrame, shared, new());
+
+        Assert.IsTrue(production.IsAvailable, production.Reason);
+        Assert.AreEqual(AstrometricUncertaintyEstimator.Available, production.SharedCalibration.Status);
+        Assert.AreEqual(Numerics(production), Numerics(diagnostic));
+        Assert.AreEqual(AstrometricUncertaintyEstimator.QualificationSchema, diagnostic.SchemaVersion);
+        Assert.AreNotEqual(production.IdentitySha256, diagnostic.IdentitySha256);
+        Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEvidence.Validate(diagnostic, frame.Result.Assessment));
+        Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEstimator.CrossCovariance(diagnostic, production, shared));
+        AstrometricUncertaintyEvidence.Validate(production, frame.Result.Assessment);
+    }
+
+    [TestMethod]
     [DataRow(10000001L)]
     [DataRow(200000000L)]
     [DataRow(600000000L)]

@@ -8,9 +8,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 /// <summary>
 /// Measures the linear raw capture inside the windows predicted by its own committed projected scene. The scene product
-/// is bound as canonical JSON exactly as LogicHost binds its resolved scene, so both hosts derive the same identity.
+/// is bound as canonical JSON so the shared recipe derives the same identity for identical scene evidence.
 /// </summary>
-internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
+internal class MeasuredStellarAssociationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     MeasuredStellarAssociationProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter)
@@ -19,14 +19,14 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
 {
     internal const string Alias = "MeasuredStellarAssociations";
     public bool Enabled => Options.Enabled;
-    public string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
+    public virtual string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => MeasuredStellarAssociationsV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType;
-    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
-    public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    public virtual IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
+    public virtual IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { Options.UseAstrometryPrediction
@@ -37,6 +37,12 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        if (context.Config.CenteredExposure is not null || context.RawCapture?.Manifest.CenteredExposure is not null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
+            return;
+        }
+
         if (!Options.Enabled || context.Artifacts?.Raw is not { } raw)
         {
             return;

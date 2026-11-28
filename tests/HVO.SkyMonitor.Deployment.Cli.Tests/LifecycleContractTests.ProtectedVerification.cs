@@ -14,11 +14,6 @@ public sealed partial class LifecycleContractTests
     [DataRow(LifecycleOperationKind.Upgrade, "cancel")]
     [DataRow(LifecycleOperationKind.Upgrade, "failure")]
     [DataRow(LifecycleOperationKind.Upgrade, "plan")]
-    [DataRow(LifecycleOperationKind.Rollback, "mismatch")]
-    [DataRow(LifecycleOperationKind.Rollback, "timeout")]
-    [DataRow(LifecycleOperationKind.Rollback, "cancel")]
-    [DataRow(LifecycleOperationKind.Rollback, "failure")]
-    [DataRow(LifecycleOperationKind.Rollback, "plan")]
     [DataRow(LifecycleOperationKind.Backup, "mismatch")]
     [DataRow(LifecycleOperationKind.Backup, "timeout")]
     [DataRow(LifecycleOperationKind.Backup, "cancel")]
@@ -35,11 +30,7 @@ public sealed partial class LifecycleContractTests
         {
             ImageReference = reference,
             NoDownload = true,
-            MigrationBackwardCompatible = true
         };
-        if (kind == LifecycleOperationKind.Rollback)
-            _ = await CameraAgentLifecycleManager.ExecuteAsync(upgrade, fixture.Runner, _ => new FakeLifecycleClient(),
-                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         var request = (kind == LifecycleOperationKind.Upgrade ? upgrade : fixture.Request(kind)) with { DryRun = fault == "plan" };
         var lifecycle = new FakeLifecycleClient();

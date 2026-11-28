@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CaptureProcessingContextTests
 {
     private static CameraAgentRecipeExecutionAdapter Adapter { get; } =
@@ -414,7 +415,7 @@ public sealed class CaptureProcessingContextTests
         var raw = CreateFrame([0, 0, 0, 0]) with
         {
             Metadata = new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0, Scene: new SceneProvenance(
-                sceneId, "rig-v1", "test", "1", new string('0', 64), "equidistant", "v1", "v1", "v1"))
+                sceneId, "rig-v1", "test", "1", new string('0', 64), "equidistant", "v1", "v1", "v1", CatalogId: "test-catalog"))
         };
         var context = new CaptureProcessingContext(CreateConfig(), CreateSubmission(raw));
         var staleInput = CameraAgentRecipeExecutionAdapter.CreateArtifact(
@@ -481,7 +482,7 @@ public sealed class CaptureProcessingContextTests
             "persisted-scene", "rig-v1", "test", "1", new string('0', 64),
             "equidistant", "v1", "v1", "v1",
             RigProfileHashSha256: RigProjectionContextFactory.CreateProfileHashSha256(config.Rig),
-            Objects: [new ProjectedObjectProvenance("star", "Star", 8, 8, 0)]);
+            Objects: [new ProjectedObjectProvenance("star", "Star", 8, 8, 0)], CatalogId: "test-catalog");
         var raw = new CameraFrame(
             DateTimeOffset.UnixEpoch,
             16,

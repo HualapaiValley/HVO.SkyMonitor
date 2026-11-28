@@ -25,10 +25,7 @@ Telemetry reports existing capture samples, metrics and completion logs.
 Simulated cloud observations require a VirtualSky frame with valid cloud-scenario
 provenance, and remain labelled simulated. A physical or cloudless frame does
 not gain cloud evidence from this toggle. Neither step publishes automatically
-for archived replay. A descriptor does not register a step or qualify a physical
-capability; LogicHost resolves the same host-neutral catalog without acquiring
-CameraAgent execution support. Central `image-quality` at
-`central-image-quality-v1` is a different contract and remains undescribed here.
+for archived replay. Step registration and physical qualification are handled separately.
 
 Preview and save create a draft only. **Validate**, then explicitly **Activate**
 with the current registry version. To restore previous behavior, use the existing

@@ -11,7 +11,7 @@
 <PageTitle>Operations</PageTitle>
 
 <OperationsPageHeading Eyebrow="@HeadingEyebrow" Title="Operations" HeadingId="operations-heading"
-                       Description="Configure and operate this camera without making local acquisition dependent on LogicHost.">
+                       Description="Operate this camera and inspect local acquisition, processing and storage.">
     <Actions>
         <a class="button secondary" href="/">View current sky</a>
         @if (CanPause)
@@ -60,7 +60,6 @@ else if (_view is not null)
             <div><dt>Next capture</dt><dd>Not reported</dd></div>
             <div><dt>Admission</dt><dd>@AdmissionText</dd></div>
             <div><dt>Active profile</dt><dd>@ActiveProfileText</dd></div>
-            <div><dt>LogicHost</dt><dd>@(IsCentralIntegrationDisabled ? "Disabled" : SplitWords(summary.Heartbeat.Value.Availability))</dd></div>
         </dl>
         @if (_latestRun is not null)
         {
@@ -115,7 +114,6 @@ else if (_view is not null)
         <div class="ops-lane-list">
             <div class="ops-lane"><span><strong>Raw ingress</strong><small>Immutable evidence</small></span><small class="ops-lane-note">@BacklogText(summary.RawIngress.Value)</small><span>@CountText(summary.RawIngress.Value.PendingCount, "pending")</span></div>
             <div class="ops-lane"><span><strong>Frame processing</strong><small>Current graph</small></span><small class="ops-lane-note">@BacklogText(summary.CaptureProcessing.Value)</small><span>@ProcessingLaneText</span></div>
-            <div class="ops-lane"><span><strong>Central delivery</strong><small>Durable outbox</small></span><small class="ops-lane-note">@(IsCentralIntegrationDisabled ? "Central integration is disabled" : BacklogText(summary.ArtifactOutbox.Value))</small><span>@DeliveryLaneText</span></div>
             @if (FullestStorage is { } storage)
             {
                 var used = UsedPercent(storage);

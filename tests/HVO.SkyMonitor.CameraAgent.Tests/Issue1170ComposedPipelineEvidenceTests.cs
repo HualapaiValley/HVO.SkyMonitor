@@ -37,13 +37,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 public sealed class Issue1170ComposedPipelineEvidenceTests
 {
     private const int Warmup = 5;
     private const int Measured = 30;
     private const string SchemaVersion = "issue1170-composed-pipeline-evidence-v1";
-    private const string CatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
+    private const string CatalogSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly DateTimeOffset NightUtc = new(2026, 2, 10, 8, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset DayUtc = new(2026, 2, 10, 20, 0, 0, TimeSpan.Zero);
@@ -106,8 +107,8 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
         try
         {
             var phase = Probe.Take(process);
-            var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production"));
-            Assert.AreEqual(119625L, snapshot.RowCount);
+            var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production"));
+            Assert.AreEqual(119613L, snapshot.RowCount);
             Assert.AreEqual(CatalogSha256, snapshot.DatabaseSha256);
             setup["catalogResolve"] = Probe.Take(process).Since(phase);
 
@@ -115,12 +116,11 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(snapshot.Catalog);
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(root, "ingress"),
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:AgentId"] = "issue1170-evidence",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
             services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
             var provider = services.BuildServiceProvider();
@@ -416,7 +416,6 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
         {
             ConfigFilePath = path,
             AgentId = "issue1170-evidence",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

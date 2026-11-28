@@ -152,11 +152,12 @@ internal sealed partial class CaptureProcessingPersistence
                 throw new InvalidDataException("The measured composition does not reproduce its canonical product identity.");
             var publicationNodeId = "capture-trails-" + composed.OutputIdentitySha256[..16];
             var outputs = new List<DurableProcessingOutput>(3);
-            foreach (var product in new[] { snapshotProduct, trailProduct, composed })
+            ProcessingProduct[] products = [snapshotProduct, trailProduct, composed];
+            foreach (var product in products)
             {
-                outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor, publicationNodeId, product,
-                    BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false));
+                outputs.Add(DescribeMetadataProduct(descriptor, publicationNodeId, product));
             }
+            await PersistSiloOutputsAsync(descriptor, outputs, products, publicationNodeId, null, cancellationToken).ConfigureAwait(false);
             var now = _timeProvider.GetUtcNow();
             var node = new CaptureProcessingGraphNode(publicationNodeId,
                 OnDemandMaterializationStep.Instance, [], false, "capture-trail-composition",

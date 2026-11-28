@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -112,7 +113,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "leased raw/lane/processing/outbox 0/0/2/0", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "leased raw/lane/processing 0/0/2", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected repeated reads before the deadline, saw {handler.RequestCount} requests");
     }
 
@@ -153,7 +154,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message,
-            "leased raw/lane/processing/outbox 0/0/2/0; archived replay pending/leased 3/1, which the drain does not wait for)",
+            "leased raw/lane/processing 0/0/2; archived replay pending/leased 3/1, which the drain does not wait for)",
             StringComparison.Ordinal);
     }
 
@@ -359,7 +360,7 @@ public sealed class CameraAgentLifecycleClientTests
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing/outbox 2/0/0/0).", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing 2/0/0).", StringComparison.Ordinal);
         Assert.AreEqual(2, handler.RequestCount);
     }
 
@@ -395,13 +396,19 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing/outbox 3/0/0/0)", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing 3/0/0)", StringComparison.Ordinal);
         StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent lifecycle state could not be read", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
     }
 
+    // Unit checks the pause and drain outcome. PauseAndDrainDoesNotStackDeadlines
+    // checks the shared wall-clock budget in the Performance suite.
     [TestMethod]
-    public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary()
+    [Timeout(30_000)]
+    public async Task PauseAndDrain_SharesOneDrainBudgetBetweenTheCommandAndTheBoundary() =>
+        _ = await VerifyPauseAndDrainBudgetAsync();
+
+    internal static async Task<TimeSpan> VerifyPauseAndDrainBudgetAsync()
     {
         var operationId = Guid.NewGuid();
         var budgets = new LifecycleBudgets(
@@ -426,8 +433,7 @@ public sealed class CameraAgentLifecycleClientTests
 
         stopwatch.Stop();
         StringAssert.Contains(exception.Message, "last observed capture control 'Initializing'", StringComparison.Ordinal);
-        // A stacked budget would poll for a further full drain deadline (about 3.5 s in total).
-        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"the boundary poll did not share the drain budget: {stopwatch.Elapsed}");
+        return stopwatch.Elapsed;
     }
 
     [TestMethod]
@@ -504,7 +510,10 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure()
+    public async Task Resume_ReportsAnUnacknowledgedCommandAsAnInstallerFailure() =>
+        _ = await VerifyUnacknowledgedResumeAsync();
+
+    internal static async Task<TimeSpan> VerifyUnacknowledgedResumeAsync()
     {
         // The read budget is deliberately far larger than the drain budget so a
         // resume that used the wrong one would exceed the elapsed-time bound.
@@ -518,12 +527,11 @@ public sealed class CameraAgentLifecycleClientTests
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None));
+            () => client.ResumeAsync(Guid.NewGuid(), "lifecycle-token", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15)));
 
         stopwatch.Stop();
         StringAssert.Contains(exception.Message, "did not acknowledge the lifecycle resume command within its budget", StringComparison.Ordinal);
-        // A resume must honour the configured drain budget rather than a fixed longer one.
-        Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"the resume did not honour its budget: {stopwatch.Elapsed}");
+        return stopwatch.Elapsed;
     }
 
     [TestMethod]
@@ -667,6 +675,9 @@ public sealed class CameraAgentLifecycleClientTests
         // rather than a capture-control version.
         Assert.AreNotEqual(operationId, commandId);
         Assert.AreNotEqual(Guid.Empty, commandId);
+        // Every command also names its operation as the stable pause owner (#1966), so a first-boot-profile
+        // CameraAgent lets the operation's resume lift exactly the pause that operation placed.
+        Assert.AreEqual(operationId, payload.RootElement.GetProperty("ownerOperationId").GetGuid());
         Assert.IsFalse(payload.RootElement.TryGetProperty("expectedVersion", out _));
         StringAssert.Contains(payload.RootElement.GetProperty("reason").GetString(), operationId.ToString("D"), StringComparison.Ordinal);
         return commandId;
@@ -697,8 +708,7 @@ public sealed class CameraAgentLifecycleClientTests
               "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
-              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}{{independence}}
+              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },{{replay}}{{independence}}
               "captureSequence": {{captureSequence}}
             }
             """;

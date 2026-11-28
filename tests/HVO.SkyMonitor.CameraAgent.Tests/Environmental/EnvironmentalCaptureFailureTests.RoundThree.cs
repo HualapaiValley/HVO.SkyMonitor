@@ -163,7 +163,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var clock = new Clock { Now = Epoch };
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             await store.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false);
             if (rawJournalPresent) await CreateRetentionRawJournalAsync(root).ConfigureAwait(false);
             var source = EnvironmentalHardwareAdapterTests.Source("SkyQualityMeter").Descriptor;
@@ -209,7 +209,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var clock = new Clock { Now = Epoch };
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             await store.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false);
             await CreateRetentionRawJournalAsync(root).ConfigureAwait(false);
             await AddRetentionRawCaptureAsync(root, Guid.NewGuid(), Encoding.UTF8.GetBytes("unrelated-unparseable-manifest")).ConfigureAwait(false);
@@ -246,7 +246,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
 
     private static async Task<(long Receipts, long Attempts)> CaptureMetadataCountsAsync(string root)
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, ".environment", "environmental-observations.db")}");
         await connection.OpenAsync().ConfigureAwait(false);
         using var count = connection.CreateCommand(); count.CommandText = "SELECT COUNT(*) FROM environmental_on_demand_commands;";
         var receipts = (long)(await count.ExecuteScalarAsync().ConfigureAwait(false))!;

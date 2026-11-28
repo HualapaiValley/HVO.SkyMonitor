@@ -25,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 // Harness.Dispose clears every SQLite connection pool in the process, which would dispose idle connections owned
 // by tests running beside it. Nothing may run beside this class (ConnectionPoolClearContractTests). Refs #1785
 [DoNotParallelize]
@@ -247,9 +248,8 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                 .ConfigureAwait(false);
             if (cloudNode is { Outputs.Count: 1 })
             {
-                var payloadPath = Path.Combine(
-                    root, cloudNode.Outputs[0].PayloadRelativePath.Replace('/', Path.DirectorySeparatorChar));
-                var parsed = CloudAssessmentJson.Parse(await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
+                var parsed = CloudAssessmentJson.Parse(await SiloInfrastructureFixture.ReadProductBytesAsync(
+                    provider, cloudNode.Outputs[0], CancellationToken.None).ConfigureAwait(false));
                 Assert.IsNotNull(parsed.Assessment);
                 reasonCodes = parsed.Assessment.ReasonCodes;
                 precipitationStatus = parsed.Assessment.Environment?.PrecipitationStatus.ToString();
@@ -317,7 +317,6 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
         const string prefix = "CameraAgent:EnvironmentalAcquisition:";
         var settings = new Dictionary<string, string?>
         {
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         void AddNws(int index)
         {
@@ -422,7 +421,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                     // Durable-local outputs require a Storage node to own retention, as in the sample.
                     new CaptureProcessingStepConfig(
                         "Storage", "LocalStorage", Order: 100,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }),
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "Telemetry", "Telemetry", Order: 1000, DependsOn: ["Calibration", "LocalStorage"])
@@ -544,7 +543,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
             services.AddLogging();
             // The host registers its configuration; the environmental source factory reads source options from it.
             services.AddSingleton<IConfiguration>(configuration);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddSingleton<ILoggerProvider>(logs);
             services.Configure<LoggerFilterOptions>(static options => options.MinLevel = LogLevel.Debug);
             // The host (Program.cs) supplies the Data Protection implementation; it is not exercised here.

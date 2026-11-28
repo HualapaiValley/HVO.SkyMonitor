@@ -20,7 +20,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [DataRow("value", "255")]
     public async Task RetainedEnvironmentEditsReachRealProducerAndPreserveMissingStaleFacts(string key, string value)
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         await CommitAsync(store, Fact(Guid.Parse("10000000-0000-0000-0000-000000000009"),
             EnvironmentalObservationKind.RelativeHumidity, 45, staleAfter: Epoch.AddSeconds(1))).ConfigureAwait(false);
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
@@ -95,7 +95,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task RetainedCloudEditsReachRealProducerWithoutChangingAssessmentStatus()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
         var assessment = CloudAssessment();
         var bytes = CloudAssessmentJson.Serialize(assessment);

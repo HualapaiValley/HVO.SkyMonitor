@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -19,6 +20,56 @@ internal sealed class ProcessingGraphDraftModel
     public string? SourceRevisionId { get; private set; }
     private string? _initialDefinition;
     private CapturePipelineConfig? _sourcePipeline;
+    private Dictionary<string, string> _sourceStepTypesById = new(StringComparer.OrdinalIgnoreCase);
+    private bool _reordered;
+
+    public bool ExistsInSourceRevision(NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (string.IsNullOrWhiteSpace(SourceRevisionId) ||
+            string.IsNullOrWhiteSpace(node.Id) ||
+            string.IsNullOrWhiteSpace(node.Type) ||
+            string.IsNullOrWhiteSpace(node.OriginalSourceNodeId) ||
+            string.IsNullOrWhiteSpace(node.OriginalSourceNodeType))
+        {
+            return false;
+        }
+
+        var trimmedId = node.Id.Trim();
+        var trimmedType = node.Type.Trim();
+        if (!string.Equals(trimmedId, node.OriginalSourceNodeId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(trimmedType, node.OriginalSourceNodeType, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!_sourceStepTypesById.TryGetValue(trimmedId, out var sourceType) ||
+            !string.Equals(trimmedType, sourceType, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var matches = 0;
+        var foundNode = false;
+        foreach (var candidate in Nodes)
+        {
+            if (ReferenceEquals(candidate, node))
+            {
+                foundNode = true;
+            }
+            if (!string.IsNullOrWhiteSpace(candidate.Id) &&
+                string.Equals(candidate.Id.Trim(), trimmedId, StringComparison.OrdinalIgnoreCase))
+            {
+                matches++;
+                if (matches > 1)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return foundNode && matches == 1;
+    }
 
     public bool HasGraphChanges(CapturePipelineConfig pipeline)
         => _initialDefinition is null || _initialDefinition != JsonSerializer.Serialize(pipeline);
@@ -27,6 +78,53 @@ internal sealed class ProcessingGraphDraftModel
     {
         var converted = FromPipeline(pipeline, SourceRevisionId, Name, Revision);
         converted._initialDefinition = _initialDefinition;
+        converted._sourceStepTypesById = new Dictionary<string, string>(_sourceStepTypesById, StringComparer.OrdinalIgnoreCase);
+
+        var retainedSourceByCurrentId = new Dictionary<string, (string CurrentType, string SourceId, string SourceType)>(StringComparer.OrdinalIgnoreCase);
+        var ambiguousIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var existing in Nodes)
+        {
+            var currentId = existing.Id.Trim();
+            if (string.IsNullOrWhiteSpace(currentId) || ambiguousIds.Contains(currentId))
+            {
+                continue;
+            }
+            if (retainedSourceByCurrentId.Remove(currentId))
+            {
+                ambiguousIds.Add(currentId);
+                continue;
+            }
+            var currentType = existing.Type.Trim();
+            if (!string.IsNullOrWhiteSpace(currentType) &&
+                !string.IsNullOrWhiteSpace(existing.OriginalSourceNodeId) &&
+                !string.IsNullOrWhiteSpace(existing.OriginalSourceNodeType))
+            {
+                retainedSourceByCurrentId[currentId] = (currentType, existing.OriginalSourceNodeId, existing.OriginalSourceNodeType);
+            }
+            else
+            {
+                ambiguousIds.Add(currentId);
+            }
+        }
+
+        foreach (var row in converted.Nodes)
+        {
+            var currentId = row.Id.Trim();
+            var currentType = row.Type.Trim();
+            if (!string.IsNullOrWhiteSpace(currentId) &&
+                retainedSourceByCurrentId.TryGetValue(currentId, out var original) &&
+                string.Equals(currentType, original.CurrentType, StringComparison.OrdinalIgnoreCase))
+            {
+                row.OriginalSourceNodeId = original.SourceId;
+                row.OriginalSourceNodeType = original.SourceType;
+            }
+            else
+            {
+                row.OriginalSourceNodeId = null;
+                row.OriginalSourceNodeType = null;
+            }
+        }
+
         return converted;
     }
 
@@ -51,15 +149,30 @@ internal sealed class ProcessingGraphDraftModel
         };
         foreach (var step in pipeline.Steps)
         {
+            var nodeId = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
+            var trimmedId = nodeId.Trim();
+            var trimmedType = step.Type.Trim();
+            var fromSource = !string.IsNullOrWhiteSpace(sourceRevisionId) &&
+                             !string.IsNullOrWhiteSpace(trimmedId) &&
+                             !string.IsNullOrWhiteSpace(trimmedType);
+            if (fromSource)
+            {
+                model._sourceStepTypesById[trimmedId] = trimmedType;
+            }
             model.Nodes.Add(new NodeRow
             {
-                Id = string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+                Id = nodeId,
                 Type = step.Type,
                 Required = step.Required,
                 Enabled = step.Enabled ?? true,
                 DependsOn = new HashSet<string>(step.DependsOn ?? [], StringComparer.Ordinal),
                 Options = step.Options,
-                Publication = step.Publication
+                Publication = step.Publication,
+                SourceStep = step,
+                SystemManagedStep = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ? step : null,
+                IsRetainedFromSource = true,
+                OriginalSourceNodeId = fromSource ? trimmedId : null,
+                OriginalSourceNodeType = fromSource ? trimmedType : null
             });
         }
         // Compare the source projection, so merely opening a draft cannot change the graph.
@@ -70,6 +183,12 @@ internal sealed class ProcessingGraphDraftModel
         return model;
     }
 
+    private static readonly CaptureProcessingPublicationPolicy DurableLocalPublication =
+        new(CaptureProcessingPersistenceMode.DurableLocal);
+
+    public bool IsCenteredGraph => Nodes.Any(static node =>
+        string.Equals(node.Type, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase));
+
     public void AddNode(string type)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(type);
@@ -78,30 +197,119 @@ internal sealed class ProcessingGraphDraftModel
         {
             id = string.Create(CultureInfo.InvariantCulture, $"{type}-{suffix}");
         }
-        Nodes.Add(new NodeRow { Id = id, Type = type, Required = true, Enabled = true, DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal) });
+        var row = new NodeRow { Id = id, Type = type, Required = true, Enabled = true, DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal) };
+        Nodes.Add(row);
+        EnsureRegionalVisibilityWiring(row);
+    }
+
+    public void EnsureRegionalVisibilityWiring(NodeRow node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (!IsRegionalVisibility(node))
+        {
+            return;
+        }
+
+        node.Required = false;
+        node.Publication = DurableLocalPublication;
+        node.DependsOn.Add(RawInput);
+        if (!IsCenteredGraph)
+        {
+            return;
+        }
+
+        node.DependsOn.Add(ExposureMeasurementProducts.StepAlias);
+        if (!node.Enabled)
+        {
+            RemoveUnusedCatalogPrediction();
+            return;
+        }
+
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        if (!Nodes.Any(static existing =>
+                string.Equals(existing.Type, predictionAlias, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(existing.Id, predictionAlias, StringComparison.OrdinalIgnoreCase)))
+        {
+            var predictionStep = new CaptureProcessingStepConfig(
+                predictionAlias,
+                predictionAlias,
+                DependsOn: [RawInput],
+                Required: false,
+                Publication: DurableLocalPublication);
+            Nodes.Add(new NodeRow
+            {
+                Id = predictionAlias,
+                Type = predictionAlias,
+                Required = false,
+                Enabled = true,
+                DependsOn = new HashSet<string>([RawInput], StringComparer.Ordinal),
+                Publication = DurableLocalPublication,
+                SystemManagedStep = predictionStep
+            });
+        }
+
+        node.DependsOn.Add(predictionAlias);
+        var nodeIndex = Nodes.IndexOf(node);
+        var astrometryNode = Nodes
+            .Where((_, position) => position < nodeIndex)
+            .FirstOrDefault(static existing =>
+                existing.Enabled &&
+                (string.Equals(existing.Type, "MeasuredAstrometry", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(existing.Type, "ExposureMeasuredAstrometry", StringComparison.OrdinalIgnoreCase)));
+        if (astrometryNode is not null && !string.IsNullOrWhiteSpace(astrometryNode.Id))
+        {
+            node.DependsOn.Add(astrometryNode.Id.Trim());
+        }
     }
 
     public void Remove(NodeRow node)
     {
         ArgumentNullException.ThrowIfNull(node);
+        if (node.IsSystemManaged)
+            return;
         Nodes.Remove(node);
-        foreach (var other in Nodes)
+        foreach (var other in Nodes.Where(static row => !row.IsSystemManaged))
         {
             other.DependsOn.Remove(node.Id);
         }
+        if (IsRegionalVisibility(node))
+        {
+            RemoveUnusedCatalogPrediction();
+        }
     }
+
+    private void RemoveUnusedCatalogPrediction()
+    {
+        const string prediction = ExposureCatalogPredictionProducts.StepAlias;
+        if (Nodes.Any(static node => node.Enabled &&
+            node.DependsOn.Contains(prediction, StringComparer.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        Nodes.RemoveAll(static node => string.Equals(node.Type, prediction, StringComparison.OrdinalIgnoreCase));
+        foreach (var other in Nodes)
+        {
+            other.DependsOn.RemoveWhere(static dependency =>
+                string.Equals(dependency, prediction, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private static bool IsRegionalVisibility(NodeRow node)
+        => string.Equals(node.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
 
     public void Move(NodeRow node, int delta)
     {
         ArgumentNullException.ThrowIfNull(node);
         var index = Nodes.IndexOf(node);
         var target = index + delta;
-        if (index < 0 || target < 0 || target >= Nodes.Count)
+        if (node.IsSystemManaged || index < 0 || target < 0 || target >= Nodes.Count)
         {
             return;
         }
         Nodes.RemoveAt(index);
         Nodes.Insert(target, node);
+        _reordered = true;
         // A node that moved above one of its inputs can no longer name it; drop the edge visibly.
         node.DependsOn.IntersectWith(EligibleDependencies(node));
     }
@@ -114,12 +322,14 @@ internal sealed class ProcessingGraphDraftModel
         return [.. eligible, .. node.DependsOn.Where(dependency => !eligible.Contains(dependency, StringComparer.Ordinal)).OrderBy(static dependency => dependency, StringComparer.Ordinal)];
     }
 
-    /// <summary>Identifiers a node may depend on: the raw input and every node above it in the list.</summary>
+    /// <summary>Editable inputs follow list order. Generated inputs retain the compiler's dependency order.</summary>
     public IReadOnlyList<string> EligibleDependencies(NodeRow node)
     {
         ArgumentNullException.ThrowIfNull(node);
         var index = Nodes.IndexOf(node);
-        return [RawInput, .. Nodes.Take(Math.Max(index, 0)).Select(static row => row.Id.Trim()).Where(static id => id.Length > 0)];
+        return [RawInput, .. Nodes.Where((row, position) => position != index &&
+                (position < index || row.IsSystemManaged || node.IsSystemManaged))
+            .Select(static row => row.Id.Trim()).Where(static id => id.Length > 0)];
     }
 
     public bool TryBuild(out CapturePipelineConfig pipeline, out IReadOnlyList<string> errors)
@@ -140,9 +350,27 @@ internal sealed class ProcessingGraphDraftModel
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var node in Nodes)
         {
-            if (node.OptionsForm is { } form && !form.TryBuild(out _, out var diagnostics))
+            if (node.HasOptionEdits)
             {
-                problems.AddRange(diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                if (node.OptionsForm is { } form && !form.TryBuild(out _, out var diagnostics))
+                {
+                    problems.AddRange(diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                }
+            }
+            else if (node.Options is { } retainedOptions &&
+                ProcessingNodeOptionsForm.DescriptorFor(node.Type, retainedOptions) is { } descriptor)
+            {
+                // Untouched nodes retained from an existing revision may carry quoted numeric spellings
+                // accepted by runtime AllowReadingFromString; preserve them without blocking unrelated edits.
+                var decoded = ProcessingNodeOptionsCodec.Decode(
+                    descriptor,
+                    retainedOptions,
+                    ProcessingNodeOptionsCodec.DefaultPath,
+                    allowQuotedNumbers: node.IsRetainedFromSource);
+                if (!decoded.IsValid)
+                {
+                    problems.AddRange(decoded.Diagnostics.Select(diagnostic => $"{diagnostic.Code} node '{node.Id}' {diagnostic.Path}: {diagnostic.Message}"));
+                }
             }
             if (string.IsNullOrWhiteSpace(node.Id))
             {
@@ -156,10 +384,16 @@ internal sealed class ProcessingGraphDraftModel
             {
                 problems.Add($"Node '{node.Id}' needs a type.");
             }
+            if (node.IsSystemManaged && node.SystemManagedStep is null)
+            {
+                problems.Add($"Node '{node.Id}' is supplied by the centered capture profile.");
+            }
             var eligible = EligibleDependencies(node);
             foreach (var dependency in node.DependsOn.Where(dependency => !eligible.Contains(dependency, StringComparer.Ordinal)))
             {
-                problems.Add($"Node '{node.Id}' depends on '{dependency}', which is not the raw input or a node above it.");
+                problems.Add(node.IsSystemManaged
+                    ? $"The centered capture profile supplies '{node.Id}' with input '{dependency}', which is missing from this draft."
+                    : $"Node '{node.Id}' depends on '{dependency}', which is not the raw input or a node above it.");
             }
             if (node.DependsOn.Count == 0)
             {
@@ -177,35 +411,50 @@ internal sealed class ProcessingGraphDraftModel
             // Options and enable edits keep omitted order/id members and dependency ordering intact.
             pipeline = source with
             {
-                Steps = source.Steps.Select((step, index) => step with
-                {
-                    Options = Nodes[index].BuildOptions(),
-                    Enabled = Nodes[index].Enabled == (step.Enabled ?? true) ? step.Enabled : Nodes[index].Enabled
-                }).ToArray()
+                Steps = source.Steps.Select((step, index) => Nodes[index].SystemManagedStep ?? UpdateSourceStep(step, Nodes[index])).ToArray()
             };
             return true;
         }
-        var steps = Nodes.Select((node, index) => new CaptureProcessingStepConfig(
-            node.Type.Trim(),
-            node.Id.Trim(),
-            (index + 1) * 10,
-            node.BuildOptions(),
-            node.DependsOn.OrderBy(static dependency => dependency, StringComparer.Ordinal).ToArray(),
-            node.Required,
-            node.Enabled ? null : false,
-            node.Publication)).ToArray();
+        var steps = Nodes.Select((node, index) =>
+        {
+            if (node.SystemManagedStep is { } managed)
+                return managed;
+            if (!_reordered && node.SourceStep is { } original && MatchesSourceStep(node, original))
+                return UpdateSourceStep(original, node);
+
+            // Structural edits keep retained priorities. Only a deliberate move renumbers the list.
+            var order = !_reordered && (node.SourceStep is not null || IsRegionalVisibility(node))
+                ? node.SourceStep?.Order : (index + 1) * 10;
+            return new CaptureProcessingStepConfig(
+                node.Type.Trim(),
+                node.Id.Trim(),
+                order,
+                node.BuildOptions(),
+                node.DependsOn.OrderBy(static dependency => dependency, StringComparer.Ordinal).ToArray(),
+                node.Required,
+                node.Enabled ? null : false,
+                node.Publication);
+        }).ToArray();
         pipeline = new CapturePipelineConfig(steps, SchemaVersion, DependencyPolicy);
         return true;
     }
 
     private bool StructureMatchesSource(CapturePipelineConfig source)
-        => Nodes.Count == source.Steps.Count && Nodes.Select((node, index) =>
+        => Nodes.Count == source.Steps.Count &&
+            Nodes.Select((node, index) => MatchesSourceStep(node, source.Steps[index])).All(static same => same);
+
+    private static bool MatchesSourceStep(NodeRow node, CaptureProcessingStepConfig step)
+        => node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
+            node.Type == step.Type && node.Required == step.Required &&
+            node.DependsOn.SetEquals(step.DependsOn ?? []);
+
+    private static CaptureProcessingStepConfig UpdateSourceStep(CaptureProcessingStepConfig step, NodeRow node)
+        => step with
         {
-            var step = source.Steps[index];
-            return node.Id == (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) &&
-                node.Type == step.Type && node.Required == step.Required &&
-                node.DependsOn.SetEquals(step.DependsOn ?? []);
-        }).All(static same => same);
+            Options = node.BuildOptions(),
+            Enabled = node.Enabled == (step.Enabled ?? true) ? step.Enabled : node.Enabled,
+            Publication = node.Publication
+        };
 
     internal sealed class NodeRow
     {
@@ -224,8 +473,15 @@ internal sealed class ProcessingGraphDraftModel
         public bool Enabled { get; set; } = true;
         public HashSet<string> DependsOn { get; set; } = new(StringComparer.Ordinal);
         public JsonElement? Options { get; init; }
-        public CaptureProcessingPublicationPolicy? Publication { get; init; }
+        public CaptureProcessingPublicationPolicy? Publication { get; set; }
         public bool HasOptions => Options is not null;
+        public bool IsSystemManaged => ExposureMeasurementProducts.IsSystemManagedStepAlias(Type);
+        public CaptureProcessingStepConfig? SourceStep { get; init; }
+        public CaptureProcessingStepConfig? SystemManagedStep { get; init; }
+        public bool IsRetainedFromSource { get; init; }
+        public string? OriginalSourceNodeId { get; internal set; }
+        public string? OriginalSourceNodeType { get; internal set; }
+        public bool HasOptionEdits => _optionsForm is { HasEdits: true };
         private ProcessingNodeOptionsForm? _optionsForm;
         public ProcessingNodeOptionsForm? OptionsForm
         {
@@ -241,7 +497,7 @@ internal sealed class ProcessingGraphDraftModel
         }
 
         public JsonElement? BuildOptions()
-            => OptionsForm is { } form && form.TryBuild(out var edited, out _) ? edited : Options;
+            => HasOptionEdits && OptionsForm is { } form && form.TryBuild(out var edited, out _) ? edited : Options;
 
         public void ToggleDependency(string dependency, bool selected)
         {

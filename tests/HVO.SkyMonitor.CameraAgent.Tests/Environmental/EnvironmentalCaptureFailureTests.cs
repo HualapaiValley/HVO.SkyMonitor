@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed partial class EnvironmentalCaptureFailureTests
 {
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
@@ -43,7 +44,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
             try
             {
                 var clock = new Clock { Now = Epoch.AddSeconds(-50) };
-                using var initialStore = new SqliteEnvironmentalObservationOutbox(clock);
+                using var initialStore = new SqliteEnvironmentalObservationStore(clock);
                 var configuration = new EnvironmentalSourceConfiguration
                 {
                     Id = "sqm",
@@ -93,7 +94,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
                     }
                 }
                 if (restart) initialStore.Dispose();
-                using var reopened = restart ? new SqliteEnvironmentalObservationOutbox(clock) : null;
+                using var reopened = restart ? new SqliteEnvironmentalObservationStore(clock) : null;
                 var store = reopened ?? initialStore;
                 var association = new EnvironmentalAssociationService(store, store, options, clock, acquisitionStates: store);
                 LocalEnvironmentalCaptureAssociation? early = null;
@@ -148,12 +149,11 @@ public sealed partial class EnvironmentalCaptureFailureTests
         try
         {
             var clock = new Clock { Now = Epoch.AddSeconds(-50) };
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var source = EnvironmentalHardwareAdapterTests.Source("SkyQualityMeter");
             var first = (await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with
             { ObservedAtUtc = clock.Now }, CancellationToken.None).ConfigureAwait(false)).Fact!;
-            var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
-            await store.CommitLocalAsync(root, first, target, CancellationToken.None).ConfigureAwait(false);
+            await store.CommitLocalAsync(root, first, CancellationToken.None).ConfigureAwait(false);
             foreach (var seconds in new[] { 0, 500 })
             {
                 var at = Epoch.AddSeconds(seconds);
@@ -164,22 +164,14 @@ public sealed partial class EnvironmentalCaptureFailureTests
             clock.Now = Epoch.AddSeconds(1000);
             var next = (await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with
             { ObservedAtUtc = clock.Now }, CancellationToken.None).ConfigureAwait(false)).Fact!;
-            await store.CommitLocalAsync(root, next, target, CancellationToken.None).ConfigureAwait(false);
+            await store.CommitLocalAsync(root, next, CancellationToken.None).ConfigureAwait(false);
             await store.RecordAttemptAsync(root, source.Descriptor, new(source.Descriptor.Id,
                 EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionDisposition.Produced, "produced",
                 next.ObservationId, clock.Now, clock.Now, next.ObservedAtUtc, next.StaleAfterUtc), null, null, CancellationToken.None).ConfigureAwait(false);
             await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
             var retained = await store.ReadAttemptsAsync(root, 10, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(0, retained);
-            Assert.AreEqual(2L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
-            for (var i = 0; i < 2; i++)
-            {
-                var lease = await store.ClaimAsync(root, "retention", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(lease);
-                await store.AcknowledgeAsync(root, lease, new(EnvironmentalObservationAcknowledgement.CurrentSchemaVersion, lease.Record.Observation.ObservationId,
-                    lease.Record.SourceIdentitySha256, lease.Record.ContentSha256, clock.Now, EnvironmentalObservationDeliveryDisposition.Accepted),
-                    CancellationToken.None).ConfigureAwait(false);
-            }
+            Assert.AreEqual(1L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
             clock.Now = Epoch.AddSeconds(2000);
             await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(0L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
@@ -211,12 +203,19 @@ public sealed partial class EnvironmentalCaptureFailureTests
         }
     }
 
-    private sealed class Publisher(SqliteEnvironmentalObservationOutbox store, string root) : IEnvironmentalObservationPublisher
+    private sealed class Publisher(SqliteEnvironmentalObservationStore store, string root)
+        : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
+        public bool SupportsHeldPollSettlement => true;
+
+        public async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+            EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+            => (await store.CommitHeldPollAsync(root, fact, poll, cancellationToken).ConfigureAwait(false)).HeldPollReceipt!;
+
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)
         {
             await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
-            return new(EnvironmentalObservationPublishDisposition.Enqueued, null);
+            return new(EnvironmentalObservationPublishDisposition.Committed);
         }
     }
 

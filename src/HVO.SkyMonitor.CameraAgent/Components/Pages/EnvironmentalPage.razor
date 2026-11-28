@@ -137,17 +137,12 @@ else
         </section>
         <section class="ops-panel" aria-labelledby="environment-delivery-heading">
             <header class="ops-panel-heading">
-                <div><h2 id="environment-delivery-heading">Delivery policy</h2><p>Environment delivery is independent from artifact delivery.</p></div>
-                <span>@(_status.Delivery.ExportEnabled ? OperationsPage.SplitWords(_status.Delivery.Availability) : "Local only")</span>
+                <div><h2 id="environment-delivery-heading">Local observation history</h2></div>
             </header>
             <dl class="ops-facts environment-delivery">
-                <div><dt>LogicHost export</dt><dd>@(_status.Delivery.ExportEnabled ? "Enabled" : "Disabled")</dd></div>
-                <div><dt>Pending</dt><dd>@(_status.Delivery.ExportEnabled ? PendingText(_status.Delivery) : "Not exported")</dd></div>
                 <div><dt>Stored locally</dt><dd>@_status.StoredCount.ToString("N0", CultureInfo.InvariantCulture) / @OperationsPage.FormatBytes(_status.StoredBytes)</dd></div>
                 <div><dt>Retention</dt><dd>@_status.RetentionDays days</dd></div>
                 <div><dt>Capacity rejections</dt><dd>@_status.OverflowCount.ToString("N0", CultureInfo.InvariantCulture)</dd></div>
-                <div><dt>Oldest pending</dt><dd>@OldestPendingText(_status.Delivery)</dd></div>
-                <div class="full"><dt>Last acknowledgment</dt><dd>@(_status.Delivery.LastAcknowledgedUtc is { } acknowledged ? FormatSiteTime(acknowledged) : _status.Delivery.ExportEnabled ? "Not yet acknowledged" : "Export disabled")</dd></div>
             </dl>
         </section>
     </div>

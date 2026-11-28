@@ -1,16 +1,13 @@
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -27,6 +24,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
@@ -35,7 +33,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CameraAgentLifecycleEndpointsTests
+[TestProperty("Area", "Endpoints")]
+public sealed partial class CameraAgentLifecycleEndpointsTests
 {
     [TestMethod]
     [DataRow(null, false)]
@@ -138,7 +137,7 @@ public sealed class CameraAgentLifecycleEndpointsTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task RecoveryClient_ReplaysDurableReceiptOverHttpWithoutUndoingLaterPause(bool restart)
+    public async Task RecoveryClient_ReplaysVersionFencedReceiptsWithoutOverridingALaterPause(bool restart)
     {
         var root = Directory.CreateTempSubdirectory("hvo-recovery-http-");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -176,9 +175,12 @@ public sealed class CameraAgentLifecycleEndpointsTests
             var client = await StartAsync().ConfigureAwait(false);
             await coordinator!.PauseAsync("upgrade-pause", 0, "installer", "upgrade", cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(2L, coordinator.Snapshot.Version);
+
+            Task<LifecycleResumeReceipt> ResumeAsync(CameraAgentLifecycleClient transport, Guid id, string token)
+                => transport.ResumeRecoveryAsync(operationId, id, 2, token, cancellationToken);
+
             var interruptedClient = new CameraAgentLifecycleClient(new Uri(app!.Urls.Single()), lostAcknowledgement);
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => interruptedClient.ResumeRecoveryAsync(
-                operationId, commandId, 2, "exact-token", cancellationToken)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(interruptedClient, commandId, "exact-token")).ConfigureAwait(false);
             Assert.AreEqual(3L, coordinator.Snapshot.Version);
             await coordinator.PauseAsync("operator-pause", 3, "owner", "remain paused", cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(5L, coordinator.Snapshot.Version);
@@ -190,9 +192,8 @@ public sealed class CameraAgentLifecycleEndpointsTests
                 coordinator.Dispose();
                 client = await StartAsync().ConfigureAwait(false);
             }
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(
-                operationId, commandId, 2, "wrong-token", cancellationToken)).ConfigureAwait(false);
-            var receipt = await client.ResumeRecoveryAsync(operationId, commandId, 2, "exact-token", cancellationToken).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(client, commandId, "wrong-token")).ConfigureAwait(false);
+            var receipt = await ResumeAsync(client, commandId, "exact-token").ConfigureAwait(false);
             Assert.IsTrue(receipt.Replayed);
             Assert.IsTrue(receipt.Changed);
             Assert.AreEqual("Running", receipt.State);
@@ -200,9 +201,8 @@ public sealed class CameraAgentLifecycleEndpointsTests
             Assert.AreEqual(CaptureAdmissionState.Paused, coordinator!.Snapshot.State);
             Assert.AreEqual(5L, coordinator.Snapshot.Version);
             Assert.IsTrue(coordinator.Snapshot.IsInitialized);
-            await client.ResumeRecoveryAsync(operationId, commandId, 2, "exact-token", cancellationToken).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(
-                operationId, Guid.NewGuid(), 2, "exact-token", cancellationToken)).ConfigureAwait(false);
+            await ResumeAsync(client, commandId, "exact-token").ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(client, Guid.NewGuid(), "exact-token")).ConfigureAwait(false);
             using var connection = new SqliteConnection($"Data Source={journalPath};Pooling=False");
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             using var count = connection.CreateCommand();
@@ -251,12 +251,8 @@ public sealed class CameraAgentLifecycleEndpointsTests
                 new NoQueueSnapshotRefresh(),
                 new CaptureLaneState(TimeProvider.System, options),
                 new CaptureProcessingState(),
-                new ArtifactOutboxState(),
                 new StoragePressureState(),
-                new FleetRuntimeState(TimeProvider.System),
-                new FleetHeartbeatState(),
-                new EnvironmentalObservationDeliveryState(),
-                new ExecutionEvidenceExportState(),
+                new CaptureRuntimeState(TimeProvider.System),
                 new TransientWorkerState(TimeProvider.System),
                 new CaptureTelemetrySink(),
                 configuration,
@@ -294,9 +290,13 @@ public sealed class CameraAgentLifecycleEndpointsTests
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            using var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            throw new HttpRequestException("simulated lost acknowledgement after durable HTTP command");
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (request.Method != HttpMethod.Post) return response;
+            using (response)
+            {
+                response.EnsureSuccessStatusCode();
+                throw new HttpRequestException("simulated lost acknowledgement after durable HTTP command");
+            }
         }
     }
 

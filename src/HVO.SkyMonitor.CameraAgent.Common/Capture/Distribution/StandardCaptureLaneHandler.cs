@@ -117,6 +117,7 @@ internal sealed class StandardCaptureLaneHandler(
                     _logger,
                     processingToken,
                     _maximumAttempts,
+                    timeProvider: _timeProvider,
                     faultInjector: _faultInjector,
                     ensureLiveStoragePolicy: _graphOperations is { } operations
                         ? token => operations.EnsureLiveStoragePolicyAsync(item.Config, token)
@@ -131,14 +132,17 @@ internal sealed class StandardCaptureLaneHandler(
             catch (ProcessingPlanSupersededException exception)
             {
                 // The raw evidence is intact; only the plan it was accepted under is gone. Abandoning the row keeps
-                // the ordered lane and ingress moving, and leaves the raw to its upload lane and archived replay.
+                // the ordered lane and ingress moving, and preserves the raw for archived replay.
                 _logger.CaptureProcessingPlanSuperseded(item.Execution?.GraphRevisionId, exception.Message);
                 result = CaptureLaneHandlerResult.Abandon(ProcessingPlanSupersededException.LaneReason);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
                 _rawIngressControl?.InvalidateEvidence();
-                result = CaptureLaneHandlerResult.Terminal("evidence-unavailable");
+                result = CaptureLaneHandlerResult.Terminal("evidence-unavailable") with
+                {
+                    PublishedSiloEvidenceFailed = exception is PublishedSiloEvidenceException
+                };
             }
             return result;
         }

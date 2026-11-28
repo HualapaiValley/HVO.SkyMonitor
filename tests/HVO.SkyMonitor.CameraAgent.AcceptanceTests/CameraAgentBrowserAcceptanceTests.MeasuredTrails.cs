@@ -2,7 +2,6 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -29,7 +28,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                 // Pause background acquisition, retention and finalization for explicit evidence checkpoints.
                 foreach (var descriptor in services.Where(value => value.ServiceType == typeof(IHostedService) &&
                     (value.ImplementationType == typeof(CameraCaptureService) ||
-                     value.ImplementationType == typeof(RetentionBackgroundService) ||
                      value.ImplementationFactory?.Method.ReturnType == typeof(TransientWorkerService))).ToArray())
                     services.Remove(descriptor);
             },

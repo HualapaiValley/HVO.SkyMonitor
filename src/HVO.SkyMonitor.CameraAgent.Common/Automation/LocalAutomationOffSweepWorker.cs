@@ -14,8 +14,8 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     private TaskCompletionSource _idle = Completed();
     private TaskCompletionSource _registered = Completed();
     private Task _execution = Task.CompletedTask;
+    private Task? _shutdown;
     private bool _reserved;
-    private bool _stopped;
     private string? _scriptRunKey;
     private CancellationTokenSource? _scriptStop;
     private int _disposed;
@@ -24,7 +24,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     {
         lock (_sync)
         {
-            if (_stopped || _reserved)
+            if (_shutdown is not null || _reserved)
             {
                 return null;
             }
@@ -67,40 +67,63 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             drained = _idle.Task;
             cancellation = _scriptStop.CancelAsync();
         }
-        await cancellation.ConfigureAwait(false);
+        try
+        {
+            await cancellation.ConfigureAwait(false);
+        }
+        catch (AggregateException)
+        {
+            // Once cancellation has faulted, report it only after this attempt releases its authority.
+            await drained.ConfigureAwait(false);
+            throw;
+        }
         await drained.WaitAsync(cancellationToken).ConfigureAwait(false);
         return true;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
         lock (_sync)
         {
-            _stopped = true;
+            return _shutdown ??= DrainAsync(cancellationToken);
         }
-        await _stopping.CancelAsync().ConfigureAwait(false);
-        // The host deadline cannot release authority while an adapter is still draining.
-        await WhenIdleAsync().ConfigureAwait(false);
-        Task execution;
-        lock (_sync)
+    }
+
+    private async Task DrainAsync(CancellationToken cancellationToken)
+    {
+        try
         {
-            execution = _execution;
+            await _stopping.CancelAsync().ConfigureAwait(false);
         }
-        await execution.ConfigureAwait(false);
+        finally
+        {
+            // The host deadline and cancellation callback faults cannot release authority.
+            await WhenIdleAsync().ConfigureAwait(false);
+            Task execution;
+            lock (_sync)
+            {
+                execution = _execution;
+            }
+            await execution.ConfigureAwait(false);
+        }
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Joins the shared drain, so the stopping source is released only after an active adapter returns. A drain
+    /// fault, such as a throwing cancellation callback, stays on the shared task that every <see cref="StopAsync"/>
+    /// caller receives. Disposal does not rethrow it, so a service provider goes on to dispose its other singletons.
+    /// </summary>
     public override void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        StopAsync(CancellationToken.None).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing).GetAwaiter().GetResult();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
-            return;
+            _stopping.Dispose();
+            base.Dispose();
         }
-        StopAsync(CancellationToken.None).GetAwaiter().GetResult();
-        _stopping.Dispose();
-        base.Dispose();
     }
 
     private void Release()

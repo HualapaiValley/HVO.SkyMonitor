@@ -7,7 +7,7 @@ Issue #1088 follows the standalone #1084/#1085/#1087 experiments. The operator a
 - `HVO.SkyMonitor.Astronomy`: input/catalog/calibration/assessment contracts, blind spherical pattern acquisition, warm local refinement, evidence identity and native pixel/sky/frame mapping
 - `HVO.SkyMonitor.Imaging`: linear source detection and Bayer reconstruction/luminance
 - No new project, native library, host reference, database, web dependency or runtime service is added
-- CameraAgent and LogicHost already consume these shared owners; no cross-host reference is introduced
+- CameraAgent consumes these shared libraries
 
 Typical flow:
 
@@ -83,7 +83,6 @@ Score0–100 combines30% fit residual,30% verification residual,20% count and20%
 1. CameraAgent: optional post-ingress Processing analyzer from calibrated linear pixels with exact raw lineage; do not block durable raw admission or mutate capture-time descriptors
 2. Processing: explicit versioned astrometry recipe and typed Metadata schema/semantic identity registration; bind catalog/calibration/settings/source identities into execution identity
 3. CameraAgent persistence: existing layoutless typed Metadata product envelope is the likely seam; source lists belong in one diagnostic artifact if retained
-4. LogicHost: use the same library/recipe through its adapter and immutable artifact reconstruction. `CentralProcessingGraphNodeRegistry` currently rejects canonical-JSON graph bindings; auxiliary-artifact dependencies are the safer existing seam pending explicit registry/catalog work
 5. Future registered stack: a separate opt-in versioned recipe, never a silent change to `rolling-mean-v1` (COMB-010)
 
 Current stacks remain unregistered arithmetic means. Edge insertion points are `RollingCombinationCaptureProcessingStep`, its compatible history selection and lineage; central points are `CentralDerivativeRecipeCatalog`, window resolver/input reader/job executor/output writer. A future registered recipe must bind ordered source frame and accepted solution identities, reference UTC/solution, mapping version, interpolation, coverage masks, rejection policy and actual integration into output identity. Preserve raw originals and transient evidence. Ordinary geometric resampling must follow linear CFA reconstruction.
@@ -125,11 +124,11 @@ reuse a prior frame fit even when its selected stars are unchanged. This adds no
 catalog schema, HYG upgrade, proper-motion or lifecycle behavior; those remain
 owned by #521.
 
-The initial #1098 catalog profile is the approved full HYG 4.2 snapshot with
+The current catalog selection uses the approved full HYG 4.4 snapshot with
 magnitude <=5: 1,637 entries, below both the 2,500 solver bound and the current
 2,000 visible-render bound. Set `AstrometricSolverOptions.MaximumCatalogMagnitude`
 and VirtualSky `MaximumMagnitude` to 5 explicitly for that profile. The existing
-solver default of 7 selects 15,598 catalog rows and therefore remains unavailable
+solver default of 7 selects 15,597 catalog rows and therefore remains unavailable
 through this bounded adapter; defaults are not silently reinterpreted. A
 magnitude <=5.5 request already has 2,865 rows and is incomplete at the legacy
 2,500 bound, and no deeper selection is qualified (see below). These
@@ -176,7 +175,7 @@ advertised:
   this.
 
 Settings keep the legacy 2,500-entry bound. That bound admits any requested
-magnitude whose complete selection fits: on the HYG 4.2 production snapshot,
+magnitude whose complete selection fits: on the HYG 4.4 production snapshot,
 up to magnitude 5.37 (2,483 rows; 5.38 selects 2,517 and is incomplete). Only
 magnitude 5 is qualified (#1098/#1126). The band above 5.0 up to 5.37 is
 admitted unqualified, exactly as before #1167.

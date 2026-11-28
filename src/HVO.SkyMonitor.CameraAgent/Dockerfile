@@ -14,7 +14,7 @@ ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
 ARG HVO_VERSION=""
 ARG HVO_SOURCE_REVISION=unknown
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS dotnet-sdk
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.14@sha256:1a48394b6f29d3a32c79d9edecd4abda0ecbe8776d567dbfc4590ed6979c740c AS dotnet-aspnet
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15@sha256:aac50ceef10391e78a899e3d2ccd00bbafa2dcb56ccf4586cbccf00edb84fc21 AS dotnet-aspnet
 
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
@@ -40,9 +40,10 @@ COPY src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts
 COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj /src/src/HVO.SkyMonitor.AgentCore/
 COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj /src/src/HVO.SkyMonitor.Astronomy/
 COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj /src/src/HVO.SkyMonitor.Catalog.Sqlite/
-COPY src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj /src/src/HVO.SkyMonitor.Fleet.Contracts/
 COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj /src/src/HVO.SkyMonitor.Imaging/
 COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj /src/src/HVO.SkyMonitor.Processing/
+COPY src/HVO.SkyMonitor.LocalFiles/HVO.SkyMonitor.LocalFiles.csproj /src/src/HVO.SkyMonitor.LocalFiles/
+COPY src/HVO.SkyMonitor.Video.FFmpeg/HVO.SkyMonitor.Video.FFmpeg.csproj /src/src/HVO.SkyMonitor.Video.FFmpeg/
 COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj /src/src/HVO.SkyMonitor.Common/
 COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj /src/src/HVO.SkyMonitor.CameraAgent.Common/
 COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj /src/src/HVO.SkyMonitor.CameraAgent.Replay/
@@ -125,32 +126,9 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Declared after the payload so that the package install stays cached across revisions. The version label is set
 # explicitly so it never inherits the base image's operating-system version.
 #
-# The state-compatibility label names the durable CameraAgent state contract this image
-# reads and writes. It is not a generic backward-compatibility promise: revisions before
-# original compatibility floor produced catalog manifest v1, Identity migration
-# 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
-# adopt in place. Deployment preflight compares the three declared boundaries below against
-# the persisted state before the container starts.
-#
-# catalog-manifest-version is the highest catalog manifest this image reads. Preflight
-# accepts a selected catalog from manifest 2 through that label. catalog-contract
-# hvo-approved-catalogs-v3 resolves every lineage in the embedded registry, including
-# the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
-# image that omits the manifest label is held to manifest 2 only.
-#
-# The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
-# and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
-# and local automation schema 4 (Refs #1768). Paired protected state
-# is snapshotted with the databases before adoption so an older-reader rollback
-# receives its pre-upgrade history. The combined reader advances beyond the processing-only
-# predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
-# Its change makes existing installers checkpoint the paired databases before store conversion;
-# rollback restores that checkpoint rather than handing converted stores to older readers.
-# The boundary includes the processing manifest ledger (Refs #1766), the schema-10
-# retained-astrometry index (Refs #1901), and the corrected schema-5 environmental poll
-# settlement reader (Refs #1938). It advances from either single-reader image and the earlier
-# private joined reader so an upgrade
-# to both readers selects the paired checkpoint even though raw ingress stays at 16.
+# The state-contract label identifies the fresh-install baseline for CameraAgent lifecycle operations.
+# The catalog-manifest-version label identifies the highest supported catalog manifest. The v4
+# catalog contract covers HYG 4.4, the composed HYG 4.4 + OpenNGC catalog, and standalone OpenNGC.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -164,17 +142,16 @@ ARG HVO_VERSION
 ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
-      io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="e7b9af4b98d1521c3939ef5925608a3663c63302" \
+      io.hvo.skymonitor.state-contract="cameraagent-silo-state-v1" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
-      io.hvo.skymonitor.raw-ingress-schema="16" \
-      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-to-v16" \
+      io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
-      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v4" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
-      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":16,\"reads\":{\"min\":13,\"max\":16}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
+      io.hvo.skymonitor.first-boot-contract="cameraagent-first-boot-pause-v1" \
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"siloPublication\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"siloCatalog\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalObservations\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
       org.opencontainers.image.created="${HVO_CREATED}"

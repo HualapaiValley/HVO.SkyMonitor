@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -64,8 +65,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 config["module"]!["options"]!["illuminationMode"] = mode;
             var steps = config["pipeline"]!["steps"]!.AsArray();
             JsonNode Find(string id) => steps.Single(step => step!["id"]!.GetValue<string>() == id)!;
-            Find("LocalStorage")["options"]!["storageRoot"] = root;
-            Find("ArchiveStorage")["options"]!["storageRoot"] = Path.Combine(root, "archive");
+            InstallerCameraModuleFixture.ConfigureSiloStorage(config);
             if (legacy || declared)
             {
                 var scene = new JsonObject
@@ -177,7 +177,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         var selection = create.GetProperty("catalogSelection");
         var depth = magnitude ?? 3.25;
         Assert.AreEqual(depth, selection.GetProperty("maximumMagnitude").GetDouble());
-        var catalog = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production"));
+        var catalog = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production"));
         var catalogSelection = await catalog.Catalog.ReadAsync(depth, 2500).ConfigureAwait(false);
         Assert.IsTrue(catalogSelection.IsCompleteForRequestedMagnitude);
         Assert.AreEqual(depth == 5 ? 1637 : 226, catalogSelection.Stars.Count);
@@ -221,7 +221,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 .ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 10, deadline.Token).ConfigureAwait(false))
                 .Single(row => row.CaptureId == accepted.CaptureId);
             Assert.AreEqual(revision, captureExecution.GraphRevisionId);
-            var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1);
+            var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1, usesSilo: true);
             var committed = (await journal.ReadAllAsync(deadline.Token).ConfigureAwait(false)).Single(row => row.CaptureId == accepted.CaptureId);
             Assert.AreEqual(61L, committed.CaptureSequence);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "accepted-fit.json"),
@@ -328,7 +328,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
 
     private static async Task ReserveThroughNextPresetFitAsync(CameraAgentKestrelFixture host)
     {
-        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 1, usesSilo: true);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var config = await host.Services.GetRequiredService<ICameraAgentConfigurationAccessor>()
             .WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);

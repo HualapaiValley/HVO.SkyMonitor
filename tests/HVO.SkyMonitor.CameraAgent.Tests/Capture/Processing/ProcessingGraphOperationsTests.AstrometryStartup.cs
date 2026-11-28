@@ -63,12 +63,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Options = legacyScene ? JsonSerializer.SerializeToElement(new { independentPrediction = true }) : null
             };
             var storage = new CaptureProcessingStepConfig("Storage", "archive", DependsOn: ["$raw", canonical.Id!],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                {
-                    StorageRoot = Path.Combine(root, "archive"),
-                    QueueForUpload = false,
-                    UpdateLatestFrame = false
-                }));
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }));
             file = file with { Pipeline = file.Pipeline with { Steps = [canonical, storage] } };
             var (generated, _) = await ReferenceAstrometryPreset.ApplyAsync(file.Pipeline, 3.25, source, token).ConfigureAwait(false);
             var crossed = generated with

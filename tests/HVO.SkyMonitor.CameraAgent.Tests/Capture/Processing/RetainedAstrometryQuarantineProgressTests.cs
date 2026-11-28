@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -20,10 +21,9 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var oldest = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var solutions = new List<DurableProcessingOutput> { oldest };
             for (var index = 1; index <= 3; index++)
@@ -35,7 +35,7 @@ public sealed partial class DurableCaptureProcessingTests
                 solutions.Add(await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false));
             }
 
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var selectedReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var previousSummaries = new List<CameraAgentLatestAstrometry>();
             foreach (var solution in solutions)
@@ -52,25 +52,13 @@ public sealed partial class DurableCaptureProcessingTests
             foreach (var solution in solutions.Skip(1).Take(2))
                 targets.Add((await store.ReadOutputByArtifactIdAsync(solution.Artifact.SourceArtifactIds[3], token).ConfigureAwait(false))!);
             targets.Add(solutions[3]);
-            var savedPayloads = new Dictionary<Guid, byte[]>();
-            var savedSidecars = new Dictionary<Guid, byte[]>();
+            var members = new List<SiloInfrastructureFixture.RetainedMember>();
             foreach (var target in targets)
             {
-                var path = Path.Combine(root, target.PayloadRelativePath);
-                var bytes = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                savedPayloads.Add(target.ArtifactId, bytes);
-                savedSidecars.Add(target.ArtifactId, await File.ReadAllBytesAsync(Path.Combine(root, target.SidecarRelativePath), token).ConfigureAwait(false));
-                var corrupted = (byte[])bytes.Clone();
-                corrupted[0] ^= 1;
-                await File.WriteAllBytesAsync(path, corrupted, token).ConfigureAwait(false);
-            }
-            var reconciliation = await new DerivedProductReconciler(root, store).RunAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(3, reconciliation.Quarantined);
-            foreach (var target in targets)
-            {
-                var persisted = await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false);
-                Assert.AreEqual("Quarantined", persisted?.AvailabilityState);
-                Assert.AreEqual("payload-checksum-mismatch", persisted?.AvailabilityReason);
+                var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, target, token).ConfigureAwait(false);
+                member.FlipByte();
+                await member.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token).ConfigureAwait(false);
+                members.Add(member);
             }
 
             var delayed = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -80,6 +68,7 @@ public sealed partial class DurableCaptureProcessingTests
             var pause = true;
             var failOldestOpen = false;
             var temporaryFailures = 0;
+            var oldestMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, oldest, token).ConfigureAwait(false);
             delayed.Setup(service => service.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .Returns(async (Guid artifactId, CancellationToken requestToken) =>
                 {
@@ -96,14 +85,21 @@ public sealed partial class DurableCaptureProcessingTests
                         return await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
 
                     failOldestOpen = false;
-                    using var exclusive = File.Open(Path.Combine(root, oldest.PayloadRelativePath), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-                    var result = await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
-                    Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
-                    temporaryFailures++;
-                    return result;
+                    oldestMember.SetUnavailable(true);
+                    try
+                    {
+                        var result = await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
+                        Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
+                        temporaryFailures++;
+                        return result;
+                    }
+                    finally
+                    {
+                        oldestMember.SetUnavailable(false);
+                    }
                 });
 
-            using var service = new CameraAgentRetainedAstrometryService(store, delayed.Object);
+            using var service = CreateUnpooledAstrometryReader(store, delayed.Object);
             ICameraAgentRetainedAstrometryService reader = service;
             var attempts = new[]
             {
@@ -152,22 +148,20 @@ public sealed partial class DurableCaptureProcessingTests
 
             // Restore a required input with its exact previously committed bytes and make it available.
             // Its assessment identity is unchanged, so invalidation must include the dependent output.
-            var repaired = targets[1];
-            await File.WriteAllBytesAsync(Path.Combine(root, repaired.PayloadRelativePath), savedPayloads[repaired.ArtifactId], token).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.Combine(root, repaired.SidecarRelativePath), savedSidecars[repaired.ArtifactId], token).ConfigureAwait(false);
-            await store.SetOutputAvailabilityAsync(repaired.OutputIdentitySha256, "Available", null, token).ConfigureAwait(false);
-            await store.SetOutputAvailabilityAsync(repaired.OutputIdentitySha256, "Missing", "fixture-missing", token).ConfigureAwait(false);
+            var repaired = members[1];
+            repaired.FlipByte();
+            await repaired.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
             var awaitingInput = await reader.ReadLatestAcceptedAsync(previousSummaries[2], token).ConfigureAwait(false);
             Assert.IsFalse(awaitingInput.Completed);
             Assert.IsFalse(awaitingInput.PreviousSummaryQuarantined);
-            await store.RestoreMissingOutputAvailableAsync(repaired.OutputIdentitySha256, token).ConfigureAwait(false);
+            await repaired.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
             var recovered = await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsTrue(recovered.Completed);
             Assert.AreEqual(previousSummaries[2], recovered.Summary);
 
             // A fresh store must find that same fit through the unchanged cold seed.
-            using var restartedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var restartedArtifacts = new CameraAgentArtifactService(first.Fixture.Options, restartedStore, new CameraAgentPreviewEncoder());
+            using var restartedStore = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
+            using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, restartedStore);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restartedStore, restartedArtifacts);
             Assert.AreEqual(recovered.Summary, (await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary);
         }

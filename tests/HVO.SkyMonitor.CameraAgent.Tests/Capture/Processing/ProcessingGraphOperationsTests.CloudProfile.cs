@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -70,7 +71,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Pipeline = source.Pipeline with
                 {
                     Steps = source.Pipeline.Steps.Select(step => step.Type == "Storage"
-                        ? step with { Options = JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }) }
+                        ? step with { Options = JsonSerializer.SerializeToElement(new { updateLatestFrame = true }) }
                         : step).ToArray()
                 }
             };
@@ -79,14 +80,27 @@ public sealed partial class ProcessingGraphOperationsTests
                 services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(ObservingDayCalendar.Utc));
                 services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
             });
+            var catalog = new InMemoryCelestialCatalog(Enumerable.Range(0, 360).Select(index =>
+                new CelestialCatalogObject($"cloud-star-{index}", $"Cloud star {index}", (index % 24), -60 + (index / 24) * 10, 1 + index % 5)));
+            var firstSubmission = await CaptureSubmissionAsync(config, 0).ConfigureAwait(false);
+            if (scenario != "missing")
+            {
+                var referenceIdentity = RawCaptureDescriptorFactory.CreateStableIds(config, firstSubmission).ArtifactId;
+                config = config with
+                {
+                    Pipeline = config.Pipeline with
+                    {
+                        Steps = config.Pipeline.Steps.Select(step => step.Type == "CloudAssessment"
+                            ? step with { Options = SetReference(step.Options!.Value, referenceIdentity) } : step).ToArray()
+                    }
+                };
+            }
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
                 .EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
-            var catalog = new InMemoryCelestialCatalog(Enumerable.Range(0, 360).Select(index =>
-                new CelestialCatalogObject($"cloud-star-{index}", $"Cloud star {index}", (index % 24), -60 + (index / 24) * 10, 1 + index % 5)));
-            var reference = await CaptureAsync(config, 0).ConfigureAwait(false);
+            var reference = (await ingress.AcceptAsync(config, firstSubmission, CancellationToken.None).ConfigureAwait(false))!;
             // First frame must finish without creating a fabricated clear reference or losing the image path.
             await CompleteLiveAsync(provider, config).ConfigureAwait(false);
             var first = await provider.GetRequiredService<ICameraAgentGallery>()
@@ -94,13 +108,13 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual("InsufficientEvidence", first!.Detail!.CloudAssessment.Status);
             Assert.IsNull(first.Detail.CloudAssessment.CoverageMillionths);
             CollectionAssert.Contains(first.Detail.CloudAssessment.ReasonCodes.ToArray(), CloudAssessmentReasonCodes.MissingClearReference);
-            var referencePath = Path.Combine(root, "references", "cloud", "clear-reference.manifest.json");
-            if (scenario != "missing")
+            var referenceId = reference.Manifest.Descriptor.Artifact.ArtifactId;
+            if (scenario == "corrupt")
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(referencePath)!);
-                await File.WriteAllBytesAsync(referencePath, scenario == "corrupt"
-                    ? "invalid reference"u8.ToArray()
-                    : CaptureContractJson.Serialize(reference.Manifest)).ConfigureAwait(false);
+                var sidecar = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, referenceId,
+                    SiloArtifactStorage.RawEvidenceRevision, CancellationToken.None).ConfigureAwait(false);
+                provider.GetRequiredService<SiloTestStore>().ReadContentOverride =
+                    locator => locator == sidecar ? new MemoryStream("invalid reference"u8.ToArray(), writable: false) : null;
             }
             if (scenario is "partial" or "overcast")
             {
@@ -119,9 +133,9 @@ public sealed partial class ProcessingGraphOperationsTests
                 });
             }
             var currentConfig = config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options) } };
-            var current = await CaptureAsync(currentConfig, 1, scenario == "incompatible").ConfigureAwait(false);
+            var currentSubmission = await CaptureSubmissionAsync(currentConfig, 1, scenario == "incompatible").ConfigureAwait(false);
+            var current = (await ingress.AcceptAsync(currentConfig, currentSubmission, CancellationToken.None).ConfigureAwait(false))!;
             var currentHash = SHA256.HashData(await File.ReadAllBytesAsync(current.StoredFrame.AbsolutePath).ConfigureAwait(false));
-            var referenceHash = SHA256.HashData(await File.ReadAllBytesAsync(reference.StoredFrame.AbsolutePath).ConfigureAwait(false));
             var timer = Stopwatch.StartNew();
             await CompleteLiveAsync(provider, currentConfig).ConfigureAwait(false);
             var elapsed = timer.Elapsed;
@@ -143,7 +157,8 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 Assert.AreEqual(DurableProcessingNodeStatus.Completed, cloud.Status, cloud.Reason);
                 var output = cloud.Outputs.Single();
-                var payload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
+                var payload = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false);
                 Assert.AreEqual(output.ProductManifest!.Artifact.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(payload));
                 var assessment = CloudAssessmentJson.Parse(payload).Assessment!;
                 Assert.AreEqual(current.Manifest.Descriptor.Artifact.ArtifactId, assessment.Current.ArtifactId);
@@ -204,7 +219,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Assert.AreEqual(JsonValueKind.Null, auxiliary.GetProperty("windowPosition").ValueKind);
                     Assert.AreEqual(reference.Manifest.Descriptor.Capture.CaptureId, auxiliary.GetProperty("captureId").GetGuid());
                     Assert.AreEqual(reference.Manifest.Descriptor.Artifact.ChecksumSha256, auxiliary.GetProperty("payloadSha256").GetString());
-                    // The provisioned file and payload still exist: only truly missing immutable
+                    // The Silo version still exists: only missing immutable
                     // reference metadata may change the response to the retention-specific 409.
                     using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
                     await connection.OpenAsync().ConfigureAwait(false);
@@ -218,8 +233,18 @@ public sealed partial class ProcessingGraphOperationsTests
                     await RunManifestTestAssertions.ResponseAsync(operations, executionId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
                 }
             }
-            CollectionAssert.AreEqual(currentHash, SHA256.HashData(await File.ReadAllBytesAsync(current.StoredFrame.AbsolutePath).ConfigureAwait(false)));
-            CollectionAssert.AreEqual(referenceHash, SHA256.HashData(await File.ReadAllBytesAsync(reference.StoredFrame.AbsolutePath).ConfigureAwait(false)));
+            var storage = provider.GetRequiredService<SiloArtifactStorage>();
+            var currentBytes = await storage.ReadRawAsync(current.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(currentHash, SHA256.HashData(currentBytes!));
+            var referenceBytes = await storage.ReadRawAsync(reference.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(reference.Manifest.Descriptor.Artifact.ChecksumSha256, PayloadChecksum.ComputeSha256(referenceBytes!));
+
+            static JsonElement SetReference(JsonElement sourceOptions, Guid artifactId)
+            {
+                var configured = JsonNode.Parse(sourceOptions.GetRawText())!.AsObject();
+                configured["clearReferenceManifestPath"] = SiloArtifactStorage.RawReference(artifactId, ".json");
+                return JsonSerializer.SerializeToElement(configured);
+            }
 
             static JsonElement Resize(JsonElement sourceOptions)
             {
@@ -229,7 +254,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 return JsonSerializer.SerializeToElement(resized);
             }
 
-            async Task<RawCaptureReceipt> CaptureAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
+            async Task<CaptureLoopSubmission> CaptureSubmissionAsync(CameraModuleConfig cameraConfig, int ordinal, bool differentExposure = false)
             {
                 var requested = DateTimeOffset.Parse("2026-01-15T08:00:00Z", System.Globalization.CultureInfo.InvariantCulture).AddSeconds(ordinal * 25);
                 var clock = new ExposureTestTimeProvider(requested, autoAdvance: true, elapseRealTime: true);
@@ -240,9 +265,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var request = new CaptureRequest(requested, TimeSpan.FromSeconds(25), CaptureMode.Still,
                     new CaptureSetpoint(TimeSpan.FromSeconds(differentExposure ? 10 : 20), 1, null, null));
                 var result = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
-                return (await ingress.AcceptAsync(cameraConfig,
-                    new CaptureLoopSubmission(request, result, requested, request.TargetInterval, TimeSpan.Zero),
-                    CancellationToken.None).ConfigureAwait(false))!;
+                return new CaptureLoopSubmission(request, result, requested, request.TargetInterval, TimeSpan.Zero);
             }
         }
         finally

@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentObservingDayUiServiceTests
 {
     private static readonly DateTimeOffset NightStart = new(2026, 7, 21, 19, 0, 0, TimeSpan.Zero);

@@ -1,11 +1,12 @@
 using System.Runtime.InteropServices;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using SharedLinuxOpenFlags = HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags;
+using SharedLinuxOpenFlags = HVO.SkyMonitor.LocalFiles.LinuxOpenFlags;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Storage")]
 public sealed class LinuxOpenFlagsTests
 {
     [TestMethod]

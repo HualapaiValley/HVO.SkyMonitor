@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 public sealed class CameraAgentFocusSessionEndpointsTests
 {
     private const string ListName = "ListCameraAgentFocusSessions";

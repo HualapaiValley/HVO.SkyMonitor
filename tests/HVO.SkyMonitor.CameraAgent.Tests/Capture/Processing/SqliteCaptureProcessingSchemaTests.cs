@@ -12,11 +12,12 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class SqliteCaptureProcessingSchemaTests
 {
     [TestMethod]
-    public async Task FreshSharedDatabaseCreatesCanonicalSchema9AndRestarts()
+    public async Task FreshSharedDatabaseCreatesCanonicalProcessingSchemaAndRestarts()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
 
@@ -60,7 +61,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(48L, await ScalarAsync(connection, """
+        Assert.AreEqual(91L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'
@@ -87,7 +88,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow(0)]
     [DataRow(4)]
-    [DataRow(11)]
+    [DataRow(SqliteCaptureProcessingStore.CurrentSchemaVersion + 1)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Schema versions are fixed integer test data rows.")]
     public async Task UnsupportedPopulatedSchemaIsRejectedWithoutMutation(int version)
     {
@@ -173,7 +174,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
 
     [TestMethod]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema6GraphIdentitySurvivesSchema9Migration()
+    public async Task CanonicalSchema6GraphIdentitySurvivesProcessingSchemaMigration()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
         var definition = new ProcessingGraphDefinition(
@@ -402,6 +403,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Uses the current raw schema integer constant.")]
     public async Task RawVersionMarkerWithoutCanonicalRawSchemaIsRejectedWithoutProcessingMutation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-schema-invalid-raw-{Guid.NewGuid():N}");
@@ -413,7 +415,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 16;";
+                command.CommandText = FormattableString.Invariant($"PRAGMA user_version = {SqliteRawCaptureJournal.CurrentSchemaVersion};");
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
@@ -445,7 +447,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow((int)CaptureProcessingFaultPoint.AfterSchemaTransactionBegan)]
     [DataRow((int)CaptureProcessingFaultPoint.BeforeSchemaCommit)]
-    public async Task InterruptedCreationRollsBackAndRetryCreatesSchema9(int faultPoint)
+    public async Task InterruptedCreationRollsBackAndRetryCreatesCurrentProcessingSchema(int faultPoint)
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
         var fault = new ThrowOnceFaultInjector((CaptureProcessingFaultPoint)faultPoint);

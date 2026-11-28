@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAdapterPipelineTests
 {
     [TestMethod]
@@ -57,7 +58,7 @@ public sealed class EnvironmentalAdapterPipelineTests
                 EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
                 { Enabled = true, SourceTimeoutMilliseconds = 100, Sources = [configuration] }
             });
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var services = new ServiceCollection();
             services.AddSingleton<IEnvironmentalObservationPublisher>(new Publisher(store, root));
             using var provider = services.BuildServiceProvider();
@@ -94,7 +95,7 @@ public sealed class EnvironmentalAdapterPipelineTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-weather-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             using var handler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(200,
                 """{"properties":{"timestamp":"2026-11-08T06:00:00Z","temperature":{"value":20,"unitCode":"wmoUnit:degC"}}}"""));
             using var client = new WeatherProviderClient(new HttpClient(handler), new OnlineWeatherSourceTests.Clock());
@@ -110,25 +111,24 @@ public sealed class EnvironmentalAdapterPipelineTests
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
     [TestMethod]
-    public async Task InfraredLineageUsesDeliveredSourceIdentitiesAfterTargetEnrichment()
+    public async Task InfraredLineageUsesPersistedLocalSourceIdentities()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-lineage-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var inputs = new EnvironmentalHardwareAdapterTests.RecordingPublisher();
             var source = new InfraredSkySource(EnvironmentalHardwareAdapterTests.Descriptor("InfraredSky", EnvironmentalObservationKind.CloudCover),
                 EnvironmentalHardwareAdapterTests.Options(EnvironmentalHardwareAdapterTests.Infrared), publisher: inputs);
             var result = await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context(), CancellationToken.None).ConfigureAwait(false);
-            var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
-            var delivered = new List<EnvironmentalObservationV1>();
+            var retained = new List<EnvironmentalObservationFactV1>();
             foreach (var input in inputs.Facts)
-                delivered.Add((await store.CommitLocalAsync(root, input, target, CancellationToken.None).ConfigureAwait(false)).DeliveryObservation!);
-            var derived = await store.CommitLocalAsync(root, result.Fact!, target, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(derived.DeliveryObservation);
-            foreach (var reference in derived.DeliveryObservation.Lineage)
-                Assert.IsTrue(delivered.Any(input => input.ObservationId == reference.ObservationId &&
-                    EnvironmentalObservationJson.ComputeSourceIdentitySha256(input) == reference.SourceIdentitySha256));
+                retained.Add((await store.CommitLocalAsync(root, input, CancellationToken.None).ConfigureAwait(false)).Record.Fact);
+            var derived = await store.CommitLocalAsync(root, result.Fact!, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(derived.Record.Fact);
+            foreach (var reference in derived.Record.Fact.Lineage)
+                Assert.IsTrue(retained.Any(input => input.ObservationId == reference.ObservationId &&
+                    EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(input) == reference.SourceIdentitySha256));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -145,7 +145,7 @@ public sealed class EnvironmentalAdapterPipelineTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-reconnect-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             using var provider = new ServiceCollection().BuildServiceProvider();
             var factory = new EnvironmentalSourceFactory(provider, Registrations());
             var publisher = new Publisher(store, root);
@@ -188,7 +188,7 @@ public sealed class EnvironmentalAdapterPipelineTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-weather-backoff-" + Guid.NewGuid().ToString("N"));
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var clock = new OnlineWeatherSourceTests.Clock();
             using (var limitedHandler = new OnlineWeatherSourceTests.FakeHandler(_ => OnlineWeatherSourceTests.Response(429)))
             using (var limited = new WeatherProviderClient(new HttpClient(limitedHandler), clock, store, root))
@@ -222,12 +222,12 @@ public sealed class EnvironmentalAdapterPipelineTests
         options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         return options;
     }
-    private sealed class Publisher(SqliteEnvironmentalObservationOutbox store, string root) : IEnvironmentalObservationPublisher
+    private sealed class Publisher(SqliteEnvironmentalObservationStore store, string root) : IEnvironmentalObservationPublisher
     {
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)
         {
             await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
-            return new(EnvironmentalObservationPublishDisposition.Enqueued, null);
+            return new(EnvironmentalObservationPublishDisposition.Committed);
         }
     }
     private sealed class LocationStore : IDeploymentLocationStore

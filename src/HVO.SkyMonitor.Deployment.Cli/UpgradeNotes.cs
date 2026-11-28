@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// What an upgrade shows before it changes anything (install contract section 6): the upgrade notes of every release
 /// after the installed one up to the target, taken from the target's release.json, and the refusal of a target older
-/// than what is installed, since only <c>rollback</c> goes back.
+/// than what is installed.
 /// </summary>
 internal static class UpgradeNotes
 {
@@ -58,14 +58,14 @@ internal static class UpgradeNotes
     /// recorded every note up to the target is shown, and the older-target check cannot be made.
     /// </summary>
     /// <exception cref="InstallerException">The target is older than the installed version.</exception>
-    public static LifecycleUpgradeNotes Plan(string? installedVersion, ReleaseManifest target, Guid instanceId)
+    public static LifecycleUpgradeNotes Plan(string? installedVersion, ReleaseManifest target)
     {
         ArgumentNullException.ThrowIfNull(target);
         if (installedVersion is not null && ProductVersion.IsOlder(target.Version, installedVersion))
         {
             throw InstallerException.Refused(
-                $"{installedVersion} is installed, which is newer than the upgrade target {target.Version}; an upgrade never goes back. " +
-                $"To return to the previous image, run '{InstallerProgram.Current} cameraagent rollback --instance-id {instanceId:D}'.");
+                $"{installedVersion} is installed, which is newer than the upgrade target {target.Version}. " +
+                "Use cameraagent rollback to select the retained previous image.");
         }
         var release = ProductVersion.Release(target.Version);
         var notes = target.UpgradeNotes

@@ -10,7 +10,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -18,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class StoragePolicyRawIngressIntegrationTests
 {
@@ -56,10 +56,13 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 Assert.AreEqual(reconciled, receipt.Manifest.CaptureGraphRevisionId);
                 var result = await ProcessNextAsync(restarted, current).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-                var rootB = Path.Combine(root, "storage-b");
-                Assert.IsTrue(Directory.EnumerateFiles(rootB, "*.json", SearchOption.AllDirectories).Any(), "Matching profile publication resumes.");
-                Assert.IsTrue((await restarted.GetRequiredService<IArtifactOutbox>().GetSnapshotAsync(rootB, CancellationToken.None).ConfigureAwait(false)).HeldCount > 0,
-                    "Matching upload-enabled profile publishes real outbox work.");
+                var store = restarted.GetRequiredService<SqliteCaptureProcessingStore>();
+                var preview = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "preview", CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(preview);
+                var output = Assert.ContainsSingle(preview.Outputs);
+                Assert.IsNotEmpty(await SiloInfrastructureFixture.ReadProductBytesAsync(restarted, output, CancellationToken.None)
+                    .ConfigureAwait(false), "Matching profile publication resumes.");
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                     await Operations(restarted).RollbackRevisionAsync(namedId,
                         (await Operations(restarted).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).StateVersion,
@@ -68,8 +71,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             }
             using var reopened = Provider(root);
             var restored = await InitializeAsync(reopened, file).ConfigureAwait(false);
-            Assert.AreEqual(90, StorageOptions(restored).RetentionDays);
-            Assert.IsTrue(StorageOptions(restored).QueueForUpload);
+            Assert.IsTrue(StorageOptions(restored).PublishArchive);
             var next = (await Ingress(reopened).AcceptAsync(restored, Submission(5), CancellationToken.None).ConfigureAwait(false))!;
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessNextAsync(reopened, restored).ConfigureAwait(false)).Outcome);
             AssertRawRetained(next);
@@ -173,7 +175,7 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                     Assert.AreEqual(2, executions.Count(execution => execution.FailureReason == "processing." + LaneReason));
                     Assert.AreEqual(1, executions.Count(execution => execution.Status == ProcessingGraphExecutionStatus.Completed));
                     Assert.AreNotEqual(RawIngressAvailability.Unhealthy, restarted.GetRequiredService<RawIngressState>().Snapshot.Availability);
-                    Assert.AreEqual(90, StorageOptions(current).RetentionDays);
+                    Assert.IsTrue(StorageOptions(current).PublishArchive);
                 }
                 finally { await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
             }
@@ -192,8 +194,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
 
     internal static ServiceProvider Provider(string root) => ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-        ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
     });
 
     internal static CameraModuleConfig Profile(string root)
@@ -210,8 +210,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                     new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue, DayOffset: 1), "always")).ToArray()),
             Pipeline = new([
                 new("Preview", "preview", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
-                new("Storage", "storage", DependsOn: ["preview"], Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = Path.Combine(root, "storage-a"), UpdateLatestFrame = false }))
+                new("Storage", "storage", DependsOn: ["preview"], Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
             ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
     }
@@ -226,18 +226,19 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         return snapshot.Configuration;
     }
 
-    internal static async Task<string> SeedLegacyRevisionAsync(ServiceProvider provider, CameraModuleConfig profile, CapturePipelineConfig pipeline)
+    internal static async Task<string> SeedLegacyRevisionAsync(ServiceProvider provider, CameraModuleConfig profile, CapturePipelineConfig pipeline,
+        string name = "legacy-storage")
     {
         var compiler = typeof(ProcessingGraphOperationsCoordinator).GetMethod("CreateRevisionSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var snapshot = (ProcessingGraphRevisionSnapshot)compiler.Invoke(Operations(provider),
-            [profile with { Pipeline = pipeline }, "legacy-storage", "1", DateTimeOffset.UtcNow,
+            [profile with { Pipeline = pipeline }, name, "1", DateTimeOffset.UtcNow,
                 ProcessingGraphRevisionLifecycle.Draft, null, CaptureProcessingGraphCompilation.Proposal])!;
         var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-        var created = await store.InsertNamedRevisionAsync(snapshot, "old-create", "old-host", null, CancellationToken.None).ConfigureAwait(false);
-        await store.ValidateRevisionAsync(created.RevisionId, "old-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        var created = await store.InsertNamedRevisionAsync(snapshot, name + "-create", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        await store.ValidateRevisionAsync(created.RevisionId, name + "-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
         var registry = await Operations(provider).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-        var active = await store.ActivateRevisionAsync(created.RevisionId, registry.StateVersion, "old-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
-        await store.RollbackRevisionAsync(registry.ActiveRevisionId, active.StateVersion, "old-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        var active = await store.ActivateRevisionAsync(created.RevisionId, registry.StateVersion, name + "-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        await store.RollbackRevisionAsync(registry.ActiveRevisionId, active.StateVersion, name + "-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
         return created.RevisionId;
     }
 
@@ -245,8 +246,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         => profile.Pipeline with
         {
             Steps = [.. profile.Pipeline.Steps.Select(step => step.Type == "Storage" ? step with
-        { Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-        { StorageRoot = Path.Combine(Path.GetDirectoryName(StorageOptions(profile).StorageRoot)!, "storage-b"), RetentionDays = 90, QueueForUpload = true, UpdateLatestFrame = false }) } : step)]
+        { Options = JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+        { UpdateLatestFrame = false, PublishArchive = true }) } : step)]
         };
 
     internal static async Task<CameraModuleConfig> ChangeProfileAsync(ServiceProvider provider, CameraModuleConfig profile)
@@ -279,7 +280,6 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         Assert.AreEqual(LaneReason, result.Reason);
         AssertRawRetained(receipt);
         Assert.AreNotEqual(RawIngressAvailability.Unhealthy, provider.GetRequiredService<RawIngressState>().Snapshot.Availability);
-        Assert.IsFalse(Directory.Exists(StorageOptions(current).StorageRoot), "Mismatched work cannot publish under another policy.");
     }
 
     private static async Task<CaptureLaneHandlerResult> ProcessNextAsync(ServiceProvider provider, CameraModuleConfig current)
@@ -295,8 +295,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         return result;
     }
 
-    private static FileStorageCaptureProcessingStepOptions StorageOptions(CameraModuleConfig config)
-        => JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(config.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value)!;
+    private static SiloCaptureProcessingStepOptions StorageOptions(CameraModuleConfig config)
+        => JsonSerializer.Deserialize<SiloCaptureProcessingStepOptions>(config.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value)!;
 
     private static void AssertRawRetained(RawCaptureReceipt receipt)
     {

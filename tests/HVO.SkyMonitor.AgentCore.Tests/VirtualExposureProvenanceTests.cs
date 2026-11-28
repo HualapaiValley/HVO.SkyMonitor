@@ -90,9 +90,9 @@ public sealed class VirtualExposureProvenanceTests
         var request = original.Descriptor.Timing.RequestedStartUtc;
         var logical = VirtualExposureProvenance.Create(request, request.AddHours(-1), request.AddDays(-1),
             original.Descriptor.Controls.EffectiveExposure, VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc);
-        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.2", new string('A', 64),
+        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.4", new string('A', 64),
             "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
-            SceneUtc: logical.CelestialMidpointUtc, VirtualExposure: logical);
+            SceneUtc: logical.CelestialMidpointUtc, VirtualExposure: logical, CatalogId: "test-catalog");
         var manifest = original with { Scene = scene };
         var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
         Assert.IsTrue(parsed.IsValid);
@@ -144,5 +144,51 @@ public sealed class VirtualExposureProvenanceTests
         Assert.IsTrue((manifest with { Scene = scene with { VirtualExposure = null } }).Validate().IsValid,
             "Existing scene provenance also remains readable without a virtual clock.");
         Assert.IsTrue(original.Validate().IsValid, "Existing manifests have no virtual interval requirement.");
+    }
+
+    [TestMethod]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "schema")]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "start")]
+    [DataRow(VirtualExposureTimeMapping.ShutterUtc, "end")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "schema")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "start")]
+    [DataRow(VirtualExposureTimeMapping.FixedCelestialAndShutterUtc, "end")]
+    public void ShutterMappedManifestRejectsWrongSchemaOrExposureEndpoint(VirtualExposureTimeMapping mapping, string mismatch)
+    {
+        var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var timing = original.Descriptor.Timing;
+        var celestialStart = mapping == VirtualExposureTimeMapping.ShutterUtc
+            ? timing.ExposureStartedUtc : timing.RequestedStartUtc.AddDays(-1);
+        var shutter = VirtualExposureProvenance.Create(timing.RequestedStartUtc, timing.ExposureStartedUtc, celestialStart,
+            original.Descriptor.Controls.EffectiveExposure, mapping);
+        var scene = new SceneProvenance("scene", "rig-v1", "HYG", "4.4", new string('A', 64),
+            "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
+            SceneUtc: shutter.CelestialMidpointUtc, VirtualExposure: shutter, CatalogId: "test-catalog");
+        var manifest = original with { Scene = scene };
+        var roundTrip = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+        Assert.IsTrue(roundTrip.IsValid);
+        Assert.AreEqual(shutter, roundTrip.Document!.Manifest.Scene!.VirtualExposure);
+
+        if (mismatch == "schema")
+        {
+            var oldSchema = shutter with { SchemaVersion = VirtualExposureProvenance.CurrentSchemaVersion };
+            manifest = manifest with { Scene = scene with { VirtualExposure = oldSchema } };
+        }
+        else
+        {
+            var alteredTiming = mismatch switch
+            {
+                "start" => timing with { ExposureStartedUtc = timing.ExposureStartedUtc.AddMilliseconds(1) },
+                "end" => timing with { ExposureEndedUtc = timing.ExposureEndedUtc.AddMilliseconds(1) },
+                _ => throw new ArgumentOutOfRangeException(nameof(mismatch))
+            };
+            var descriptor = original.Descriptor with { Timing = alteredTiming };
+            Assert.IsTrue(descriptor.Validate().IsValid, "The observed descriptor is valid on its own.");
+            manifest = manifest with { Descriptor = descriptor };
+        }
+
+        var expected = CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
+        Assert.AreEqual(expected, manifest.Validate());
+        Assert.AreEqual(expected, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest)).Validation);
     }
 }

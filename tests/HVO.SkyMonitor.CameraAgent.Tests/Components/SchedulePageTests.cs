@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class SchedulePageTests
 {
     private static readonly string[] RawDependency = ["$raw"];
@@ -705,10 +706,13 @@ public sealed class SchedulePageTests
                 Profile = profile,
                 ProfileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(profile)
             };
+            var graphs = new Mock<IProcessingGraphOperations>();
+            graphs.Setup(service => service.ExpandConfiguredProfile(It.IsAny<CameraModuleConfig>()))
+                .Returns((CameraModuleConfig config) => config);
             return CameraAgentPipelineOperatorProjection.CreateState(
                 state with { ActiveRevision = revision, PendingRevision = null },
                 currentConfiguration,
-                new ProjectionPipelineFactory()).Active.CanToggle;
+                new ProjectionPipelineFactory(), graphs.Object).Active.CanToggle;
         }
     }
 

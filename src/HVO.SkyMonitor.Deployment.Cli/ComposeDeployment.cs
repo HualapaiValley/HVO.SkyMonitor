@@ -197,12 +197,14 @@ services:
         ContainerResourceLimits? resources,
         InstallationPaths? outputPaths = null,
         CameraConfigurationGeneration? defaults = null,
-        CatalogInstallationIdentity? deepSkyCatalog = null)
+        CatalogInstallationIdentity? deepSkyCatalog = null,
+        SiloComposeInputs? silo = null)
     {
         outputPaths ??= paths;
         var rendering = Render(
             request, paths, instanceId, applicationIdentity, uid, gid, immutableImage, catalogPackageVersion, passwordFile,
-            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths, defaults, deepSkyCatalog);
+            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths, defaults, deepSkyCatalog,
+            silo);
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
         foreach (var path in new[]
@@ -219,6 +221,13 @@ services:
         {
             SafeFileSystem.CreateRuntimeDirectory(path, uid, gid);
         }
+        if (silo is not null)
+        {
+            // The Silo data root is a bind source of its own beside the state root; like every other one it must exist
+            // with the runtime identity before Compose starts, or Docker would create it as root.
+            SafeFileSystem.CreateRuntimeDirectory(silo.DataRoot, uid, gid);
+            SiloInstallation.EnsureRootCredential(SiloRuntimeProfile.RootSecretsDirectory(outputPaths));
+        }
 
         SafeFileSystem.WriteTextAtomic(rendering.ConfigurationPath, rendering.ConfigurationJson);
         // The camera name is operator-editable, so it lives only in the operator settings file the camera's UI
@@ -232,7 +241,11 @@ services:
 
         foreach (var setting in rendering.Settings)
         {
-            SafeFileSystem.WriteTextAtomic(Path.Combine(secretsRoot, setting.Key), setting.Value);
+            // A setting that already holds exactly this value keeps its file, so a running CameraAgent that loaded it is not
+            // taken for one holding an earlier value (#1966 review): Silo verification requires a restart after any change.
+            var path = Path.Combine(secretsRoot, setting.Key);
+            if (!SafeFileSystem.HoldsOwnerText(path, setting.Value))
+                SafeFileSystem.WriteTextAtomic(path, setting.Value);
         }
         var replayKeyPath = Path.Combine(secretsRoot, ReplayRunnerKeyName);
         if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
@@ -286,7 +299,8 @@ services:
         ContainerResourceLimits? resources,
         InstallationPaths? outputPaths = null,
         CameraConfigurationGeneration? defaults = null,
-        CatalogInstallationIdentity? deepSkyCatalog = null)
+        CatalogInstallationIdentity? deepSkyCatalog = null,
+        SiloComposeInputs? silo = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(paths);
@@ -303,9 +317,6 @@ services:
         {
             ["CameraAgent__ConfigFilePath"] = "/app/cameraagent.deploy.json",
             ["CameraAgent__RawIngressRoot"] = "/app/data/raw",
-            ["CameraAgent__CentralIntegration__Mode"] = "Disabled",
-            ["CameraAgent__CaptureDistribution__UploadEnabled"] = "false",
-            ["CameraAgent__EnvironmentalDelivery__Enabled"] = "false",
             ["CameraAgent__TransientDetection__Mode"] = "Off",
             ["CameraAgent__Observatory__LatitudeDegrees"] = request.LatitudeDegrees.ToString("R", CultureInfo.InvariantCulture),
             ["CameraAgent__Observatory__LongitudeDegrees"] = request.LongitudeDegrees.ToString("R", CultureInfo.InvariantCulture),
@@ -356,6 +367,22 @@ services:
                 StringComparison.Ordinal);
             template += ReplayRunnerTemplate;
         }
+        if (silo is not null)
+        {
+            if (request.ReplayProfile != CameraAgentReplayProfile.InProcess)
+                throw new InstallerException("The Silo storage layout supports only the in-process replay profile.");
+            // The CameraAgent service joins the private Silo network beside its published one; the Silo service and the
+            // internal network follow the CameraAgent service.
+            template = template.Replace(
+                "    read_only: true\n    cap_drop: [ALL]\n",
+                SiloRuntimeProfile.CameraAgentNetworks + "\n    read_only: true\n    cap_drop: [ALL]\n",
+                StringComparison.Ordinal);
+            template += SiloRuntimeProfile.ComposeService + "\n";
+            foreach (var setting in SiloRuntimeProfile.CameraAgentSettings(instanceId, silo.FirstBootPauseId))
+            {
+                settings[setting.Key] = setting.Value;
+            }
+        }
         var environment = string.Join('\n', new[]
         {
             $"HVO_CONTAINER_NAME=hvo-skymonitor-{compactId}",
@@ -371,6 +398,11 @@ services:
             $"HVO_PASSWORD_FILE={passwordFile}",
             string.Empty
         });
+        if (silo is not null)
+        {
+            environment = environment.TrimEnd('\n') +
+                          $"\nHVO_SILO_IMAGE={silo.ImageId}\nHVO_SILO_PLATFORM={silo.Platform}\nHVO_SILO_DATA_ROOT={silo.DataRoot}\n";
+        }
         if (deepSkyCatalog is not null)
         {
             const string starMount = "      - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro\n";
@@ -499,6 +531,12 @@ services:
 /// The files <see cref="ComposeDeployment.Write"/> writes for an instance, computed in memory
 /// (<see cref="ComposeDeployment.Render"/>).
 /// </summary>
+/// <summary>
+/// What a Silo-layout instance adds to its Compose model (#1966): the local ID of the verified pinned image (immutable,
+/// as CameraAgent's own), its data root and the first-boot pause.
+/// </summary>
+internal sealed record SiloComposeInputs(string ImageId, string Platform, string DataRoot, Guid FirstBootPauseId);
+
 internal sealed record ComposeRendering(
     ComposeFiles Files,
     string ConfigurationPath,

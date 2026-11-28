@@ -103,7 +103,7 @@ public sealed record StructuredProcessingProductDescriptorV1(
         => CaptureContractValidationResult.Failure(reasonCode, path);
 }
 
-/// <summary>Structured product media types and schema versions supported end to end by edge and central hosts.</summary>
+/// <summary>Structured product media types and schema versions used by retained processing products.</summary>
 public static class StructuredProcessingProductContracts
 {
     public const string ProjectedSceneMediaType = "application/vnd.hvo.projected-scene+json";
@@ -117,9 +117,13 @@ public static class StructuredProcessingProductContracts
             (ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion) => true,
             (ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion) => true,
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
+            (RegionalStellarVisibilityProducts.MediaType, RegionalStellarVisibilityProducts.SchemaVersion) => true,
             (MeasuredAstrometryJson.MediaType, MeasuredAstrometrySolutionV1.CurrentSchemaVersion) => true,
             (MeasuredAstrometryJson.ContextMediaType, MeasuredAstrometryContextV1.CurrentSchemaVersion) => true,
+            (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.V1SchemaVersion) => true,
             (MeasuredStellarAssociationsMediaType, MeasuredStellarAssociationsV1.CurrentSchemaVersion) => true,
+            (ExposureMeasurementProducts.MediaType, ExposureMeasurementProducts.SchemaVersion) => true,
+            (MeasuredDeepSkyStackV1.MediaType, MeasuredDeepSkyStackV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SceneStyleSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.RichTextSchemaVersion) => true,
@@ -148,10 +152,11 @@ public static class StructuredProcessingProductContracts
     public static bool IsSupportedMediaType(string mediaType)
         => mediaType is MeasuredAstrometryJson.MediaType or MeasuredAstrometryJson.ContextMediaType or ProjectedSceneMediaType or CloudAssessmentMediaType or MeasuredStellarAssociationsMediaType or
             PresentationLayerPayloadJson.MediaType or PresentationProcessingProducts.ManifestMediaType or
-            PresentationMetadataFactsProductV1.MediaType;
+            PresentationMetadataFactsProductV1.MediaType or ExposureMeasurementProducts.MediaType or
+            MeasuredDeepSkyStackV1.MediaType or RegionalStellarVisibilityProducts.MediaType;
 }
 
-/// <summary>Versioned envelope for ordinary outbox delivery of one structured product.</summary>
+/// <summary>Versioned manifest for one structured processing product.</summary>
 public sealed record StructuredProcessingProductManifestV1(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] StructuredProcessingProductDescriptorV1 Descriptor,

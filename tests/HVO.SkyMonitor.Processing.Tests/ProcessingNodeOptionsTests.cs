@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Single-use expected test values are clearer inline.")]
 public sealed partial class ProcessingNodeOptionsTests
 {
-    private const string SceneVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+    private const string SceneVersion = "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels";
     private const string Color = "constellationLineColor";
     private const string Thickness = "constellationLineThickness";
     private static readonly ProcessingNodeOptionsDescriptor Scene = ProcessingNodeOptionsDescriptors.ScenePresentationLayer;
@@ -59,10 +59,19 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(32, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        var sceneVersions = ProcessingNodeOptionsCatalog.BuiltIn.Descriptors.Where(descriptor => descriptor.StepAlias == Scene.StepAlias)
+            .Select(static descriptor => descriptor.StepVersion).ToArray();
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "projected-scene-presentation-v12-plain-circle-markers",
+                "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
+                SceneVersion
+            },
+            sceneVersions);
         Assert.AreSame(CaptureAnalysisOptionDescriptors.Prediction,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve("AstrometryPrediction", "canonical-projected-scene-v1").Descriptor);
-        Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
+        Assert.HasCount(3, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);
     }
 
     [TestMethod]
@@ -94,7 +103,7 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.AreEqual(saved.Nodes[index].EffectiveOptions.GetRawText(),
                 roundTripped.Nodes[index].EffectiveOptions.GetRawText());
         }
-        Assert.HasCount(2, catalog.Upgrades, "Upgrades are offered but never applied by reading or validation.");
+        Assert.HasCount(3, catalog.Upgrades, "Upgrades are offered but never applied by reading or validation.");
     }
 
     [TestMethod]
@@ -386,22 +395,6 @@ public sealed partial class ProcessingNodeOptionsTests
 
         Assert.AreEqual("processing.options.out-of-range", diagnostic.Code);
         Assert.AreEqual("nodes[1].effectiveOptions.constellationLineThickness", diagnostic.Path);
-    }
-
-    [TestMethod]
-    public void TheCanonicalCentralGraphValidatesAndRoundTripsToItsShippedBytes()
-    {
-        // The fixture is the byte-exact DefinitionJson development/v1 b13f0d0e stored for the central graph.
-        var bytes = File.ReadAllBytes(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "canonical-central-graph-rev1-b13f0d0e.json"));
-        var definition = ProcessingGraphJson.Parse(bytes).Definition!;
-
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(definition));
-        var roundTripped = RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, definition);
-        CollectionAssert.AreEqual(bytes, ProcessingGraphJson.SerializeCanonical(roundTripped));
-        Assert.AreEqual(
-            ProcessingGraphJson.ComputeDefinitionIdentity(definition),
-            ProcessingGraphJson.ComputeDefinitionIdentity(roundTripped));
     }
 
     [TestMethod]

@@ -21,9 +21,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OrbitalPlanning")]
 public sealed class CameraAgentTimeDataRefreshTests
 {
-    private static readonly DateTimeOffset Start = new(2026, 10, 22, 6, 0, 0, TimeSpan.Zero);
+    /// <summary>The committed bundled pair, parsed with the product parser.</summary>
+    private static readonly OrbitalTimeData Bundled = OrbitalTimeData.FromFinals2000A(BundledEop, BundledLeap);
+
+    /// <summary>
+    /// The default fixture clock: six hours into the bundled predictions, so the committed pair covers it after every refresh.
+    /// The rapid-only days before the predictions are a gap; the rapid-gap and rollover cases use them on their own clocks.
+    /// </summary>
+    private static readonly DateTimeOffset Start = Bundled.EarthOrientationPredictedCoverage!.StartUtc.AddHours(6);
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -33,8 +41,31 @@ public sealed class CameraAgentTimeDataRefreshTests
     private static byte[] BundledLeap => File.ReadAllBytes(Path.Combine(CameraAgentPinnedOrbitalTimeSource.BundledDirectory,
         CameraAgentTimeDataSources.LeapSecondsFile));
 
-    private static DateTimeOffset DayBeforeBundledPredictions
-        => OrbitalTimeData.FromFinals2000A(BundledEop, BundledLeap).EarthOrientationPredictedCoverage!.StartUtc.AddDays(-1);
+    private static DateTimeOffset DayBeforeBundledPredictions => Bundled.EarthOrientationPredictedCoverage!.StartUtc.AddDays(-1);
+
+    private static bool CoversAt(OrbitalTimeData time, DateTimeOffset at) => CameraAgentPinnedOrbitalTimeSource.Covers(time, new(at, at));
+
+    [TestMethod]
+    public async Task TheFixtureClockIsCoveredByTheBundledPairAndTheGapControlsAreNotAsync()
+    {
+        // The tie, shadowing and failed-refresh cases are meant to rank pairs that cover now, not to reach the fallback that
+        // ranks every pair when none does. Every default-clock case plans or resolves within the two days after Start.
+        Assert.IsTrue(CameraAgentPinnedOrbitalTimeSource.Covers(Bundled, new(Start, Start.AddDays(2))),
+            $"the bundled pair covers {Start:O} and the two days after it");
+        Assert.AreEqual(OrbitalEarthOrientationStatus.Predicted, Bundled.Evaluate(Start).Status);
+        using var host = new Host();
+        var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual("bundled", status.ActiveSource);
+        Assert.IsTrue(status.CoversNow);
+        var plan = await PlanAsync(host, Start).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, plan.Outcome);
+        Assert.AreEqual(Bundled.LeapSecondsSha256, plan.LeapSecondsSha256);
+
+        // The rapid-gap and rollover controls stay independent of Start: the afternoon before the predictions is a gap.
+        var gap = DayBeforeBundledPredictions.AddHours(18);
+        Assert.IsFalse(CoversAt(Bundled, gap), $"the bundled pair alone cannot evaluate {gap:O}");
+        Assert.IsTrue(CoversAt(Bundled, DayBeforeBundledPredictions.AddDays(1)), "coverage resumes at 00:00Z");
+    }
 
     [TestMethod]
     public async Task ClientAcceptsOnlyBounded200ResponsesAsync()
@@ -141,10 +172,14 @@ public sealed class CameraAgentTimeDataRefreshTests
         Assert.AreEqual(Start, state.LastSuccessUtc);
         Assert.AreEqual(pointer.Pair, pointer.History.Single().Pair);
 
-        // The same coverage as the bundled pair: the tie keeps the bundled pair active, and the managed pair is verified.
+        // The same coverage as the bundled pair: both cover now, the tie keeps the bundled pair active, and the managed pair
+        // is verified.
         var resolution = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, resolution.Source);
         Assert.AreEqual(CameraAgentManagedTimeDataState.Verified, resolution.Managed);
+        Assert.IsTrue(CoversAt(resolution.Data!, Start), "the tie is decided among pairs that cover now");
+        Assert.AreEqual(CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(resolution.Data!), resolution.ManagedCoverageEndUtc);
+        Assert.IsTrue((await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false)).CoversNow);
     }
 
     [TestMethod]
@@ -279,7 +314,8 @@ public sealed class CameraAgentTimeDataRefreshTests
             host.Clock.Now = Start + offset;
             var skipped = await host.Job.ExecuteAsync(manual, TestContext.CancellationToken).ConfigureAwait(false);
             Assert.AreEqual(LocalAutomationRunOutcome.Skipped, skipped.Outcome);
-            StringAssert.Contains(skipped.Detail, "next permitted attempt 2026-10-23T06:00:00.0000000Z", StringComparison.Ordinal);
+            StringAssert.Contains(skipped.Detail, string.Create(CultureInfo.InvariantCulture,
+                $"next permitted attempt {Start.AddDays(1).UtcDateTime:O}"), StringComparison.Ordinal);
         }
         // A restart keeps the floor: it is read from the durable record.
         var restarted = new CameraAgentTimeDataRefreshJob(new CameraAgentManagedTimeDataStore(host.Store.RootDirectory), host.Client,
@@ -332,6 +368,7 @@ public sealed class CameraAgentTimeDataRefreshTests
         var bundled = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, bundled.Source, "no managed pair yet");
         Assert.AreEqual(CameraAgentManagedTimeDataState.None, bundled.Managed);
+        Assert.IsTrue(CoversAt(bundled.Data!, Start), "the bundled pair covers now, so the ranking below never needs the fallback");
         var bundledEnd = CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(bundled.Data!);
 
         // An equal pair ties and the bundled pair stays active.
@@ -339,6 +376,7 @@ public sealed class CameraAgentTimeDataRefreshTests
         var tie = await host.Source.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, tie.Source);
         Assert.AreEqual(bundledEnd, tie.ManagedCoverageEndUtc);
+        Assert.IsTrue(CoversAt(tie.Data!, Start), "the tie is decided among pairs that cover now");
 
         // A pair whose coverage ends later wins, and its adoption is picked up by the next resolution.
         await host.AdoptLongerPairAsync(days: 100).ConfigureAwait(false);
@@ -346,12 +384,19 @@ public sealed class CameraAgentTimeDataRefreshTests
         Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Managed, managed.Source);
         Assert.IsGreaterThan(bundledEnd, CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(managed.Data!));
         Assert.AreEqual(managed.Data!.LeapSecondsSha256, managed.LeapSecondsProvenance!.Sha256);
+        Assert.IsTrue(CoversAt(managed.Data!, Start));
 
-        // A newer release (a bundled pair that covers longer) is not shadowed by the older refresh.
+        // A newer release (a bundled pair that covers longer) is not shadowed by the older refresh. Both cover now, so the
+        // later coverage end decides it, not the fallback.
         var newerBundle = host.CopyBundle(WithLaterExpiry(BundledLeap, 3000));
         using (var upgraded = new CameraAgentPinnedOrbitalTimeSource(host.Options, newerBundle, host.Store, host.Clock))
-            Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled,
-                (await upgraded.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false)).Source);
+        {
+            var release = await upgraded.ResolveAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentOrbitalTimeDataSource.Bundled, release.Source);
+            Assert.IsTrue(CoversAt(release.Data!, Start), "the newer release covers now");
+            Assert.IsGreaterThan(CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(managed.Data!),
+                CameraAgentPinnedOrbitalTimeSource.PlanningCoverageEnd(release.Data!));
+        }
 
         // A missing bundle leaves the verified managed pair; a corrupted managed pair leaves the bundled one.
         using (var unbundled = new CameraAgentPinnedOrbitalTimeSource(host.Options, Path.Combine(host.Root, "absent"), host.Store, host.Clock))
@@ -406,6 +451,7 @@ public sealed class CameraAgentTimeDataRefreshTests
         Assert.AreEqual("none", never.Problem);
         Assert.AreEqual("never", never.Refresh.Outcome);
         Assert.IsFalse(never.Expired);
+        Assert.IsTrue(never.CoversNow);
         Assert.IsNull(never.ManagedPair);
 
         host.Client.Fail(CameraAgentTimeDataSources.EarthOrientationUri, CameraAgentTimeDataClient.TransportReasonCode);
@@ -415,7 +461,10 @@ public sealed class CameraAgentTimeDataRefreshTests
         Assert.AreEqual(CameraAgentTimeDataClient.TransportReasonCode, failed.Refresh.ReasonCode);
         Assert.AreEqual(Start.AddDays(1), failed.Refresh.NextPermittedAttemptUtc);
         Assert.IsFalse(failed.Expired, "a failed refresh does not expire a pair that still covers today");
+        Assert.IsTrue(failed.CoversNow, "the pair still covers today after the failed refresh");
+        Assert.AreEqual("bundled", failed.ActiveSource);
         Assert.AreEqual(failed.CoverageEndUtc, never.CoverageEndUtc);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, (await PlanAsync(host, Start).ConfigureAwait(false)).Outcome);
 
         var adopted = await host.AdoptLongerPairAsync().ConfigureAwait(false);
         var end = (await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false)).CoverageEndUtc!.Value;

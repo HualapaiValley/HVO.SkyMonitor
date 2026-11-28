@@ -60,7 +60,7 @@
                             {
                                 <a class="btn btn-outline-light" href="/api/v1/operations/processing-graphs/executions/@execution.ExecutionId/manifest" download>Download manifest</a>
                             }</div></header>
-                <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><span class="camera-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9H2V9a2 2 0 0 1 2-2Z" /><circle cx="12" cy="12.5" r="4" /></svg></span><div><span>Triggered by @execution.TriggerKind</span><strong>@TriggerLabel</strong><small>Graph @GraphRevisionLabel / @ScheduleLabel</small></div></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@PipelineRunPresentation.StatusLabel(execution.Status.ToString())</dd></div><div><dt>Total duration</dt><dd>@PipelineRunPresentation.Duration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.SelectMany(static node => node.Outputs).Select(static output => output.ArtifactId).Distinct().Count()</dd></div><div><dt>LogicHost</dt><dd>@LogicHostState</dd></div></dl></section>
+                <section class="run-summary" aria-label="Run summary"><div class="run-summary__origin"><span class="camera-glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9H2V9a2 2 0 0 1 2-2Z" /><circle cx="12" cy="12.5" r="4" /></svg></span><div><span>Triggered by @execution.TriggerKind</span><strong>@TriggerLabel</strong><small>Graph @GraphRevisionLabel / @ScheduleLabel</small></div></div><dl class="run-overview__facts"><div><dt>Status</dt><dd>@PipelineRunPresentation.StatusLabel(execution.Status.ToString())</dd></div><div><dt>Total duration</dt><dd>@PipelineRunPresentation.Duration(execution.Duration)</dd></div><div><dt>Artifacts</dt><dd>@_view.Nodes.SelectMany(static node => node.Outputs).Select(static output => output.ArtifactId).Distinct().Count()</dd></div></dl></section>
                 @if (execution.FailureReason is not null || execution.Status == ProcessingGraphExecutionStatus.Failed)
                 {
                     <section class="run-notice failure" role="note"><span class="status-icon failure" aria-hidden="true"></span><div><strong>Recorded execution failure</strong><p>@(execution.FailureReason ?? "This execution failed; no detailed reason was retained.")</p></div><a href="@RunInspectorUrl">Inspect evidence</a></section>
@@ -68,6 +68,34 @@
                 else if (_transient?.Events.Any(static stage => stage.CandidateId is not null) == true)
                 {
                     <section class="run-notice warning" role="note"><span class="status-icon warning" aria-hidden="true"></span><div><strong>Independent candidate evidence retained</strong><p>Recorded local transient milestones are separate from the image pipeline. No central confirmation is implied.</p></div><a href="/transients/@_transient.Events.First(static stage => stage.CandidateId is not null).CandidateId">View candidate</a></section>
+                }
+                @if (_view.CenteredPublications is { } publications)
+                {
+                    <section class="detail-card" aria-label="Recorded display publications">
+                        <header class="panel-heading"><h2>Recorded display publications</h2></header>
+                        @if (publications.ExecutionVersion is { } version)
+                        {
+                            <p>Acquisition execution version <code>@version</code></p>
+                        }
+                        @foreach (var publication in publications.Views)
+                        {
+                            <div class="run-publication">
+                                @if (publication.View is { } view)
+                                {
+                                    <a href="@CenteredPublicationEvidence.ArchiveUrl(view)">@publication.Role · @CenteredPublicationEvidence.Label(publication.Base.Definition.Kind)</a>
+                                    <span> · Generation <code>@publication.Base.Definition.Stream.GenerationId</code></span>
+                                    <details>
+                                        <summary>Inspect recorded revision</summary>
+                                        <CenteredPublicationEvidence View="view" ShowArchiveLink="false" />
+                                    </details>
+                                }
+                                else
+                                {
+                                    <span>@publication.Role · @CenteredPublicationEvidence.Label(publication.Base.Definition.Kind) · revision <code>@publication.RevisionId</code> unavailable</span>
+                                }
+                            </div>
+                        }
+                    </section>
                 }
                 <section class="graph-card" aria-label="Capture-time dependency graph"><ExecutionRunDiagram @key="execution.ExecutionId" Nodes="@_view.Nodes" GraphTitle="@($"Pipeline revision {GraphRevisionLabel}")" TransientEvents="@(_transient?.Events ?? [])" TransientEnabled="@(TransientEnabled || _transient?.Events.Count > 0)" TransientUnavailable="@_transientUnavailable" SelectedNodeId="@_selectedNodeId" NodeSelected="SelectNode" SelectedTransientKey="@(_selectedTransient is null ? null : ExecutionRunDiagram.StageKey(_selectedTransient))" TransientSelected="SelectTransient" />
                 </section>
@@ -89,12 +117,79 @@
                         {
                             <header class="detail-heading"><div><p class="eyebrow">Edge processing / @(selected.Required ? "Required" : "Optional")</p><h2>@PipelineRunPresentation.Name(selected)</h2><p>@PipelineRunPresentation.Description(selected)</p></div><span class="state-chip @PipelineRunPresentation.StatusClass(selected.Status)">@PipelineRunPresentation.StatusLabel(selected.Status)</span></header>
                             <MixedGainDiagnostics Node="selected" />
+                            @if (selected.NodeId == HVO.SkyMonitor.Processing.ExposureMeasurementProducts.StepAlias)
+                            {
+                                <section class="stage-facts" aria-label="Exposure measurements">
+                                    @if (_view.ExposureMeasurement?.Measurement is { } measurement)
+                                    {
+                                        var imageLayout = measurement.Input.Linear?.Layout ?? measurement.Input.Raw.Layout;
+                                        <dl class="fact-grid">
+                                            <div><dt>Raw source</dt><dd><code>@measurement.Input.Raw.ArtifactId</code></dd></div>
+                                            <div><dt>Linear source</dt><dd>@(measurement.Input.Linear?.ArtifactId.ToString() ?? "Unavailable")</dd></div>
+                                            @if (_view.ExposureMeasurement.LinearExpiryReason is { } expiry)
+                                            {
+                                                <div><dt>Linear pixels</dt><dd>Expired (@expiry); retained measurements remain available.</dd></div>
+                                            }
+                                            <div><dt>Calibration</dt><dd>@measurement.Input.Calibration @measurement.Input.CalibrationReason</dd></div>
+                                            <div><dt>Delivered image</dt><dd>@imageLayout.PixelFormat / @imageLayout.Width × @imageLayout.Height px @measurement.Sources.LocalBayerPattern</dd></div>
+                                            @if (imageLayout.Readout is { } readout)
+                                            {
+                                                <div><dt>Readout</dt><dd>ROI (@readout.RoiX, @readout.RoiY), bin @readout.BinX × @readout.BinY</dd></div>
+                                            }
+                                            @if (measurement.RawBrightness is { } brightness)
+                                            {
+                                                <div><dt>Raw range and mean</dt><dd>@brightness.Minimum–@brightness.Maximum / @MeasurementNumber(brightness.Mean) stored ADU</dd></div>
+                                                <div><dt>Raw zero count</dt><dd>@brightness.ZeroCount</dd></div>
+                                                <div><dt>Sensor clipping</dt><dd>@ClippingLabel(brightness.SensorClipping)</dd></div>
+                                            }
+                                            else
+                                            {
+                                                <div><dt>Raw brightness</dt><dd>@(measurement.RawBrightnessUnavailableReason ?? "Unavailable")</dd></div>
+                                            }
+                                            <div><dt>Linear output clipping</dt><dd>@ClippingLabel(measurement.LinearOutputClipping)</dd></div>
+                                            <div><dt>Centroids</dt><dd>@measurement.Sources.Status @measurement.Sources.Reason @if (measurement.Sources.CandidateCount is not null) { <span> / @measurement.Sources.Detections.Count accepted, @measurement.Sources.Exclusions.Count rejected</span> }</dd></div>
+                                            <div><dt>Mean HFD</dt><dd>@MeasurementNumber(measurement.Hfd.MeanPixels) @if (measurement.Hfd.MeanPixels is not null) { <span>px</span> }</dd></div>
+                                            <div><dt>Median HFD</dt><dd>@MeasurementNumber(measurement.Hfd.MedianPixels) @if (measurement.Hfd.MedianPixels is not null) { <span>px</span> }</dd></div>
+                                            <div><dt>HFD contributors</dt><dd>@MeasurementNumber(measurement.Hfd.ValidCount) / @measurement.Hfd.Status @measurement.Hfd.Reason</dd></div>
+                                        </dl>
+                                    }
+                                    else
+                                    {
+                                        <p>@(_view.ExposureMeasurement?.UnavailableReason ?? "Measurement unavailable")</p>
+                                    }
+                                </section>
+                            }
+                            @if (selected.OutputContracts.Any(static contract => contract.Recipe?.Name == HVO.SkyMonitor.Processing.RegionalStellarVisibilityProducts.RecipeName))
+                            {
+                                <section class="stage-facts" aria-label="Regional stellar visibility">
+                                    @if (_view.RegionalStellarVisibility?.Assessment is { } visibility)
+                                    {
+                                        <dl class="fact-grid">
+                                            <div><dt>Status</dt><dd>@visibility.Status</dd></div>
+                                            <div><dt>Method</dt><dd><code>@visibility.MethodId</code></dd></div>
+                                            <div><dt>Geometry basis</dt><dd>@visibility.GeometryBasis</dd></div>
+                                            <div><dt>Focus basis</dt><dd>@visibility.FocusBasis</dd></div>
+                                            <div><dt>Confidence</dt><dd>@MeasurementNumber(visibility.ConfidenceMillionths / 1_000_000d)</dd></div>
+                                            <div><dt>Assessed tiles</dt><dd>@visibility.Grid.AssessedTileCount / @visibility.Tiles.Count (@visibility.Grid.ClearTileCount clear, @visibility.Grid.DeficitTileCount deficit, @visibility.Grid.InsufficientEvidenceTileCount low support, @visibility.Grid.ExcludedTileCount excluded)</dd></div>
+                                            <div><dt>Expected detectable stars</dt><dd>@visibility.Grid.TotalExpectedDetectableStars expected / @visibility.Grid.TotalMatchedMeasuredStars matched</dd></div>
+                                            @if (visibility.ReasonCodes.Count > 0)
+                                            {
+                                                <div><dt>Reasons</dt><dd>@string.Join(", ", visibility.ReasonCodes)</dd></div>
+                                            }
+                                        </dl>
+                                    }
+                                    else
+                                    {
+                                        <p>@(_view.RegionalStellarVisibility?.UnavailableReason ?? "Regional stellar visibility unavailable")</p>
+                                    }
+                                </section>
+                            }
                             <div class="detail-grid"><section class="stage-facts"><h3>Execution</h3><dl><div><dt>Started</dt><dd>@SiteTime.Format(selected.StartedUtc, unavailable: "Not recorded")</dd></div><div><dt>Completed</dt><dd>@SiteTime.Format(selected.CompletedUtc, unavailable: "Not recorded")</dd></div><div><dt>Duration</dt><dd>@PipelineRunPresentation.Duration(PipelineRunPresentation.Duration(selected))</dd></div><div><dt>Attempts</dt><dd>@selected.AttemptCount recorded</dd></div><div><dt>Runner</dt><dd>@PipelineRunPresentation.Runner(selected)</dd></div><div><dt>Stage</dt><dd>@selected.NodeId</dd></div></dl><h3>Dependencies</h3><div class="token-list">@if (selected.Dependencies.Count == 0) { <span>No dependencies recorded</span> } @foreach (var dependency in selected.Dependencies) { <span>@dependency.ProducerId / @(dependency.Required ? "required" : "optional")</span> }</div><h3>Outputs</h3><div class="token-list outputs">@if (selected.Outputs.Count == 0) { <span>No outputs recorded</span> } @foreach (var output in selected.Outputs) { <span>@output.Role / @output.Variant / @output.AvailabilityState</span> }</div></section><section class="event-log"><div class="event-heading"><h3>Stage events</h3><span>Recorded execution facts</span></div><ol>@foreach (var fact in StageFacts(selected)) { <li><time>@SiteTime.Format(fact.Time, unavailable: "Not timed")</time><span class="event-level @fact.Tone">@fact.Label</span><p>@fact.Message</p></li> }</ol><p class="unavailable-copy">Journal facts are shown at their recorded times; no log messages or successful commits are synthesized.</p></section></div>
                         }
                         else if (_tab == "artifacts")
                         {
                             <header class="panel-heading"><div><p class="eyebrow">Immutable run evidence</p><h2>Produced artifacts</h2></div></header>
-                            <div class="artifact-table-wrap"><table><caption class="visually-hidden">Recorded artifacts for this execution</caption><thead><tr><th>Artifact</th><th>Producer</th><th>Size</th><th>Retention</th><th>Availability</th><th>Publication</th></tr></thead><tbody>@foreach (var node in _view.Nodes) { @foreach (var output in node.Outputs) { var artifact = _capture?.Artifacts.FirstOrDefault(item => item.ArtifactId == output.ArtifactId); <tr><td><strong>@output.Role / @output.Variant</strong><small>@output.ArtifactId</small></td><td>@node.NodeId</td><td>@(artifact?.ByteLength is { } length ? FormatBytes(length) : "Not recorded")</td><td>@RetentionLabel(output.ArtifactId)</td><td>@output.AvailabilityState</td><td>@(output.Published ? "Published locally" : "Not published")<small>@(output.AvailabilityReason ?? "Central delivery is a separate fact")</small></td></tr> } }</tbody></table></div>
+                            <div class="artifact-table-wrap"><table><caption class="visually-hidden">Recorded artifacts for this execution</caption><thead><tr><th>Artifact</th><th>Producer</th><th>Size</th><th>Retention</th><th>Availability</th><th>Publication</th></tr></thead><tbody>@foreach (var node in _view.Nodes) { @foreach (var output in node.Outputs) { var artifact = _capture?.Artifacts.FirstOrDefault(item => item.ArtifactId == output.ArtifactId); <tr><td><strong>@output.Role / @output.Variant</strong><small>@output.ArtifactId</small></td><td>@node.NodeId</td><td>@(artifact?.ByteLength is { } length ? FormatBytes(length) : "Not recorded")</td><td>@RetentionLabel(output.ArtifactId)</td><td>@output.AvailabilityState</td><td>@(output.Published ? "Published locally" : "Not published")@if (output.AvailabilityReason is { } reason) { <small>@reason</small> }</td></tr> } }</tbody></table></div>
                             @if (_view.Nodes.All(static node => node.Outputs.Count == 0)) { <p class="unavailable-copy">No outputs recorded.</p> }
                         }
                         else
@@ -103,7 +198,7 @@
                             @if (selected.Attempts.Count == 0) { <p class="unavailable-copy">No attempts recorded.</p> }
                         }
                     }
-                    else { <p class="unavailable-copy">No processing stage is recorded. Designed cloud, meteor and central slots remain explicitly unavailable in the graph.</p> }
+                    else { <p class="unavailable-copy">No processing stage is recorded. Designed cloud and meteor stages remain explicitly unavailable in the graph.</p> }
                     </div>
                 </section>
             </div>

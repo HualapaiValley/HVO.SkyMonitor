@@ -5,25 +5,27 @@ event_name="${1:-}"
 base_sha="${2:-}"
 head_sha="${3:-}"
 summary_file="${GITHUB_STEP_SUMMARY:-}"
+classification_scope="${4:-}"
 
 mode="full"
 reason="non-pull-request events always run the full matrix"
 deployment="true"
 deployment_reason="non-pull-request events always run deployment contracts"
 deployment_catalog="true"
-deployment_shards="true"
 deployment_installer="true"
 complete="true"
 complete_reason="non-pull-request events always run the complete solution matrix"
 shared="true"
 cameraagent="true"
-logichost="true"
-combined="true"
 delivery="true"
 secret_scan_contract="true"
 release_scripts="true"
 catalog_recipe="true"
 path_count=0
+docs_fast_path="false"
+docs_fast_path_reason="non-pull-request events require full validation"
+restore_certificate_path='scripts/ci:restore-import-certificate.json'
+docs_restore_required=false
 
 write_summary_header() {
   [[ -n "$summary_file" ]] || return 0
@@ -36,22 +38,29 @@ write_summary_path() {
 }
 
 finish() {
-  if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
+  if [[ -n "$summary_file" && "${classification_scope:-}" != "docs-fast-only" ]]; then
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
-      "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
-      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" "$release_scripts" \
+      "$deployment_installer" "$complete" "$complete_reason" \
+      "$shared" "$cameraagent" "$delivery" "$secret_scan_contract" "$release_scripts" \
       "$catalog_recipe" "$path_count" >> "$summary_file"
   fi
 
-  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s release_scripts=%s catalog_recipe=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
-    "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
+  printf 'Docs fast path: %s; reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >&2
+  [[ -z "$summary_file" ]] || printf '\nDocs fast path: **%s**  \nDocs fast path reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >> "$summary_file"
+  if [[ "$classification_scope" == docs-fast-only ]]; then
+    printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
+    return
+  fi
+  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s delivery=%s secret_scan_contract=%s release_scripts=%s catalog_recipe=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
+    "$mode" "$deployment" "$complete" "$shared" "$cameraagent" \
     "$delivery" "$secret_scan_contract" "$release_scripts" "$catalog_recipe" "$reason" "$deployment_reason" \
     "$complete_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\nsecret_scan_contract=%s\nrelease_scripts=%s\ncatalog_recipe=%s\n' \
-    "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
-    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" \
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\ndelivery=%s\nsecret_scan_contract=%s\nrelease_scripts=%s\ncatalog_recipe=%s\n' \
+    "$mode" "$deployment" "$deployment_catalog" "$deployment_installer" \
+    "$complete" "$shared" "$cameraagent" "$delivery" "$secret_scan_contract" \
     "$release_scripts" "$catalog_recipe"
+  printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
 }
 
 is_secret_scan_contract_path() {
@@ -79,7 +88,7 @@ is_release_scripts_path() {
     scripts/release:cameraagent-publish | scripts/release:check-cameraagent-publish | scripts/cameraagent-release.targets | scripts/test:cameraagent-r2r | \
     scripts/time-data:update | scripts/release:assets | scripts/release:combine-images | scripts/release:check-image-labels | scripts/release:push-image | \
       scripts/release:prerelease-gate | scripts/release:prerelease-check | scripts/release:publish-prerelease | \
-      scripts/release:version | scripts/release:notes | scripts/release:gate | scripts/release:check-environment | \
+      scripts/release:version | scripts/release:notes | scripts/release:changelog | scripts/release:gate | scripts/release:check-environment | \
       scripts/release:publish | scripts/release:tag-latest | \
       scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/deployment-installer-qualification.sh | \
       scripts/lib/github-api.sh | scripts/lib/releases.sh | \
@@ -94,9 +103,8 @@ is_release_scripts_path() {
 
 is_catalog_recipe_path() {
   # The Catalog Reproducibility job (Refs #1774) rebuilds the approved HYG 4.4 and OpenNGC bytes, and the committed catalog
-  # test fixtures, under both SQLite connection defaults. It runs when a build recipe, a pin or a fixture changes,
-  # which is everything under these two directories and nothing else: scripts/catalog:* (the operator entry points)
-  # and the job's own wiring do not select it on a pull request. Non-pull-request events always run it.
+  # test fixtures, under both SQLite connection defaults. Pull requests select it through changes under the two
+  # recipe directories below. Non-pull-request events always run it.
   case "$1" in
     scripts/catalog/* | tests/fixtures/catalog/*)
       return 0
@@ -111,9 +119,12 @@ is_reduced_path() {
   if [[ "$path" =~ ^\.agents/skills/[^/]+/SKILL\.md$ ]]; then
     return 0
   fi
+  if [[ "$path" =~ ^changelog\.d/[a-z0-9]+(-[a-z0-9]+)*\.(added|changed|deprecated|removed|fixed|security)\.md$ ]]; then
+    return 0
+  fi
 
   case "$path" in
-    docs/catalog/hyg-v42-attribution.md | docs/catalog/hyg-v42-license.md | docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
+    docs/catalog/hyg-v44-attribution.md | docs/catalog/hyg-v44-license.md)
       return 1
       ;;
   esac
@@ -122,7 +133,7 @@ is_reduced_path() {
     docs/* | .devcontainer/* | .vscode/* | .github/prompts/*)
       return 0
       ;;
-    README.md | AGENTS.md | CLAUDE.md | CHANGELOG.md | THIRD-PARTY-NOTICES.md)
+    README.md | CONTRIBUTING.md | AGENTS.md | CLAUDE.md | CHANGELOG.md | THIRD-PARTY-NOTICES.md | changelog.d/README.md)
       return 0
       ;;
     .github/copilot-instructions.md | .github/pull_request_template.md)
@@ -131,7 +142,7 @@ is_reduced_path() {
     tools/asi-capture/README.md)
       return 0
       ;;
-    tests/fixtures/catalog/SOURCE.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
+    tests/fixtures/catalog/SOURCE-v44.md | tests/fixtures/catalog/SOURCE-v44-openngc.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
       return 0
       ;;
     scripts/test:devcontainer)
@@ -140,6 +151,369 @@ is_reduced_path() {
   esac
 
   [[ "$path" =~ ^(src|tests)/[^/]+/README\.md$ ]]
+}
+
+is_fast_doc_path() {
+  case "$1" in
+    docs/catalog/* | docs/contracts/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/generated/* | docs/*/generated/* | docs/images/* | docs/upgrade-notes/* | docs/runbooks/development-v1-merge-queue-drill/* | docs/runbooks/cameraagent-silo-runtime.md) return 1 ;;
+    docs/*.md | docs/*.markdown | docs/*.txt | README.md | AGENTS.md | CLAUDE.md) return 0 ;;
+  esac
+  return 1
+}
+
+# Certified inventory: the base-controlled manifest records every tracked
+# MSBuild definition, XML input and resolved explicit import, including modes
+# and blob identities. Changes disable the exemption until reviewed.
+audit_fast_inventory() {
+  python3 -I - "$1" "${2:-}" <<'PY_AUDIT'
+import json, os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
+
+commit = sys.argv[1]
+restore_source = sys.argv[2] == "restore-source"
+def fail(message):
+    print("docs inventory audit: " + message, file=sys.stderr)
+    sys.exit(1)
+def git(*args):
+    try:
+        return subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        fail("Git could not read the committed input tree")
+
+def unique_object(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        fail("duplicate certificate or restore data keys")
+    return result
+
+def validate_global_json(raw):
+    if raw.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00", b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw:
+        fail("global.json is not UTF-8")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("global.json is not UTF-8")
+    try:
+        settings = json.loads(text, object_pairs_hook=unique_object)
+    except ValueError:
+        fail("unknown SDK resolver configuration")
+    if type(settings) is not dict or set(settings) != {"sdk"}:
+        fail("unknown SDK resolver configuration")
+    version_pin = settings["sdk"]
+    if type(version_pin) is not dict or set(version_pin) != {"version", "rollForward", "allowPrerelease"}:
+        fail("unknown SDK resolver configuration")
+    version = version_pin["version"]
+    if (type(version) is not str or not re.fullmatch(r"10\.0\.[0-9]+", version) or
+            version_pin["rollForward"] != "disable" or version_pin["allowPrerelease"] is not False):
+        fail("SDK pin unavailable or unsupported")
+
+def read_xml(name, *, solution=False):
+    raw = git("cat-file", "blob", commit + ":" + name)
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("build input is not UTF-8")
+    if "\0" in text or text.startswith("\ufeff"):
+        fail("build input is not UTF-8")
+    declaration = re.match(r"^<\?xml\s+([^?]*?)\?>", text)
+    if declaration:
+        declared_encoding = re.search(r"(?:^|\s)encoding\s*=\s*([\"'])([^\"']+)\1", declaration.group(1))
+        if declared_encoding and declared_encoding.group(2).lower() != "utf-8":
+            fail("XML declares a non-UTF-8 encoding")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        fail("document type declarations require manual review")
+    if re.search(r"&#|%[0-9a-fA-F]{2}", text):
+        fail("escaped build input requires manual review")
+    if solution:
+        # ElementTree normalizes literal attribute whitespace to spaces.
+        # Inspect all quoted values before parsing, including after namespace declarations.
+        tags = re.finditer(
+            r"""<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|"""
+            r"""(<(?![!?/])(?:[^<>"']|"[^"]*"|'[^']*')*>)""",
+            text, re.DOTALL,
+        )
+        if any(
+            re.search(r"[\t\r\n]", value)
+            for tag in tags if tag[1] is not None
+            for _, value in re.findall(r"""(["'])(.*?)\1""", tag[1], re.DOTALL)
+        ):
+            fail("solution attribute contains control whitespace")
+    try:
+        return ET.fromstring(text)
+    except (ET.ParseError, ValueError):
+        fail("unparseable build input")
+
+entries = {}
+try:
+    for entry in git("ls-tree", "-rz", commit).split(b"\0"):
+        if not entry: continue
+        meta, path = entry.split(b"\t", 1)
+        name = path.decode("utf-8")
+        entries[name] = (meta, path)
+except (ValueError, UnicodeError):
+    fail("unreadable tree entry")
+
+RESERVED_FOLDER_NAMES = frozenset({
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
+
+def ordinal_ignore_case(text):
+    out = []
+    for c in text:
+        code = ord(c)
+        if code in (0x0131, 0x017F):
+            out.append(c)
+        elif 0x10D70 <= code <= 0x10D85:
+            out.append(chr(code - 0x20))
+        else:
+            upper = c.upper()
+            if len(upper) == 1:
+                out.append(upper)
+            else:
+                title = c.title()
+                out.append(title if len(title) == 1 else c)
+    return "".join(out)
+
+def is_valid_folder_name(folder_name):
+    if (len(folder_name) < 3 or
+            not folder_name.startswith("/") or
+            not folder_name.endswith("/") or
+            any(c in folder_name for c in '\\:*?"<>|') or
+            any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in folder_name)):
+        return False
+    for segment in folder_name[1:-1].split("/"):
+        if not segment.strip() or segment in (".", ".."):
+            return False
+        stem = segment.rsplit(".", 1)[0] if "." in segment else segment
+        if stem.isascii() and stem.upper() in RESERVED_FOLDER_NAMES:
+            return False
+    return True
+
+restore_inputs = set()
+global_json_files = []
+for name, (metadata, _) in entries.items():
+    if metadata.startswith(b"120000 "):
+        fail("tracked symlink requires manual review")
+    if metadata.startswith(b"160000 "):
+        fail("tracked submodule requires manual review")
+    lower = name.lower()
+    if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
+        fail("tracked automatic MSBuild input requires manual review")
+    if posixpath.basename(lower) == "global.json":
+        global_json_files.append(name)
+    if restore_source and (posixpath.basename(lower) in (
+        "global.json", "nuget.config", "packages.config", "packages.lock.json", ".gitattributes", "dotnet-tools.json"
+    )):
+        restore_inputs.add(name)
+
+for name in sorted(global_json_files):
+    global_meta, _ = entries[name]
+    if not global_meta.startswith((b"100644 blob ", b"100755 blob ")):
+        fail("non-regular build input")
+    validate_global_json(git("cat-file", "blob", commit + ":" + name))
+
+# Certify the exact solution the workflow restores and builds. Unknown solution
+# syntax or project paths cannot establish the exemption.
+solution = "HVO.SkyMonitor.v9.slnx"
+if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
+    fail("solution is unavailable or non-regular")
+solution_root = read_xml(solution, solution=True)
+if solution_root.tag != "Solution" or solution_root.attrib: fail("unknown solution format")
+projects = set()
+folders = set()
+def add_solution_project(node):
+    if len(node) != 0:
+        fail("unknown solution entry")
+    value = node.attrib.get("Path", "").replace("\\", "/")
+    if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+        fail("unresolved solution project")
+    target = posixpath.normpath(value)
+    if target == ".." or target.startswith("../") or target not in entries or target in projects:
+        fail("solution project outside committed inventory")
+    projects.add(target)
+for child in solution_root:
+    if child.tag == "Project":
+        add_solution_project(child)
+    elif child.tag == "Folder":
+        folder_name = child.attrib.get("Name", "")
+        folder_key = ordinal_ignore_case(folder_name)
+        if set(child.attrib) != {"Name"} or not is_valid_folder_name(folder_name) or folder_key in folders:
+            fail("unknown solution entry")
+        folders.add(folder_key)
+        for entry in child:
+            if entry.tag != "Project":
+                fail("unknown solution entry")
+            add_solution_project(entry)
+    else:
+        fail("unknown solution entry")
+if not projects: fail("solution has no projects")
+pending = [(n, True) for n in projects]
+pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
+seen = {solution} | restore_inputs
+visited = set()
+while pending:
+    name, is_project = pending.pop()
+    if (name, is_project) in visited: continue
+    visited.add((name, is_project))
+    seen.add(name)
+    # SDK default items include the project subtree. A project rooted at the
+    # repository or under docs can implicitly consume eligible documentation.
+    project_dir = posixpath.dirname(name).lower()
+    if is_project and (not project_dir or project_dir == "docs" or project_dir.startswith("docs/")):
+        fail("project location permits implicit documentation items")
+    meta, _ = entries[name]
+    if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
+        fail("non-regular build input")
+    root = read_xml(name)
+    sdk_uncertified = False
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+        sdk_keys = [key for key in node.attrib if key.rsplit("}", 1)[-1].lower() == "sdk"]
+        if tag.lower() == "sdk" or sdk_keys:
+            # Only the pinned SDK's built-in project entry points are covered.
+            sdk_uncertified |= not (restore_source and is_project and node is root and
+                tag == "Project" and sdk_keys == ["Sdk"] and
+                node.attrib["Sdk"] in ("Microsoft.NET.Sdk", "Microsoft.NET.Sdk.Web"))
+        if tag.lower() in ("packagereference", "globalpackagereference", "packagedownload") and not (
+            restore_source and tag == "PackageReference"
+        ):
+            fail("restore generated package imports are uncertified")
+        for text in list(node.attrib.values()) + ([node.text] if node.text else []):
+            norm = text.replace("\\", "/")
+            if re.search(r"(?i)(^|[^a-z0-9_])(README|AGENTS|CLAUDE)\.md([^a-z0-9_]|$)", norm):
+                fail("build input references a root documentation name")
+            for match in re.finditer(r"(?i)(?:^|/)(docs/([^\s\"'<>;]+))", norm):
+                raw_doc = match.group(1)
+                part = match.group(2).lower()
+                if ".." in part.split("/") or (
+                    raw_doc != "docs/runbooks/cameraagent-silo-runtime.md"
+                    and not part.startswith(("catalog/", "contracts/", "validation/", "images/", "upgrade-notes/", "evidence/", "generated/"))
+                ):
+                    fail("build input references eligible documentation")
+        for attr in ("Include", "Update", "Remove"):
+            value = node.attrib.get(attr)
+            if not value or tag in ("PackageReference", "PackageVersion", "Reference", "Using", "InternalsVisibleTo"): continue
+            for part in value.split(";"):
+                part = part.strip().replace("\\", "/")
+                if not part: fail("empty item specification")
+                if "@(" in part or "%(" in part:
+                    if name == "scripts/cameraagent-release.targets" and tag == "StaticWebAssetEndpoint" and part == "@(_HvoReleaseAssetEndpoints)":
+                        continue
+                    fail("unresolved item expression")
+                token = "$(MSBuildThisFileDirectory)"
+                if not is_project and not part.startswith(token):
+                    if name == "scripts/cameraagent-release.targets" and tag == "_HvoReleaseAssetHeader" and part == "Replace":
+                        continue
+                    fail("relative item in imported build input")
+                if "$(" in part:
+                    token = "$(MSBuildThisFileDirectory)"
+                    if not part.startswith(token): fail("unresolved item property")
+                    part = part[len(token):]
+                    if "$(" in part: fail("unresolved item property")
+                resolved_part = posixpath.normpath(posixpath.join(posixpath.dirname(name), part))
+                lower_part = resolved_part.lower()
+                if resolved_part.startswith("/") or resolved_part == ".." or resolved_part.startswith("../"):
+                    fail("item path escapes the committed tree")
+                if lower_part in ("readme.md", "agents.md", "claude.md") or (
+                    lower_part.startswith("docs/")
+                    and resolved_part != "docs/runbooks/cameraagent-silo-runtime.md"
+                    and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))
+                ):
+                    fail("item references eligible documentation")
+                if "*" in part or "?" in part:
+                    wildcard_tail = re.split(r"[?*]", part, 1)[1]
+                    if ".." in wildcard_tail.split("/"):
+                        fail("item path traverses after a wildcard")
+                    prefix = re.split(r"[?*]", part, 1)[0]
+                    # A partial component is not a directory boundary: d* can
+                    # match docs. Confine only the complete preceding directory.
+                    if not prefix.endswith("/"):
+                        prefix = posixpath.dirname(prefix)
+                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), prefix))
+                    if resolved in ("", ".", "..") or resolved.startswith("../") or resolved == "docs" or resolved.startswith("docs/"):
+                        fail("item glob may reach documentation")
+        if tag == "ProjectReference":
+            value = node.attrib.get("Include", "").replace("\\", "/")
+            if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                fail("unresolved project reference")
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("project reference outside committed inventory")
+            pending.append((target, True))
+        if tag == "Import":
+            if "Sdk" in node.attrib: fail("SDK import requires manual review")
+            value = node.attrib.get("Project", "").replace("\\", "/")
+            if name == "tests/Directory.Build.props" and value == "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))":
+                target = "Directory.Build.props"
+            else:
+                token = "$(MSBuildThisFileDirectory)"
+                if value.startswith(token): value = value[len(token):]
+                if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                    fail("unresolved MSBuild import")
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("MSBuild import outside committed inventory")
+            pending.append((target, False))
+    if sdk_uncertified:
+        fail("SDK generated restore imports are uncertified")
+for name in sorted(seen, key=lambda n: entries[n][1]):
+    meta, path = entries[name]
+    print(meta.decode("ascii") + " " + repr(path))
+PY_AUDIT
+}
+
+restore_tool_from_base() (
+  local command="$1" trust_sha="$2" source_hash="$3" tool
+  tool="$(mktemp)" || return 1
+  trap 'rm -f "$tool"' EXIT
+  if ! git show "$trust_sha:scripts/ci/restore-imports.py" > "$tool" 2>/dev/null; then
+    printf 'docs inventory audit: restore import verifier unavailable\n' >&2
+    return 1
+  fi
+  python3 -I "$tool" "$command" "$trust_sha" "$source_hash"
+)
+
+fast_inventory_for_tree() {
+  local commit="$1" trust_sha="$2" entry inventory checksum
+  entry="$(git ls-tree "$trust_sha" -- "$restore_certificate_path")" || return 1
+  if [[ -z "$entry" ]]; then
+    audit_fast_inventory "$commit" || return 2
+    return 0
+  fi
+  if [[ "$entry" != '100644 blob '* ]]; then
+    printf 'docs inventory audit: restore import certificate must be a regular non-executable file\n' >&2
+    return 1
+  fi
+  docs_restore_required=true
+  inventory="$(audit_fast_inventory "$commit" restore-source)" || return 2
+  checksum="$(printf '%s\n' "$inventory" | sha256sum)" || return 1
+  restore_tool_from_base check-source "$trust_sha" "${checksum%% *}" || return 1
+  printf '%s\n' "$inventory"
+}
+
+fast_doc_link_state() {
+  local expected actual expected_entry
+  expected="$(mktemp)" || return 2
+  actual="$(mktemp)" || { rm -f "$expected"; return 2; }
+  expected_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || { rm -f "$expected" "$actual"; return 2; }
+  if [[ "$expected_entry" != '100644 blob '* ]] ||
+     ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
+     ! fast_inventory_for_tree "$head_sha" "$base_sha" > "$actual"; then
+    rm -f "$expected" "$actual"
+    return 2
+  fi
+  if ! cmp -s "$expected" "$actual"; then
+    if [[ -n "$summary_file" ]]; then
+      printf '\nBuild inventory differs from the certified base inventory:\n```diff\n' >> "$summary_file"
+      diff -u "$expected" "$actual" >> "$summary_file" || true
+      printf '\n```\n' >> "$summary_file"
+    fi
+    rm -f "$expected" "$actual"
+    return 0
+  fi
+  rm -f "$expected" "$actual"
+  return 1
 }
 
 is_deployment_path() {
@@ -152,25 +526,16 @@ is_deployment_path() {
     scripts/ci:* | scripts/test:ci-classification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/*)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy/*)
-      return 0
-      ;;
-    scripts/qualify:filesystem-object-store | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
-      return 0
-      ;;
-    scripts/deploy-contracts/*)
-      return 0
-      ;;
-    scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
+    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/catalog/* | scripts/infra:operation-lock)
       return 0
       ;;
     deploy/*)
       return 0
       ;;
-    tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
+    tests/fixtures/catalog/hyg-v44-subset.sqlite)
       return 0
       ;;
-    src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
+    src/HVO.SkyMonitor.CameraAgent/Dockerfile)
       return 0
       ;;
     src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
@@ -195,91 +560,42 @@ select_deployment_suites() {
   local path="$1"
 
   case "$path" in
-    .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification)
+    .github/workflows/ci.yml | global.json | scripts/ci:* | scripts/test:ci-classification | .github/workflows/release-image.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml)
+      select_all_deployment_suites
+      ;;
+    scripts/catalog/* | tests/fixtures/catalog/hyg-v44-subset.sqlite | scripts/infra:operation-lock)
       deployment_catalog="true"
-      deployment_shards="true"
+      ;;
+    .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
-      ;;
-    scripts/catalog/catalog-common.sh | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/catalog:* | scripts/catalog/*)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/infra:operation-lock)
-      deployment_catalog="true"
-      deployment_shards="true"
-      ;;
-    scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
-      deployment_shards="true"
-      ;;
-    scripts/lib/deploy-test-lifecycle.sh)
-      # Every shard body calls the runners and staging in this library (#875), so a
-      # change here can break all ten shards without touching a file that names them.
-      # A case takes the first match, so the installer suite scripts/lib/* always
-      # selected is set here explicitly rather than relied on from the later arm.
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    .github/workflows/release-image.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml)
-      deployment_catalog="true"
-      deployment_installer="true"
-      ;;
-    src/HVO.SkyMonitor.Deployment.Cli/SplitHost/Preflight*.cs | src/HVO.SkyMonitor.Deployment.Cli/SplitHost/SplitHostPreflight.cs | src/HVO.SkyMonitor.Deployment.Contracts/Preflight*.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/Preflight*Tests.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixture.cs | tests/HVO.SkyMonitor.Deployment.Cli.Tests/PreflightFixtures.json)
-      # The preflight shard now executes these typed validators and fake-target contracts (#1593).
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-images | scripts/test:release-install | scripts/test:release-scripts | scripts/test:cameraagent-r2r | scripts/cameraagent-release.targets | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
-      deployment_installer="true"
-      ;;
-    scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
-      # The Deployment Contracts job always runs this lightweight preflight fixture.
-      ;;
-    .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
-      deployment_shards="true"
-      deployment_installer="true"
-      ;;
-    .env.template | docker-compose.apps.yml | scripts/deploy:environment | scripts/deploy/* | scripts/test:deploy-environment | scripts/deploy-contracts/* | deploy/* | src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
-      deployment_shards="true"
       ;;
   esac
 }
 
 select_all_deployment_suites() {
   deployment_catalog="true"
-  deployment_shards="true"
   deployment_installer="true"
 }
 
 # Component ownership is keyed on the exact project directory segment so that
-# sibling names such as HVO.SkyMonitor.CameraAgent.Tests and
-# HVO.SkyMonitor.CameraAgent.LogicHost.Tests can never match by prefix.
+# an unknown sibling project takes the complete-matrix fallback.
 shared_projects=(
   HVO.SkyMonitor.AgentCore
   HVO.SkyMonitor.Astronomy
   HVO.SkyMonitor.Catalog.Sqlite
   HVO.SkyMonitor.Common
-  HVO.SkyMonitor.Fleet.Contracts
   HVO.SkyMonitor.Imaging
   HVO.SkyMonitor.Processing
   HVO.SkyMonitor.Video.FFmpeg
-  HVO.SkyMonitor.ProcessingRunner
-  HVO.SkyMonitor.ProcessingRunner.Contracts
-  HVO.SkyMonitor.Storage.FileSystem
+  HVO.SkyMonitor.LocalFiles
   HVO.SkyMonitor.TestSupport
   HVO.SkyMonitor.AgentCore.Tests
   HVO.SkyMonitor.Astronomy.Tests
   HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests
   HVO.SkyMonitor.Catalog.Sqlite.Tests
   HVO.SkyMonitor.Common.Tests
-  HVO.SkyMonitor.Fleet.Contracts.Tests
   HVO.SkyMonitor.Imaging.Tests
   HVO.SkyMonitor.Processing.Tests
-  HVO.SkyMonitor.ProcessingRunner.Tests
-  HVO.SkyMonitor.Storage.FileSystem.Tests
   HVO.SkyMonitor.TestSupport.Tests
 )
 
@@ -293,18 +609,6 @@ cameraagent_projects=(
   HVO.SkyMonitor.CameraAgent.AcceptanceTests
   HVO.SkyMonitor.CameraAgent.IntegrationTests
   HVO.SkyMonitor.CameraAgent.Tests
-)
-
-logichost_projects=(
-  HVO.SkyMonitor.LogicHost
-  HVO.SkyMonitor.LogicHost.IntegrationTests
-  HVO.SkyMonitor.LogicHost.TestInfrastructure
-  HVO.SkyMonitor.LogicHost.Tests
-)
-
-combined_projects=(
-  HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests
-  HVO.SkyMonitor.CameraAgent.LogicHost.Tests
 )
 
 delivery_projects=(
@@ -326,94 +630,26 @@ contains_project() {
   return 1
 }
 
-# Host paths default to being an exported protocol or integration seam. Only the
-# explicitly listed host-private areas skip the combined lane, so a new host
-# directory fails closed into combined coverage. A directory is host-private only
-# when no combined suite compiles against it; scripts/test:ci-classification
-# rechecks that against the combined projects' actual using directives.
-is_host_private_path() {
-  local path="$1"
-
-  case "$path" in
-    src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/* | src/HVO.SkyMonitor.CameraAgent.Replay/* | src/HVO.SkyMonitor.CameraAgent.ReplayRunner/* | src/HVO.SkyMonitor.CameraAgent.Cli/*)
-      return 0
-      ;;
-    src/HVO.SkyMonitor.CameraAgent/Components/Account/* | src/HVO.SkyMonitor.LogicHost/Components/Account/*)
-      return 1
-      ;;
-    src/*/Properties/AssemblyInfo.cs)
-      return 1
-      ;;
-    src/HVO.SkyMonitor.CameraAgent/Components/* | src/HVO.SkyMonitor.CameraAgent/Properties/* | src/HVO.SkyMonitor.CameraAgent/wwwroot/*)
-      return 0
-      ;;
-    src/HVO.SkyMonitor.CameraAgent.Common/Background/* | src/HVO.SkyMonitor.CameraAgent.Common/Diagnostics/* | src/HVO.SkyMonitor.CameraAgent.Common/Gallery/*)
-      return 0
-      ;;
-    src/HVO.SkyMonitor.CameraAgent.Common/Imaging/* | src/HVO.SkyMonitor.CameraAgent.Common/Logging/* | src/HVO.SkyMonitor.CameraAgent.Common/Properties/* | src/HVO.SkyMonitor.CameraAgent.Common/Reflection/* | src/HVO.SkyMonitor.CameraAgent.Common/Scheduling/* | src/HVO.SkyMonitor.CameraAgent.Common/SkyMap/*)
-      return 0
-      ;;
-    src/HVO.SkyMonitor.LogicHost/Components/* | src/HVO.SkyMonitor.LogicHost/Properties/* | src/HVO.SkyMonitor.LogicHost/wwwroot/*)
-      return 0
-      ;;
-    tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/*)
-      return 1
-      ;;
-    tests/*)
-      return 0
-      ;;
-  esac
-
-  return 1
-}
-
 select_complete_matrix() {
   complete="true"
   shared="true"
   cameraagent="true"
-  logichost="true"
-  combined="true"
   delivery="true"
 }
 
-select_shared_component() {
-  shared="true"
-  cameraagent="true"
-  logichost="true"
-  combined="true"
-  delivery="true"
-}
-
-# A source can be compiled into a project outside its own directory through an
-# MSBuild <Compile Include> link. The including project's component is derived
-# from the checked-out project files rather than a hand-maintained list, so a new
-# link cannot narrow the plan.
-apply_linked_project() {
-  local project="$1"
-
-  # A host application project that compiles a source from elsewhere composes it
-  # into that host's exported surface, so it selects combined coverage the same
-  # way a direct seam change does. A test project keeps the narrow selection.
-  case "$project" in
-    HVO.SkyMonitor.CameraAgent | HVO.SkyMonitor.CameraAgent.Common | HVO.SkyMonitor.LogicHost)
-      combined="true"
-      ;;
-  esac
+select_project_component() {
+  local project="$1" fallback_reason="$2"
 
   if contains_project "$project" "${shared_projects[@]}"; then
-    select_shared_component
+    shared="true"
+    cameraagent="true"
+    delivery="true"
   elif contains_project "$project" "${cameraagent_projects[@]}"; then
     cameraagent="true"
-  elif contains_project "$project" "${logichost_projects[@]}"; then
-    logichost="true"
-  elif contains_project "$project" "${combined_projects[@]}"; then
-    combined="true"
-    cameraagent="true"
-    logichost="true"
   elif contains_project "$project" "${delivery_projects[@]}"; then
     delivery="true"
   else
-    complete_reason="a linked source is compiled by a project outside every component boundary"
+    complete_reason="$fallback_reason"
     select_complete_matrix
   fi
 }
@@ -465,7 +701,7 @@ select_components() {
   # component, wherever the source itself lives.
   while IFS= read -r linked_project; do
     [[ -n "$linked_project" ]] || continue
-    apply_linked_project "$linked_project"
+    select_project_component "$linked_project" "a linked source is compiled by a project outside every component boundary"
   done <<< "$linked_projects"
 
   # Deployment inputs that are not .NET project directories are intentionally not
@@ -487,47 +723,110 @@ select_components() {
   fi
 
   project="${rest%%/*}"
-  if contains_project "$project" "${shared_projects[@]}"; then
-    select_shared_component
-  elif contains_project "$project" "${cameraagent_projects[@]}"; then
-    cameraagent="true"
-    if ! is_host_private_path "$path"; then
-      combined="true"
-    fi
-  elif contains_project "$project" "${logichost_projects[@]}"; then
-    logichost="true"
-    if ! is_host_private_path "$path"; then
-      combined="true"
-    fi
-  elif contains_project "$project" "${combined_projects[@]}"; then
-    combined="true"
-    cameraagent="true"
-    logichost="true"
-  elif contains_project "$project" "${delivery_projects[@]}"; then
-    delivery="true"
-  else
-    complete_reason="at least one path is outside every component boundary"
-    select_complete_matrix
-  fi
+  select_project_component "$project" "at least one path is outside every component boundary"
 }
+
+if [[ "$event_name" == "--print-docs-inventory" ]]; then
+  fast_inventory_for_tree "$base_sha" "$base_sha" || exit 1
+  exit 0
+fi
+
+if [[ "$event_name" == "--print-docs-restore-source" ]]; then
+  audit_fast_inventory "$base_sha" restore-source
+  exit $?
+fi
+
+if [[ "$event_name" == "--verify-docs-restore" ]]; then
+  if verify_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" &&
+     [[ "$verify_entry" == '100644 blob '* ]] &&
+     inventory="$(fast_inventory_for_tree "$base_sha" "$base_sha")" &&
+     git show "$base_sha:scripts/ci:docs-inventory" | cmp -s <(printf '%s\n' "$inventory") - &&
+     checksum="$(printf '%s\n' "$inventory" | sha256sum)" &&
+     restore_tool_from_base verify "$base_sha" "${checksum%% *}"; then
+    printf 'restore_imports_verified=true\n'
+    exit 0
+  fi
+  exit 1
+fi
+
+if [[ "$event_name" == "--check-docs-inventory" ]]; then
+  if [[ "$#" -ne 2 || -z "$base_sha" ]] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+    printf '::error::Documentation CI build inventory check failed: commit unavailable\n' >&2
+    exit 1
+  fi
+  check_expected="$(mktemp)" || { printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_actual="$(mktemp)" || { rm -f "$check_expected"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  check_error="$(mktemp)" || { rm -f "$check_expected" "$check_actual"; printf '::error::Documentation CI build inventory check could not run.\n' >&2; exit 1; }
+  trap 'rm -f "$check_expected" "$check_actual" "$check_error"' EXIT
+  check_reason=""
+  check_kind="refresh"
+  if ! check_entry="$(git ls-tree "$base_sha" -- scripts/ci:docs-inventory 2>/dev/null)" || [[ -z "$check_entry" ]]; then
+    check_reason="certificate unavailable"
+  elif [[ "$check_entry" != '100644 blob '* ]]; then
+    check_reason="certificate must be a regular non-executable file"
+  elif ! git show "$base_sha:scripts/ci:docs-inventory" > "$check_expected" 2>/dev/null; then
+    check_reason="certificate unavailable"
+  fi
+  if [[ -n "$check_reason" ]]; then
+    if ! audit_fast_inventory "$base_sha" restore-source > /dev/null 2> "$check_error"; then
+      unsafe_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+      [[ "$unsafe_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || unsafe_reason="audit could not complete"
+      check_reason="$unsafe_reason"
+      check_kind="unsafe"
+    fi
+  else
+    check_rc=0
+    fast_inventory_for_tree "$base_sha" "$base_sha" > "$check_actual" 2> "$check_error" || check_rc=$?
+    if [[ "$check_rc" -ne 0 ]]; then
+      check_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+      [[ "$check_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || check_reason="audit could not complete"
+      if [[ "$check_rc" -eq 2 ]]; then
+        check_kind="unsafe"
+        if [[ -z "$(git ls-tree "$base_sha" -- "$restore_certificate_path" 2>/dev/null)" ]] &&
+           [[ "$check_reason" == "restore generated package imports are uncertified" || "$check_reason" == "SDK generated restore imports are uncertified" ]]; then
+          if audit_fast_inventory "$base_sha" restore-source > /dev/null 2> "$check_error"; then
+            check_kind="refresh"
+          else
+            restore_source_reason="$(sed -n 's/^docs inventory audit: //p' "$check_error" | tail -n 1)"
+            if [[ "$restore_source_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]]; then
+              check_reason="$restore_source_reason"
+            fi
+          fi
+        fi
+      elif [[ "$check_reason" == "unknown SDK resolver configuration" || "$check_reason" == "SDK pin unavailable or unsupported" || "$check_reason" == "global.json is not UTF-8" ]]; then
+        check_kind="unsafe"
+      fi
+    elif ! cmp -s "$check_expected" "$check_actual"; then
+      check_reason="certificate differs from the audited inputs"
+    fi
+  fi
+  if [[ -n "$check_reason" ]]; then
+    if [[ "$check_kind" == "unsafe" ]]; then
+      printf '::error::Documentation CI build inventory is stale or unsafe; remove the unsafe input or update the audit policy under HIGH-tier review: %s\n' "$check_reason" >&2
+    else
+      printf '::error::Documentation CI build inventory is stale or unsafe; refresh scripts/ci:docs-inventory and scripts/ci:restore-import-certificate.json: %s\n' "$check_reason" >&2
+    fi
+    exit 1
+  fi
+  printf 'Documentation CI build inventory is current and audited.\n'
+  exit 0
+fi
 
 if [[ "$event_name" != "pull_request" ]]; then
   finish
   exit 0
 fi
 
+docs_fast_path_reason="base or head commit is unavailable"
 reason="pull request contains only allowlisted documentation and developer-environment changes"
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
 deployment_catalog="false"
-deployment_shards="false"
 deployment_installer="false"
 complete="false"
 complete_reason="pull request changes only component-scoped paths"
 shared="false"
 cameraagent="false"
-logichost="false"
-combined="false"
 delivery="false"
 
 if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
@@ -542,10 +841,83 @@ if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   exit 0
 fi
 
+# This decision uses the exact two endpoint trees, not the merge-base range used
+# by the component classifier. Every entry must be a regular, unlinked text doc.
+fast_diff="$(mktemp)"
+trap 'rm -f "$fast_diff" "${diff_file:-}"' EXIT
+docs_fast_path_reason="exact diff failed or is empty"
+if git diff --name-status --no-renames --ignore-submodules=none -z "$base_sha" "$head_sha" -- > "$fast_diff"; then
+  fast_ok=true
+  fast_count=0
+  [[ -z "$summary_file" ]] || printf '\nExact base/head paths for docs fast path:\n' >> "$summary_file"
+  while IFS= read -r -d '' fast_status || [[ -n "$fast_status" ]]; do
+    if ! IFS= read -r -d '' fast_path || [[ -z "$fast_path" ]]; then
+      fast_ok=false
+      docs_fast_path_reason="malformed exact diff"
+      break
+    fi
+    ((fast_count += 1))
+    [[ -z "$summary_file" ]] || printf -- '- %q %q\n' "$fast_status" "$fast_path" >> "$summary_file"
+    [[ "$fast_ok" == true ]] || continue
+    if [[ "$fast_status" != A && "$fast_status" != M ]]; then
+      fast_ok=false; docs_fast_path_reason="deleted or type-changed path in exact diff"
+    elif ! fast_entry="$(git ls-tree "$head_sha" -- ":(literal)$fast_path")" \
+      || [[ "${fast_entry%% *}" != 100644 ]]; then
+      fast_ok=false; docs_fast_path_reason="non-regular or missing path in exact diff"
+    elif [[ "$fast_status" == M ]] && { ! fast_base_entry="$(git ls-tree "$base_sha" -- ":(literal)$fast_path")" || [[ "${fast_base_entry%% *}" != 100644 ]]; }; then
+      fast_ok=false; docs_fast_path_reason="non-regular or executable base path"
+    elif ! is_fast_doc_path "$fast_path"; then
+      fast_ok=false; docs_fast_path_reason="path outside documentation allowlist"
+    elif ! git cat-file blob "$head_sha:$fast_path" | python3 -c 'import codecs, sys
+text = codecs.getincrementaldecoder("utf-8")("strict")
+try:
+    while chunk := sys.stdin.buffer.read(65536):
+        decoded = text.decode(chunk)
+        if any((ord(c) < 32 and c not in "\t\r\n") or 127 <= ord(c) <= 159 for c in decoded): sys.exit(1)
+    text.decode(b"", final=True)
+except UnicodeError:
+    sys.exit(1)' ; then
+      fast_ok=false; docs_fast_path_reason="documentation is binary or unreadable"
+    else
+      if [[ -z "${fast_inventory_status:-}" ]]; then
+        if fast_doc_link_state; then fast_inventory_status=changed; else
+          fast_link_status=$?
+          if [[ "$fast_link_status" -eq 1 ]]; then fast_inventory_status=clean; else fast_inventory_status=failed; fi
+        fi
+      fi
+      case "$fast_inventory_status" in
+        changed) fast_ok=false; docs_fast_path_reason="project inventory differs from certified baseline" ;;
+        failed) fast_ok=false; docs_fast_path_reason="project inventory unavailable" ;;
+      esac
+    fi
+    # Continue listing every path, even after a rejection.
+    [[ "$fast_ok" == true ]] || continue
+  done < "$fast_diff"
+  [[ -z "$summary_file" ]] || printf '\nFast path paths examined: %s\n' "$fast_count" >> "$summary_file"
+  if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
+    if [[ "$docs_restore_required" == true ]]; then
+      if [[ "$classification_scope" == docs-fast-only ]]; then
+        docs_fast_path=verify-restore
+      fi
+      docs_fast_path_reason="reviewed restore import proof required"
+    else
+      docs_fast_path=true
+      docs_fast_path_reason="all exact base/head paths are safe documentation"
+    fi
+  fi
+fi
+
+if [[ "${4:-}" == "docs-fast-only" ]]; then
+  finish
+  exit 0
+fi
+
 diff_file="$(mktemp)"
-trap 'rm -f "$diff_file"' EXIT
+trap 'rm -f "$diff_file" "$fast_diff"' EXIT
 
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
+  docs_fast_path=false
+  docs_fast_path_reason="component diff failed"
   deployment="true"
   select_all_deployment_suites
   select_complete_matrix
@@ -573,6 +945,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
     deployment="true"
     select_all_deployment_suites
     select_complete_matrix
+    docs_fast_path=false
+    docs_fast_path_reason="malformed component diff"
     reason="git diff returned malformed name-status data"
     deployment_reason="git diff returned malformed name-status data"
     complete_reason="git diff returned malformed name-status data"
@@ -631,6 +1005,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
 done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
+  docs_fast_path=false
+  docs_fast_path_reason="empty component diff"
   secret_scan_contract="true"
   release_scripts="true"
   catalog_recipe="true"
@@ -644,7 +1020,7 @@ if [[ "$path_count" -eq 0 ]]; then
 fi
 
 if [[ "$mode" == "full" && "$complete" == "false" ]] \
-  && [[ "$shared" == "false" && "$cameraagent" == "false" && "$logichost" == "false" && "$combined" == "false" && "$delivery" == "false" ]]; then
+  && [[ "$shared" == "false" && "$cameraagent" == "false" && "$delivery" == "false" ]]; then
   complete_reason="full mode selected no component lane"
   select_complete_matrix
 fi

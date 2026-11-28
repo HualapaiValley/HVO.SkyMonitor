@@ -25,7 +25,7 @@ public sealed record PresentationDeepSkyStyleV1(
 /// <summary>What the deep-sky layer drew for one object.</summary>
 public enum PresentationDeepSkyDrawing
 {
-    /// <summary>Reserved value; the curated delivery does not draw source contours.</summary>
+    /// <summary>A sourced catalog outline contour, when explicitly selected.</summary>
     Outline,
 
     /// <summary>The object's catalog ellipse footprint.</summary>
@@ -93,7 +93,8 @@ public static class PresentationDeepSkyLayerProducer
         PreviewTransform? previewTransform = null, int? outputWidth = null, int? outputHeight = null,
         IReadOnlyList<ResolvedFootprintBounds>? reservedLabelBounds = null,
         int maximumPrimitives = MaximumPrimitives,
-        HorizonObstructionSceneSelection? horizon = null)
+        HorizonObstructionSceneSelection? horizon = null,
+        string? sceneStyleIdentitySha256 = null)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -115,7 +116,8 @@ public static class PresentationDeepSkyLayerProducer
             Math.Abs(height - scene.ImageTransform.OutputHeightPixels * transform.ScaleY) > 1e-6)
             throw new ArgumentException("Preview transform must match the retained scene and output dimensions.", nameof(previewTransform));
         if (scene.DeepSky is not { } deepSky)
-            return new(PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height),
+            return new(PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height,
+                sceneStyleIdentitySha256: sceneStyleIdentitySha256),
                 ReadOnlyCollection<PresentationDeepSkyObjectDrawingV1>.Empty);
 
         var color = style.Color ?? DefaultColor;
@@ -128,18 +130,29 @@ public static class PresentationDeepSkyLayerProducer
         var geometryWork = MaximumWork - labelWork;
 
         var footprints = (scene.ResolvedFootprints ?? [])
-    .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
-    .Select(item => item with
-    {
-        CenterPixel = item.CenterPixel is { } center ? transform.Apply(center) : null,
-        Parts = item.Parts.Select(part => part with
-        {
-            Points = part.Points.Select(transform.Apply).ToArray()
-        }).ToArray(),
-        Bounds = new ResolvedFootprintBounds(
-            item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
-            item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
-    }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+            .Where(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject)
+            .Select(item => item with
+            {
+                CenterPixel = item.CenterPixel is { } center ? transform.Apply(center) : null,
+                Parts = item.Parts.Select(part => part with
+                {
+                    Points = part.Points.Select(transform.Apply).ToArray()
+                }).ToArray(),
+                Bounds = new ResolvedFootprintBounds(
+                    item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
+                    item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
+            }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
+        var outlines = deepSky.Outlines
+            .Select(item => item with
+            {
+                Parts = item.Parts.Select(part => part with
+                {
+                    Points = part.Points.Select(transform.Apply).ToArray()
+                }).ToArray(),
+                Bounds = new ResolvedFootprintBounds(
+                    item.Bounds.MinX * transform.ScaleX, item.Bounds.MinY * transform.ScaleY,
+                    item.Bounds.MaxX * transform.ScaleX, item.Bounds.MaxY * transform.ScaleY)
+            }).ToDictionary(static item => item.Id, StringComparer.Ordinal);
         var ordered = deepSky.Objects.Where(item => horizon is null || horizon.Contains(item.Id)).Select(item => item with
         {
             Pixel = item.Pixel is { } pixel ? transform.Apply(pixel) : null,
@@ -156,7 +169,17 @@ public static class PresentationDeepSkyLayerProducer
             var anchor = item.Pixel ?? default;
             var clearance = 0d;
             ResolvedFootprintBounds? bounds = null;
-            if (style.DrawOutlines && item.Representation == DeepSkyRepresentation.Footprint && footprints.TryGetValue(item.Id, out var footprint) &&
+            if (style.DrawOutlines && item.Representation == DeepSkyRepresentation.Outline &&
+                outlines.TryGetValue(item.Id, out var outline) &&
+                TryAdd(Polylines(outline.Parts), GeometryStroke))
+            {
+                drawing = PresentationDeepSkyDrawing.Outline;
+                bounds = outline.Bounds;
+                if (item.Pixel is null) anchor = new PixelPoint(
+                    (bounds.MinX + bounds.MaxX) / 2, (bounds.MinY + bounds.MaxY) / 2);
+            }
+            else if (style.DrawOutlines && item.Representation == DeepSkyRepresentation.Footprint &&
+                footprints.TryGetValue(item.Id, out var footprint) &&
                 TryAdd(Polylines(footprint.Parts), GeometryStroke))
             {
                 drawing = PresentationDeepSkyDrawing.Footprint;
@@ -238,7 +261,7 @@ public static class PresentationDeepSkyLayerProducer
         }
 
         var payload = PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, width, height,
-            segments: segments, textBlocks: texts);
+            segments: segments, textBlocks: texts, sceneStyleIdentitySha256: sceneStyleIdentitySha256);
         return new(payload, drawings.Select(value => new PresentationDeepSkyObjectDrawingV1(value.Item.Id,
             value.Item.Representation, value.Drawing, labelled.GetValueOrDefault(value.Item.Id))).ToArray().AsReadOnly());
 

@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
+using HVO.SkyMonitor.Processing;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
@@ -48,12 +49,9 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
 
-    [Inject] internal IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
+    [Inject] private IOptions<CameraAgentHostOptions> HostOptions { get; set; } = default!;
 
-    private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
-    private string LogicHostState => HostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled
-        ? "Disabled now / no receipt"
-        : "No acknowledgement recorded for this execution";
+    private bool TransientEnabled => HostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Edge;
     private long? _captureSequence;
     private string TriggerLabel => _view?.Execution is { } execution
         ? $"{(execution.TriggerReference is { } reference ? reference : "Recorded capture trigger")} at {SiteTime.Format(execution.AcceptedUtc)}"
@@ -95,6 +93,14 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
     private static string FormatBytes(long bytes) => bytes >= 1_048_576
         ? $"{(bytes / 1_048_576d).ToString("0.##", CultureInfo.InvariantCulture)} MiB"
         : $"{bytes.ToString("N0", CultureInfo.InvariantCulture)} B";
+
+    private static string MeasurementNumber(double? value) =>
+        value?.ToString("0.##", CultureInfo.InvariantCulture) ?? "Unavailable";
+
+    private static string ClippingLabel(ExposureClippingV1? clipping) =>
+        clipping?.Count is { } count
+            ? string.Create(CultureInfo.InvariantCulture, $"{count} at or above {clipping.StoredWhite}")
+            : clipping?.Reason ?? "Unavailable";
 
     /// <summary>The recorded retention state of one artifact, distinct from its content availability.</summary>
     private string RetentionLabel(Guid artifactId) =>

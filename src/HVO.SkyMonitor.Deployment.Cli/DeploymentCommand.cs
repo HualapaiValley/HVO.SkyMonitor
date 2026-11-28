@@ -103,6 +103,26 @@ internal sealed record CameraAgentStatePreflightRequest(
     }
 }
 
+/// <summary>The Silo-layout commands of #1966: the atomic first resume and the read-only runtime verification.</summary>
+internal enum SiloCommandKind
+{
+    FirstResume,
+    Verify
+}
+
+internal sealed record SiloCommandRequest(
+    SiloCommandKind Kind,
+    Guid? InstanceId,
+    string ProductRoot,
+    bool Json) : DeploymentCommand(Json)
+{
+    public void Validate()
+    {
+        if (InstanceId is null) throw new InstallUsageException("--instance-id is required.");
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+    }
+}
+
 internal sealed record CameraAgentStateResetRequest(
     Guid? InstanceId,
     Guid? ConfirmationInstanceId,
@@ -155,8 +175,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string ProductRoot { get; init; }
     public bool DryRun { get; init; }
     public bool Resume { get; init; }
-    public bool RestoreOnly { get; init; }
-    public Guid? RecoveryOperationId { get; init; }
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
@@ -167,7 +185,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
     /// <summary>How the release's image reaches Docker (<c>--image-source</c>), as <see cref="InstallRequest.ImageSource"/>.</summary>
     public ReleaseImageSource? ImageSource { get; init; }
     public bool NoDownload { get; init; }
-    public bool MigrationBackwardCompatible { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
 
     /// <summary>
@@ -254,15 +271,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
             throw new InstallUsageException("--resume requires a lifecycle operation.");
         }
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
-        if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
-                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty ||
-                            Release is not null))
-        {
-            throw new InstallUsageException(
-                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; release recovery is not supported.");
-        }
-        if (!RestoreOnly && RecoveryOperationId is not null)
-            throw new InstallUsageException("--operation-id requires --restore-only.");
         if (ConfirmRemovedOperationId is not null &&
             (Operation != LifecycleOperationKind.Purge || !Resume || ConfirmRemovedOperationId == Guid.Empty))
         {
@@ -290,7 +298,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
             ImageReference,
             ImageArchiveSha256,
             NoDownload,
-            MigrationBackwardCompatible,
             // Keep the null slot stable so current password-free operation receipts survive executable replacement.
             OwnerPasswordFile = (string?)null,
             CatalogBundle,
@@ -358,7 +365,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
     private void ValidateOperationOptions()
     {
         var hasImage = ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null ||
-                       Release is not null || ImageSource is not null || NoDownload || MigrationBackwardCompatible;
+                       Release is not null || ImageSource is not null || NoDownload;
         var hasCatalogSource = CatalogBundle is not null;
         switch (Operation)
         {

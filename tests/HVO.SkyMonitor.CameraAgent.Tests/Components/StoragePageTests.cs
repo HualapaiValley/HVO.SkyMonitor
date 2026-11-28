@@ -1,5 +1,4 @@
 using Bunit;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
@@ -11,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class StoragePageTests
 {
     private static readonly DateTimeOffset Now = OperatorUiTestData.Now;
@@ -27,12 +27,10 @@ public sealed class StoragePageTests
         Assert.AreEqual("50%", cut.Find(".storage-capacity .ops-donut span").TextContent);
         Assert.AreEqual("--used: 50%", cut.Find(".storage-capacity .ops-donut").GetAttribute("style"));
         Assert.AreEqual("Healthy", cut.Find(".storage-capacity .state-chip").TextContent);
-        Assert.AreEqual("Below 10% free", Fact(cut, ".storage-capacity", "Pressure starts"));
-        Assert.AreEqual("At 15% free", Fact(cut, ".storage-capacity", "Recovers"));
-        Assert.AreEqual("3 days", Fact(cut, ".storage-capacity", "Retention now"));
+        Assert.IsEmpty(cut.FindAll(".storage-capacity dt").Where(static term =>
+            term.TextContent is "Pressure starts" or "Recovers" or "Retention now"));
         var classes = cut.Find(".storage-class-table").TextContent;
-        StringAssert.Contains(classes, "Captures & products", StringComparison.Ordinal);
-        StringAssert.Contains(classes, "Disk-pressure history", StringComparison.Ordinal);
+        StringAssert.Contains(classes, "Environment observations", StringComparison.Ordinal);
         StringAssert.Contains(classes, "31 days", StringComparison.Ordinal);
         StringAssert.Contains(classes, "Raw ingress reserve", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".storage-lane-table").TextContent, "Standard", StringComparison.Ordinal);
@@ -44,7 +42,7 @@ public sealed class StoragePageTests
     }
 
     [TestMethod]
-    public void Render_UnderPressure_ShowsBannerShortenedRetentionAndCriticalLane()
+    public void Render_UnderPressure_ShowsSiloPressureBannerAndCriticalLane()
     {
         using var context = CreateContext(out var service);
         service.OperationsHandler = _ => Success(OperatorUiTestData.Operations(lanePressure: 2, storagePressure: true));
@@ -53,8 +51,7 @@ public sealed class StoragePageTests
 
         cut.WaitForElement(".storage-pressure");
         Assert.AreEqual("Under pressure", cut.Find(".storage-capacity .state-chip").TextContent);
-        Assert.AreEqual("3 days, shortened by disk pressure", Fact(cut, ".storage-capacity", "Retention now"));
-        StringAssert.Contains(cut.Find(".storage-class-table").TextContent, "Active", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".storage-pressure").TextContent, "Held evidence stays pinned", StringComparison.Ordinal);
         var laneChip = cut.Find(".storage-lane-table tbody tr:last-child .state-chip");
         Assert.AreEqual("Critical", laneChip.TextContent);
         StringAssert.Contains(laneChip.ClassName, "failure", StringComparison.Ordinal);
@@ -77,7 +74,7 @@ public sealed class StoragePageTests
     }
 
     [TestMethod]
-    public void Render_WithoutReportedStorage_ExplainsTheFirstSweepRecordsIt()
+    public void Render_WithoutReportedStorage_ShowsCapacityPending()
     {
         using var context = CreateContext(out var service);
         service.OperationsHandler = _ => Success(WithStorage());
@@ -85,7 +82,7 @@ public sealed class StoragePageTests
         var cut = context.Render<StoragePage>();
 
         cut.WaitForElement(".storage-capacity");
-        StringAssert.Contains(cut.Find(".storage-capacity .storage-empty").TextContent, "first retention sweep", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".storage-capacity .storage-empty").TextContent, "Silo has yet to report local capacity", StringComparison.Ordinal);
         Assert.AreEqual("Unknown", cut.Find(".storage-capacity .state-chip").TextContent);
     }
 
@@ -102,7 +99,6 @@ public sealed class StoragePageTests
             {
                 RawIngress = summary.RawIngress with { Value = summary.RawIngress.Value with { PendingCount = 3, QuarantineCount = 1, OldestPendingUtc = Now.AddMinutes(-5) } },
                 CaptureLanes = summary.CaptureLanes with { Value = laneState },
-                ArtifactOutbox = summary.ArtifactOutbox with { Value = summary.ArtifactOutbox.Value with { PendingCount = 5, QuarantineCount = 1, OldestPendingUtc = Now.AddMinutes(-20) } },
             },
         });
 
@@ -111,9 +107,8 @@ public sealed class StoragePageTests
         cut.WaitForElement(".storage-holds");
         Assert.AreEqual("3", Fact(cut, ".storage-holds", "Raw captures held"));
         Assert.AreEqual("10", Fact(cut, ".storage-holds", "Capture lanes"));
-        Assert.AreEqual("4", Fact(cut, ".storage-holds", "Delivery"));
-        Assert.AreEqual("4", Fact(cut, ".storage-holds", "Quarantine"));
-        Assert.AreEqual("23 Jul 2026 11:40:00 +00:00 (UTC (site time zone unavailable)), Delivery", Fact(cut, ".storage-holds", "Oldest held evidence"));
+        Assert.AreEqual("3", Fact(cut, ".storage-holds", "Quarantine"));
+        Assert.AreEqual("23 Jul 2026 11:55:00 +00:00 (UTC (site time zone unavailable)), Raw captures held", Fact(cut, ".storage-holds", "Oldest held evidence"));
     }
 
     [TestMethod]
@@ -130,7 +125,6 @@ public sealed class StoragePageTests
             {
                 RawIngress = summary.RawIngress with { Value = summary.RawIngress.Value with { PendingCount = 2, QuarantineCount = 0 } },
                 CaptureLanes = summary.CaptureLanes with { Value = summary.CaptureLanes.Value with { PendingCount = 2, QuarantineCount = 1 } },
-                ArtifactOutbox = summary.ArtifactOutbox with { Value = summary.ArtifactOutbox.Value with { PendingCount = 0, QuarantineCount = 0 } },
             },
         });
 
@@ -156,10 +150,9 @@ public sealed class StoragePageTests
 
         cut.WaitForElement(".storage-reconciliation");
         var items = cut.FindAll(".storage-reconciliation .ops-validation-item");
-        Assert.HasCount(2, items);
-        Assert.IsTrue(items.All(static item => item.ClassList.Contains("neutral")));
-        StringAssert.Contains(items[0].TextContent, "no reconciliation has completed", StringComparison.Ordinal);
-        StringAssert.Contains(items[1].TextContent, "within 5 minutes", StringComparison.Ordinal);
+        var item = Assert.ContainsSingle(items);
+        Assert.IsTrue(item.ClassList.Contains("neutral"));
+        StringAssert.Contains(item.TextContent, "yet to finish its startup check", StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll(".storage-reconciliation .ops-panel-heading > span"));
     }
 
@@ -168,35 +161,17 @@ public sealed class StoragePageTests
     {
         using var context = CreateContext(out var service);
         service.ReconciliationHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new(
-            new RawIngressReconciliationReport(Now.AddHours(-2), 40, 2, 1, 1, 0, 0),
-            new DerivedProductReconciliationReport(Now.AddMinutes(-3), true, 120, 0, 3, 0, 0))));
+            new RawIngressReconciliationReport(Now.AddHours(-2), 40, 2, 1, 1, 0))));
 
         var cut = context.Render<StoragePage>();
 
         cut.WaitForElement(".storage-reconciliation .ops-validation-item");
         var items = cut.FindAll(".storage-reconciliation .ops-validation-item");
-        Assert.HasCount(3, items);
+        Assert.HasCount(2, items);
         StringAssert.Contains(items[0].TextContent, "40 frames inspected, 2 recovered, 1 cleaned up", StringComparison.Ordinal);
         Assert.IsTrue(items[0].ClassList.Contains("failed"));
         StringAssert.Contains(items[1].TextContent, "1 quarantined and 0 missing", StringComparison.Ordinal);
-        StringAssert.Contains(items[2].TextContent, "120 products inspected", StringComparison.Ordinal);
-        Assert.IsFalse(items[2].ClassList.Contains("failed"));
-        Assert.AreEqual("Passed:", items[2].QuerySelector(".visually-hidden")!.TextContent);
-        Assert.AreEqual("Last 23 Jul 2026 11:57:00 +00:00 (UTC (site time zone unavailable))", cut.Find(".storage-reconciliation .ops-panel-heading > span").TextContent);
-    }
-
-    [TestMethod]
-    public void Reconciliation_WhenDerivedCheckFailed_SaysSoAndWhenItRetries()
-    {
-        using var context = CreateContext(out var service);
-        service.ReconciliationHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new(
-            null, new DerivedProductReconciliationReport(Now.AddMinutes(-1), false, 0, 0, 0, 0, 0))));
-
-        var cut = context.Render<StoragePage>();
-
-        cut.WaitForElement(".storage-reconciliation .ops-validation-item.failed");
-        StringAssert.Contains(cut.Find(".storage-reconciliation .ops-validation-item.failed").TextContent,
-            "failed. It runs again within 5 minutes", StringComparison.Ordinal);
+        Assert.AreEqual("Last 23 Jul 2026 10:00:00 +00:00 (UTC (site time zone unavailable))", cut.Find(".storage-reconciliation .ops-panel-heading > span").TextContent);
     }
 
     [TestMethod]
@@ -223,12 +198,9 @@ public sealed class StoragePageTests
 
         var dialog = cut.Find("dialog.storage-dialog");
         var text = dialog.TextContent;
-        StringAssert.Contains(text, "Every 30 minutes", StringComparison.Ordinal);
-        StringAssert.Contains(text, "Below 10% free", StringComparison.Ordinal);
-        StringAssert.Contains(text, "At 15% free", StringComparison.Ordinal);
-        StringAssert.Contains(text, "1 day, or less", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Retention uses exact Silo versions", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Raw ingress reserve", StringComparison.Ordinal);
         StringAssert.Contains(text, "100,000 observations", StringComparison.Ordinal);
-        StringAssert.Contains(text, "never removes evidence", StringComparison.Ordinal);
         Assert.AreEqual(1, context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "showModal"));
 
         cut.Find("#storage-policy-close").Click();

@@ -28,8 +28,6 @@ affects subsequent captures; an in-flight capture keeps its selected revision.
 Use **Roll back** on the previous eligible revision to restore its query for
 future captures. Retained scenes, archived replay, original revision identities,
 reconstruction and expected-position captions remain tied to their frozen inputs.
-LogicHost consumes retained scene metadata through the shared recipes; this panel
-adds no central catalog query behavior.
 
 The shared descriptor binds only registered alias `ProjectedScene` (case
 insensitive) at exact version `canonical-projected-scene-v1`. Pipeline JSON stays

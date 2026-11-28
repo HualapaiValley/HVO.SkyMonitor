@@ -3,9 +3,8 @@
 ## Purpose
 
 The virtual camera is the first production-quality `ICameraModule` used to
-prove CameraAgent acquisition, exposure control, processing, storage, local UI,
-and eventual upload. It must behave like a camera adapter, not like a separate
-demo application.
+prove CameraAgent acquisition, exposure control, processing, storage, and the
+local UI through the same camera adapter contract as physical modules.
 
 The implementation combines three independent concerns:
 
@@ -16,7 +15,7 @@ The implementation combines three independent concerns:
 3. Sensor simulation converts scene irradiance into mono or color raw pixels
    using exposure, gain, noise, and defect parameters.
 
-Keeping these concerns separate lets CameraAgent and LogicHost reuse identical
+Keeping these concerns separate lets CameraAgent  reuse identical
 projection and annotation behavior while physical camera modules replace only
 the sensor-acquisition stage.
 
@@ -263,11 +262,10 @@ The configured `VirtualSkyCloudObservation` standard-lane step runs only after
 durable raw ingress. It verifies the captured provenance, evaluates a fixed
 equal-area sky-dome grid, and publishes a restart-stable targetless
 `environmental-observation-v1` fact with source kind `Simulated`, value kind
-`CloudCover`, and unit `Fraction`. The CameraAgent provisioning bridge remains
-the only owner of central site/device identity, and the existing SQLite outbox
-owns retry, restart, duplicate, and delivery behavior. This simulated fact is
-not the image-derived cloud assessment, mask, confidence, or processing gate
-owned by #105.
+`CloudCover`, and unit `Fraction`. CameraAgent commits the fact to its local
+environmental observation journal, which preserves it across restarts and
+deduplicates it on retry. The image-derived cloud assessment, mask, confidence,
+and processing gate are defined under #105.
 
 Mono rendering evaluates effects on demand and retains one signal plane plus the
 raw output. RGB/Bayer rendering shares one temporary two-float effect map across
@@ -281,7 +279,7 @@ is never persisted. Dated W1/W2 measurements and interpretation are retained in
 contains an opaque canonical identity, numeric revision, seed, UTC epoch, one
 through sixty-four temporal midpoint samples, and at most 128 generic sky or
 sensor primitives with at most 1,024 total keyframes. Keyframes are strictly
-ordered within one day of the epoch. Production definitions contain no meteor,
+ordered within one day of the epoch. Generic definitions contain no meteor,
 fireball, satellite, aircraft, cosmic-ray, hot-pixel, expected-class, score, or
 mask fields.
 
@@ -304,13 +302,35 @@ ordinary renderer hot path.
 algorithm identity, seed/epoch, logical integration interval, sample count, and
 sky/sensor primitive counts. Canonical manifest v2 parsing verifies those values
 and the canonical parameter hash; retired manifest versions fail validation.
-Processing recipes receive the normal image
-artifact, not simulator provenance as a detector feature. Semantic oracle labels
-exist only in the separate test-owned
+Semantic oracle labels for the generic fixture live in the separate test-owned
 `tests/fixtures/virtual-sky/transient-detection-oracle-v1.json`. The stimulus
 manifest contains rendering inputs and capture offsets but no expected label,
 raw checksum, geometry, candidate, assessment, or event identity. Matrix tests
 complete detector execution from that manifest before loading the oracle.
+
+The optional [`namedOrbitalPass`](validation/virtualsky-named-pass-1927.md)
+adds prediction lineage to `TransientScenarioProvenance.Parameters`.
+
+- `sourcePackageSha256` identifies the exact rendering package.
+- `namedPassPredictionV1.selectionPolicySha256` identifies the record-selection
+  policy.
+- `namedPassPredictionV1.inputs` retains `snapshotManifestSha256`,
+  `earthOrientationSha256`, `leapSecondsSha256`, and `expectedRecords`, which
+  maps each NORAD catalog number to the expected record SHA-256.
+
+Prediction uses those pins with the observed shutter interval and capture-time
+rig, readout, and location. After measurement, private scoring can use the
+package identity to join measured candidates with the expected exposure paths
+and optical controls, including per-track transmission.
+
+The independent trail detector consumes raw pixels and their delivered readout,
+the capture-time rig and observing site, and the effective exposure. With
+exposure-integrated star masks enabled, it uses the validated celestial start
+from the time-only `Scene.VirtualExposure` record (see
+[Exposure-aware stellar visibility and motion](#exposure-aware-stellar-visibility-and-motion);
+falling back to the capture descriptor's `ExposureStartedUtc` when absent) and
+the effective exposure to integrate catalog-star geometry. It receives no
+named-pass identity, prediction lineage, or expected tracks.
 
 For example, one generic sensor-stage fixture can be configured as:
 
@@ -494,13 +514,11 @@ real Sun:
   gain are metered toward the target within the envelope's minimum and maximum in
   every lighting mode; the regime only selects the starting setpoint and the
   reset on a regime change. With control disabled, the fixed setpoint applies.
-- Host-metered control is what records a regime, and every consumer of it then
-  sees `Night` for a No daylight frame: edge and central cloud assessment
-  evaluate it as a night image rather
-  than rejecting it as daylight, the environmental `RegimeChange` trigger does
-  not fire at the real sunrise or sunset (switching the lighting choice across a
-  restart can fire it once), and the capture-control metrics and traces carry
-  the same `regime` label.
+- Host-metered control records `Night` for a No daylight frame. The local cloud
+  assessment evaluates it as a night image, and capture-control metrics and
+  traces carry the same `regime` label. The environmental `RegimeChange`
+  trigger follows changes in that recorded regime, such as a lighting choice
+  changed across a restart.
 - Capture windows, observing-day boundaries, sunrise and sunset events, and
   nightly, still-product and time-lapse source windows still use the real Sun.
   The installer profile captures only from sunset to sunrise, so recording a
@@ -562,20 +580,27 @@ display pixels together with the point objects. Inputs without footprints,
 including every `projected-scene-v1` scene and the standalone CameraAgent path,
 render the released bytes. Golden hashes pin this.
 
-The presentation layers have since changed three times: #1383 restored the
+The presentation layers have since changed four times: #1383 restored the
 original overlay colours in `projected-scene-presentation-v11-original-colours`,
 so footprint outlines and point markers are drawn in the marker grey, and #1415
 drew the point marker as the original plain circle outline, without the
 crosshair, in `projected-scene-presentation-v12-plain-circle-markers`. #526
-then gated star labels on measured associations, in
-`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`: a star
-label is drawn only for a policy-eligible measured association, or marked as
-expected when expected-position diagnostics are requested, and the markers stay.
-The layers' golden hash pins the v13 bytes, and pins the v12 bytes for a scene
-in which every star is measured. #1383 and #1415 left the Annotation raster
-unchanged; #526 applies the same label policy to it under Annotation Definition
-`projected-annotation-v4`, and only expected-position diagnostics select the
-`projected-annotation-raster-v5-bounded-expected-labels` renderer.
+initially gated star labels on measured associations in
+`projected-scene-presentation-v13-plain-circle-bounded-expected-labels`, and now
+gates both star and point-source planet (Mercury–Neptune) labels on measured
+pixel evidence by default in
+`projected-scene-presentation-v15-plain-circle-bounded-point-source-labels`
+(and `projected-scene-presentation-v15-explicit-style` for explicit scene style):
+a star or point-source planet label is drawn only for a policy-eligible measured
+association, or marked as expected when expected-position diagnostics are
+requested, while markers stay and resolved Sun/Moon discs remain outside
+point-source gating. The layers' golden hash pins the expected-star payload
+bytes, and pins the v12 bytes for a star/Sun/Moon scene in which every star is
+measured. #1383 and #1415 left the Annotation raster unchanged; #526 applies the
+same point-source star and Mercury–Neptune label policy to it under Annotation
+Definition `projected-annotation-v5` (moving from `projected-annotation-v4` so
+retained outputs never collide), and only expected-position diagnostics select
+the `projected-annotation-raster-v5-bounded-expected-labels` renderer.
 
 Reference values come from offline JPL Horizons responses in
 `tests/fixtures/horizons/issue-518/`:
@@ -602,6 +627,66 @@ They also check the perihelion/aphelion and perigee/apogee size ordering and
 the lunar parallax between two sites at one instant. Astronomy Engine and
 Bennett refraction remain visualization models, and the fixtures are not
 physical lens qualification.
+
+### Extended deep-sky source rendering (#524)
+
+Opt-in `RenderDeepSkySources` (`VirtualSkyDeepSkyRenderOptions`) renders
+bounded, deterministic parametric extended deep-sky sources
+(`deep-sky-parametric-v1`, profile schema `deep-sky-parametric-profile-v1`) in
+`Mono16`, `Rgb24`, and `BayerRggb16` captures. Leaving `RenderDeepSkySources`
+unset or disabled (`Enabled = false`) omits it from scene identity serialization,
+bypasses all DSO work, and preserves exact prior `SceneId` identities and raw
+pixel bytes even with stochastic sensor noise enabled. When enabled, `SceneId`
+and `SceneProvenance.DeepSkyCatalog` bind the active DSO catalog snapshot and
+render-model identity independently of annotation selection; when an in-memory
+or custom `IDeepSkyCatalog` supplies `SnapshotIdentity == null`, `VirtualSky`
+derives a deterministic canonical content-hash fallback identity so distinct
+catalog rows never collide on `SceneId` or publish null DSO provenance.
+
+- **Pipeline order:** `DeepSkyRenderPlan` normalizes each source's compatible
+  integrated flux over its full angular profile before horizon, projection, PSF,
+  aperture, or sensor clipping (exterior energy is lost and never renormalized).
+  Unresolved emitters (`<= 0.5 * PsfSigmaPixels`) reuse
+  `StellarExposureGeometryBuilder` and `TemporalPointSpreadRaster` across the
+  full exposure (matching sidereal motion, horizon crossing, and instantaneous
+  cloud transmission to the stellar PSF path); unresolved diffuse emitters
+  evaluate overlapping dark-cloud optical depth at each exposure sample before
+  PSF deposition, while resolved diffuse emitters attenuate on the pre-PSF grid
+  before final PSF convolution. Overlapping rendered diffuse emission enters
+  local shot-noise variance when evaluating `MinimumSignalToNoise` admission.
+  Incident rates enter `RenderCore` in electron-rate space (pre-cloud diffuse/
+  extended rates before cloud attenuation; temporal point-source rates after
+  instantaneous cloud attenuation) before vignetting, exposure/gain, noise,
+  saturation, CFA sampling, defects, digital readout binning, and quantization.
+- **Catalog separation and honesty:** Parametric morphology and default class
+  spectra are labeled `IsSimulationParameter = true` and never mutate catalog
+  facts. Missing photometry or incomplete geometry stays annotation-only unless
+  an explicit `DeepSkySyntheticScenario` supplies validated overrides. Open
+  clusters and `Cl+N` composites deduct matched HYG star flux before unresolved
+  fallback to prevent double-counting. Dark nebulae (`DrkN`) compose optical
+  depth additively in sky space at each sample position
+  (`T = exp(-sum_k tau_k)`) before pixel coverage averaging, enforce
+  `MinimumSignalToNoise` against real absorption deficit and local pre-attenuation
+  variance before admission or slot consumption, attenuate only compatible
+  celestial diffuse background, and never attenuate foreground terrestrial
+  skyglow. Antipodal/near-antipodal outline edges are refused honestly without
+  aborting sibling objects.
+- **Diagnostics vs measured associations:** Frame metadata records bounded
+  `deepSky*` statistics, canonical `deepSkyDiagnosticsSha256` computed over the
+  final delivered (post-readout) diagnostics payload (plus
+  `deepSkyNativeDiagnosticsSha256` when readout transforms coordinates), and
+  `deepSkyDiagnostics` for scoring, while `StellarSourceMeasurer` continues to
+  measure associations solely from final pixels and canonical presentation
+  outlines (`projected-scene-v3`, including optional explicitly selected sourced
+  OpenNGC contours via `MaximumOutlines`) remain strictly separate from raw
+  imagery.
+- **Specification, limits, and measured resources:** See
+  [`docs/astronomy/deep-sky-rendering-v1.md`](astronomy/deep-sky-rendering-v1.md)
+  for the full profile table, morphology/photometry limits, independent analytic
+  clipping error budget, carried-over `#1191` mapping, and matched baseline vs
+  enabled `1936 × 1216` measured counts, per-operation latency breakdown, CPU,
+  allocations, sampled working set, and `projected-scene-v3` geometry
+  serialization / SQLite persistence overhead.
 
 ### Exposure-aware stellar visibility and motion
 
@@ -700,29 +785,21 @@ refused for positive exposures because its altitude-floor discontinuity and
 motion derivative are outside the geometric sampling bound.
 
 Transient masking can explicitly select `ExposureIntegratedStarMask=true` in
-the CameraAgent transient options or central transient options. The shared
+the CameraAgent transient options. The shared
 `catalog-geometric-exposure-swept-mask-v1` uses an independent complete catalog
 query, captured rig/location, effective exposure and validated time-only capture
 clock facts. It never reads simulated object locations, admissions, photon
 predictions or class truth. Half the declared maximum motion step expands both
 selection and sampled supports to cover unsampled shutter endpoints; detector
-transforms use their larger scale conservatively. Mask raster work is bounded
-at 100 million cells, including the entire central window, with explicit refusal
-instead of truncation.
-Central V2 resolves each source's acknowledged capture-bound deployment version
-and checks its descriptor provenance, canonical coordinate hash and effective
-interval against actual capture time. Missing or conflicting location evidence
-returns NeedsReview; registration coordinates never substitute for it. The
-virtual celestial clock does not change deployment validity. VirtualSky likewise
-checks the deployment interval against the operational capture request, independently
-of a fixed celestial or scenario epoch. Legacy V1 keeps
-its historical registration-based behavior for frozen receipts.
+transforms use their larger scale conservatively. The evaluator refuses mask
+raster work above 100 million cells. VirtualSky checks the deployment interval
+against the operational capture request independently of a fixed celestial or
+scenario epoch.
 
 The legacy instantaneous mask remains the default. A swept profile must declare
 an adequate complete-query safety bound, such as 32,768 for the HYG magnitude
 6.5 virtual qualification, rather than inherit a 2,000-result truncation.
-Central durable execution options freeze the legacy or swept policy. An edge
-candidate whose persisted causal mask identities cannot be reproduced after a
+A local candidate whose persisted causal mask identities cannot be reproduced after a
 policy/configuration change retains its causal evidence and finalizes as
 `NeedsReview`; it does not receive a changed automatic verdict. Switch profiles
 after draining unfinished edge windows when automatic completion is required.
@@ -810,9 +887,8 @@ alone is not an independent physical validation.
 ## Optical Profiles
 
 The optical projector is created from rig configuration in
-`HVO.SkyMonitor.Astronomy`. The virtual camera, local annotation pipeline, and
-LogicHost derivative pipeline use the same projector factory and projection
-context.
+`HVO.SkyMonitor.Astronomy`. The virtual camera and local annotation pipeline
+use the same projector factory and projection context.
 
 ### Fisheye lenses
 
@@ -1051,8 +1127,7 @@ checksum includes the binding when present, and manifests without it retain thei
 existing serialization. A retry adopts an existing sidecar and scene rather than
 staging again; recovery validates its referenced immutable local revision instead
 of choosing the current active revision. A missing or never validated reference
-is refused. No graph registry is required by central consumers to read or
-reconstruct the artifact. Existing manifests without the binding keep their
+is refused. Existing manifests without the binding keep their
 existing recovery behavior; there is no layout, database schema or upgrade change.
 This stays on the existing primitives retained by #1607 and the #1615 reassessment
 under #1606; it does not change checkpoint or installation recovery.
@@ -1060,8 +1135,8 @@ under #1606; it does not change checkpoint or installation recovery.
 VirtualSky selects its render query from **module settings** and the existing
 scene-object bound. Its captured/rendered scene stays authoritative even when
 graph query options differ. The host never requeries or rewrites it. Committed
-projected scenes, central consumers, captions and archived replay consume retained
-scene evidence; replay never makes a new catalog query. The ProjectedScene option
+projected scenes, captions and archived replay use retained scene evidence.
+Replay never makes a new catalog query. The ProjectedScene option
 editor in #1619 must describe this physical-query/module-settings boundary and
 does not edit VirtualSky module settings.
 
@@ -1094,9 +1169,8 @@ inverse projection, field edges, and visibility rejection.
 
 ### 2. Shared projector conformance
 
-For every fixture, the virtual renderer, CameraAgent annotations, and LogicHost
-annotations must receive identical projected coordinates from the shared
-Astronomy assembly. Tests compare object visibility and pixel positions within
+For every fixture, the virtual renderer and CameraAgent annotations must
+receive identical projected coordinates from the shared Astronomy assembly. Tests compare object visibility and pixel positions within
 a documented sub-pixel tolerance.
 
 ### 3. Synthetic geometry fixtures
@@ -1177,7 +1251,7 @@ Required deterministic tests cover:
   principal/focal/image-circle geometry, and impossible-mode rejection.
 - Configuration-driven module creation, reduced/full frame sizes, fixed
   checksums/statistics/centroids, time/orientation/setpoint behavior, ordinary
-  pipeline persistence/telemetry/upload, and failure before capture for invalid
+  pipeline persistence and telemetry, and failure before capture for invalid
   catalog, optics, sensor, or recipe configuration.
 - Renderer/annotation agreement, bounded/clipped topology, mirrored orientation,
   and deterministic Mono8/RGB24 overlays.

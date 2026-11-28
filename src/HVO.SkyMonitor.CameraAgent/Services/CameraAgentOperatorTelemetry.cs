@@ -20,6 +20,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     private readonly Histogram<double> _transientQueryDuration;
     private readonly Histogram<long> _transientResponseBytes;
     private readonly Counter<long> _apiKeyAuthentications;
+    private readonly Counter<long> _scientificExportFailures;
     private readonly ILogger _logger;
 
     public CameraAgentOperatorTelemetry(ILogger<CameraAgentOperatorTelemetry>? logger = null)
@@ -43,6 +44,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
         _transientQueryDuration = _meter.CreateHistogram<double>("hvo.transient.operator.query.duration", "ms");
         _transientResponseBytes = _meter.CreateHistogram<long>("hvo.transient.operator.response.bytes", "By");
         _apiKeyAuthentications = _meter.CreateCounter<long>("camera_agent.api_key.authentications", "{authentication}");
+        _scientificExportFailures = _meter.CreateCounter<long>("camera_agent.scientific_export.failures", "{failure}");
     }
 
     internal Activity? StartPlanPreview() => _activities.StartActivity("processing-plan.preview");
@@ -70,6 +72,21 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     /// <summary>Counts one presented API key by outcome, <c>accepted</c> or <c>rejected</c>; never the key itself.</summary>
     internal void RecordApiKeyAuthentication(string outcome)
         => _apiKeyAuthentications.Add(1, new TagList { { "outcome", outcome } });
+
+    internal void RecordScientificExportFailure(string format, string reason, int status)
+    {
+        CountScientificExportFailure(format, reason, status);
+        ScientificExportRejected(_logger, format, reason, status);
+    }
+
+    internal void RecordScientificExportTransferFailure(string format, int status, IOException exception)
+    {
+        CountScientificExportFailure(format, "scientific-export.transfer-failed", status);
+        ScientificExportTransferFailed(_logger, format, status, exception.GetType().Name, exception.HResult);
+    }
+
+    private void CountScientificExportFailure(string format, string reason, int status)
+        => _scientificExportFailures.Add(1, new TagList { { "format", format }, { "reason", reason }, { "status", status } });
 
     internal void RecordComparison(TimeSpan duration, long outputBytes, string outcome)
     {
@@ -112,4 +129,12 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
 
     [LoggerMessage(2533, LogLevel.Information, "Transient operator query completed with outcome {Outcome}")]
     private static partial void TransientQueryCompleted(ILogger logger, string outcome);
+
+    [LoggerMessage(EventId = 14723, Level = LogLevel.Information,
+        Message = "Scientific export {Format} returned {Status} with {ReasonCode}.")]
+    private static partial void ScientificExportRejected(ILogger logger, string format, string reasonCode, int status);
+
+    [LoggerMessage(EventId = 14724, Level = LogLevel.Warning,
+        Message = "Scientific export {Format} transfer failed with response status {Status}: {Cause} ({ErrorCode}).")]
+    private static partial void ScientificExportTransferFailed(ILogger logger, string format, int status, string cause, int errorCode);
 }

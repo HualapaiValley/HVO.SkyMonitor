@@ -391,7 +391,7 @@ internal sealed class GalleryPerformanceFixture : IDisposable
         "EquidistantFisheye",
         "projection-v1",
         "astronomy-v1",
-        "sensor-v1");
+        "sensor-v1", CatalogId: "test-catalog");
 
     private static Guid CreateGuid(int index, byte kind)
     {

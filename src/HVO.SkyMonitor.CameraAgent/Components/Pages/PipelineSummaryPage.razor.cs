@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -116,6 +117,12 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         ? registry.Revisions.FirstOrDefault(revision => string.Equals(
             revision.RevisionId, registry.ActiveRevisionId, StringComparison.Ordinal))
         : null;
+
+    private string? NodeConfigHref(CaptureProcessingPlanNode node)
+        => !_showDraft && _registry?.ConfiguredBasicRevisionId is { Length: > 0 } revisionId &&
+            ProcessingNodeOptionsForm.DescriptorFor(node.Alias, node.Options) is not null
+            ? ProcessingNodeConfigPage.NodeConfigHref(revisionId, node.Id)
+            : null;
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -303,6 +310,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// </summary>
     private string? ToggleUnavailableReason()
     {
+        if (SelectedNode is { Alias: var selectedAlias } && ExposureMeasurementProducts.IsSystemManagedStepAlias(selectedAlias))
+            return CameraAgentPipelineOperatorProjection.SystemManagedStepReason;
         if (_pipeline is null)
         {
             return "The processing graph is not loaded.";
@@ -583,19 +592,20 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// those are shown rather than an empty graph.
     /// </summary>
     internal static IReadOnlyList<CaptureProcessingPlanNode> CanvasNodes(CaptureProcessingPlanPreview plan)
-        => plan.DesiredNodes.Count == 0 ? plan.EffectiveNodes : plan.DesiredNodes;
+        => plan.DesiredNodes.Count == 0 ? plan.EffectiveNodes :
+            [.. plan.DesiredNodes, .. plan.EffectiveNodes.Where(node =>
+                !plan.DesiredNodes.Any(desired => string.Equals(desired.Id, node.Id, StringComparison.OrdinalIgnoreCase)))];
 
     internal static bool UsesDefaultSteps(CaptureProcessingPlanPreview plan)
         => plan.DesiredNodes.Count == 0 && plan.EffectiveNodes.Count > 0;
 
     /// <summary>
-    /// Places the steps on the grid. A legacy step without declared dependencies is drawn from the dependencies
-    /// CameraAgent inferred for it, which the effective graph records.
+    /// Draw enabled edges from the compiled plan and retain declared edges for disabled branches.
     /// </summary>
     internal static IReadOnlyList<PipelineGraphPlacement> Arrange(CaptureProcessingPlanPreview plan)
     {
         var nodes = CanvasNodes(plan)
-            .Select(node => node.Dependencies is null && Effective(plan, node.Id) is { } effective
+            .Select(node => Effective(plan, node.Id) is { } effective
                 ? node with { Dependencies = effective.Dependencies }
                 : node)
             .ToArray();
@@ -745,7 +755,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     internal static IReadOnlyList<PipelineCheck> Validate(CaptureProcessingPlanPreview plan)
     {
         var checks = new List<PipelineCheck>();
-        var nodes = plan.DesiredNodes;
+        var nodes = CanvasNodes(plan);
         if (UsesDefaultSteps(plan))
         {
             checks.Add(new("No steps are configured, so CameraAgent runs its default steps.", null));
@@ -774,7 +784,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
                 .Select(dependency => (node.Id, Dependency: dependency)))
             .FirstOrDefault();
         checks.Add(dangling.Id is null
-            ? new("Every dependency names a configured step or the raw frame.", true)
+            ? new("Every dependency names an available step identity or the raw frame.", true)
             : new($"{dangling.Id} depends on {dangling.Dependency}, which is not configured.", false));
         checks.Add(IsAcyclic(nodes)
             ? new("Dependencies form an acyclic graph.", true)
@@ -822,7 +832,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     }
 
     private static string NodeClass(CaptureProcessingPlanNode node, bool active)
-        => string.Concat("ops-pipeline-node step", active ? " active" : "", node.Enabled ? "" : " off", node.Required ? "" : " optional");
+        => string.Concat("ops-pipeline-node step", active ? " active" : "", node.Enabled ? "" : " off",
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? " fixed" : node.Required ? "" : " optional");
 
     private static string EdgeClass(PipelineCanvasEdge edge, string? selectedKey)
     {
@@ -836,7 +847,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         => string.Concat("ops-pipeline-node source", key == selectedKey ? " active" : "");
 
     private static string StageClass(MeteorLaneStage stage, string key, string? selectedKey)
-        => string.Concat("ops-pipeline-node transient", stage.Central ? " central" : "", key == selectedKey ? " active" : "");
+        => string.Concat("ops-pipeline-node transient", key == selectedKey ? " active" : "");
 
     private static string Pressed(string key, string? selectedKey) => key == selectedKey ? "true" : "false";
 
@@ -847,8 +858,6 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     {
         null => "State unavailable",
         TransientOperatingMode.Edge => "Edge mode / reads every raw frame on its own durable lane",
-        TransientOperatingMode.Hybrid => "Hybrid mode / scans here, validates on LogicHost",
-        TransientOperatingMode.Central => "Central mode / runs on LogicHost",
         _ => "Off on this agent",
     };
 
@@ -871,8 +880,6 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         {
             MeteorLaneMeasure.PendingFrames => Waiting(view.Worker.PendingFrames, "frame", "frames"),
             MeteorLaneMeasure.PendingCandidates => Waiting(view.Worker.PendingCandidates, "candidate", "candidates"),
-            MeteorLaneMeasure.Delivery => string.Concat(
-                Waiting(view.Delivery.PendingCount, "candidate", "candidates"), ", ", Count(view.Delivery.RetryingCount), " retrying"),
             _ => "Not measured on this agent",
         };
 
@@ -880,11 +887,11 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
             => string.Concat(Count(count), " ", count == 1 ? one : many, " waiting");
     }
 
-    private static string RawConsumers(IReadOnlyList<PipelineGraphPlacement> placements, PipelineCanvas canvas)
+    private static string RawConsumers(CaptureProcessingPlanPreview plan, PipelineCanvas canvas)
     {
-        var names = placements
-            .Where(static placement => placement.Dependencies.Any(PipelineGraphLayout.IsRawInput))
-            .Select(static placement => Label(placement.Node.Id))
+        var names = plan.EffectiveNodes
+            .Where(static node => node.Dependencies?.Any(PipelineGraphLayout.IsRawInput) == true)
+            .Select(static node => Label(node.Id))
             .ToList();
         if (canvas.Stages.Count > 0)
         {
@@ -909,13 +916,27 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     };
 
     private static string StepFacts(CaptureProcessingPlanNode node)
-        => string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
+        => ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? StepKind(node) :
+            string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
 
     private static string StepKind(CaptureProcessingPlanNode node)
-        => string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
+        => IsExposureMeasurement(node) ? "Fixed measurement" :
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "Fixed step" :
+            string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
+
+    private static bool IsExposureMeasurement(CaptureProcessingPlanNode node)
+        => string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
 
     private static string StepDescription(CaptureProcessingPlanNode node)
     {
+        if (IsExposureMeasurement(node))
+        {
+            return "Records raw brightness, measured centroids and half-flux diameter for each exposure as inputs permit.";
+        }
+        if (ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias))
+        {
+            return "Builds an independent catalog prediction for the selected centered association or astrometry steps.";
+        }
         if (!node.Enabled)
         {
             return "This step is off. It stays in the configured graph and is left out of the effective graph until it is turned back on.";
@@ -929,7 +950,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     {
         if (node.Dependencies is { } declared)
         {
-            return declared.Count == 0 ? "None" : string.Join(", ", declared.Select(Input));
+            var dependencies = Effective(plan, node.Id)?.Dependencies ?? declared;
+            return dependencies.Count == 0 ? "None" : string.Join(", ", dependencies.Select(Input));
         }
         var inferred = Effective(plan, node.Id)?.Dependencies;
         return inferred is { Count: > 0 }
@@ -939,6 +961,13 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
 
     private static string Input(string dependency)
         => PipelineGraphLayout.IsRawInput(dependency) ? "Raw frame" : dependency;
+
+    private static string Consumers(CaptureProcessingPlanPreview plan, string producerId)
+    {
+        var consumers = plan.EffectiveNodes.Where(node => node.Dependencies?.Contains(producerId, StringComparer.OrdinalIgnoreCase) == true)
+            .Select(static node => node.Id).ToArray();
+        return consumers.Length == 0 ? "None in the effective graph" : string.Join(", ", consumers);
+    }
 
     private static string Outputs(CaptureProcessingPlanPreview plan, CaptureProcessingPlanNode node)
     {

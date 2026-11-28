@@ -267,7 +267,13 @@ if result.returncode != 0:
     raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
 shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
-(inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
+unit_inventory = inventory_repo / "tests/unit-test-projects.json"
+unit_projects = ["Fixture.Tests"]
+for project in unit_projects:
+    project_file = inventory_repo / "tests" / project / f"{project}.csproj"
+    project_file.parent.mkdir(exist_ok=True)
+    project_file.touch()
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
 fixture_scripts = inventory_repo / "scripts"
 fixture_scripts.mkdir()
@@ -388,6 +394,38 @@ fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.Cove
 (launcher / "dotnet").chmod(0o700)
 wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
 
+# Invoke the compiled input validator directly so the wrapper's report-count
+# check cannot mask a membership rejection. Use the same valid reports for
+# the maintenance producer and require that it leave no output on failure.
+invalid_pin = scratch / "invalid-membership-pin.json"
+validate_inputs = [real_dotnet, str(fixture_gate), "--development-v1", "--validate-reports",
+                   "--unit-results", str(results), str(fixture_scripts / "coverage/baseline.json"), str(valid)]
+generate_inventory = [str(fixture_scripts / "coverage:line-inventory"), str(results), str(invalid_pin)]
+membership_readers = (
+    ("coverage input validator", validate_inputs),
+    ("line inventory producer", generate_inventory),
+)
+membership_error = "Invalid Unit project membership in tests/unit-test-projects.json"
+for label, membership in (
+    ("null list", None),
+    ("empty list", []),
+    ("duplicate project", [*unit_projects, unit_projects[0]]),
+    ("null project", [*unit_projects, None]),
+    ("empty project", [*unit_projects, ""]),
+    ("project path", [f"./{unit_projects[0]}", *unit_projects[1:]]),
+    ("missing project file", [*unit_projects, "Missing.Tests"]),
+):
+    unit_inventory.write_text(json.dumps(membership))
+    for reader, command in membership_readers:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 1 or membership_error not in result.stderr:
+            raise SystemExit(f"FAIL {reader} accepted or misdiagnosed {label}: exit={result.returncode}\n{result.stdout}{result.stderr}")
+        cases += 1
+        print(f"PASS {reader} rejects {label} in Unit project membership")
+    if invalid_pin.exists():
+        raise SystemExit(f"FAIL line inventory producer wrote a pin for {label}")
+unit_inventory.write_text(json.dumps(unit_projects))
+
 # Both genuine root forms pass; rewritten roots in ANY contributor fail before
 # ReportGenerator can report a successful parse while silently dropping its hits.
 for source_root in (str(inventory_repo / "src") + "/", str(source_dir), str(source_dir) + "/"):
@@ -416,7 +454,8 @@ second_output = second_project / "bin/Release/net10.0"
 shutil.copytree(assembly_output, second_output)
 shutil.copy2(second_output / "Fixture.Tests.dll", second_output / "ZFixture.Tests.dll")
 shutil.copy2(second_output / "Fixture.Tests.deps.json", second_output / "ZFixture.Tests.deps.json")
-(second_project / "test-categories.json").write_text('{"Unit":1}')
+(second_project / "ZFixture.Tests.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, "ZFixture.Tests"]))
 second_report = results / "zzz/coverage.cobertura.xml"
 second_report.parent.mkdir()
 second_attachment = results / "zattachment/In/computer/coverage.cobertura.xml"
@@ -451,10 +490,108 @@ dependencies_file.write_text(json.dumps(dependencies))
 wrapper_case("classless report with empty roots and no included assemblies is valid", 0, "Coverage gate passed.")
 # These are private temporary fixtures owned by this test.
 shutil.rmtree(second_project)
+unit_inventory.write_text(json.dumps(unit_projects))
 shutil.rmtree(second_report.parent)
 shutil.rmtree(results / "zattachment")
 second_trx.unlink()
 write_fixture(composite)
+
+# Both shards must supply a report independently associated with their TRX.
+# Use copied fixture assemblies to verify the same isolation layout used in CI.
+camera_project = "HVO.SkyMonitor.CameraAgent.Tests"
+camera_root = inventory_repo / "tests" / camera_project
+camera_release = camera_root / "bin/Release"
+camera_build = camera_release / "net10.0"
+shutil.copytree(assembly_output, camera_build)
+shutil.copy2(camera_build / "Fixture.Tests.dll", camera_build / f"{camera_project}.dll")
+shutil.copy2(camera_build / "Fixture.Tests.deps.json", camera_build / f"{camera_project}.deps.json")
+(camera_root / f"{camera_project}.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project]))
+shard_reports = []
+for index in (1, 2):
+    shard = f"cameraagent-shard-{index}"
+    shard_build = camera_release / "dev-v1-shards.fixture" / shard
+    shutil.copytree(camera_build, shard_build)
+    original = results / shard / "coverage.cobertura.xml"
+    collected = results / f"{shard}-attachment/In/computer/coverage.cobertura.xml"
+    for path_to_copy in (original, collected):
+        path_to_copy.parent.mkdir(parents=True)
+        shutil.copy2(valid, path_to_copy)
+    shard_trx = results / f"{shard}.trx"
+    shard_trx.write_text((results / "fixture.trx").read_text().replace(
+        str(assembly_output / "Fixture.Tests.dll"), str(shard_build / f"{camera_project}.dll")
+    ).replace('runDeploymentRoot="attachment"', f'runDeploymentRoot="{shard}-attachment"'))
+    shard_reports.append(str(original))
+
+sharded_command = [value if value != "--unit-results" else "--sharded-unit-results" for value in validate_inputs]
+
+
+def shard_coverage_case(label, reports, expected, needle, *, skip_deployment_cli=False):
+    global cases
+    command = sharded_command.copy()
+    if skip_deployment_cli:
+        command.insert(command.index("--development-v1") + 1, "--skip-deployment-cli")
+    result = subprocess.run([*command, *reports], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or needle not in output:
+        raise SystemExit(f"FAIL {label}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {label}")
+
+
+shard_coverage_case("coverage validates both CameraAgent shards and other Unit projects", shard_reports, 0,
+                    "Verified 3 Unit report identities")
+deployment_project_name = "HVO.SkyMonitor.Deployment.Cli.Tests"
+deployment_root = inventory_repo / "tests" / deployment_project_name
+deployment_build = deployment_root / "bin/Release/net10.0"
+shutil.copytree(assembly_output, deployment_build)
+deployment_dll = deployment_build / f"{deployment_project_name}.dll"
+(deployment_build / "Fixture.Tests.dll").rename(deployment_dll)
+(deployment_build / "Fixture.Tests.deps.json").rename(deployment_dll.with_suffix(".deps.json"))
+(deployment_root / f"{deployment_project_name}.csproj").touch()
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project, deployment_project_name]))
+shard_coverage_case("sharded full inventory requires Deployment.Cli.Tests", shard_reports, 1,
+                    f"missing: {deployment_project_name}")
+shard_coverage_case("sharded path-filtered inventory includes both CameraAgent shards", shard_reports, 0,
+                    "Verified 3 Unit report identities", skip_deployment_cli=True)
+
+deployment_report = results / "deployment-original/coverage.cobertura.xml"
+deployment_attachment = results / "deployment-attachment/In/computer/coverage.cobertura.xml"
+for destination in (deployment_report, deployment_attachment):
+    destination.parent.mkdir(parents=True)
+    shutil.copy2(valid, destination)
+deployment_trx = results / "deployment.trx"
+deployment_trx.write_text((results / "fixture.trx").read_text().replace(
+    str(assembly_output / "Fixture.Tests.dll"), str(deployment_dll),
+).replace('runDeploymentRoot="attachment"', 'runDeploymentRoot="deployment-attachment"'))
+full_sharded_reports = [*shard_reports, str(deployment_report)]
+shard_coverage_case("sharded full inventory includes Deployment.Cli.Tests", full_sharded_reports, 0,
+                    "Verified 4 Unit report identities")
+shard_coverage_case("sharded path-filtered inventory rejects a Deployment.Cli.Tests report", full_sharded_reports, 1,
+                    f"unexpected: {deployment_project_name}", skip_deployment_cli=True)
+deployment_trx.unlink()
+shutil.rmtree(deployment_report.parent)
+shutil.rmtree(results / "deployment-attachment")
+shutil.rmtree(deployment_root)
+unit_inventory.write_text(json.dumps([*unit_projects, camera_project]))
+
+shard_coverage_case("one CameraAgent shard has no original report", shard_reports[:1], 1,
+                    "no matching original coverage report")
+original_shard_trx = shard_trx.read_text()
+shard_trx.unlink()
+shard_coverage_case("one CameraAgent shard has no TRX", shard_reports, 1, "missing: cameraagent-shard-2")
+shard_trx.write_text("<TestRun")
+shard_coverage_case("one CameraAgent shard has malformed TRX", shard_reports, 1, "Coverage input inventory failed")
+shard_trx.write_text(original_shard_trx)
+original.write_text("<coverage")
+shard_coverage_case("one CameraAgent shard has malformed coverage", shard_reports, 1, "Coverage input validation failed")
+for index in (1, 2):
+    shard = f"cameraagent-shard-{index}"
+    (results / f"{shard}.trx").unlink()
+    shutil.rmtree(results / shard)
+    shutil.rmtree(results / f"{shard}-attachment")
+shutil.rmtree(camera_root)
+unit_inventory.write_text(json.dumps(unit_projects))
 
 # Raw coordinates and metadata must describe records the pinned merger reads.
 for label in ("excluded-class", "outside-classes"):
@@ -875,6 +1012,144 @@ for event, base_ref in (("push", ""), ("merge_group", ""), ("pull_request", "dev
         raise SystemExit(f"Policy accepted a new retirement through a JSON edit ({event}): {result.stdout}{result.stderr}")
     cases += 1
     print(f"PASS rename plus retirement JSON edit fails policy on {event}")
+
+# Issue #2071: --skip-deployment-cli path-filtering coverage contract.
+# Real repo: all 27 active floors stay instrumented and enforced with --skip-deployment-cli.
+skip_settings_file = scratch / "v1-skip-deployment-cli.runsettings"
+subprocess.run([str(root / "scripts/coverage:development-v1"), "--settings", "--skip-deployment-cli", str(skip_settings_file)], check=True)
+assert skip_settings_file.read_bytes() == settings_file.read_bytes()
+cases += 1
+print("PASS --settings --skip-deployment-cli preserves all active non-Deployment.Cli floor assemblies")
+
+# Default canonical gate and coverage:enforce must reject --skip-deployment-cli without --development-v1.
+for label, cmd in (
+    ("CoverageGate without --development-v1", ["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"), "--skip-deployment-cli", str(baseline_file), str(good)]),
+    ("coverage:enforce without --development-v1", [str(root / "scripts/coverage:enforce"), "--skip-deployment-cli", "--merged", str(good)]),
+):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0 or "--skip-deployment-cli is only supported with --development-v1" not in result.stderr:
+        raise SystemExit(f"FAIL {label} accepted --skip-deployment-cli: exit={result.returncode}\n{result.stdout}{result.stderr}")
+    cases += 1
+    print(f"PASS {label} rejects --skip-deployment-cli")
+
+# Fixture repo with Deployment.Cli.Tests registered in tests/unit-test-projects.json
+# but omitted from the Unit results directory (matching a non-deployment PR run).
+deploy_cli_test_project = inventory_repo / "tests/HVO.SkyMonitor.Deployment.Cli.Tests"
+deploy_cli_test_project.mkdir(parents=True, exist_ok=True)
+(deploy_cli_test_project / "HVO.SkyMonitor.Deployment.Cli.Tests.csproj").touch()
+unit_projects_with_deploy = [*unit_projects, "HVO.SkyMonitor.Deployment.Cli.Tests"]
+unit_inventory.write_text(json.dumps(unit_projects_with_deploy))
+write_fixture(composite)
+wrapper_case("missing Deployment.Cli.Tests fails default development-v1 coverage gate", 1,
+             "Missing or extra Unit coverage data", "expected 2 reports")
+direct_missing = subprocess.run(
+    [real_dotnet, str(fixture_gate), "--development-v1", "--validate-reports",
+     "--unit-results", str(results), str(fixture_scripts / "coverage/baseline.json"), str(valid)],
+    capture_output=True, text=True)
+if direct_missing.returncode != 1 or "HVO.SkyMonitor.Deployment.Cli.Tests" not in direct_missing.stderr:
+    raise SystemExit(f"FAIL direct validator did not require Deployment.Cli.Tests by default: {direct_missing.stdout}{direct_missing.stderr}")
+cases += 1
+print("PASS direct input validator requires Deployment.Cli.Tests when --skip-deployment-cli is absent")
+
+skip_wrapper = subprocess.run(
+    [str(fixture_scripts / "coverage:development-v1"), "--skip-deployment-cli", str(results), str(inventory_repo / "coverage-output-skip")],
+    capture_output=True, text=True, env=wrapper_env)
+if skip_wrapper.returncode != 0 or "Coverage gate passed." not in skip_wrapper.stdout:
+    raise SystemExit(f"FAIL --skip-deployment-cli wrapper rejected valid non-deployment PR reports: exit={skip_wrapper.returncode}\n{skip_wrapper.stdout}{skip_wrapper.stderr}")
+cases += 1
+print("PASS --skip-deployment-cli wrapper passes without Deployment.Cli.Tests while enforcing active floors")
+
+# Unexpected Deployment.Cli.Tests report when --skip-deployment-cli is active must fail inventory check.
+extra_deploy_report = results / "extra-deploy/coverage.cobertura.xml"
+extra_deploy_report.parent.mkdir()
+shutil.copy2(valid, extra_deploy_report)
+skip_extra = subprocess.run(
+    [str(fixture_scripts / "coverage:development-v1"), "--skip-deployment-cli", str(results), str(inventory_repo / "coverage-output-extra")],
+    capture_output=True, text=True, env=wrapper_env)
+shutil.rmtree(extra_deploy_report.parent)
+if skip_extra.returncode != 1 or "Missing or extra Unit coverage data" not in skip_extra.stderr:
+    raise SystemExit(f"FAIL --skip-deployment-cli accepted unexpected extra report: exit={skip_extra.returncode}\n{skip_extra.stdout}{skip_extra.stderr}")
+cases += 1
+print("PASS --skip-deployment-cli rejects unexpected extra Deployment.Cli.Tests report")
+
+# Synthetic active Deployment.Cli / Deployment.Contracts / TerminalUi floors:
+# - included in --settings and enforced by default (merge_group / deployment PR)
+# - NEVER waived in --skip-deployment-cli mode; both --settings and CoverageGate fail closed.
+for deploy_floor_path in (
+    "HVO.SkyMonitor.Deployment.Cli/SyntheticFloor.cs",
+    "HVO.SkyMonitor.Deployment.Contracts/SyntheticFloor.cs",
+    "HVO.SkyMonitor.TerminalUi/SyntheticFloor.cs",
+):
+    deploy_floor_assembly = deploy_floor_path.split("/")[0]
+    deploy_floor_source = inventory_repo / "src" / deploy_floor_path
+    deploy_floor_source.parent.mkdir(parents=True, exist_ok=True)
+    deploy_floor_source.write_text("namespace Synthetic; public static class SyntheticFloor { public static int V() => 1; }\n")
+    deploy_baseline = copy.deepcopy(fixture_baseline)
+    deploy_baseline["files"][deploy_floor_path] = {"line": 0.80, "branch": 0.70}
+    fixture_baseline_path.write_text(json.dumps(deploy_baseline))
+    pinned_with_deploy = json.loads(pinned_bytes)
+    pinned_with_deploy["files"][deploy_floor_path] = {
+        "sourceSha256": hashlib.sha256(deploy_floor_source.read_bytes()).hexdigest(),
+        "lines": [1],
+        "branches": {},
+    }
+    pinned_path.write_text(json.dumps(pinned_with_deploy))
+
+    full_settings_with_deploy = scratch / f"fixture-full-{deploy_floor_assembly}.runsettings"
+    skip_settings_with_deploy = scratch / f"fixture-skip-{deploy_floor_assembly}.runsettings"
+    subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", str(full_settings_with_deploy)], check=True)
+    assert f"[{deploy_floor_assembly}]*" in ET.parse(full_settings_with_deploy).find(".//Configuration/Include").text
+    cases += 1
+    print(f"PASS default --settings includes active {deploy_floor_assembly} floor assembly")
+
+    skip_settings_result = subprocess.run(
+        [str(fixture_scripts / "coverage:development-v1"), "--settings", "--skip-deployment-cli", str(skip_settings_with_deploy)],
+        capture_output=True, text=True)
+    if skip_settings_result.returncode == 0 or deploy_floor_path not in skip_settings_result.stderr or "Cannot use --skip-deployment-cli" not in skip_settings_result.stderr:
+        raise SystemExit(
+            f"FAIL --settings --skip-deployment-cli waived active floor {deploy_floor_path}: "
+            f"exit={skip_settings_result.returncode}\n{skip_settings_result.stdout}{skip_settings_result.stderr}")
+    cases += 1
+    print(f"PASS --settings --skip-deployment-cli fails closed on active {deploy_floor_assembly} floor")
+
+    skip_wrapper_result = subprocess.run(
+        [str(fixture_scripts / "coverage:development-v1"), "--skip-deployment-cli", str(results), str(inventory_repo / f"coverage-output-skip-{deploy_floor_assembly}")],
+        capture_output=True, text=True, env=wrapper_env)
+    if (skip_wrapper_result.returncode == 0 or
+            f"SKIP {deploy_floor_path}" in skip_wrapper_result.stdout or
+            "--skip-deployment-cli cannot waive active canonical floor" not in skip_wrapper_result.stderr):
+        raise SystemExit(
+            f"FAIL --skip-deployment-cli wrapper waived active floor {deploy_floor_path}: "
+            f"exit={skip_wrapper_result.returncode}\n{skip_wrapper_result.stdout}{skip_wrapper_result.stderr}")
+    cases += 1
+    print(f"PASS --skip-deployment-cli wrapper fails closed on active {deploy_floor_assembly} floor")
+
+    direct_skip_enforce = subprocess.run(
+        [real_dotnet, str(fixture_gate), "--development-v1", "--skip-deployment-cli", str(fixture_baseline_path), str(valid)],
+        capture_output=True, text=True)
+    if (direct_skip_enforce.returncode == 0 or
+            f"SKIP {deploy_floor_path}" in direct_skip_enforce.stdout or
+            "--skip-deployment-cli cannot waive active canonical floor" not in direct_skip_enforce.stderr):
+        raise SystemExit(
+            f"FAIL direct CoverageGate --skip-deployment-cli waived active floor {deploy_floor_path}: "
+            f"exit={direct_skip_enforce.returncode}\n{direct_skip_enforce.stdout}{direct_skip_enforce.stderr}")
+    cases += 1
+    print(f"PASS direct CoverageGate --skip-deployment-cli fails closed on active {deploy_floor_assembly} floor")
+
+    enforce_default_missing = subprocess.run(
+        [real_dotnet, str(fixture_gate), "--development-v1", str(fixture_baseline_path), str(inventory_repo / "coverage-output-skip/Cobertura.xml")],
+        capture_output=True, text=True)
+    if enforce_default_missing.returncode != 1 or deploy_floor_path not in enforce_default_missing.stderr or "measured coverage MISSING" not in enforce_default_missing.stderr:
+        raise SystemExit(f"FAIL default --development-v1 gate did not enforce {deploy_floor_path}: {enforce_default_missing.stdout}{enforce_default_missing.stderr}")
+    cases += 1
+    print(f"PASS default --development-v1 gate enforces active {deploy_floor_assembly} floor")
+
+    shutil.rmtree(deploy_floor_source.parent)
+
+fixture_baseline_path.write_text(json.dumps(fixture_baseline))
+pinned_path.write_bytes(pinned_bytes)
+unit_inventory.write_text(json.dumps(unit_projects))
+shutil.rmtree(deploy_cli_test_project)
 
 print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
 PY

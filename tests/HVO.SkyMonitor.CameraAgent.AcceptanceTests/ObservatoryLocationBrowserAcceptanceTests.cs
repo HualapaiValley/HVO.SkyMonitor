@@ -72,6 +72,8 @@ public sealed partial class ObservatoryLocationBrowserAcceptanceTests
         page.PageError += (_, error) => browserErrors.Add(error);
 
         await OpenSiteAsync(page).ConfigureAwait(false);
+        await Assertions.Expect(page.Locator(".satellite-planner"))
+            .ToContainTextAsync("US Space Force / Space-Track public GP data via CelesTrak").ConfigureAwait(false);
         var map = page.Locator(".site-map");
         await page.WaitForFunctionAsync(
             """

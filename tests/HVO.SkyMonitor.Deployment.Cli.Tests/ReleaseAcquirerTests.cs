@@ -1,4 +1,8 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -175,11 +179,7 @@ public sealed class ReleaseAcquirerTests
                 break;
             case "release-json-fifo":
                 File.Delete(Path.Combine(folder, "release.json"));
-                using (var mkfifo = Process.Start("mkfifo", Path.Combine(folder, "release.json")))
-                {
-                    await mkfifo.WaitForExitAsync();
-                    Assert.AreEqual(0, mkfifo.ExitCode);
-                }
+                await CreateFifoOrInconclusiveAsync(Path.Combine(folder, "release.json"));
                 break;
             case "archive-symlink":
                 File.Move(archive!, outside);
@@ -224,6 +224,2520 @@ public sealed class ReleaseAcquirerTests
         var exception = Assert.ThrowsExactly<InstallerException>(() => image.ToEvidence(stranger));
         Assert.AreEqual("The running CameraAgent image is not the image the release names.", exception.Message);
     }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandMissing_IsInconclusive()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-guard-");
+        try
+        {
+            var missingCommand = Path.Combine(root.FullName, "no-such-mkfifo");
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, missingCommand));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandNotExecutable_IsInconclusive()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-noexec-");
+        try
+        {
+            var nonExecutable = Path.Combine(root.FullName, "mkfifo-noexec");
+            await File.WriteAllTextAsync(nonExecutable, "#!/bin/sh\nexit 0\n");
+            File.SetUnixFileMode(nonExecutable, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertInconclusiveException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, nonExecutable));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandParentIsRegularFile_FailsInsteadOfSkipping()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-enotdir-");
+        try
+        {
+            var regularFile = Path.Combine(root.FullName, "not-a-directory");
+            await File.WriteAllTextAsync(regularFile, "file");
+            var invalidCommand = Path.Combine(regularFile, "mkfifo");
+            var fifoPath = Path.Combine(root.FullName, "release.json");
+
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, invalidCommand));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("already-exists")]
+    [DataRow("EPERM")]
+    [DataRow("not supported")]
+    [DataRow("Operation not permitted")]
+    public async Task CreateFifoOrInconclusive_WhenTargetAlreadyExists_FailsInsteadOfSkipping(string directoryName)
+    {
+        ArgumentNullException.ThrowIfNull(directoryName);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-existing-");
+        try
+        {
+            // Verify mkfifo itself works on this host first so a restricted environment remains inconclusive cleanly.
+            await CreateFifoOrInconclusiveAsync(Path.Combine(root.FullName, "probe.fifo"));
+
+            var directory = Path.Combine(root.FullName, directoryName);
+            Directory.CreateDirectory(directory);
+            var existingFile = Path.Combine(directory, "release.json");
+            await File.WriteAllTextAsync(existingFile, "occupied");
+
+            await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(existingFile));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenCommandHangs_FailsWithinTimeout()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-hang-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
+        var script = Path.Combine(root.FullName, "hang.sh");
+        try
+        {
+            await File.WriteAllTextAsync(
+                script,
+                "#!/bin/sh\nset -e\nIFS= read -r stat_line < \"/proc/$$/stat\"\nprintf '%s\\n%s\\n' \"$$\" \"$stat_line\" > \"$1.pid.tmp\"\nmv -f \"$1.pid.tmp\" \"$1.pid\"\nexec sleep 30\n");
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var stopwatch = Stopwatch.StartNew();
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(500)));
+            stopwatch.Stop();
+
+            StringAssert.Contains(failure.Message, "timed out", StringComparison.Ordinal);
+            Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded timeout, took {stopwatch.Elapsed}.");
+            var fixtureProcess = await ReadFixtureProcessIdentityAsync(pidFile);
+            var currentStat = ReadLinuxProcessStat(fixtureProcess.Pid);
+            Assert.IsTrue(
+                IsFixtureProcessTerminated(fixtureProcess, currentStat, allowZombieAsTerminated: false),
+                $"Timed-out command PID {fixtureProcess.Pid} (start time {fixtureProcess.StartTimeTicks}) was not reaped (stat: {currentStat}).");
+        }
+        finally
+        {
+            await CleanUpFifoFixtureAsync(root, pidFile, script, allowZombieAsTerminated: false);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenChildHoldsRedirectedPipesOpen_FailsWithinTimeout()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
+        var script = Path.Combine(root.FullName, "hold-pipes.sh");
+        try
+        {
+            await File.WriteAllTextAsync(script, HoldPipesFixtureScript);
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var stopwatch = Stopwatch.StartNew();
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, script, TimeSpan.FromMilliseconds(500)));
+            stopwatch.Stop();
+
+            StringAssert.Contains(failure.Message, "remained open", StringComparison.Ordinal);
+            Assert.IsLessThan(5.0, stopwatch.Elapsed.TotalSeconds, $"Expected bounded pipe drain timeout, took {stopwatch.Elapsed}.");
+            _ = await ReadFixtureProcessIdentityAsync(pidFile);
+        }
+        finally
+        {
+            // The command has exited, so the fixture owns cleanup of its reparented descendant.
+            // Minimal containers whose PID 1 does not reap adopted orphans may leave the killed sleep in state 'Z'.
+            await CleanUpFifoFixtureAsync(root, pidFile, script, allowZombieAsTerminated: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CreateFifoOrInconclusive_WhenPipeHolderPidFilePublicationFails_DoesNotLeakSleepChild()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pipe-mvfail-");
+        var fifoPath = Path.Combine(root.FullName, "release.json");
+        var pidFile = fifoPath + ".pid";
+        var holdPipesScript = Path.Combine(root.FullName, "hold-pipes.sh");
+        var runnerScript = Path.Combine(root.FullName, "run-with-failing-mv.sh");
+        var fakeBin = Path.Combine(root.FullName, "bin");
+        var mvStub = Path.Combine(fakeBin, "mv");
+        var sleepStub = Path.Combine(fakeBin, "sleep");
+        var mvMarker = Path.Combine(root.FullName, "mv-parent.pid");
+        var sleepMarker = Path.Combine(root.FullName, "sleep-invoked.pid");
+        try
+        {
+            Directory.CreateDirectory(fakeBin);
+            await File.WriteAllTextAsync(holdPipesScript, HoldPipesFixtureScript);
+            File.SetUnixFileMode(holdPipesScript, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedMvMarker = EscapeSingleQuotedShellArgument(mvMarker);
+            await File.WriteAllTextAsync(
+                mvStub,
+                $"#!/bin/sh\nIFS= read -r parent_stat < \"/proc/$PPID/stat\"\nprintf '%s\\n%s\\n' \"$PPID\" \"$parent_stat\" > {escapedMvMarker}\nexit 1\n");
+            File.SetUnixFileMode(mvStub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedSleepMarker = EscapeSingleQuotedShellArgument(sleepMarker);
+            await File.WriteAllTextAsync(
+                sleepStub,
+                $"#!/bin/sh\nprintf '%s\\n' \"$$\" > {escapedSleepMarker}\nexit 0\n");
+            File.SetUnixFileMode(sleepStub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var escapedFakeBin = EscapeSingleQuotedShellArgument(fakeBin);
+            var escapedHoldPipesScript = EscapeSingleQuotedShellArgument(holdPipesScript);
+            await File.WriteAllTextAsync(
+                runnerScript,
+                $"#!/bin/sh\nPATH={escapedFakeBin}:\"$PATH\"\nexport PATH\nexec {escapedHoldPipesScript} \"$1\"\n");
+            File.SetUnixFileMode(runnerScript, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+                () => CreateFifoOrInconclusiveAsync(fifoPath, runnerScript, TimeSpan.FromMilliseconds(500)));
+
+            StringAssert.Contains(failure.Message, "failed unexpectedly (exit 1)", StringComparison.Ordinal);
+            Assert.IsFalse(
+                failure.Message.Contains("remained open", StringComparison.Ordinal),
+                $"A leaked child process held redirected pipes open after mv failure: {failure.Message}");
+            Assert.IsFalse(
+                failure.Message.Contains("timed out", StringComparison.Ordinal),
+                $"Expected prompt failure after mv error, got timeout: {failure.Message}");
+            Assert.IsFalse(File.Exists(pidFile), "PID file must not be published when mv fails.");
+            Assert.IsFalse(File.Exists(sleepMarker), "Background pipe-holder must never exec sleep when PID-file publication fails.");
+
+            var backgroundChild = await ReadFixtureProcessIdentityAsync(mvMarker);
+            var waitStopwatch = Stopwatch.StartNew();
+            var childStat = ReadLinuxProcessStat(backgroundChild.Pid);
+            while (!IsFixtureProcessTerminated(backgroundChild, childStat, allowZombieAsTerminated: true)
+                && waitStopwatch.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
+                childStat = ReadLinuxProcessStat(backgroundChild.Pid);
+            }
+
+            Assert.IsTrue(
+                IsFixtureProcessTerminated(backgroundChild, childStat, allowZombieAsTerminated: true),
+                $"Background pipe-holder PID {backgroundChild.Pid} (start time {backgroundChild.StartTimeTicks}) remained alive after mv failure (stat: {childStat}).");
+        }
+        finally
+        {
+            await CleanUpFifoFixtureAsync(root, pidFile, holdPipesScript, allowZombieAsTerminated: true);
+        }
+    }
+
+    [TestMethod]
+    public void TryParseLinuxProcessStat_ParsesStateAndStartTimeIncludingComplexComm()
+    {
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL),
+                out var sleeping));
+        Assert.AreEqual(new LinuxProcessStat(12345, 'S', 987654321UL), sleeping);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(23456, "sleep", 'Z', 42000UL),
+                out var zombie));
+        Assert.AreEqual(new LinuxProcessStat(23456, 'Z', 42000UL), zombie);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(34567, "my (weird) proc)) ", 'Z', ulong.MaxValue),
+                out var complexComm));
+        Assert.AreEqual(new LinuxProcessStat(34567, 'Z', ulong.MaxValue), complexComm);
+
+        // Minimum Linux 2.6.24+ stat format (44 total fields = 42 fields after "(comm) "), with negative signed fields.
+        const string linux26Stat = "45678 (worker 1) I 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 -100 -20 1 0 555 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n";
+        Assert.IsTrue(TryParseLinuxProcessStat(linux26Stat, out var minimalLinux26));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'I', 555UL), minimalLinux26);
+
+        // Linux permits CR and LF inside parenthesized comm in /proc/{pid}/stat.
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "line1\nline2", 'R', 555UL),
+                out var lfInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'R', 555UL), lfInComm);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "line1\rline2", 'S', 666UL),
+                out var crInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'S', 666UL), crInComm);
+
+        Assert.IsTrue(
+            TryParseLinuxProcessStat(
+                BuildSyntheticLinuxProcessStat(45678, "a)\r\n(b", 'D', 777UL),
+                out var crlfParensInComm));
+        Assert.AreEqual(new LinuxProcessStat(45678, 'D', 777UL), crlfParensInComm);
+
+        var validFullStat = BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL);
+        var validWithoutNewline = validFullStat[..^1];
+        const string truncatedInsideStartTime = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432";
+        const string truncatedAfterStartTimeWithNewline = "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n";
+        const string only43Fields = "45678 (worker) R 1 45678 45678 0 -1 4194304 10 0 0 0 0 0 0 0 20 0 1 0 555 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0\n";
+        var nonNumericPpid = validFullStat.Replace(") S 1 ", ") S badppid ", StringComparison.Ordinal);
+        var negativePpid = validFullStat.Replace(") S 1 ", ") S -1 ", StringComparison.Ordinal);
+        var trailingGarbage = $"{validWithoutNewline} garbage\n";
+        var trailingSpace = $"{validWithoutNewline} \n";
+        var invalidStateLetter = validFullStat.Replace(") S ", ") Q ", StringComparison.Ordinal);
+        var crlfStat = $"{validWithoutNewline}\r\n";
+        var embeddedNewlineAfterComm = validFullStat.Replace(") S 1 ", ") S 1\n", StringComparison.Ordinal);
+        var embeddedCrAfterComm = validFullStat.Replace(") S 1 ", ") S 1\r", StringComparison.Ordinal);
+        var nulWithNewlineInComm = BuildSyntheticLinuxProcessStat(45678, "line1\n\0line2", 'R', 555UL);
+        var nulWithCrInComm = BuildSyntheticLinuxProcessStat(45678, "line1\r\0line2", 'R', 555UL);
+        var twoConcatenatedLines = $"{validFullStat}{validFullStat}";
+
+        Assert.IsFalse(TryParseLinuxProcessStat(null, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(string.Empty, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validWithoutNewline, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(truncatedInsideStartTime, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(truncatedAfterStartTimeWithNewline, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(only43Fields, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nonNumericPpid, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(negativePpid, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(trailingGarbage, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(trailingSpace, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(invalidStateLetter, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(crlfStat, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(embeddedNewlineAfterComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(embeddedCrAfterComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nulWithNewlineInComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(nulWithCrInComm, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(twoConcatenatedLines, out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"{validFullStat}extra\n", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"\n{validFullStat}", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($"\r{validFullStat}", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat($" {validFullStat}", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("(sleep)", "sleep", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("12345 (sleep)", "(sleep)", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("(sleep)", ")sleep(", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ")S ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(BuildSyntheticLinuxProcessStat(0, "swapper", 'S', 0UL), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat("12345 (sleep) S 1 2 3\n", out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ") ZZ ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace(") S ", ") 9 ", StringComparison.Ordinal), out _));
+        Assert.IsFalse(TryParseLinuxProcessStat(validFullStat.Replace("987654321", "not-ticks", StringComparison.Ordinal), out _));
+    }
+
+    [TestMethod]
+    public void TryParseFixtureProcessIdentity_ParsesAtomicIdentityAndRejectsTruncatedOrMismatchedContent()
+    {
+        var validStat = BuildSyntheticLinuxProcessStat(12345, "hang (fixture) sh", 'S', 987654321UL);
+        var crlfCommStat = BuildSyntheticLinuxProcessStat(12345, "line1\r\nline2", 'S', 987654321UL);
+        var initStat = BuildSyntheticLinuxProcessStat(1, "init", 'S', 1UL);
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{validStat}", out var identity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), identity);
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\r\n{validStat}", out var crlfIdentity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), crlfIdentity);
+
+        Assert.IsTrue(TryParseFixtureProcessIdentity($"12345\n{crlfCommStat}", out var crlfCommIdentity));
+        Assert.AreEqual(new FixtureProcessIdentity(12345, 987654321UL), crlfCommIdentity);
+
+        Assert.IsFalse(TryParseFixtureProcessIdentity(null, out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity(string.Empty, out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("   \n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"12345\n{validStat[..^1]}", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity("12345\n12345 (sleep) S 1 2 3\n", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"not-a-pid\n{validStat}", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"1\n{initStat}", out _));
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"99999\n{validStat}", out _));
+    }
+
+    [TestMethod]
+    public async Task TryReadFixtureProcessIdentityAsync_HandlesMissingEmptyPartialAndAtomicFilesWithoutThrowing()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-pidfile-parse-");
+        try
+        {
+            var pidFile = Path.Combine(root.FullName, "release.json.pid");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, string.Empty);
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, "12345");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            await File.WriteAllTextAsync(pidFile, "12345\n12345 (sleep) S 1 2");
+            Assert.IsNull(await TryReadFixtureProcessIdentityAsync(pidFile));
+
+            var tempFile = pidFile + ".tmp";
+            await File.WriteAllTextAsync(
+                tempFile,
+                $"12345\n{BuildSyntheticLinuxProcessStat(12345, "sleep", 'S', 987654321UL)}");
+            File.Move(tempFile, pidFile, overwrite: true);
+
+            Assert.AreEqual(
+                new FixtureProcessIdentity(12345, 987654321UL),
+                await TryReadFixtureProcessIdentityAsync(pidFile));
+        }
+        finally
+        {
+            if (root.Exists)
+            {
+                root.Delete(recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void ReadLinuxProcessStat_ClassifiesPresentNotFoundAndUnreadableOrMalformed()
+    {
+        const int fixturePid = 12345;
+        var validStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654321UL);
+        var validComplexCommStat = BuildSyntheticLinuxProcessStat(fixturePid, "my (complex) sleep", 'S', 987654321UL);
+
+        var present = ReadLinuxProcessStat(fixturePid, path =>
+        {
+            Assert.AreEqual("/proc/12345/stat", path);
+            return validStat;
+        });
+        Assert.AreEqual(
+            new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', 987654321UL)),
+            present);
+
+        var presentComplexComm = ReadLinuxProcessStat(fixturePid, _ => validComplexCommStat);
+        Assert.AreEqual(
+            new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', 987654321UL)),
+            presentComplexComm);
+
+        var fileNotFound = ReadLinuxProcessStat(fixturePid, static _ => throw new FileNotFoundException("gone"));
+        Assert.AreSame(LinuxProcessStatReadResult.NotFound.Instance, fileNotFound);
+
+        var directoryNotFound = ReadLinuxProcessStat(fixturePid, static _ => throw new DirectoryNotFoundException("gone"));
+        Assert.AreSame(LinuxProcessStatReadResult.NotFound.Instance, directoryNotFound);
+
+        var unauthorized = ReadLinuxProcessStat(fixturePid, static _ => throw new UnauthorizedAccessException("hidepid"));
+        var unauthorizedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(unauthorized);
+        StringAssert.Contains(unauthorizedResult.Diagnostic, "UnauthorizedAccessException", StringComparison.Ordinal);
+        StringAssert.Contains(unauthorizedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var ioFailure = ReadLinuxProcessStat(fixturePid, static _ => throw new IOException("read error"));
+        var ioFailureResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(ioFailure);
+        StringAssert.Contains(ioFailureResult.Diagnostic, "IOException", StringComparison.Ordinal);
+        StringAssert.Contains(ioFailureResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var malformed = ReadLinuxProcessStat(fixturePid, static _ => "12345 (sleep) S truncated");
+        var malformedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(malformed);
+        StringAssert.Contains(malformedResult.Diagnostic, "malformed", StringComparison.Ordinal);
+        StringAssert.Contains(malformedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+
+        var truncatedInsideStartTime = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432");
+        var truncatedInsideResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(truncatedInsideStartTime);
+        StringAssert.Contains(truncatedInsideResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var truncatedAfterStartTime = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n");
+        var truncatedAfterResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(truncatedAfterStartTime);
+        StringAssert.Contains(truncatedAfterResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var nonNumericPpid = ReadLinuxProcessStat(
+            fixturePid,
+            _ => validStat.Replace(") S 1 ", ") S badppid ", StringComparison.Ordinal));
+        var nonNumericPpidResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(nonNumericPpid);
+        StringAssert.Contains(nonNumericPpidResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var trailingGarbage = ReadLinuxProcessStat(
+            fixturePid,
+            _ => $"{validStat[..^1]} trailing-garbage\n");
+        var trailingGarbageResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(trailingGarbage);
+        StringAssert.Contains(trailingGarbageResult.Diagnostic, "malformed", StringComparison.Ordinal);
+
+        var mismatchedPid = ReadLinuxProcessStat(
+            fixturePid,
+            static _ => BuildSyntheticLinuxProcessStat(54321, "sleep", 'S', 987654321UL));
+        var mismatchedPidResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(mismatchedPid);
+        StringAssert.Contains(mismatchedPidResult.Diagnostic, "mismatched PID 54321", StringComparison.Ordinal);
+        StringAssert.Contains(mismatchedPidResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ReadLinuxProcessStat_WhenStatContainsNulBytes_ReturnsUnreadableOrMalformed()
+    {
+        const int fixturePid = 12345;
+        var validStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654321UL);
+        var differentStartTimeStat = BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', 987654322UL);
+
+        var cases = new[]
+        {
+            $"{validStat[..^1]}\0\n",
+            $"{differentStartTimeStat[..^1]}\0\n",
+            validStat.Replace("12345 (sleep)", "12345\0 (sleep)", StringComparison.Ordinal),
+            validStat.Replace(") S 1 ", ") S 1\0 ", StringComparison.Ordinal),
+            validStat.Replace("987654321", "987654321\0", StringComparison.Ordinal),
+            differentStartTimeStat.Replace("987654322", "987654322\0", StringComparison.Ordinal),
+            BuildSyntheticLinuxProcessStat(fixturePid, "sl\0eep", 'S', 987654321UL)
+        };
+
+        foreach (var malformedStat in cases)
+        {
+            Assert.IsFalse(TryParseLinuxProcessStat(malformedStat, out _));
+            var result = ReadLinuxProcessStat(fixturePid, _ => malformedStat);
+            var malformedResult = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(result);
+            StringAssert.Contains(malformedResult.Diagnostic, "malformed", StringComparison.Ordinal);
+            StringAssert.Contains(malformedResult.Diagnostic, "/proc/12345/stat", StringComparison.Ordinal);
+        }
+
+        Assert.IsFalse(TryParseFixtureProcessIdentity($"12345\0\n{validStat}", out _));
+    }
+
+    [TestMethod]
+    public void LinuxStatNumericHelpers_EnforceStrictAsciiDigitsAndRejectTrailingNul()
+    {
+        Assert.IsTrue(TryParseStrictUnsignedInt32("0", out var zeroInt) && zeroInt == 0);
+        Assert.IsTrue(TryParseStrictUnsignedInt32("12345", out var pidInt) && pidInt == 12345);
+        Assert.IsTrue(TryParseStrictUnsignedInt32("2147483647", out var maxInt) && maxInt == int.MaxValue);
+        Assert.IsFalse(TryParseStrictUnsignedInt32(string.Empty, out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12345\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("\012345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12\0345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("+12345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("-1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32(" 12345", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("12345 ", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("\u0661\u0662", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt32("2147483648", out _));
+
+        Assert.IsTrue(TryParseStrictUnsignedInt64("0", out var zeroUlong) && zeroUlong == 0UL);
+        Assert.IsTrue(TryParseStrictUnsignedInt64("987654321", out var ticks) && ticks == 987654321UL);
+        Assert.IsTrue(TryParseStrictUnsignedInt64("18446744073709551615", out var maxUlong) && maxUlong == ulong.MaxValue);
+        Assert.IsFalse(TryParseStrictUnsignedInt64(string.Empty, out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("987654321\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("0\0", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("+1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("-1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64(" 1", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("1 ", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("\u0661\u0662", out _));
+        Assert.IsFalse(TryParseStrictUnsignedInt64("18446744073709551616", out _));
+
+        Assert.IsTrue(IsStrictUnsignedInteger("0"));
+        Assert.IsTrue(IsStrictUnsignedInteger("18446744073709551615"));
+        Assert.IsFalse(IsStrictUnsignedInteger("0\0"));
+        Assert.IsFalse(IsStrictUnsignedInteger("1\0"));
+        Assert.IsFalse(IsStrictUnsignedInteger("-1"));
+
+        Assert.IsTrue(IsStrictSignedInteger("0"));
+        Assert.IsTrue(IsStrictSignedInteger("-1"));
+        Assert.IsTrue(IsStrictSignedInteger("-9223372036854775808"));
+        Assert.IsTrue(IsStrictSignedInteger("9223372036854775807"));
+        Assert.IsFalse(IsStrictSignedInteger(string.Empty));
+        Assert.IsFalse(IsStrictSignedInteger("-"));
+        Assert.IsFalse(IsStrictSignedInteger("--1"));
+        Assert.IsFalse(IsStrictSignedInteger("+1"));
+        Assert.IsFalse(IsStrictSignedInteger("0\0"));
+        Assert.IsFalse(IsStrictSignedInteger("-1\0"));
+        Assert.IsFalse(IsStrictSignedInteger(" -1"));
+        Assert.IsFalse(IsStrictSignedInteger("-1 "));
+        Assert.IsFalse(IsStrictSignedInteger("-\u0661"));
+        Assert.IsFalse(IsStrictSignedInteger("9223372036854775808"));
+    }
+
+    [TestMethod]
+    public void ShouldKillFixtureProcess_RejectsIdentityAndCommandLineMismatches()
+    {
+        var expected = new FixtureProcessIdentity(12345, 987654321UL);
+        var matchingStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 987654321UL));
+        const string scriptPath = "/tmp/hvo-mkfifo-hang/hang.sh";
+
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "/usr/bin/sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, "busybox\0sleep\030\0", scriptPath));
+        Assert.IsTrue(ShouldKillFixtureProcess(expected, matchingStat, $"/bin/sh\0{scriptPath}\0/tmp/hvo-mkfifo-hang/release.json\0", scriptPath));
+
+        // Reused PID with a different start time must never be killed even if the command line happens to match.
+        var reusedPidStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 999999999UL));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, reusedPidStat, "sleep\030\0", scriptPath));
+
+        // Different PID, unrelated command line, empty command line, zombie, missing stat, or unreadable stat must not be signaled.
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.Present(new LinuxProcessStat(54321, 'S', 987654321UL)), "sleep\030\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "/usr/bin/dotnet\0test\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, "sleep\060\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, string.Empty, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, matchingStat, null, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'Z', 987654321UL)), string.Empty, scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, LinuxProcessStatReadResult.NotFound.Instance, "sleep\030\0", scriptPath));
+        Assert.IsFalse(ShouldKillFixtureProcess(expected, new LinuxProcessStatReadResult.UnreadableOrMalformed("permission denied"), "sleep\030\0", scriptPath));
+    }
+
+    [TestMethod]
+    public void IsFixtureProcessTerminated_TreatsZombieAsTerminatedOnlyWhenAllowed()
+    {
+        var expected = new FixtureProcessIdentity(12345, 987654321UL);
+        var liveStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 987654321UL));
+        var zombieStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'Z', 987654321UL));
+        var reusedPidStat = new LinuxProcessStatReadResult.Present(new LinuxProcessStat(12345, 'S', 999999999UL));
+        var unreadableStat = new LinuxProcessStatReadResult.UnreadableOrMalformed("unable to read '/proc/12345/stat'");
+
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, LinuxProcessStatReadResult.NotFound.Instance, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, LinuxProcessStatReadResult.NotFound.Instance, allowZombieAsTerminated: true));
+
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, reusedPidStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, liveStat, allowZombieAsTerminated: false));
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, liveStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: false));
+        Assert.IsTrue(IsFixtureProcessTerminated(expected, zombieStat, allowZombieAsTerminated: true));
+
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, unreadableStat, allowZombieAsTerminated: false));
+        Assert.IsFalse(IsFixtureProcessTerminated(expected, unreadableStat, allowZombieAsTerminated: true));
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow("12345")]
+    [DataRow("not-a-pid")]
+    public async Task CleanUpFifoFixtureAsync_WhenPidFileMissingEmptyOrPartial_DeletesFixtureWithoutThrowing(string? pidFileContent)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cleanup-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        if (pidFileContent is not null)
+        {
+            await File.WriteAllTextAsync(pidFile, pidFileContent);
+        }
+
+        await CleanUpFifoFixtureAsync(root, pidFile, allowZombieAsTerminated: true);
+
+        Assert.IsFalse(Directory.Exists(root.FullName), "Fixture directory should be removed even when the PID file is absent or partial.");
+    }
+
+    private static readonly string[] ExpectedSignalSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "read-cmdline",
+        $"send-signal:42:{PosixSigKill}",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedReusedAfterOpenSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "close-pidfd:42"
+    ];
+
+    private static readonly string[] ExpectedRefusedSignalSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "read-cmdline",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedOpenEsrchSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedInitialReadOnlySequence = ["read-stat"];
+
+    private static readonly string[] ExpectedUnreadableInitialStatSequence =
+    [
+        "read-stat",
+        "read-stat"
+    ];
+
+    private static readonly string[] ExpectedUnreadableVerifiedStatSequence =
+    [
+        "read-stat",
+        "open-pidfd:12345",
+        "read-stat",
+        "close-pidfd:42",
+        "read-stat"
+    ];
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_OpensPidFdBeforeIdentityVerificationSignalsViaPidFdAndClosesInFinally()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-order-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount <= 2
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
+            },
+            ReadProcessCmdline: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                Assert.AreEqual(fixturePid, pid);
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations);
+
+        CollectionAssert.AreEqual(ExpectedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenPidReusedAfterOpeningPidFd_ClosesPidFdWithoutSignalingAndSucceeds()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-reused-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1));
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedReusedAfterOpenSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineMismatchesAfterOpeningPidFdAndFixtureRemainsAlive_ClosesPidFdWithoutSignalingAndFails()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-mismatch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "/usr/bin/dotnet\0test\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        StringAssert.Contains(failure.Message, "cmdline did not match", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineUnreadableAndFixtureRemainsAlive_RefusesToSignalClosesPidFdAndFails(
+        bool allowZombieAsTerminated)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cmdline-null-alive-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return null;
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "cmdline could not be read", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenCmdlineUnreadableBecauseFixtureExited_RefusesToSignalClosesPidFdAndSucceeds()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-cmdline-null-exited-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount <= 2
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return null;
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenOpenPidFdReturnsEsrchAndProcessExited_SucceedsWithoutSignalingOrClosing()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-open-esrch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Failure(PosixNoSuchProcess);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedOpenEsrchSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenSendPidFdSignalReturnsEsrchAndProcessGoneOrReused_ClosesPidFdAndSucceeds(
+        bool pidReused)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-signal-esrch-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return pidReused
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 10))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixNoSuchProcess);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenAlreadyExitedOrPidReused_SucceedsWithoutOpeningPidFd(bool pidReused)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-already-gone-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ =>
+            {
+                events.Add("read-stat");
+                return pidReused
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks + 1))
+                    : LinuxProcessStatReadResult.NotFound.Instance;
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: false, operations);
+
+        CollectionAssert.AreEqual(ExpectedInitialReadOnlySequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CleanUpFifoFixtureAsync_WhenPidFdOperationFailsWithNonEsrchAndFixtureRemainsAlive_FailsExplicitly(
+        bool failOnOpen)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-err-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var closedPidFd = false;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ => new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks)),
+            ReadProcessCmdline: _ => "sleep\030\0",
+            OpenPidFd: _ => failOnOpen
+                ? PidFdOpenResult.Failure(PosixOperationNotPermitted)
+                : PidFdOpenResult.Success(42),
+            SendPidFdSignal: (_, _) => PidFdSignalResult.Failure(PosixOperationNotPermitted),
+            ClosePidFd: pidfd =>
+            {
+                Assert.AreEqual(42, pidfd);
+                closedPidFd = true;
+            },
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            failOnOpen ? "pidfd_open failed with errno 1" : "pidfd_send_signal(SIGKILL) failed with errno 1",
+            StringComparison.Ordinal);
+        Assert.AreEqual(!failOnOpen, closedPidFd);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    public async Task CleanUpFifoFixtureAsync_WhenSignalThrows_StillClosesPidFdInFinally()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-pidfd-throw-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var closedPidFd = -1;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: _ => new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks)),
+            ReadProcessCmdline: _ => "sleep\030\0",
+            OpenPidFd: _ => PidFdOpenResult.Success(99),
+            SendPidFdSignal: (_, _) => throw new InvalidOperationException("injected signal fault"),
+            ClosePidFd: pidfd => closedPidFd = pidfd,
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated: true, operations));
+
+        Assert.AreEqual(99, closedPidFd);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized", true)]
+    [DataRow(true, "unauthorized", true)]
+    [DataRow(false, "malformed", false)]
+    [DataRow(true, "malformed", false)]
+    [DataRow(false, "io-error", false)]
+    [DataRow(true, "io-error", true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterCmdlineRefusal_FailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault,
+        bool unreadableCmdline)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-cmdline-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return unreadableCmdline ? null : "/usr/bin/dotnet\0test\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            unreadableCmdline ? "cmdline could not be read" : "cmdline did not match",
+            StringComparison.Ordinal);
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedRefusedSignalSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized", false)]
+    [DataRow(true, "unauthorized", false)]
+    [DataRow(false, "malformed", false)]
+    [DataRow(true, "malformed", false)]
+    [DataRow(false, "unauthorized", true)]
+    [DataRow(true, "malformed", true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterFailedSignal_FailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault,
+        bool failOnOpen)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-signal-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var presentReadLimit = failOnOpen ? 1 : 2;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= presentReadLimit)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return failOnOpen
+                    ? PidFdOpenResult.Failure(PosixOperationNotPermitted)
+                    : PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixOperationNotPermitted);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(
+            failure.Message,
+            failOnOpen ? "pidfd_open failed with errno 1" : "pidfd_send_signal(SIGKILL) failed with errno 1",
+            StringComparison.Ordinal);
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnOpen ? ExpectedOpenEsrchSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, "unauthorized")]
+    [DataRow(true, "unauthorized")]
+    [DataRow(false, "malformed")]
+    [DataRow(true, "malformed")]
+    public async Task CleanUpFifoFixtureAsync_WhenStatInitiallyUnreadableOrMalformed_NeverSignalsAndFailsExplicitly(
+        bool allowZombieAsTerminated,
+        string statFault)
+    {
+        ArgumentNullException.ThrowIfNull(statFault);
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-initial-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                return ReadSimulatedFaultyStat(pid, statFault);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, ExpectedStatFaultDiagnosticToken(statFault), StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedUnreadableInitialStatSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatUnreadableOrMalformedAfterOpeningPidFd_ClosesPidFdWithoutSignalingAndFails(
+        bool allowZombieAsTerminated)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-fault-verified-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                return statReadCount == 1
+                    ? new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks))
+                    : ReadSimulatedFaultyStat(pid, "unauthorized");
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "UnauthorizedAccessException", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(ExpectedUnreadableVerifiedStatSequence, events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, true, true)]
+    [DataRow(true, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatNotFoundAfterCmdlineRefusalOrFailedSignal_SucceedsCleanly(
+        bool allowZombieAsTerminated,
+        bool refuseByCmdline,
+        bool useFileNotFound)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-notfound-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (statReadCount <= 2)
+                {
+                    return new LinuxProcessStatReadResult.Present(new LinuxProcessStat(fixturePid, 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(
+                    pid,
+                    _ => throw (useFileNotFound
+                        ? new FileNotFoundException("process exited")
+                        : new DirectoryNotFoundException("proc dir gone")));
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return refuseByCmdline ? "/usr/bin/dotnet\0test\0" : "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Failure(PosixOperationNotPermitted);
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        await CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations);
+
+        CollectionAssert.AreEqual(
+            refuseByCmdline ? ExpectedRefusedSignalSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, true)]
+    [DataRow(false, true, true)]
+    [DataRow(true, true, true)]
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(true, true, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatTruncatedInsideOrAfterStartTime_DoesNotTreatAsPidReuseAndFails(
+        bool allowZombieAsTerminated,
+        bool includeNewlineAfterStartTime,
+        bool failOnInitialRead)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-truncated-starttime-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var truncatedStatContent = includeNewlineAfterStartTime
+            ? "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432\n"
+            : "12345 (sleep) S 1 12345 12345 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 98765432";
+        var parsedTruncated = ReadLinuxProcessStat(fixturePid, _ => truncatedStatContent);
+        _ = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(parsedTruncated);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (!failOnInitialRead && statReadCount <= 2)
+                {
+                    return ReadLinuxProcessStat(
+                        pid,
+                        static _ => BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(pid, _ => truncatedStatContent);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "malformed", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnInitialRead ? ExpectedUnreadableInitialStatSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    public async Task CleanUpFifoFixtureAsync_WhenStatHasTrailingNulBeforeNewlineWithDifferentStartTime_DoesNotTreatAsPidReuseAndFails(
+        bool allowZombieAsTerminated,
+        bool failOnInitialRead)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-mkfifo-stat-trailing-nul-");
+        var pidFile = Path.Combine(root.FullName, "release.json.pid");
+        const int fixturePid = 12345;
+        const ulong startTimeTicks = 987654321UL;
+        await WriteFixturePidFileAsync(pidFile, fixturePid, startTimeTicks);
+
+        var nulBeforeNewlineStat = $"{BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks + 1)[..^1]}\0\n";
+        var parsedMalformed = ReadLinuxProcessStat(fixturePid, _ => nulBeforeNewlineStat);
+        _ = Assert.IsInstanceOfType<LinuxProcessStatReadResult.UnreadableOrMalformed>(parsedMalformed);
+
+        var events = new List<string>();
+        var statReadCount = 0;
+        var operations = new FifoFixtureCleanupOperations(
+            ReadProcessStat: pid =>
+            {
+                events.Add("read-stat");
+                statReadCount++;
+                if (!failOnInitialRead && statReadCount <= 2)
+                {
+                    return ReadLinuxProcessStat(
+                        pid,
+                        static _ => BuildSyntheticLinuxProcessStat(fixturePid, "sleep", 'S', startTimeTicks));
+                }
+
+                return ReadLinuxProcessStat(pid, _ => nulBeforeNewlineStat);
+            },
+            ReadProcessCmdline: _ =>
+            {
+                events.Add("read-cmdline");
+                return "sleep\030\0";
+            },
+            OpenPidFd: pid =>
+            {
+                events.Add($"open-pidfd:{pid}");
+                return PidFdOpenResult.Success(42);
+            },
+            SendPidFdSignal: (pidfd, signal) =>
+            {
+                events.Add($"send-signal:{pidfd}:{signal}");
+                return PidFdSignalResult.Success();
+            },
+            ClosePidFd: pidfd => events.Add($"close-pidfd:{pidfd}"),
+            TerminationTimeout: TimeSpan.Zero,
+            PollInterval: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsExactlyAsync<AssertFailedException>(
+            () => CleanUpFifoFixtureAsync(root, pidFile, expectedScriptPath: null, allowZombieAsTerminated, operations));
+
+        StringAssert.Contains(failure.Message, "malformed", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            failOnInitialRead ? ExpectedUnreadableInitialStatSequence : ExpectedSignalSequence,
+            events);
+        Assert.IsFalse(Directory.Exists(root.FullName));
+    }
+
+    private static LinuxProcessStatReadResult ReadSimulatedFaultyStat(int pid, string statFault)
+        => statFault switch
+        {
+            "unauthorized" => ReadLinuxProcessStat(pid, static _ => throw new UnauthorizedAccessException("hidepid")),
+            "io-error" => ReadLinuxProcessStat(pid, static _ => throw new IOException("simulated proc read error")),
+            "malformed" => ReadLinuxProcessStat(pid, static _ => "12345 (sleep) S truncated"),
+            _ => throw new ArgumentOutOfRangeException(nameof(statFault), statFault, null)
+        };
+
+    private static string ExpectedStatFaultDiagnosticToken(string statFault)
+        => statFault switch
+        {
+            "unauthorized" => "UnauthorizedAccessException",
+            "io-error" => "IOException",
+            "malformed" => "malformed",
+            _ => throw new ArgumentOutOfRangeException(nameof(statFault), statFault, null)
+        };
+
+    [TestMethod]
+    [DataRow(1, true)]
+    [DataRow(2, true)]
+    [DataRow(13, true)]
+    [DataRow(5, false)]
+    [DataRow(12, false)]
+    [DataRow(20, false)]
+    [DataRow(24, false)]
+    public void IsUnavailableCommandStartError_OnlySkipsAvailabilityAndPermissionErrors(int nativeErrorCode, bool expected)
+        => Assert.AreEqual(expected, IsUnavailableCommandStartError(nativeErrorCode));
+
+    [TestMethod]
+    [DataRow(127, "", null, true)]
+    [DataRow(126, "", null, true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not permitted", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Operation not supported", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Function not implemented", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Permission denied", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/x': Read-only file system", "/tmp/x", true)]
+    [DataRow(1, "mkfifo: failed (EPERM)", null, true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/EPERM/release.json': File exists", "/tmp/EPERM/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/not supported/release.json': File exists", "/tmp/not supported/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/Operation not permitted:x/release.json': No space left on device", "/tmp/Operation not permitted:x/release.json", false)]
+    [DataRow(1, "mkfifo: '/tmp/EPERM/release.json'", "/tmp/EPERM/release.json", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/EPERM\n/fifo': File exists", "/tmp/EPERM\n/fifo", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/not supported\r\n/fifo': Permission denied", "/tmp/not supported\r\n/fifo", true)]
+    [DataRow(1, "mkfifo: failed (TEST_EPERM)", null, false)]
+    [DataRow(1, "mkfifo: failed (EPERM_DETAIL)", null, false)]
+    [DataRow(1, "mkfifo: failed (TEST_EPERM, EPERM)", null, true)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/fileperm/x': File exists", "/tmp/fileperm/x", false)]
+    [DataRow(1, "mkfifo: cannot create fifo '/tmp/missing/x': No such file or directory", "/tmp/missing/x", false)]
+    public void IsRestrictedFifoError_ClassifiesRestrictedAndUnexpectedErrors(
+        int exitCode,
+        string stderr,
+        string? targetPath,
+        bool expected)
+    {
+        ArgumentNullException.ThrowIfNull(stderr);
+        Assert.AreEqual(expected, IsRestrictedFifoError(exitCode, stderr, targetPath));
+    }
+
+    private const int PosixOperationNotPermitted = 1;
+    private const int PosixNoSuchFileOrDirectory = 2;
+    private const int PosixNoSuchProcess = 3;
+    private const int PosixInterruptedSystemCall = 4;
+    private const int PosixPermissionDenied = 13;
+    private const int PosixSigKill = 9;
+    // Unified Linux syscall numbers across x86_64 and arm64 (since Linux 5.1 / 5.3).
+    private const nint LinuxSysPidfdSendSignal = 424;
+    private const nint LinuxSysPidfdOpen = 434;
+    private static readonly TimeSpan DefaultFifoCommandTimeout = TimeSpan.FromSeconds(10);
+
+    // Publish the background child's own (PID, /proc/$$/stat) identity atomically BEFORE exec'ing sleep 30,
+    // and synchronize via a command-substitution pipe so the parent exits 0 only after publication succeeds
+    // and no sleep child is ever spawned if mv or any preceding step fails.
+    private const string HoldPipesFixtureScript =
+        "#!/bin/sh\n"
+        + "set -e\n"
+        + "exec 3>&1\n"
+        + "ready=$(\n"
+        + "  sh -c '\n"
+        + "    set -e\n"
+        + "    IFS= read -r stat_line < \"/proc/$$/stat\"\n"
+        + "    printf \"%s\\n%s\\n\" \"$$\" \"$stat_line\" > \"$1.pid.tmp\"\n"
+        + "    mv -f \"$1.pid.tmp\" \"$1.pid\"\n"
+        + "    printf \"ok\\n\"\n"
+        + "    exec 1>&3 3>&-\n"
+        + "    exec sleep 30\n"
+        + "  ' \"$0\" \"$1\" &\n"
+        + ")\n"
+        + "[ \"$ready\" = \"ok\" ]\n"
+        + "exit 0\n";
+
+    private static string EscapeSingleQuotedShellArgument(string value)
+        => $"'{value.Replace("'", "'\\''", StringComparison.Ordinal)}'";
+
+    private static async Task CreateFifoOrInconclusiveAsync(
+        string path,
+        string command = "mkfifo",
+        TimeSpan? timeout = null)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsFreeBSD())
+        {
+            Assert.Inconclusive("FIFO creation requires a POSIX test environment.");
+        }
+
+        var effectiveTimeout = timeout ?? DefaultFifoCommandTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(effectiveTimeout, TimeSpan.Zero);
+
+        var startInfo = new ProcessStartInfo(command)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add(path);
+
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (Win32Exception exception) when (IsUnavailableCommandStartError(exception.NativeErrorCode))
+        {
+            Assert.Inconclusive($"'{command}' is unavailable in this test environment (errno {exception.NativeErrorCode}): {exception.Message}");
+            return;
+        }
+        catch (Win32Exception exception)
+        {
+            Assert.Fail($"'{command}' failed to start unexpectedly (errno {exception.NativeErrorCode}): {exception.Message}");
+            return;
+        }
+
+        if (process is null)
+        {
+            Assert.Fail($"'{command}' failed to start unexpectedly (Process.Start returned null).");
+            return;
+        }
+
+        using (process)
+        {
+            using var pipeCts = new CancellationTokenSource();
+            var stopwatch = Stopwatch.StartNew();
+            var standardOutputTask = process.StandardOutput.ReadToEndAsync(pipeCts.Token);
+            var standardErrorTask = process.StandardError.ReadToEndAsync(pipeCts.Token);
+
+            using var exitCts = new CancellationTokenSource(effectiveTimeout);
+            try
+            {
+                await process.WaitForExitAsync(exitCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                await KillAndReapProcessTreeAsync(process);
+                await CancelAndClosePipesAsync(process, pipeCts, standardOutputTask, standardErrorTask);
+                Assert.Fail(
+                    $"'{command}' timed out after {effectiveTimeout.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms while creating FIFO '{path}'.");
+                return;
+            }
+
+            var remaining = effectiveTimeout - stopwatch.Elapsed;
+            var drainTimeout = remaining > TimeSpan.FromMilliseconds(50)
+                ? remaining
+                : TimeSpan.FromMilliseconds(50);
+            var drainTask = Task.WhenAll(standardOutputTask, standardErrorTask);
+            string standardError;
+            try
+            {
+                await drainTask.WaitAsync(drainTimeout);
+                standardError = (await standardErrorTask).Trim();
+            }
+            catch (TimeoutException)
+            {
+                ObserveFaults(drainTask);
+                await CancelAndClosePipesAsync(process, pipeCts, standardOutputTask, standardErrorTask);
+                Assert.Fail(
+                    $"'{command}' exited with code {process.ExitCode}, but its redirected output streams remained open past the {effectiveTimeout.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms timeout.");
+                return;
+            }
+
+            if (process.ExitCode == 0)
+            {
+                return;
+            }
+
+            if (IsRestrictedFifoError(process.ExitCode, standardError, path))
+            {
+                Assert.Inconclusive($"'{command}' cannot create a FIFO in this restricted or non-POSIX test environment (exit {process.ExitCode}): {standardError}");
+            }
+
+            Assert.Fail($"'{command}' failed unexpectedly (exit {process.ExitCode}): {standardError}");
+        }
+    }
+
+    private static bool IsUnavailableCommandStartError(int nativeErrorCode)
+        => nativeErrorCode is PosixOperationNotPermitted or PosixNoSuchFileOrDirectory or PosixPermissionDenied;
+
+    private static bool IsRestrictedFifoError(int exitCode, string standardError, string? targetPath = null)
+    {
+        if (exitCode is 126 or 127)
+        {
+            return true;
+        }
+
+        var diagnostic = string.IsNullOrEmpty(targetPath)
+            ? standardError
+            : standardError.Replace(targetPath, string.Empty, StringComparison.Ordinal);
+        foreach (var line in diagnostic.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var reason = line[(line.LastIndexOf(':') + 1)..].Trim();
+            if (reason.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("operation not supported", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("not supported", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("function not implemented", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+                || reason.Contains("read-only file system", StringComparison.OrdinalIgnoreCase)
+                || ContainsErrnoToken(reason, "EPERM")
+                || ContainsErrnoToken(reason, "ENOTSUP")
+                || ContainsErrnoToken(reason, "EOPNOTSUPP")
+                || ContainsErrnoToken(reason, "ENOSYS")
+                || ContainsErrnoToken(reason, "EACCES")
+                || ContainsErrnoToken(reason, "EROFS"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsErrnoToken(string reason, string token)
+    {
+        var start = 0;
+        while ((start = reason.IndexOf(token, start, StringComparison.Ordinal)) >= 0)
+        {
+            var beforeOk = start == 0 || !IsErrnoIdentifierCharacter(reason[start - 1]);
+            var end = start + token.Length;
+            var afterOk = end == reason.Length || !IsErrnoIdentifierCharacter(reason[end]);
+            if (beforeOk && afterOk)
+            {
+                return true;
+            }
+
+            start = end;
+        }
+
+        return false;
+    }
+
+    private static bool IsErrnoIdentifierCharacter(char character)
+        => char.IsLetterOrDigit(character) || character == '_';
+
+    private readonly record struct LinuxProcessStat(int Pid, char State, ulong StartTimeTicks);
+
+    private abstract record LinuxProcessStatReadResult
+    {
+        private LinuxProcessStatReadResult()
+        {
+        }
+
+        public sealed record Present(LinuxProcessStat Stat) : LinuxProcessStatReadResult;
+
+        public sealed record NotFound : LinuxProcessStatReadResult
+        {
+            public static NotFound Instance { get; } = new();
+        }
+
+        public sealed record UnreadableOrMalformed(string Diagnostic) : LinuxProcessStatReadResult;
+    }
+
+    private readonly record struct FixtureProcessIdentity(int Pid, ulong StartTimeTicks);
+
+    private readonly record struct PidFdOpenResult(int FileDescriptor, int ErrorCode)
+    {
+        public bool Succeeded => FileDescriptor >= 0;
+        public bool IsProcessGone => FileDescriptor < 0 && ErrorCode == PosixNoSuchProcess;
+
+        public static PidFdOpenResult Success(int fileDescriptor) => new(fileDescriptor, 0);
+        public static PidFdOpenResult Failure(int errorCode) => new(-1, errorCode);
+    }
+
+    private readonly record struct PidFdSignalResult(bool Succeeded, int ErrorCode)
+    {
+        public bool IsProcessGone => !Succeeded && ErrorCode == PosixNoSuchProcess;
+
+        public static PidFdSignalResult Success() => new(true, 0);
+        public static PidFdSignalResult Failure(int errorCode) => new(false, errorCode);
+    }
+
+    private sealed record FifoFixtureCleanupOperations(
+        Func<int, LinuxProcessStatReadResult> ReadProcessStat,
+        Func<int, string?> ReadProcessCmdline,
+        Func<int, PidFdOpenResult> OpenPidFd,
+        Func<int, int, PidFdSignalResult> SendPidFdSignal,
+        Action<int> ClosePidFd,
+        TimeSpan TerminationTimeout,
+        TimeSpan PollInterval)
+    {
+        public static FifoFixtureCleanupOperations DefaultLinux { get; } = new(
+            ReadLinuxProcessStat,
+            TryReadLinuxProcessCmdline,
+            TryOpenLinuxPidFd,
+            TrySendLinuxPidFdSignal,
+            CloseLinuxPidFd,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(20));
+    }
+
+    [SuppressMessage(
+        "Interoperability",
+        "SYSLIB1054:Use LibraryImportAttribute instead of DllImportAttribute",
+        Justification = "Test assembly does not enable unsafe blocks for LibraryImport source generation.")]
+    private static class LinuxPidFdInterop
+    {
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "syscall", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern nint SyscallPidfdOpen(nint number, nint pid, nint flags);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "syscall", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern nint SyscallPidfdSendSignal(nint number, nint pidfd, nint signal, nint info, nint flags);
+
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [DllImport("libc", EntryPoint = "close", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int CloseFileDescriptor(int fd);
+    }
+
+    private static string BuildSyntheticLinuxProcessStat(
+        int pid,
+        string comm = "sleep",
+        char state = 'S',
+        ulong startTimeTicks = 987654321UL)
+    {
+        var pidText = pid.ToString(CultureInfo.InvariantCulture);
+        var ticksText = startTimeTicks.ToString(CultureInfo.InvariantCulture);
+        // 52-field Linux /proc/{pid}/stat format (Linux 3.5+), including negative tpgid (-1)
+        // and 64-bit unsigned rsslim (RLIM_INFINITY = 18446744073709551615).
+        return $"{pidText} ({comm}) {state} 1 {pidText} {pidText} 0 -1 4194304 89 0 0 0 0 0 0 0 20 0 1 0 {ticksText} 4096 128 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
+    }
+
+    private static Task WriteFixturePidFileAsync(string pidFile, int pid, ulong startTimeTicks)
+    {
+        var pidText = pid.ToString(CultureInfo.InvariantCulture);
+        var statLine = BuildSyntheticLinuxProcessStat(pid, "sleep", 'S', startTimeTicks);
+        return File.WriteAllTextAsync(pidFile, $"{pidText}\n{statLine}");
+    }
+
+    private static async Task<FixtureProcessIdentity> ReadFixtureProcessIdentityAsync(string pidFile)
+    {
+        Assert.IsTrue(File.Exists(pidFile), $"FIFO fixture PID file '{pidFile}' was not written.");
+        var content = await File.ReadAllTextAsync(pidFile);
+        Assert.IsTrue(
+            TryParseFixtureProcessIdentity(content, out var identity),
+            $"Invalid FIFO fixture identity in '{pidFile}': '{content.Trim()}'.");
+        return identity;
+    }
+
+    private static async Task<FixtureProcessIdentity?> TryReadFixtureProcessIdentityAsync(string pidFile)
+    {
+        if (!File.Exists(pidFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            var content = await File.ReadAllTextAsync(pidFile);
+            return TryParseFixtureProcessIdentity(content, out var identity) ? identity : null;
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TryParseFixtureProcessIdentity(string? content, out FixtureProcessIdentity identity)
+    {
+        identity = default;
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return false;
+        }
+
+        var newlineIndex = content.IndexOf('\n', StringComparison.Ordinal);
+        if (newlineIndex <= 0)
+        {
+            return false;
+        }
+
+        var pidLine = content.AsSpan(0, newlineIndex).Trim();
+        if (!TryParseStrictUnsignedInt32(pidLine, out var pid) || pid <= 1)
+        {
+            return false;
+        }
+
+        var statLine = content[(newlineIndex + 1)..];
+        if (!TryParseLinuxProcessStat(statLine, out var stat) || stat.Pid != pid)
+        {
+            return false;
+        }
+
+        identity = new FixtureProcessIdentity(pid, stat.StartTimeTicks);
+        return true;
+    }
+
+    private static bool TryParseLinuxProcessStat(string? statContent, out LinuxProcessStat stat)
+    {
+        stat = default;
+        if (string.IsNullOrEmpty(statContent)
+            || statContent.Contains('\0', StringComparison.Ordinal)
+            || statContent[^1] != '\n')
+        {
+            return false;
+        }
+
+        var line = statContent.AsSpan(0, statContent.Length - 1);
+        var openParen = line.IndexOf('(');
+        var closeParen = line.LastIndexOf(')');
+        // Linux fs/proc/array.c formats comm into a 64-byte buffer (max 63 bytes before NUL; 15 bytes for user tasks)
+        // and allows CR/LF inside comm. Bounding comm prevents two concatenated full stat records from being swallowed.
+        const int MaxLinuxTaskCommLength = 63;
+        if (openParen < 2
+            || line[openParen - 1] != ' '
+            || closeParen <= openParen
+            || closeParen - openParen - 1 > MaxLinuxTaskCommLength
+            || closeParen + 2 >= line.Length
+            || line[closeParen + 1] != ' ')
+        {
+            return false;
+        }
+
+        var pidSpan = line[..(openParen - 1)];
+        if (!TryParseStrictUnsignedInt32(pidSpan, out var pid) || pid <= 0)
+        {
+            return false;
+        }
+
+        var afterComm = line[(closeParen + 2)..];
+        if (afterComm.ContainsAny('\n', '\r'))
+        {
+            return false;
+        }
+
+        var fields = statContent[(closeParen + 2)..^1].Split(' ', StringSplitOptions.None);
+        // After "(comm) ", /proc/{pid}/stat starts at field 3 (state) at index 0;
+        // field 22 (starttime in clock ticks since boot) is at index 19;
+        // Linux 2.6.24+ emits at least 44 total fields (42 after "(comm) "), and Linux 3.5+ emits 52 (50 after "(comm) ").
+        const int StateFieldIndex = 0;
+        const int StartTimeFieldIndex = 19;
+        const int MinimumFieldsAfterComm = 42;
+        if (fields.Length < MinimumFieldsAfterComm || fields[StateFieldIndex].Length != 1)
+        {
+            return false;
+        }
+
+        var state = fields[StateFieldIndex][0];
+        if (!IsValidLinuxProcessState(state))
+        {
+            return false;
+        }
+
+        ulong startTimeTicks = 0;
+        for (var index = 1; index < fields.Length; index++)
+        {
+            var field = fields[index];
+            var fieldNumber = index + 3;
+            if (index == StartTimeFieldIndex)
+            {
+                if (!TryParseStrictUnsignedInt64(field, out startTimeTicks))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!IsValidLinuxStatNumericField(fieldNumber, field))
+            {
+                return false;
+            }
+        }
+
+        stat = new LinuxProcessStat(pid, state, startTimeTicks);
+        return true;
+    }
+
+    private static bool IsValidLinuxProcessState(char state)
+        => state is 'R' or 'S' or 'D' or 'Z' or 'T' or 't' or 'W' or 'X' or 'x' or 'K' or 'P' or 'I';
+
+    private static bool IsValidLinuxStatNumericField(int fieldNumber, ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        return fieldNumber switch
+        {
+            // Field 4 (ppid): non-negative PID (%d).
+            4 => TryParseStrictUnsignedInt32(token, out _),
+            // Signed fields in Linux fs/proc/array.c do_task_stat (%d / %ld).
+            5 or 6 or 7 or 8 or 16 or 17 or 18 or 19 or 20 or 21 or 24 or 38 or 39 or 44 or 52 =>
+                IsStrictSignedInteger(token),
+            // Unsigned fields in Linux fs/proc/array.c do_task_stat (%u / %lu / %llu).
+            9 or 10 or 11 or 12 or 13 or 14 or 15 or 22 or 23 or (>= 25 and <= 37) or (>= 40 and <= 43) or (>= 45 and <= 51) =>
+                IsStrictUnsignedInteger(token),
+            // Future kernel fields beyond field 52: accept strict signed or unsigned 64-bit integer tokens only.
+            _ => IsStrictUnsignedInteger(token) || IsStrictSignedInteger(token)
+        };
+    }
+
+    private static bool IsStrictAsciiUnsignedDigits(ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var character in token)
+        {
+            if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsStrictAsciiSignedDigits(ReadOnlySpan<char> token)
+    {
+        if (token.IsEmpty)
+        {
+            return false;
+        }
+
+        var digits = token[0] == '-' ? token[1..] : token;
+        return IsStrictAsciiUnsignedDigits(digits);
+    }
+
+    private static bool TryParseStrictUnsignedInt32(ReadOnlySpan<char> token, out int value)
+    {
+        if (!IsStrictAsciiUnsignedDigits(token))
+        {
+            value = 0;
+            return false;
+        }
+
+        return int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryParseStrictUnsignedInt64(ReadOnlySpan<char> token, out ulong value)
+    {
+        if (!IsStrictAsciiUnsignedDigits(token))
+        {
+            value = 0;
+            return false;
+        }
+
+        return ulong.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool IsStrictSignedInteger(ReadOnlySpan<char> token)
+        => IsStrictAsciiSignedDigits(token)
+            && long.TryParse(token, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+
+    private static bool IsStrictUnsignedInteger(ReadOnlySpan<char> token)
+        => TryParseStrictUnsignedInt64(token, out _);
+
+    private static bool IsSameFixtureProcess(FixtureProcessIdentity expected, LinuxProcessStat actual)
+        => actual.Pid == expected.Pid && actual.StartTimeTicks == expected.StartTimeTicks;
+
+    private static bool IsExpectedFixtureCommandLine(string? cmdline, string? expectedScriptPath)
+    {
+        if (string.IsNullOrEmpty(cmdline))
+        {
+            return false;
+        }
+
+        var args = cmdline.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        if (args.Length == 0)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(expectedScriptPath)
+            && args.Any(arg => string.Equals(arg, expectedScriptPath, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var executable = Path.GetFileName(args[0]);
+        if (string.Equals(executable, "sleep", StringComparison.Ordinal)
+            && args.Length == 2
+            && string.Equals(args[1], "30", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(executable, "busybox", StringComparison.Ordinal)
+            && args.Length == 3
+            && string.Equals(args[1], "sleep", StringComparison.Ordinal)
+            && string.Equals(args[2], "30", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(executable, "coreutils", StringComparison.Ordinal)
+            && args.Length >= 3
+            && string.Equals(args[^1], "30", StringComparison.Ordinal)
+            && args.Any(static arg => string.Equals(Path.GetFileName(arg), "sleep", StringComparison.Ordinal)
+                || arg.EndsWith("=sleep", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ShouldKillFixtureProcess(
+        FixtureProcessIdentity expected,
+        LinuxProcessStatReadResult currentStat,
+        string? currentCmdline,
+        string? expectedScriptPath)
+    {
+        if (currentStat is not LinuxProcessStatReadResult.Present(var stat)
+            || !IsSameFixtureProcess(expected, stat)
+            || stat.State == 'Z')
+        {
+            return false;
+        }
+
+        return IsExpectedFixtureCommandLine(currentCmdline, expectedScriptPath);
+    }
+
+    private static bool IsFixtureProcessTerminated(
+        FixtureProcessIdentity expected,
+        LinuxProcessStatReadResult currentStat,
+        bool allowZombieAsTerminated)
+        => currentStat switch
+        {
+            LinuxProcessStatReadResult.NotFound => true,
+            LinuxProcessStatReadResult.Present(var stat) when !IsSameFixtureProcess(expected, stat) => true,
+            LinuxProcessStatReadResult.Present(var stat) => allowZombieAsTerminated && stat.State == 'Z',
+            LinuxProcessStatReadResult.UnreadableOrMalformed => false,
+            _ => false
+        };
+
+    private static LinuxProcessStatReadResult ReadLinuxProcessStat(int pid)
+        => ReadLinuxProcessStat(pid, File.ReadAllText);
+
+    private static LinuxProcessStatReadResult ReadLinuxProcessStat(int pid, Func<string, string> readAllText)
+    {
+        var statPath = $"/proc/{pid}/stat";
+        try
+        {
+            var content = readAllText(statPath);
+            if (!TryParseLinuxProcessStat(content, out var stat))
+            {
+                return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                    $"malformed stat content in '{statPath}'");
+            }
+
+            if (stat.Pid != pid)
+            {
+                return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                    $"mismatched PID {stat.Pid} in '{statPath}'");
+            }
+
+            return new LinuxProcessStatReadResult.Present(stat);
+        }
+        catch (FileNotFoundException)
+        {
+            return LinuxProcessStatReadResult.NotFound.Instance;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return LinuxProcessStatReadResult.NotFound.Instance;
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                $"unable to read '{statPath}' ({exception.GetType().Name}: {exception.Message})");
+        }
+        catch (IOException exception)
+        {
+            return new LinuxProcessStatReadResult.UnreadableOrMalformed(
+                $"unable to read '{statPath}' ({exception.GetType().Name}: {exception.Message})");
+        }
+    }
+
+    private static string? TryReadLinuxProcessCmdline(int pid)
+    {
+        try
+        {
+            return File.ReadAllText($"/proc/{pid}/cmdline");
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static PidFdOpenResult TryOpenLinuxPidFd(int pid)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Linux pidfd_open is only supported on Linux.");
+        }
+
+        while (true)
+        {
+            var result = LinuxPidFdInterop.SyscallPidfdOpen(LinuxSysPidfdOpen, pid, 0);
+            if (result >= 0)
+            {
+                return PidFdOpenResult.Success(checked((int)result));
+            }
+
+            var errorCode = Marshal.GetLastPInvokeError();
+            if (errorCode == PosixInterruptedSystemCall)
+            {
+                continue;
+            }
+
+            return PidFdOpenResult.Failure(errorCode);
+        }
+    }
+
+    private static PidFdSignalResult TrySendLinuxPidFdSignal(int pidfd, int signal)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Linux pidfd_send_signal is only supported on Linux.");
+        }
+
+        while (true)
+        {
+            var result = LinuxPidFdInterop.SyscallPidfdSendSignal(
+                LinuxSysPidfdSendSignal,
+                pidfd,
+                signal,
+                IntPtr.Zero,
+                0);
+            if (result == 0)
+            {
+                return PidFdSignalResult.Success();
+            }
+
+            var errorCode = Marshal.GetLastPInvokeError();
+            if (errorCode == PosixInterruptedSystemCall)
+            {
+                continue;
+            }
+
+            return PidFdSignalResult.Failure(errorCode);
+        }
+    }
+
+    private static void CloseLinuxPidFd(int pidfd)
+    {
+        if (pidfd >= 0 && OperatingSystem.IsLinux())
+        {
+            _ = LinuxPidFdInterop.CloseFileDescriptor(pidfd);
+        }
+    }
+
+    private static Task CleanUpFifoFixtureAsync(
+        DirectoryInfo root,
+        string pidFile,
+        string? expectedScriptPath = null,
+        bool allowZombieAsTerminated = false)
+        => CleanUpFifoFixtureAsync(
+            root,
+            pidFile,
+            expectedScriptPath,
+            allowZombieAsTerminated,
+            FifoFixtureCleanupOperations.DefaultLinux);
+
+    private static async Task CleanUpFifoFixtureAsync(
+        DirectoryInfo root,
+        string pidFile,
+        string? expectedScriptPath,
+        bool allowZombieAsTerminated,
+        FifoFixtureCleanupOperations operations)
+    {
+        try
+        {
+            var identity = await TryReadFixtureProcessIdentityAsync(pidFile);
+            if (identity is null)
+            {
+                return;
+            }
+
+            var currentStat = operations.ReadProcessStat(identity.Value.Pid);
+            if (IsFixtureProcessTerminated(identity.Value, currentStat, allowZombieAsTerminated))
+            {
+                return;
+            }
+
+            string? signalFailureReason = null;
+            if (currentStat is LinuxProcessStatReadResult.Present { Stat.State: not 'Z' })
+            {
+                // Open the process-instance pidfd BEFORE verifying /proc/{pid}/stat and /proc/{pid}/cmdline so that
+                // signaling cannot race with PID reuse: if the verified (pid, starttime) process still exists while
+                // pidfd is open, pidfd is guaranteed to refer to that exact process instance, and pidfd_send_signal
+                // will return ESRCH rather than hitting a newly reused PID.
+                var openResult = operations.OpenPidFd(identity.Value.Pid);
+                if (openResult.Succeeded)
+                {
+                    try
+                    {
+                        var verifiedStat = operations.ReadProcessStat(identity.Value.Pid);
+                        var verifiedCmdline = verifiedStat is LinuxProcessStatReadResult.Present(var presentVerifiedStat)
+                            && presentVerifiedStat.State != 'Z'
+                            && IsSameFixtureProcess(identity.Value, presentVerifiedStat)
+                            ? operations.ReadProcessCmdline(identity.Value.Pid)
+                            : null;
+                        if (ShouldKillFixtureProcess(identity.Value, verifiedStat, verifiedCmdline, expectedScriptPath))
+                        {
+                            var signalResult = operations.SendPidFdSignal(openResult.FileDescriptor, PosixSigKill);
+                            if (!signalResult.Succeeded && !signalResult.IsProcessGone)
+                            {
+                                signalFailureReason = $"pidfd_send_signal(SIGKILL) failed with errno {signalResult.ErrorCode}";
+                            }
+                        }
+                        else if (IsFixtureProcessTerminated(identity.Value, verifiedStat, allowZombieAsTerminated))
+                        {
+                            return;
+                        }
+                        else if (verifiedStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var verifiedStatDiagnostic))
+                        {
+                            signalFailureReason = $"refused to signal because /proc stat was unreadable or malformed: {verifiedStatDiagnostic}";
+                        }
+                        else if (verifiedStat is LinuxProcessStatReadResult.Present { Stat.State: not 'Z' })
+                        {
+                            signalFailureReason = verifiedCmdline is null
+                                ? "refused to signal because /proc cmdline could not be read"
+                                : "refused to signal because /proc cmdline did not match the fixture";
+                        }
+                    }
+                    finally
+                    {
+                        operations.ClosePidFd(openResult.FileDescriptor);
+                    }
+                }
+                else if (!openResult.IsProcessGone)
+                {
+                    signalFailureReason = $"pidfd_open failed with errno {openResult.ErrorCode}";
+                }
+            }
+            else if (currentStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var initialStatDiagnostic))
+            {
+                signalFailureReason = $"refused to signal because /proc stat was unreadable or malformed: {initialStatDiagnostic}";
+            }
+
+            // A zombie still has a /proc entry until its parent reaps it; reparented pipe-holders may remain 'Z'
+            // on minimal containers whose PID 1 does not reap adopted orphans.
+            // Even when signaling was refused or failed, require positive evidence that the fixture process
+            // terminated (NotFound, PID reused by a different start time, or 'Z' when allowed) before returning.
+            var stopwatch = Stopwatch.StartNew();
+            var finalStat = operations.ReadProcessStat(identity.Value.Pid);
+            while (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated)
+                && stopwatch.Elapsed < operations.TerminationTimeout)
+            {
+                if (operations.PollInterval > TimeSpan.Zero)
+                {
+                    await Task.Delay(operations.PollInterval);
+                }
+
+                finalStat = operations.ReadProcessStat(identity.Value.Pid);
+            }
+
+            if (!IsFixtureProcessTerminated(identity.Value, finalStat, allowZombieAsTerminated))
+            {
+                var detailParts = new List<string>(2);
+                if (signalFailureReason is not null)
+                {
+                    detailParts.Add(signalFailureReason);
+                }
+
+                if (finalStat is LinuxProcessStatReadResult.UnreadableOrMalformed(var finalStatDiagnostic))
+                {
+                    detailParts.Add($"termination could not be verified because /proc stat was unreadable or malformed: {finalStatDiagnostic}");
+                }
+
+                var detail = detailParts.Count == 0
+                    ? string.Empty
+                    : $" ({string.Join("; ", detailParts)})";
+                var failureLead = finalStat is LinuxProcessStatReadResult.UnreadableOrMalformed
+                    ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) termination could not be confirmed during cleanup"
+                    : allowZombieAsTerminated
+                        ? $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) did not terminate during cleanup"
+                        : $"FIFO fixture PID {identity.Value.Pid} (start time {identity.Value.StartTimeTicks}) was not reaped during cleanup";
+                Assert.Fail($"{failureLead}{detail}.");
+            }
+        }
+        finally
+        {
+            if (root.Exists)
+            {
+                root.Delete(recursive: true);
+            }
+        }
+    }
+
+    private static async Task KillAndReapProcessTreeAsync(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                using var reapCts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                await process.WaitForExitAsync(reapCts.Token);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (Win32Exception)
+        {
+        }
+        catch (NotSupportedException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task CancelAndClosePipesAsync(
+        Process process,
+        CancellationTokenSource pipeCts,
+        Task<string> standardOutputTask,
+        Task<string> standardErrorTask)
+    {
+        await pipeCts.CancelAsync();
+        TryCloseStream(process.StandardOutput);
+        TryCloseStream(process.StandardError);
+        ObserveFaults(standardOutputTask);
+        ObserveFaults(standardErrorTask);
+    }
+
+    private static void TryCloseStream(StreamReader reader)
+    {
+        try
+        {
+            reader.Close();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private static void ObserveFaults(Task task)
+        => _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private static InstallRequest Request(string? release) => new()
     {

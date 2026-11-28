@@ -237,7 +237,6 @@ public sealed partial class HostProductRootPolicyTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("cameraagents", DisplayName = "cameraagent")]
-    [DataRow("logichosts", DisplayName = "logichost")]
     public void Apply_RefusesToMoveARootThatAlreadyHoldsInstances(string component)
     {
         using var host = new PolicyHost();
@@ -322,7 +321,7 @@ public sealed partial class HostProductRootPolicyTests
             ["cameraagent", "reset-state", "--instance-id", instance, "--confirm-instance-id", instance],
             ["cameraagent", "recover-owner", "--instance-id", instance, "--generate-password"],
             ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle"],
-            ["catalog", "select", "--instance-id", instance, "--catalog-version", "hyg-v4.2-p3-s2-r1"],
+            ["catalog", "select", "--instance-id", instance, "--catalog-version", "hyg-v4.4-p4-s3-r1"],
             ["catalog", "rollback", "--instance-id", instance],
             ["catalog", "gc", "--dry-run"],
             ["cameraagent", "upgrade", "--instance-id", instance, "--release", "/srv/hvo/release-v1.2.0-dev.3"]
@@ -550,12 +549,12 @@ public sealed partial class HostProductRootPolicyTests
         string[] defaultNamespaces =
         [
             "/var/lib/hvo-sky", "/var/lib/hvo-sky/cameraagents",
-            "/var/lib/hvo-sky/logichosts", "/var/lib/hvo-sky/catalogs"
+            "/var/lib/hvo-sky/catalogs"
         ];
         string[] policyNamespaces =
         [
             "/srv/data/hvo-skymonitor", "/srv/data/hvo-skymonitor/cameraagents",
-            "/srv/data/hvo-skymonitor/logichosts", "/srv/data/hvo-skymonitor/catalogs"
+            "/srv/data/hvo-skymonitor/catalogs"
         ];
         CollectionAssert.AreEqual(
             defaultNamespaces, PrivilegedPreparation.RootOwnedNamespaces(InstallRequest.DefaultProductRoot).ToArray());
@@ -608,7 +607,7 @@ public sealed partial class HostProductRootPolicyTests
         using var host = new PolicyHost();
         var root = host.CreateDirectory("srv/data-1/hvo_sky.monitor-A9");
         Assert.IsNull(HostProductRootPolicy.ProductRootTextError(root));
-        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV44.CatalogId);
 
         var compose = WriteCompose(paths);
 
@@ -648,7 +647,7 @@ public sealed partial class HostProductRootPolicyTests
 
         using var host = new PolicyHost();
         var root = host.CreateDirectory("srv/data-1/hvo_sky.monitor-A9");
-        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV44.CatalogId);
         var compose = WriteCompose(paths);
 
         var rendered = await runner.RunAsync(
@@ -884,7 +883,7 @@ public sealed partial class HostProductRootPolicyTests
             NativeLinux.getuid(),
             NativeLinux.getgid(),
             $"sha256:{new string('a', 64)}",
-            HygV42.PackageVersion,
+            HygV44.PackageVersion,
             Path.Combine(paths.ConfigRoot, "owner-password"),
             "verification-token",
             "lifecycle-token",

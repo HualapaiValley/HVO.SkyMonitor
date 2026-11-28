@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OrbitalPlanning")]
 public sealed class CameraAgentSatellitePlanningRuntimeTests
 {
     public TestContext TestContext { get; set; } = null!;
@@ -162,7 +163,6 @@ public sealed class CameraAgentSatellitePlanningRuntimeTests
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(root, "ingress"),
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:OrbitalElements:Enabled"] = "false"
             };
             if (enabled)
@@ -183,7 +183,7 @@ public sealed class CameraAgentSatellitePlanningRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<TimeProvider>(host.Clock);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddCameraAgentSatellitePlanning(configuration);
             services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
             services.AddSingleton<ICameraAgentConfigurationAccessor>(new PlanningTestInputs.Config());

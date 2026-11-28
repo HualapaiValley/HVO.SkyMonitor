@@ -5,14 +5,14 @@ Status: **draft 4 with approved SkyMonitor recovery revision**, 2026-10-23. The 
 The revision is a target contract, not a claim that its runtime implementation or qualification has shipped.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
-and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
+and HVO.SkyMonitor (CameraAgent). Each product implements it in its own
 repository; it does not create a shared codebase. RoofController 4.1.1 already implements most of it, so where this
 document says "as RoofController does", its implementation is the reference. Conformance work is tracked in each
 repository's epic. Where a rule says **Today**, it records how each product meets it, and the issue that brings a
 product that does not.
 
 Product-specific safety rules stay product-specific and are never weakened by this contract. Examples are the roof
-controller's verified Stop and idle-only redeploy, and CameraAgent's capture pause and state-compatibility gate.
+controller's verified Stop and idle-only redeploy, and CameraAgent's capture pause and state contract gate.
 
 ## 1. Versions
 
@@ -26,6 +26,7 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
   | Workstation | `X.Y.Z-dev` |
   | CI | `X.Y.Z-ci.<run>` |
   | Integration pre-release | `X.Y.Z-dev.<n>` (SkyMonitor `development/v1` only) |
+  | Beta | `X.Y.Z-beta.N` (SkyMonitor `main`) |
   | Release candidate | `X.Y.Z-rc.<n>` |
   | Release | `X.Y.Z` |
 
@@ -56,13 +57,15 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 ## 3. Cutting a release
 
 1. A version-bump PR.
-2. A release PR. It renames `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog) to the version and adds a non-empty
-   `docs/upgrade-notes/X.Y.Z.md`.
-3. An annotated tag `vX.Y.Z` (or `vX.Y.Z-rc.<n>`) on the release branch. That is the default branch, except in
-   SkyMonitor, whose default branch is the `development/v1` integration branch and whose release branch is `main`.
+2. A release PR for the final release. Use `scripts/release:changelog` to assemble the pending fragments and any
+   remaining Unreleased entries into the version section in `CHANGELOG.md`. Add a non-empty `docs/upgrade-notes/X.Y.Z.md`.
+3. An annotated tag `vX.Y.Z`, `vX.Y.Z-rc.<n>` or (for SkyMonitor) `vX.Y.Z-beta.N` on the release branch. That is the
+   default branch, except in SkyMonitor, whose default branch is the `development/v1` integration branch and whose
+   release branch is `main`.
 
 The release workflow then:
-- checks that the tag matches the version, is on the release branch, and has its CHANGELOG section and upgrade notes;
+- checks that the tag matches the version and is on the release branch, and that a final release has its CHANGELOG
+  section and upgrade notes;
 - calls the CI and scenario workflows (`workflow_call`) as gates, so the tested binaries are the shipped binaries;
 - builds and pushes the images, collects CI's binaries, and writes `release.json` and `SHA256SUMS`;
 - creates a **draft** GitHub release, in an environment that needs the owner's approval;
@@ -76,7 +79,7 @@ candidate, a pre-release or a fix to an older line never moves it.
 same assets, are marked as GitHub pre-releases, need no CHANGELOG section, and never move `latest`.
 
 **The pre-release exception** (decision D8). The approval and the end-to-end job above are for final releases and
-release candidates. An integration pre-release follows them except in these ways:
+release candidates and SkyMonitor betas. An integration pre-release follows them except in these ways:
 - **The human step is the owner's tag.** An annotated `vX.Y.Z-dev.<n>` tag that only the owner can push, under the
   release-tag ruleset, on a commit the integration branch's required checks passed. There is no environment approval.
   The workflow publishes the tested draft itself.
@@ -89,10 +92,10 @@ Reason: an integration pre-release exists to put a branch head on a real host qu
 deliberate act on a reviewed, green commit, and a second approval would add a wait without adding a check. A final
 release is what operators install from `latest`, so it keeps the approval and both platforms.
 
-**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309), and its final releases
-and release candidates by the final-release path above (`.github/workflows/release.yml`, #1310), with the approval in
-its `production-release` environment. RoofController cuts no integration pre-releases; its release candidates follow
-the final-release path.
+**Today:** SkyMonitor cuts integration pre-releases this way (`.github/workflows/prerelease.yml`, #1309). Its final
+releases, betas and release candidates follow the release path above (`.github/workflows/release.yml`, #1310), with
+approval in its `production-release` environment. RoofController cuts no integration pre-releases; its release
+candidates follow the final-release path.
 
 ## 4. Release assets
 
@@ -104,7 +107,7 @@ Every release carries assets with these names and kinds:
 | `hvo-<product>-<rid>` | `cli` | The runtime client, when the product has one |
 | `install.sh` | `install-script` | The entry point, with the release version baked in |
 | `<image>-<version>-linux-<arch>.oci.tar` | `image-archive` | An offline image archive per architecture |
-| `<catalog version>.bundle.tar.gz` | `catalog` | An independently versioned data package (section 1): the default HYG 4.2 star bundle and `openngc-v20260501-p6-s5-r1.bundle.tar.gz` for deep-sky objects. HYG 4.4 remains held for separate approval. Star and deep-sky selections use independent catalog lifecycle commands |
+| `<catalog version>.bundle.tar.gz` | `catalog` | An independently versioned data package (section 1): the default HYG 4.4 star bundle and `openngc-v20260501-p6-s5-r1.bundle.tar.gz` for deep-sky objects. Star and deep-sky selections use independent catalog lifecycle commands |
 | `THIRD-PARTY-NOTICES.md` | `notices` | The third-party notices of what the release ships, the installer's bundled packages among them (SkyMonitor, #1317) |
 | `release.json` | | The machine-readable release manifest |
 | `SHA256SUMS` | | Covers every asset |
@@ -134,6 +137,11 @@ Every release carries assets with these names and kinds:
   by itself: the operator, or `install.sh`, extracts it and passes it to the installer (SkyMonitor:
   `--catalog-bundle`). The product still declares which data versions it accepts, so a newer data package can be
   installed without a product release.
+- **Star catalog rollback** is an instance operation.
+  `hvo-sky-install catalog rollback` restores the previous package revision of the installed star lineage.
+  It refuses when there is no previous revision or capture processing still has pending work or retries.
+  Later releases must preserve this rollback contract. Independent OpenNGC selection has its own
+  previous-selection record.
 - **Platform names** (decision D5). A name about an image uses the OCI architecture, `amd64` or `arm64`:
   - the offline archive's file name, `<image>-<version>-linux-<arch>.oci.tar`;
   - `images.<key>.platforms`;
@@ -145,8 +153,7 @@ Every release carries assets with these names and kinds:
     for binaries. Renaming either side would add a translation that both products already avoid.
   - **Today:** both products name their files this way.
 - **Images** are pushed to `ghcr.io/hualapaivalley/<image>` with tag `<version>`, plus `latest` for the newest final release,
-  and are always referenced by digest. Image names: `roof-controller`, `roof-hat-emulator`, `skymonitor-cameraagent`,
-  and later `skymonitor-logichost`.
+  and are always referenced by digest. Image names: `roof-controller`, `roof-hat-emulator`, and `skymonitor-cameraagent`.
 - **`release.json`** follows RoofController's schema 1:
   - `version`, `tag`, `prerelease`, `commit`, `created`, `repository`;
   - `images.<key>` with `repository`, `tag`, `digest`, `reference` and `platforms`;
@@ -160,17 +167,20 @@ Every release carries assets with these names and kinds:
   | Product | Keys |
   | --- | --- |
   | RoofController | `controller` (`roof-controller`), `hatEmulator` (`roof-hat-emulator`) |
-  | SkyMonitor | `cameraAgent` (`skymonitor-cameraagent`), later `logicHost` (`skymonitor-logichost`) |
+  | SkyMonitor | `cameraAgent` (`skymonitor-cameraagent`) |
 
   - Reason: RoofController's released installers already read `images.controller`, while SkyMonitor has published
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
     also outlives a rename of its image.
   - **Today:** both products use these keys. SkyMonitor's `release.json` names `images.cameraAgent` (#1359, #1364).
-- **LogicHost reader-first preparation** (#1242). Schema 1 additionally supports `images.logicHost` and
-  `componentMetadata.logicHost` for a local identity candidate. The bounded central declaration is repeated in the
-  image's `io.hvo.skymonitor.logichost-release` label. The [candidate format](planning/logichost-offline-candidate.md)
-  defines the exact fields, checks and remaining bundle/trust gates. This additive reader support enables no publication
-  or installation, and does not change the CameraAgent reader or release writer.
+- **Upstream images** (#1966). `images.silo` names the stock Silo image a Silo-layout CameraAgent runs. HVO does not
+  build or convey it, so it differs from a component image:
+  - it has `"supplier": "upstream"`, the upstream `repository`, release `tag`, index `digest` and `reference`;
+  - `platforms[]` are objects with `platform`, `manifestDigest` and `configDigest`;
+  - it adds `revision`, `license` and `source`, and has no `offlineArchives`;
+  - the release tool writes it from the installer's own pin. A reader that does not use it ignores it, so earlier
+    installers read such a release unchanged;
+  - a Silo-layout install refuses a release that names no Silo image or another one, before changing anything.
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
@@ -184,8 +194,8 @@ Every release carries assets with these names and kinds:
     decision, 2026-10-16).
   - The release environment requires the owner's approval to publish, except for the integration pre-releases of
     section 3.
-  - Installers refuse an older version on `upgrade`. RoofController's `rollback` goes back;
-    SkyMonitor's approved rollback is only recovery of the pending upgrade's exact checkpoint (section 6).
+  - Installers refuse an older version on `upgrade`. CameraAgent's `rollback` loads the retained
+    previous image on the baseline contract (section 6).
 
 ## 5. Installer
 
@@ -223,7 +233,7 @@ HVO.RoofController#127):
 | --- | --- |
 | *(none)* / `install` | Install; interactive on a terminal, otherwise from flags or `--answers` |
 | `upgrade [--version V]` | Upgrade to the latest release or to `V` (section 6) |
-| `rollback` | RoofController: return to the release recorded as previous. SkyMonitor target: recover the pending upgrade's paired checkpoint; no arbitrary downgrade or post-commit grace period (section 6) |
+| `rollback` | RoofController returns to the release recorded as previous. CameraAgent starts the retained previous image on the same state contract (section 6). |
 | `backup` / `restore FILE` | A self-verifying archive of the product's own data, with a manifest, that only its owner can read (below) |
 | `uninstall [--purge --confirm HOST --backup\|--no-backup]` | Remove what was installed; `--purge` also removes data |
 | `status` | What is installed here, its versions and health |
@@ -248,17 +258,11 @@ HVO.RoofController#127):
   adding RoofController's `cli.folder` setting. The release's installer goes in both `/usr/local/sbin/hvo-sky-install`
   and `~/.local/bin/hvo-sky-install`. Both kinds are checked against release.json and SHA256SUMS, published atomically
   with mode `0755`, reported by `--plan`, and projected into `install-programs.json` beside the install record. Upgrade keeps replaced files as
-  `.previous`; rollback republishes the verified files retained for the previous image, without the release folder.
-  This describes today's lifecycle. Under the approved section 6 target, those retained programs belong to the
-  pending checkpoint/image pair and do not authorize a post-commit binary downgrade.
+  `.previous`. The retained programs belong to the pending checkpoint and image pair described in section 6.
   - SkyMonitor keeps per-image program sets and cached files under the instance's deployment state. The machine
-    install-record sidecar is their summary, consistent with D10. The schema-1 `install.json` keeps exactly its released
-    members: older strict readers, including a kept `.previous` installer, can still read it for recovery. The separate
-    sidecar uses the same atomic write and file/directory fsync discipline. Old installers leave PATH programs and the
-    sidecar alone. An image-only install has no release programs to publish.
-    A rollback to an image without a retained set removes the owned runtime client and keeps the maintenance
-    installer, rather than assuming an unverified manual copy is that image's client. Shared command paths take the
-    version last published by an install, upgrade or rollback.
+    install-record sidecar is their summary, consistent with D10. It uses the same atomic write and
+    file and directory synchronization as the schema-2 machine record. An image-only install has no
+    release programs to publish. Shared command paths take the version last published from a verified release.
   - SkyMonitor removes a last-owner runtime client on uninstall and restores it on reinstall. Unlike RoofController,
     it retains the installer for a preserved instance's `reinstall`; purge removes the last-owner installer copies
     and `.previous`, after the deletion is durably completed. Interrupted program cleanup remains resumable from
@@ -271,7 +275,7 @@ HVO.RoofController#127):
     modes. Publication keeps the verified stage open and checks its device/inode at the renamed destination. A durable
     intent records the old and desired checksums before either slot changes, so an interrupted publication can resume
     without accepting an unowned `.previous`.
-  - A completed legacy install re-run also publishes missing release commands and then settles both record views,
+  - A completed install re-run also publishes missing release commands and then settles both record views,
     without redeploying an otherwise unchanged container.
   - After publication, command hints use an existing durable installer path. SkyMonitor completes its current
     operation without RoofController's installer handover; subsequent commands execute the newly installed release.
@@ -320,151 +324,45 @@ HVO.RoofController#127):
 
 ## 6. Upgrade and rollback
 
-**Scope and precedence.** The SkyMonitor target below supersedes its previous-release readability and small-store
-fallback obligations from #1318 / D2. The existing swap/readability/copy rules following it remain RoofController's
-policy and describe SkyMonitor's legacy implementation only. RoofController's safety and lifecycle policy is unchanged.
+### CameraAgent state contract baseline
 
-### SkyMonitor approved target: upgrade-time checkpoint recovery
+**0.10.0-beta.1** is the first release of the clean-install state contract `cameraagent-silo-state-v1`.
+The CameraAgent image declares the contract in
+`io.hvo.skymonitor.state-contract`. The installer records it in the instance manifest and in the
+installed image identity. The manifest, installation journal, installation result and machine
+install record use schema 2. The image lifecycle operation journal uses schema 4, and the
+database checkpoint manifest uses schema 2.
 
-Owner decision, 2026-10-23, [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606).
-**No downgrades:** an older binary never opens candidate-mutated state. Recovery restores the exact pre-upgrade
-checkpoint with its matching prior image digest, configuration and catalog selection. A previous binary need not
-read a newly migrated CameraAgent store. Forward migrations must still correctly accept only declared supported
-inputs; store/image declarations and integrity/path/capacity checks remain required.
+A pre-baseline Silo instance may already have the same identifier in its storage binding. Installer
+admission requires the baseline record schemas and the new OCI label in the retained image identity.
+The binding and individual SQLite schema numbers do not establish installer admission on their own.
 
-The protected upgrade boundary is:
+A site moving from a release before 0.10.0-beta.1 provisions a fresh instance on empty storage. Install and
+lifecycle preflight refuse records or images outside this contract and direct the operator to a
+fresh install. They do not adopt earlier state, resume its journals, or apply its checkpoints.
+The [cutover plan](planning/cameraagent-silo-cutover.md) governs site rollout.
 
-1. Verify current/candidate inputs, ownership, supported forward migration and capacity. Serialize lifecycle work
-   for the exact UUID. Pause acquisition/ingress and drain or durably settle accepted work. Fence **all writers**:
-   workers, replay result publication, outboxes, retention, provider refresh, configuration/identity/key changes,
-   maintenance tools and other processes. Keep the fence across checkpoint, candidate validation and recovery.
-2. Detect a qualified checkpoint capability for the actual backend/topology and create and verify the checkpoint
-   before any candidate mutation. CameraAgent may use its existing SQLite-copy mechanism if qualification proves
-   the whole logical point below; a filesystem snapshot, new filesystem or layout is not prescribed.
-3. Durably pair the checkpoint manifest/hash and completion proof with instance UUID, operation, prior exact
-   image/platform, configuration, immutable catalog identities and supported recovery procedure. Keep journal,
-   protected/unprotected disposition, restore progress and final receipt **outside every tree being reverted**.
-   Publish intent before effects, and completion only after data and directory entries are durable.
-4. Migrate and start the candidate with external work admission still closed. Candidate health requires the exact
-   image/config/catalog/schema and identity/key-ring match; DB integrity and referenced payload checks; bounded
-   dependency-aware readiness, authenticated read/API checks, and an isolated representative persistence/retrieval
-   probe with verified output. A live process or HTTP liveness alone is insufficient. Probe writes must be isolated
-   or part of the disposable candidate state; probes must not export identities, send provider requests, acknowledge
-   production submissions or release results. Name checks, timeout and expected health disposition in the candidate
-   qualification; unavailable required checks fail the decision. CameraAgent standalone health needs no LogicHost.
-5. On success, durably commit the new image/state receipt and recovery decision, then release admission and resume
-   acquisition/ingress and workers. **No externally acknowledged new work before this commit.** On failure, stop the
-   candidate, validate and restore the complete paired point while fenced, start the matching old image, verify its
-   restored health and references, durably record recovery, then resume. If restoration cannot verify, stay fenced
-   with an explicit repair instruction. A restart reconciles journal and actual state; it never guesses success or
-   repeats a pre-upgrade restore after committed service has admitted work.
+The baseline keeps clean install, installation verification, data-preserving uninstall, reinstall,
+and purge with exact instance confirmation. Later builds that declare the same contract can use
+`cameraagent upgrade` and `cameraagent rollback` through the retained Compose and image identities.
+Until 0.10.0-beta.1 ships, fold schema changes into the initial EF Core migration and baselined SQLite
+stores owned by [#2179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2179). From 0.10.0-beta.1
+onward, later releases must maintain upgrade, reinstall, migration and rollback support from this
+baseline. A schema or state-contract change after shipment requires an explicit, verified transition.
 
-This phase ends the automatic rollback window at commit. Retention for diagnosis does not authorize later rollback.
-There is no daily/periodic snapshot command, arbitrary downgrade command, repeated previous-image toggle or
-last-checkpoint grace period. Explicit `backup` / `restore` remains separate; a full recovery archive is not an
-automatic prerequisite for every upgrade.
+Before replacing an image, the installer pauses and drains capture, stops the writers and records
+a verified checkpoint of the small stores for recovery before commit. A failed or interrupted
+operation is recovered against its own authenticated checkpoint and exact predecessor records.
+An operation past commit resumes its settlement. The operator can use `cameraagent rollback` to run
+the retained previous image against the same live contract and keep post-upgrade data. The
+[installer runbook](runbooks/deployment-installer.md#checkpoint-and-image-recovery) describes the
+recovery procedure and checkpoint boundaries.
 
-**CameraAgent protected or operator-managed.** If qualified capability is unavailable or checkpoint creation or
-verification fails, clearly warn before candidate mutation that this upgrade is **unprotected** and backup/manual
-restore is the operator's responsibility. Allow it without forcing a backup, requiring proof or adding an approval
-gate. Ordinary ownership, integrity, path and space failures still refuse; this option bypasses only checkpoint
-protection. Record the reason and unprotected status durably outside the revert tree before proceeding. Never label
-a partial checkpoint usable. If the unprotected candidate changes state or its effects are uncertain, failure leaves
-the instance fenced for manual recovery or a supported forward repair; never claim snapshot recovery or start an
-old binary on that state. If the disposition cannot be persisted, do not mutate. LogicHost has its own coherent
-SQL/object/config cutoff and qualification; CameraAgent's unprotected allowance does not implicitly extend to it.
+### RoofController policy
 
-**One logical recovery point.** Include the instance's mutable databases and all DB recovery files (WAL/journal or
-native log/backup chain), referenced raw/archive/derived/calibration/content files, configuration/Compose,
-application binding, Identity/provisioning secrets and key ring. Verify that every restored DB reference resolves
-to the matching payload/generation. Inventory external configured roots; a separate mount or omitted root cannot
-silently reduce coverage. A native SQLite backup may consolidate committed WAL state into a self-contained DB;
-it must prove that result and remove stale live sidecars safely on restore. Catalogs remain immutable: pin and retain
-the exact selected and historically referenced packages and hashes rather than rewinding a shared `current` pointer.
-Pair the exact image and retained verified installer/runtime programs as well. Sibling instances and shared services
-must remain unchanged. LogicHost remains SQL Server; SQL, objects, configuration, Identity and keys must share one
-fenced cutoff, not independent snapshots taken while another writer runs.
-
-Preserve **non-rewindable external facts**, provider Retry-After/backoff/halts, exported capture/job/event identities,
-sequence/version floors and credential revocations through a minimal explicit exception/capsule outside the reverted
-trees. Inventory each exception, its authority, old-image-compatible application, durability and verification.
-Reapply and verify it before work resumes; failure keeps recovery fenced, rather than silently reissuing an identity
-or weakening a provider floor. Do not exempt an entire mutable store merely to retain one floor. If fencing proves no
-such fact can change in this boundary, retain that proof instead of building a general framework. Existing best-effort
-counter carry and store exclusions below are baseline behavior, not qualification of this stricter target.
-
-### SkyMonitor qualification and adoption
-
-[#1607](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1607) evaluates CameraAgent;
-[#1608](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1608) independently evaluates LogicHost after this
-contract. Both must credit existing evidence, time-box the first study/probe to roughly 60–90 minutes, test the most
-promising alternative first and stop early without a credible net benefit. Keeping the current mechanism is success.
-Measure setup/dependencies, operating steps, failure modes, test upkeep and end-to-end upgrade/recovery time;
-snapshot creation speed alone is insufficient. No backend/layout change is required by this contract.
-
-**Ordering gate (owner clarification, 2026-10-23).** The studies may be scheduled now or later, but their applicable
-recorded keep/change outcome must precede overlapping persistent-layout/recovery work or a substantial forward
-migration. Affected implementation stories cite #1607 for CameraAgent or #1608 for LogicHost, the recorded decision,
-and their declared supported forward inputs before committing to that path. An evidence-backed keep-current result
-clears the gate without a new filesystem, framework or implementation PR. Apply this to the overlapping parts of
-CameraAgent #1059/#1060/#1300 and LogicHost #1244/#1245/#589/#591. Unrelated features, clean-install preparation,
-release verification and strict existing-behavior #893 CLI parity remain independent. Follow the selection check in
-the [execution protocol](planning/agent-execution.md#skymonitor-recovery-ordering-gate).
-
-**Explicit forward-only conversions.** A separately declared larger DB/file/schema conversion may be forward-only;
-its size alone does not require a reverse migration, old-binary/new-schema compatibility or a new rollback
-implementation. Its story and operator guidance must name supported source/target inputs, pre-mutation validation,
-post-conversion integrity/reference checks, interruption/resume behavior, and operator recovery and any data-loss
-expectations. State these limits before conversion; they do not authorize silent destructive changes. This is
-distinct from ordinary protected upgrade-time checkpoint recovery above: a forward-only migration within a protected
-upgrade still recovers its paired pre-upgrade checkpoint on failure, without reverse migration. Do not treat a
-forward-only declaration as a universal waiver of checkpoint protection or erase existing required gates.
-
-Minimal qualification must show:
-
-- One instance restored while a running sibling's state, image, configuration, catalog selection and work remain
-  unchanged; exact DB/payload hashes or logical invariants, identity/key/catalog pairing and external floors agree.
-- Every writer fenced, pre-commit production requests refused without success acknowledgement, accepted old work
-  accounted for, candidate health failures recovering before admission and post-commit restarts never rewinding work.
-- Durable checkpoint/image pairing and restore intent/progress surviving interruption before/after publication,
-  candidate migration/start, each DB/file/config restore, capsule application and final decision. Missing/partial,
-  damaged, wrong-instance, wrong-image/catalog and space-exhausted checkpoints never become successful recovery.
-- Capability absence and checkpoint failure produce the durable CameraAgent unprotected warning/path; unsafe
-  ordinary preflight failures still refuse. An unprotected failed mutation cannot launch an old binary.
-- No arbitrary downgrade or daily-snapshot command, and no recovery of a pending checkpoint after commit.
-
-The [implementation and qualification map](planning/skymonitor-upgrade-recovery.md) identifies current code/tests,
-remaining experiments and proposed regression routing. Full storage recovery campaigns are proposed when lifecycle,
-backend, layout or durability behavior changes; other changes may reuse unchanged applicable evidence with explicit
-identity/boundary justification. **Existing required gates remain in force until a separately reviewed policy change
-adopts that routing.** This contract adds no every-PR filesystem matrix and runs no new qualification campaign.
-
-### RoofController policy and SkyMonitor legacy behavior
-
-- **Before upgrading**, the installer prints the upgrade notes of every release between the installed and the target
-  version. It refuses an older target and points to `rollback`.
-- **Swap:**
-  1. The previous image or container is kept.
-  2. The product-specific safety gate runs (verified Stop and roof idle; capture paused and drained).
-  3. The new version starts and must pass its health check.
-  4. If it fails, the previous version is restored automatically.
-- **Rollback** goes back exactly one release.
-- **State:**
-  - Each component declares a state contract in its image labels and in `release.json`'s `stateContracts`. Its shape
-    is given below.
-  - If the contract is unchanged, upgrade and rollback are a swap: no operator assertion is needed, and a rollback
-    needs no restore. A product may still copy its small stores on every upgrade, and restore them, as the copies
-    below allow (D2).
-  - A schema change must stay readable by the previous release for one release: add first, remove in a later
-    release. A rollback then still needs no restore.
-  - When a release cannot meet that, it declares a breaking contract change. The installer then snapshots only the
-    small databases before migrating (SQLite online backup, or a native database backup), and rollback restores that
-    snapshot. The installer says plainly that changes made after the upgrade are lost.
-  - **Bulk append-only data is never copied by an upgrade:** frames, archives, derived products, catalogs. It is only
-    protected from deletion while the upgrade runs. Copying it does not scale; one CameraAgent instance holds hundreds
-    of GB at steady state.
-- **Full backup** of everything is the separate `backup` command, run on the operator's schedule. It is not a hidden
-  step of every upgrade.
+RoofController retains its own upgrade notes, state checks and one-release rollback policy.
+Its installer verifies Stop and roof idle before replacing the image and restores the previous
+version if candidate health fails.
 
 ### State contracts
 
@@ -487,64 +385,53 @@ it gives the newest schema a release may write, and every schema it reads:
   release checks refuse a release whose label and `release.json` differ.
 - **A store** is one durable store the component writes: a database, or a set of files with one schema version. A
   store's schema is the version that store records about itself, never one the installer infers.
-- **A breaking change** is a target that writes a schema, for some store, newer than the installed release reads
-  (`target.writes > installed.reads.max`). A rollback to the installed release would then meet a store it cannot read.
-  Any other change keeps RoofController's rollback a swap. For SkyMonitor this is legacy selection logic;
-  the target always recovers the paired checkpoint, never relies on reverse readability.
-- Reason: per-store numbers let the installer decide "swap" or "breaking" by comparing two `release.json` files, with
-  no knowledge of the product's schemas.
-- **Today:** RoofController declares this shape in `build/release-assets.py` and in its controller Dockerfile's label
-  `io.hvo.roof.state-contracts`, which its release tests check agree. Its installer compares contracts before an
-  upgrade and a rollback. SkyMonitor declares every store in the mapping below in its CameraAgent Dockerfile's label
-  `io.hvo.skymonitor.state-contracts` and in `release.json`'s `stateContracts.cameraAgent` (#1359, #1364). Its
-  installer does not compare them yet: it still decides a state migration from one contract name
-  (`io.hvo.skymonitor.state-compatibility`, `cameraagent-state-v2`) plus boundary labels, and treats any changed
-  boundary label as a state migration (#1340).
+- For RoofController, a target writes beyond the previous reader's range when
+  `target.writes > installed.reads.max`. Its installer uses these values to distinguish a same-state
+  swap from a transition requiring a checkpoint. SkyMonitor publishes its per-store schema inventory
+  in the same shape. CameraAgent lifecycle admission uses the baseline identifier and the candidate's
+  catalog, Identity and raw journal declarations.
 
-**The SkyMonitor mapping.** Component `cameraAgent`, with one store for each SQLite database an instance keeps:
+CameraAgent keeps the local environmental observation journal at
+`raw/.environment/environmental-observations.db` under the instance state root.
 
-D1's target is a whole-number schema for each store in `stateContracts`. The table gives the marker each store keeps
-its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateContracts.cameraAgent` declare:
+### SkyMonitor Silo layout (#1966)
 
-| Store | Database (under the instance's state root) | Schema marker today | Declared today |
-| --- | --- | --- | --- |
-| `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
-| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
-| `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
-| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
-| `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
-| `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |
-| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4. The current image boundary also preserves the paired checkpoint first required by `bc5ca7489c4090c299c416309519ab72da4a8cdb` for adoption from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |
-| `orbitalElements` | `raw/.orbital-elements/orbital-elements.db`, with its content files beside it | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): the provider floor and halt must never be rewound |
-| `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
-| `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
+The CameraAgent Silo layout ([cutover contract](planning/cameraagent-silo-cutover.md)) is the default
+for a clean install. Omitting `--storage-layout` or specifying `--storage-layout silo` selects it.
+The interactive installer uses the same defaults and carries explicit Silo image and archive options into its answers.
 
-The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
-The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
-journal without the settlement column is refused unchanged. Retain or archive that rehearsal state and restore
-the verified paired v4 checkpoint before adopting the released reader.
+- Its instance manifest declares component schema `cameraagent-silo-install-v1` and Compose template
+  `cameraagent-silo-compose-v1`. It supports `status`, `first-resume`, `silo-verify`, `uninstall`,
+  `purge`, `reinstall`, `upgrade`, `rollback`, `catalog select` and `catalog rollback`. Backup and disaster recovery of the Silo store are
+  tracked in [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972).
+- The manifest records the pinned stock Silo image and the data root's filesystem and device. It also records the
+  bucket, store and binding identities, the writer key's ID and the exact versions and digests of the instance marker and
+  fence. It holds no secret.
+- The stock Silo image is pinned by release, index digest and each platform's manifest and config digests. The
+  installer and the release tool share that pin, and `release.json` names it as `images.silo` (section 4). HVO does not
+  ship the image. An offline site stages a `docker save --platform` archive of the pinned reference, which the installer
+  verifies blob for blob before loading. [The runbook](runbooks/cameraagent-silo-runtime.md) gives the licence
+  rationale, who provisions and verifies the image, and the offline route.
+- The CameraAgent image declares `io.hvo.skymonitor.first-boot-contract=cameraagent-first-boot-pause-v1`; a Silo-layout
+  install refuses an image without it.
+- The data-root filesystem must keep the larger of 10 GiB and 5 % free. `silo-verify` reports `ready`, `degraded` (only
+  the optional archive is unreachable) or `not-ready`. It exits 3 when not ready, and `first-resume` then refuses.
+- An optional archive store is verified read-only over HTTPS, chained to an operator authority for the endpoint's
+  name, with a signed versioning read. Plain HTTP is refused, and there is no lab exception. The manifest records its
+  endpoint, bucket, authority and server-certificate SHA-256 and access key ID, never the secret.
+- A re-run of a completed Silo-layout install with the same inputs verifies the instance and changes nothing. With
+  other inputs it refuses and names `silo-verify`. Use the lifecycle commands for admitted image changes.
+- `silo-verify`, `first-resume` and a completed re-run verify the instance as it runs now. They correlate its records
+  before any authenticated call, require the running CameraAgent on its recorded image and this daemon's own platform
+  child of the Silo pin, and require the private network to hold only the instance's two containers. They read the
+  binding back from CameraAgent's own network namespace.
+- An interrupted Silo-layout install resumes from an owner-only, durable bootstrap intent and writer credential record.
+  It adopts only what this instance's own attempt created, and refuses any other or ambiguous state before the store
+  is touched.
 
-- The state snapshot of #1340 copies every store here except `orbitalElements`, `spaceWeather` and
-  `calibrationFamilies`. The calibration-family store (#1475) holds approved calibration families and which one is
-  active. No earlier release opens it, so a rollback needs no copy of it. A snapshot or backup that an earlier installer
-  took does not list it, and verification requires every store the snapshot list names, so listing it would make those
-  refused. A full `backup` archives it with the instance's other files and `restore` puts it back. A future schema
-  change must revisit this legacy exclusion when adopting #1606's complete recovery point. The space-weather store holds per-product Retry-After floors, backoff and provider/product halts; restoring an older copy would rewind them. Future incompatible schema changes must revisit this legacy exclusion. The orbital store holds the provider's
-  attempt floor and any halt. Restoring an older copy would rewind them, and the release rolled back to could then
-  request inside the floor or after the provider refused. A future orbital schema change that older releases cannot
-  read must revisit this legacy exclusion. The approved target inventories all three stores and their content,
-  preserving only explicit non-rewindable facts through the verified exception/capsule above.
-- The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
-  accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
-- Every store's schema is declared from these markers (#1359, #1364). Deciding a migration by comparing the declared
-  contracts is not done yet, as above.
+### Copies of the small stores
 
-### Copies of the small stores (RoofController policy; SkyMonitor legacy implementation)
-
-Decision D2. Before an upgrade can change a small store, a restorable copy of it exists. For SkyMonitor this
-describes the delivered #1340 mechanism, superseded as a target obligation by #1606 above.
+Decision D2. Before an image change can affect a small store, a restorable copy of it exists.
 - **When to copy.** A product copies at least when the target declares a state change. It may copy on every upgrade.
 - **Rollback.** A rollback restores the copy of every store the release it returns to cannot read. It may restore
   every copied store. It says which changes made since the upgrade are lost, before it changes anything.
@@ -556,9 +443,9 @@ describes the delivered #1340 mechanism, superseded as a target obligation by #1
   - RoofController takes a backup of its own data, as its `backup` command does, as the first step of every
     upgrade, before it puts the release's installer in place; that data is a few small files. Its
     `rollback --restore-backup` puts back the stores the release before cannot read, after asking (or with `--yes`).
-  - SkyMonitor snapshots its SQLite stores, except `orbitalElements`, `spaceWeather` and `calibrationFamilies` (section 6), only when the candidate declares a
-    state migration (#1340). It pauses and drains capture and stops the instance first, then takes the snapshot. Its
-    rollback restores the snapshot the upgrade it undoes took, and says what is lost.
+  - SkyMonitor pauses and drains capture and stops its writers before checkpointing the selected SQLite stores
+    and protected records. The checkpoint recovers an interrupted image change. An explicit rollback within
+    the baseline contract runs the retained image on live state.
   - SkyMonitor's `backup` command is #1353; RoofController has one.
 
 ## 7. Container resources
@@ -585,11 +472,10 @@ describes the delivered #1340 mechanism, superseded as a target obligation by #1
     warning on standard error and in the logs. Everything else that refuses an install still refuses a rollback.
   - Reason: an unbounded container can starve the host it shares, but refusing a rollback could leave an operator
     with no way back from a failed release.
-  - **Today:** both products behave this way: RoofController (HVO.RoofController#151) and SkyMonitor (#1357), at
-    install, upgrade and rollback. SkyMonitor's rollback, its `--resume` and its `upgrade --restore-only` write the
-    warning to the operation's install log. Docker refuses a container with a CPU limit on a host without CPU quota
-    support, so every SkyMonitor rollback and recovery start there withholds the CPU limits and keeps the others, as
-    RoofController gives only the limits Docker can enforce; the limits stay recorded.
+  - RoofController applies that policy to rollback. SkyMonitor applies it to pending-upgrade recovery starts
+    and records rollback warnings in the operation's install log. On a host without CPU quota support,
+    the recovery model withholds the CPU limit and keeps the other recorded limits. The instance retains its
+    full resource settings.
 - **Roof controller.** Its limits are on by default because its container's supervisor turns the drive relays off
   whenever the controller exits or crash-loops (HVO.RoofController#138):
   - It writes relay-off and verifies the register by reading it back.
@@ -619,8 +505,8 @@ does with `hvo-roof`. It sits beside the installer: the installer owns lifecycle
 | --- | --- | --- |
 | Installer | `hvo-roof-install` | `hvo-sky-install` |
 | Runtime client | `hvo-roof` | `hvo-sky` |
-| Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent`, `skymonitor-logichost` |
-| Image keys (`release.json`, `stateContracts`) | `controller`, `hatEmulator` | `cameraAgent`, later `logicHost` |
+| Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent` |
+| Image keys (`release.json`, `stateContracts`) | `controller`, `hatEmulator` | `cameraAgent` |
 | Config root | `/etc/hvo-roof` | `/etc/hvo-sky` |
 | Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` |
 
@@ -646,8 +532,8 @@ Owner decisions of 2026-10-18:
    upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor met its upgrade and
    rollback part in #1357.
 7. **Draft 4's decisions** D1, D2 and D5–D10, below, are accepted as written. SkyMonitor met the resulting rules (the
-   `cameraAgent` image key, `stateContracts` and the `created` label) in #1359 (#1364). Its installer still decides a
-   state migration from boundary labels rather than from `stateContracts` (section 6).
+   `cameraAgent` image key, `stateContracts` and the `created` label) in #1359 (#1364). The CameraAgent
+   baseline uses the admission rules in section 6.
 
 - **D1. State contracts:** RoofController's per-component, per-store `writes` and `reads` shape, with the SkyMonitor
   mapping (section 6).
@@ -676,11 +562,7 @@ Owner decision of 2026-10-18, on #1353:
    account's, and a restore leaves the machine install record to `reinstall`. RoofController keeps running its backups
    as root. SkyMonitor met this in #1353 (#1369).
 
-Owner decision of 2026-10-23, on #1606:
+Owner decision of 2026-11-27, on #1964:
 
-9. **SkyMonitor recovery is upgrade-time checkpoint rollback, with no downgrades.** Section 6 supersedes the
-   SkyMonitor part of #1318 / D2 and the previous-release readability obligation. CameraAgent can proceed durably
-   unprotected with a clear manual-recovery warning when qualified checkpoint protection is unavailable or fails;
-   ordinary integrity/path/space checks remain. #1607 and #1608 qualify the smallest adequate mechanism, including
-   keeping the current one. No new backend, layout, periodic snapshot or post-commit grace period is authorized.
-   RoofController policy is unchanged.
+9. **0.10.0-beta.1 starts fresh.** The CameraAgent lifecycle uses the
+   [baseline contract](#cameraagent-state-contract-baseline) for install, image transitions and checkpoint recovery.

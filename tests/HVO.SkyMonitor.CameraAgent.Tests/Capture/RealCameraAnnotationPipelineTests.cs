@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class RealCameraAnnotationPipelineTests
 {
     private static readonly DateTimeOffset Utc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
@@ -235,34 +236,16 @@ public sealed class RealCameraAnnotationPipelineTests
     }
 
     [TestMethod]
-    public async Task AnnotationSceneProvider_InstalledHygV42RetryKeepsPreLineageProvenanceBytes()
-    {
-        // An installed schema-2 (HYG 4.2) package reports its catalog ID and package version, but provenance
-        // regenerated for a retained capture must stay byte-identical to the evidence recorded before #521.
-        var catalog = CreateCatalog(schemaVersion: "2", catalogId: "hyg-v42-production", packageVersion: "hyg-v4.2-p3-s2-r1");
-        var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
-
-        var first = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
-        var retry = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
-
-        Assert.IsNull(retry.Provenance.CatalogId);
-        Assert.IsNull(retry.Provenance.CatalogPackageVersion);
-        var json = JsonSerializer.SerializeToUtf8Bytes(retry.Provenance);
-        using var document = JsonDocument.Parse(json);
-        Assert.IsFalse(document.RootElement.EnumerateObject().Any(static property =>
-            property.Name.StartsWith("catalogId", StringComparison.OrdinalIgnoreCase) ||
-            property.Name.StartsWith("catalogPackage", StringComparison.OrdinalIgnoreCase)),
-            "Schema-2 provenance must not gain package-identity properties.");
-        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(first.Provenance), json);
-    }
-
-    [TestMethod]
     public async Task AnnotationSceneProvider_SchemaThreeLineageRecordsCatalogIdentity()
     {
         var catalog = CreateCatalog(schemaVersion: "3", catalogId: "hyg-v44-production", packageVersion: "hyg-v4.4-p4-s3-r1");
         var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
 
         var scene = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+        var retry = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(scene.Provenance),
+            JsonSerializer.SerializeToUtf8Bytes(retry.Provenance));
 
         Assert.AreEqual("hyg-v44-production", scene.Provenance.CatalogId);
         Assert.AreEqual("hyg-v4.4-p4-s3-r1", scene.Provenance.CatalogPackageVersion);

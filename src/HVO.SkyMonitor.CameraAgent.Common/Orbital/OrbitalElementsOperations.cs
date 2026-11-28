@@ -27,7 +27,7 @@ public enum OrbitalElementsCommandStatus
     Unavailable
 }
 
-/// <summary>An operator request to refresh now. It never bypasses the provider halt or the two-hour floor.</summary>
+/// <summary>An operator request to refresh now. It never bypasses the provider halt, two-hour floor or 5xx backoff.</summary>
 public sealed record OrbitalElementsRefreshRequest(string IdempotencyKey, string Actor, string Reason);
 
 /// <summary>

@@ -213,6 +213,7 @@ public abstract class OrbitalStoreTestBase
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
 {
     private static readonly string[] Tables =
@@ -860,10 +861,10 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
             clock.Advance(OrbitalElementsStoreTestData.Interval);
         }
 
-        CollectionAssert.AreEquivalent(hashes.Skip(1).Select(hash => hash + ".json").ToArray(),
+        CollectionAssert.AreEquivalent(hashes.Skip(1).Select(hash => hash + ".raw").ToArray(),
             OrbitalElementsStoreTestData.Files(root, "quarantine"));
         CollectionAssert.AreEqual(OrbitalElementsStoreTestData.Raw("q3"),
-            await File.ReadAllBytesAsync(Path.Combine(root, "quarantine", hashes[2] + ".json")).ConfigureAwait(false));
+            await File.ReadAllBytesAsync(Path.Combine(root, "quarantine", hashes[2] + ".raw")).ConfigureAwait(false));
         var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsNull(state.CurrentManifestSha256);
         Assert.AreEqual(OrbitalAttemptOutcome.Quarantined, state.LastAttemptOutcome);

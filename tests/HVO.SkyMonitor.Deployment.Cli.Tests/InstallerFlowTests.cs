@@ -44,7 +44,7 @@ public sealed partial class InstallerFlowTests
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity(string? illuminationMode)
     {
         // Deliberately environment-gated. These contracts install a real catalog bundle, which is
-        // too large to check in, so the CI Unit lane restores it from the hyg-v42-contracts artifact
+        // too large to check in, so the CI Unit lane restores it from the hyg-v44-contracts artifact
         // and exports this variable; locally it is absent and the test skips. The skip is silent --
         // a skipped MSTest records notExecuted="0" and inconclusive="0" in its TRX -- so the lane
         // that is supposed to run these asserts the bundle exists before exporting the variable,
@@ -59,6 +59,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("e8260a29-0717-4730-a9ea-7780b3a8d377"),
             FriendlyName = "Contract Camera",
@@ -238,7 +239,8 @@ public sealed partial class InstallerFlowTests
                 RuntimeGid,
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe));
-            StringAssert.Contains(unsupported.Message, "invalid or unsupported", StringComparison.Ordinal);
+            Assert.IsTrue(unsupported.IsRefusal);
+            StringAssert.Contains(unsupported.Message, "fresh install", StringComparison.Ordinal);
         }
         finally
         {
@@ -271,6 +273,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('c', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("a71e12c8-bef2-4184-8fd4-3548b74a7d89"),
             FriendlyName = "Resume Camera",
@@ -354,6 +357,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('d', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e001"),
             FriendlyName = "Default Owner Camera",
@@ -434,6 +438,7 @@ public sealed partial class InstallerFlowTests
         File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e003"),
             FriendlyName = "Spaced Password Camera",
@@ -492,6 +497,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('e', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e002"),
             FriendlyName = "Generated Owner Camera",
@@ -628,7 +634,7 @@ public sealed partial class InstallerFlowTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
-    [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    [DataRow("io.hvo.skymonitor.component", "OtherProduct")]
     [DataRow("org.opencontainers.image.created", "2026-10-17T18:00:01Z")]
     public async Task InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing(string label, string value)
     {
@@ -839,7 +845,7 @@ public sealed partial class InstallerFlowTests
         {
             case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
             case "revision-label": labels["org.opencontainers.image.revision"] = new string('f', 40); break;
-            case "component-label": labels["io.hvo.skymonitor.component"] = "LogicHost"; break;
+            case "component-label": labels["io.hvo.skymonitor.component"] = "OtherProduct"; break;
             case "created-label": labels.Remove("org.opencontainers.image.created"); break;
             case "created-other": labels["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"; break;
             case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
@@ -945,7 +951,7 @@ public sealed partial class InstallerFlowTests
                     break;
                 case "config-alias":
                     entries.Add(new(configName.Replace("blobs/sha256/", "blobs/sha256//", StringComparison.Ordinal),
-                        Encoding.UTF8.GetBytes(Text(configName).Replace("CameraAgent", "LogicHost", StringComparison.Ordinal))));
+                        Encoding.UTF8.GetBytes(Text(configName).Replace("CameraAgent", "OtherProduct", StringComparison.Ordinal))));
                     break;
                 case "layer-alias":
                     entries.Add(new(layer.Name.Replace("blobs/sha256/", "blobs/sha256/./", StringComparison.Ordinal), "other layer"u8.ToArray()));
@@ -1311,6 +1317,7 @@ public sealed partial class InstallerFlowTests
 
     private static InstallRequest ReleaseRequest(string root, string bundle, Guid instanceId, string release) => new()
     {
+        StorageLayout = CameraAgentStorageLayout.Filesystem,
         AllowTestProductRoot = true,
         InstanceId = instanceId,
         FriendlyName = "Release Camera",
@@ -1350,6 +1357,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("5d3f0c8e-6a1b-4f27-9e44-2c7d8b9a1e60"),
             FriendlyName = "LAN Camera",
@@ -1415,6 +1423,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("9e1c4a7b-2f35-4d68-8b0a-6c3e5f7d9a12"),
             FriendlyName = "Pi Camera",
@@ -1510,6 +1519,7 @@ public sealed partial class InstallerFlowTests
         var imageId = $"sha256:{new string('b', 64)}";
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = Guid.Parse("3c6f1d2e-8a47-4b59-9d10-7e2f4a6b8c31"),
             FriendlyName = "Budget Camera",
@@ -1625,7 +1635,7 @@ public sealed partial class InstallerFlowTests
             cancellationToken.ThrowIfCancellationRequested();
             Verifications++;
             InspectVerification?.Invoke(expectation);
-            Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
+            Assert.AreEqual("hyg-v44-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
             Assert.IsTrue(OwnerBootstrapClient.IsAllowedOwnerBootstrapState(
@@ -1806,7 +1816,7 @@ public sealed partial class InstallerFlowTests
             {
                 var id = instanceId.ToString("D");
                 var instanceRoot = Path.Combine(root, "cameraagents", id);
-                var catalog = Path.Combine(root, "catalogs", "hyg-v42-production");
+                var catalog = Path.Combine(root, "catalogs", "hyg-v44-production");
                 return Success(JsonSerializer.Serialize(new[]
                 {
                     new
@@ -1873,14 +1883,14 @@ public sealed partial class InstallerFlowTests
         {
             var mounts = new List<object>
             {
-                new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
-                new { Source = catalog, Destination = "/app/catalog", RW = false },
-                new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
+                new { Type = "bind", Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
+                new { Type = "bind", Source = catalog, Destination = "/app/catalog", RW = false },
+                new { Type = "bind", Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
             };
             const string prefix = "HVO_DEEP_SKY_CATALOG_ROOT=";
             if (LastComposeUp?.Contains(DeepSkyCatalogSelection.Mount, StringComparison.Ordinal) == true &&
                 LastComposeUpEnvironment?.Split('\n').SingleOrDefault(static line => line.StartsWith(prefix, StringComparison.Ordinal)) is { } root)
-                mounts.Add(new { Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
+                mounts.Add(new { Type = "bind", Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
             return [.. mounts];
         }
 

@@ -2,6 +2,9 @@
 
 Refs #1179. Target: `development/v1`; branch point `79a20dba`.
 
+This report records the initial release-gate change. The subsequent campaign
+and final envelope decision are in the [#1179 qualification report](issue-1179-qualification.md).
+
 ## Frozen scope and evidence plan
 
 Declared 2026-11-13, before local regression evidence or estimator changes.

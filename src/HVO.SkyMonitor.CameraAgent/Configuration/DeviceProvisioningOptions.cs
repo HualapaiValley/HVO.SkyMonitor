@@ -4,14 +4,14 @@ using System.IO;
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
 /// <summary>
-/// Configures where the agent stores device identity and secure bootstrap state.
+/// Configures where the agent stores local device identity and operator notification state.
 /// </summary>
 public sealed class DeviceProvisioningOptions
 {
     private static readonly string DefaultStateDirectory = Path.Combine(AppContext.BaseDirectory, "data", "provisioning");
 
     /// <summary>
-    /// Root directory for provisioning artifacts (device identity, secrets, logs).
+    /// Root directory for local device identity and operator notification records.
     /// </summary>
     public string StateDirectory { get; set; } = DefaultStateDirectory;
 
@@ -20,14 +20,7 @@ public sealed class DeviceProvisioningOptions
     /// </summary>
     public string IdentityFileName { get; set; } = "device-identity.json";
 
-    /// <summary>
-    /// File name (without directory) used to persist encrypted device secrets.
-    /// </summary>
-    public string SecretsFileName { get; set; } = "device-secrets.dat";
-
     internal string GetIdentityPath()
         => Path.Combine(StateDirectory, IdentityFileName);
 
-    internal string GetSecretsPath()
-        => Path.Combine(StateDirectory, SecretsFileName);
 }

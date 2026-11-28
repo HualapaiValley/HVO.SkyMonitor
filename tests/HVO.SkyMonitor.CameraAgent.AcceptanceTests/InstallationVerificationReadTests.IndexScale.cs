@@ -18,7 +18,7 @@ public sealed partial class InstallationVerificationReadTests
     public async Task SmallScaleProofCountExcludesAuthenticatedMetadataHints()
     {
         await using var fixture = await InstallationReadAttributionFixture.CreateAsync(Path.GetTempPath(), solar: false).ConfigureAwait(false);
-        _ = await fixture.SeedScaleAsync(3).ConfigureAwait(false);
+        _ = await fixture.SeedScaleAsync(3, stageRawAdmissions: true).ConfigureAwait(false);
         await fixture.QualifyLegacyScaleAsync().ConfigureAwait(false);
         using var connection = new SqliteConnection($"Data Source={Path.Combine(fixture.IngressRoot, ".location", "retained-validation.v2.db")};Mode=ReadOnly;Pooling=False");
         await connection.OpenAsync().ConfigureAwait(false);

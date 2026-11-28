@@ -18,34 +18,6 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2003, Level = LogLevel.Information, Message = "Camera agent configuration initialized for module type {ModuleType}")]
     public static partial void ConfigurationInitialized(this ILogger logger, string moduleType);
 
-    [LoggerMessage(EventId = 2004, Level = LogLevel.Information, Message = "Stored frame at {Path}")]
-    public static partial void FrameStored(this ILogger logger, string path);
-
-    [LoggerMessage(EventId = 2026, Level = LogLevel.Warning, Message = "Skipped invalid or incomplete stored-frame entry in {IndexPath}")]
-    public static partial void FrameBrowseEntrySkipped(this ILogger logger, string indexPath);
-
-    [LoggerMessage(EventId = 2015, Level = LogLevel.Warning, Message = "Failed to store frame to root {StorageRoot}")]
-    public static partial void FrameStorageFailed(this ILogger logger, string storageRoot, Exception exception);
-
-    [LoggerMessage(EventId = 2005, Level = LogLevel.Error, Message = "Retention sweep failed")]
-    public static partial void RetentionSweepFailed(this ILogger logger, Exception exception);
-
-    [LoggerMessage(EventId = 2006, Level = LogLevel.Information, Message = "Deleted frame directory {Directory}")]
-    public static partial void FrameDirectoryDeleted(this ILogger logger, string directory);
-
-    [LoggerMessage(EventId = 2007, Level = LogLevel.Information, Message = "Deleted index file {File}")]
-    public static partial void IndexFileDeleted(this ILogger logger, string file);
-
-    [LoggerMessage(EventId = 2008, Level = LogLevel.Information, Message = "Deleted derived output {File}")]
-    public static partial void DerivedFileDeleted(this ILogger logger, string file);
-
-    [LoggerMessage(EventId = 2025, Level = LogLevel.Information, Message = "Retention sweep completed for {StorageRoot}: deleted {DeletedFileCount} files and protected {ProtectedArtifactCount} pending artifacts")]
-    public static partial void RetentionSweepCompleted(
-        this ILogger logger,
-        string StorageRoot,
-        int DeletedFileCount,
-        int ProtectedArtifactCount);
-
     [LoggerMessage(EventId = 2009, Level = LogLevel.Information, Message = "Camera module {Module} initialized")]
     public static partial void CameraModuleInitialized(this ILogger logger, string module);
 
@@ -67,12 +39,6 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2089, Level = LogLevel.Warning, Message = "Optional capture projected-scene staging is unavailable with reason {Reason}")]
     public static partial void ProjectedSceneStagingUnavailable(this ILogger logger, string reason);
 
-    [LoggerMessage(EventId = 2076, Level = LogLevel.Information, Message = "Derived-product reconciliation completed: inspected {InspectedCount}, available {AvailableCount}, recoverable {RecoverableCount}, cleaned {CleanedCount}, missing {MissingCount}, quarantined {QuarantinedCount}, quarantine bytes {QuarantineBytes}")]
-    public static partial void DerivedProductReconciliationCompleted(this ILogger logger, int inspectedCount, int availableCount, int recoverableCount, int cleanedCount, int missingCount, int quarantinedCount, long quarantineBytes);
-
-    [LoggerMessage(EventId = 2077, Level = LogLevel.Warning, Message = "Derived-product reconciliation pass failed")]
-    public static partial void DerivedProductReconciliationFailed(this ILogger logger, Exception exception);
-
     [LoggerMessage(EventId = 2032, Level = LogLevel.Warning, Message = "Capture failure {ConsecutiveFailures}; retrying after {DelayMilliseconds} ms")]
     public static partial void CaptureFailureBackoff(this ILogger logger, int consecutiveFailures, double delayMilliseconds);
 
@@ -85,15 +51,14 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2011, Level = LogLevel.Information, Message = "Created camera module {ModuleType} ({Implementation})")]
     public static partial void CameraModuleCreated(this ILogger logger, string moduleType, string implementation);
 
-    [LoggerMessage(EventId = 2012, Level = LogLevel.Debug, Message = "Capture cycle completed in {ElapsedMilliseconds} ms (Interval {IntervalMilliseconds} ms, Exposure {ExposureMilliseconds} ms, Gain {Gain}, Mode {Mode}, ImmediateUpload {ImmediateUpload})")]
+    [LoggerMessage(EventId = 2012, Level = LogLevel.Debug, Message = "Capture cycle completed in {ElapsedMilliseconds} ms (Interval {IntervalMilliseconds} ms, Exposure {ExposureMilliseconds} ms, Gain {Gain}, Mode {Mode})")]
     public static partial void CaptureCycleCompleted(
         this ILogger logger,
         double ElapsedMilliseconds,
         double IntervalMilliseconds,
         double ExposureMilliseconds,
         double Gain,
-        CaptureMode Mode,
-        bool ImmediateUpload);
+        CaptureMode Mode);
 
     [LoggerMessage(EventId = 2013, Level = LogLevel.Warning, Message = "Capture processing step {Step} failed for frame captured at {TimestampUtc}")]
     public static partial void CaptureProcessingStepFailed(this ILogger logger, string Step, DateTimeOffset TimestampUtc, Exception exception);
@@ -109,21 +74,6 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2028, Level = LogLevel.Warning, Message = "Capture processing channel drain aborted by the host shutdown deadline")]
     public static partial void CaptureProcessingDrainAborted(this ILogger logger);
-
-    [LoggerMessage(EventId = 2029, Level = LogLevel.Warning, Message = "Disk pressure entered for {StorageRoot} at {AvailablePercent:F2}% available")]
-    public static partial void DiskPressureEntered(this ILogger logger, string storageRoot, double availablePercent);
-
-    [LoggerMessage(EventId = 2030, Level = LogLevel.Information, Message = "Disk pressure recovered for {StorageRoot} at {AvailablePercent:F2}% available")]
-    public static partial void DiskPressureRecovered(this ILogger logger, string storageRoot, double availablePercent);
-
-    [LoggerMessage(EventId = 2031, Level = LogLevel.Error, Message = "Storage capacity probe failed for {StorageRoot}")]
-    public static partial void StorageCapacityProbeFailed(this ILogger logger, string storageRoot, Exception exception);
-
-    [LoggerMessage(EventId = 2020, Level = LogLevel.Information, Message = "File storage step {Step} skipped because no frame was captured")]
-    public static partial void FileStorageSkipped(this ILogger logger, string Step);
-
-    [LoggerMessage(EventId = 2021, Level = LogLevel.Information, Message = "File storage step {Step} storing frame captured at {TimestampUtc} to {Root} with retention {RetentionDays} days")]
-    public static partial void FileStorageStarted(this ILogger logger, string Step, DateTimeOffset TimestampUtc, string Root, int RetentionDays);
 
     [LoggerMessage(EventId = 2024, Level = LogLevel.Debug, Message = "Calibration step {Step} applying {Strategy} strategy with {Passes} passes and max {MaxSeconds}s window")]
     public static partial void CalibrationApplying(this ILogger logger, string Step, string Strategy, int Passes, int MaxSeconds);
@@ -170,9 +120,6 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2048, EventName = "RawIngressSqliteResult", Level = LogLevel.Warning, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
     private static partial void RawIngressSqliteFailure(ILogger logger, string operation, string result);
 
-    [LoggerMessage(EventId = 2049, Level = LogLevel.Warning, Message = "Raw ingress compatibility index projection failed and will be repaired at restart")]
-    public static partial void RawIngressIndexProjectionFailed(this ILogger logger);
-
     [LoggerMessage(EventId = 2050, Level = LogLevel.Information, Message = "Capture lanes initialized at schema {SchemaVersion} with {LaneCount} configured lanes")]
     public static partial void CaptureLanesInitialized(this ILogger logger, int schemaVersion, int laneCount);
 
@@ -190,6 +137,9 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2055, Level = LogLevel.Warning, Message = "Capture lane {Lane} scheduled retry attempt {Attempt} because {Reason}")]
     public static partial void CaptureLaneRetryScheduled(this ILogger logger, string lane, int attempt, string reason);
+
+    [LoggerMessage(EventId = 2105, Level = LogLevel.Information, Message = "Capture lane {Lane} returned to pending at attempt 0 after Silo raw evidence became visible")]
+    public static partial void CaptureLaneSiloEvidenceRestored(this ILogger logger, string lane);
 
     [LoggerMessage(EventId = 2056, Level = LogLevel.Warning, Message = "Capture lane {Lane} reached terminal outcome {Outcome} because {Reason}")]
     public static partial void CaptureLaneTerminal(this ILogger logger, string lane, string outcome, string reason);

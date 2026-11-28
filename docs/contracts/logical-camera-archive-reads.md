@@ -1,5 +1,8 @@
 # Logical-camera archive and current selection
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 Issue #1236 supplies `ILogicalCameraArchiveReadService` for #1239. It reads existing
 normalized SQL records and uses existing credential, retrieval and object-reader
 services. It adds no persisted policy, schema, importer or UI.

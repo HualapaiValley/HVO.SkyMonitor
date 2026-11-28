@@ -24,6 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// configured window while replay keeps consuming its own frozen pins.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed partial class RollingCombinationWindowLineageTests
 {
     private const int WindowSize = 5;
@@ -233,6 +234,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                 "revision-reference-test",
                 null,
                 CancellationToken.None).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var replay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     receipt.Manifest.Descriptor.Capture.CaptureId,
@@ -354,6 +356,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                 .ConfigureAwait(false);
             var descriptor = receipt.Manifest.Descriptor;
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var replay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     descriptor.Capture.CaptureId,
@@ -538,19 +541,6 @@ public sealed partial class RollingCombinationWindowLineageTests
             var holds = await store.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(holds.Any(hold => hold.ArtifactId == oldestCandidate.ArtifactId));
             Assert.IsFalse(holds.Any(hold => hold.ArtifactId == expiredControl.ArtifactId));
-            var heldPaths = holds.SelectMany(static hold => new[]
-                {
-                    hold.PayloadRelativePath,
-                    hold.SidecarRelativePath
-                })
-                .Select(path => Path.GetFullPath(Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar))))
-                .ToHashSet(StringComparer.Ordinal);
-            _ = await provider.GetRequiredService<CaptureProcessingPersistence>().ExpireOutputsAsync(
-                root, DateTimeOffset.MaxValue, heldPaths, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(File.Exists(Path.Combine(
-                root, oldestCandidate.PayloadRelativePath.Replace('/', Path.DirectorySeparatorChar))));
-            Assert.IsFalse(File.Exists(expiredControl.PayloadPath));
-
             await laneStore.ReleaseAsync(firstLease, CancellationToken.None).ConfigureAwait(false);
             var secondLease = await laneStore.ClaimAsync(
                 standard, "candidate-retention-2", configuration, CancellationToken.None).ConfigureAwait(false);
@@ -814,12 +804,11 @@ public sealed partial class RollingCombinationWindowLineageTests
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog(
             [new CelestialCatalogObject("star", "Star", 2.5, 20, 1)]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:MaximumWindowInputs"] = maximumWindowInputs.ToString(
                     CultureInfo.InvariantCulture),
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
@@ -908,7 +897,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                         Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal)),
                     new CaptureProcessingStepConfig(
                         "Storage", "storage", Order: 100, DependsOn: ["scene"],
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root, queueForUpload = false }))
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }))
                 ],
                 CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),

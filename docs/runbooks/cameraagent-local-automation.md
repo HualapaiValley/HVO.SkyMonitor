@@ -10,12 +10,13 @@ This runbook covers the versioned durable local contract behind that section.
 ## Configure A Product Automation
 
 Choose **Create automation**, then an available registered task and its pinned
-target. Product tasks continue through **Next: source window**: select a completed
-site-local hour or sunrise-to-next-sunrise period, the producer's accepted actual
-source selection, and a settle allowance from 0 to 86400 seconds. Up to seven
-decimal places preserve existing subsecond allowances. Keograms require all actual
-sources; star trails require dark-night sources. The pinned target supplies recipe
-parameters; changing producer configuration is a separate operation.
+target. The target shows the producer's pinned settings. Product tasks continue
+through **Next: source window**. Select a completed site-local hour or a daily
+sunrise-to-next-sunrise period from the choices that producer accepts. The source
+selection defaults to an accepted value. Keograms require all actual sources,
+star trails require dark-night sources, and daily summaries require a sunrise
+day. Settle allowances range from 0 to 86400 seconds and preserve up to seven
+decimal places. Producer recipe settings come from the host configuration.
 
 **Preview and review** shows exact inclusive start, exclusive end, site zone and
 offsets, starting-sunrise product date, and next-run/earliest-final time in both
@@ -23,22 +24,41 @@ site time and UTC. The preview is read-only, calculated for the next future
 occurrence if enabled; saving later may change it. It is not a coverage or
 publication guarantee. Missing sunrise events produce explicit unavailability,
 without a fallback time. Partial sunrise hours and DST folds/gaps use the shared
-planner. Confirm **Record revision** to save; stepping back retains your fields.
+planner. **Review and save** for periodic and capture-relative tasks previews
+the current cadence or the exact durable capture sequence when a baseline is
+known. Confirm **Record revision** to save. Stepping back retains your fields.
 
 **Edit** supports source-window definitions, including their retained selection
 and allowance. **Disable** pauses the definition without rewriting its policy or
 old occurrences. Revision history retains actor and reason. Hourly and daily tasks
 use separate identifiers and revisions. The first-slice scope and decision to
 retain the current runner are recorded in the
-[wizard decision](../planning/automation-wizard-1133.md). Run/cancel/backfill UI and
-broader task parameter editors remain follow-up work under #1133.
+[wizard decision](../planning/automation-wizard-1133.md).
 
-Changing a pinned producer preset can retire its old target hash. A retained
-definition then shows **Unavailable**, with repair guidance, and contributes no
-enabled count or upcoming run. Unsupported retained triggers and source presets
-are treated the same way. Choose **Edit** and select a currently registered
-target/trigger/period to record a new revision; old definitions in revision history
-and retained occurrences keep their original identities. Enable/disable is
+In **Schedule**, expand unavailable schedules for the same repair guidance shown
+on definition cards. Upcoming product runs show their exact source spans and
+earliest final time. In **Run history**, expand source window and provenance to inspect
+a retained attempt and find products linked to its occurrence. A time-lapse
+request can succeed before its worker produces a video.
+
+On a runnable product definition, expand **Backfill** and enter the
+starting-sunrise report date. Preview the eligible windows and select the exact
+hour by offset and UTC time when applicable. Give a reason before queuing. If a
+site change moves the previewed window, preview the new window before queuing. A
+failed or interrupted source-window run offers **Retry** in **Run history** when
+the definition is enabled and the registry still accepts the run's recorded
+revision. A retry uses the original inputs. The store checks the version,
+retention, current registry, finality and queue bounds again at admission.
+Disabling withdraws queued attempts. An already running predefined task finishes
+under its existing worker policy. Time-data refresh supports **Run now**. Orbital and space-weather
+refreshes link to their provider-specific controls.
+
+Changing a producer preset or its validation rules can make a definition
+unavailable. Such a definition shows **Unavailable** with the registry's repair
+guidance and contributes no enabled count or upcoming run. Choose **Edit** and
+select a currently registered target, trigger, or period to record a new
+revision. Revision history and retained occurrences keep their original
+identities. Enable/disable is
 unavailable until the retained settings are compatible again.
 
 ## What A Definition Can Express
@@ -65,7 +85,7 @@ names a target the registry does not publish is rejected with
 
 Built-in producers register `ILocalAutomationWindowTaskAdapter`; their descriptors
 publish actual installed targets and supported presets. `StillImageGeneration` is
-registered for keograms and star trails when the pinned [still-product configuration](cameraagent-still-products.md)
+registered for keograms, star trails and daily summaries when the pinned [still-product configuration](cameraagent-still-products.md)
 is enabled and valid; it has no target otherwise. A target
 must identify its immutable producer preset; an adapter must reject a retained preset
 it can no longer resolve, rather than reinterpret it using changed settings. Each
@@ -87,22 +107,15 @@ column change, so any column change bumps the schema version (currently 4). Star
 migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
-The image declares writes 4 and reads 3 to 4. The current minimum reader
-`e9bc66a58ec4f9902f7d6f25c89057832eff9fbc` includes the environmental schema-5 settlement reader.
-The earlier combined-reader boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` first extended
-checkpointing beyond the processing-only boundary in development/v1 `38320d3a`. Adoption from
-that schema-3 automation reader still takes a paired checkpoint before startup. Rollback
-restores that checkpoint, including automation schema 3.
+The image declares writes 4 and reads 3 to 4. The installer lifecycle starts with the
+[0.10.0-beta.1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).
+
 Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
 schema version and object count and refuses a database it does not recognize, so
-adding automation tables there would make an installer rollback to a baseline image
-fail to start. A baseline image never opens this file; a rollback leaves it in place
-and a roll-forward finds the same definitions and run history. A previous binary that
-already reads this database but cannot read schema 4 requires the paired pre-upgrade
-checkpoint, including the database and its matching protected state.
+keeping automation tables separate lets the raw journal keep its own schema.
 
 Tables:
 

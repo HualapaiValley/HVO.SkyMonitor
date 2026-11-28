@@ -556,7 +556,7 @@ public sealed class ProcessingOptionDescriptor
             ProcessingOptionValue.FromColor(defaultValue));
 
     /// <summary>Why <paramref name="value"/> is not a valid value of this option, or <see langword="null"/>.</summary>
-    internal (string Code, string Message)? Check(ProcessingOptionValue value)
+    internal (string Code, string Message)? Check(ProcessingOptionValue value, bool allowQuotedNumbers = false)
     {
         if (value.Kind != Kind)
         {
@@ -573,7 +573,11 @@ public sealed class ProcessingOptionDescriptor
                 try
                 {
                     using var document = JsonDocument.Parse(row);
-                    var decoded = ProcessingNodeOptionsCodec.Decode(RowDescriptor!, document.RootElement);
+                    var decoded = ProcessingNodeOptionsCodec.Decode(
+                        RowDescriptor!,
+                        document.RootElement,
+                        ProcessingNodeOptionsCodec.DefaultPath,
+                        allowQuotedNumbers);
                     if (!decoded.IsValid)
                         return (decoded.Diagnostics[0].Code, decoded.Diagnostics[0].Message);
                     var identity = decoded.Get(RowIdentityKey!);
@@ -829,8 +833,8 @@ public static class ProcessingNodeOptionsDescriptors
                 "The existing cardinal-direction size multiplier.", 2, 1, 8, "×")
         ]);
 
-    /// <summary>The current sky-context producer also exposes its explicitly qualified catalog-position labels.</summary>
-    public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
+    /// <summary>The shipped v13 sky-context descriptor retained for saved-draft inspection and explicit scene-style upgrade.</summary>
+    public static ProcessingNodeOptionsDescriptor ScenePresentationLayerV13 { get; } = new(
         "scene-presentation-layer-options-v2",
         ScenePresentationLayerStepAlias,
         "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
@@ -840,15 +844,33 @@ public static class ProcessingNodeOptionsDescriptors
             "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
             "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star labels.", true)));
 
+    /// <summary>The current sky-context producer also exposes its explicitly qualified catalog-position labels.</summary>
+    public static ProcessingNodeOptionsDescriptor ScenePresentationLayer { get; } = new(
+        "scene-presentation-layer-options-v2",
+        ScenePresentationLayerStepAlias,
+        "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels",
+        ScenePresentationLayerV12.Title,
+        ScenePresentationLayerV12.Help,
+        ScenePresentationLayerV12.Options.AddRange(DeepSkyOptionDescriptors.Presentation).Add(ProcessingOptionDescriptor.Toggle(
+            "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
+            "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star and point-source planet labels.", true)));
+
     public static ImmutableArray<ProcessingNodeOptionsDescriptor> All =>
-        [ScenePresentationLayerV12, ScenePresentationLayer, SceneStylePresentation.Descriptor, FrameFactsPresentationOptionDescriptors.Descriptor,
+        [ScenePresentationLayerV12, ScenePresentationLayerV13, ScenePresentationLayer,
+            SceneStylePresentation.DescriptorV14, SceneStylePresentation.Descriptor,
+            FrameFactsPresentationOptionDescriptors.Descriptor,
             CaptureScalarOptionDescriptors.ImageQuality, CaptureScalarOptionDescriptors.Telemetry,
             CaptureScalarOptionDescriptors.VirtualSkyCloudObservation, WeatherCloudOverlayOptionDescriptors.Descriptor,
-            CloudAssessmentOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.MixedGain, CalibrationOptionDescriptors.Normalization,
-            CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
+            CloudAssessmentOptionDescriptors.Descriptor, RegionalStellarVisibilityOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.Descriptor, RollingCombinationOptionDescriptors.MixedGain, CalibrationOptionDescriptors.Normalization,
+            CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor,
+            AnnotationOptionDescriptors.DescriptorV4, AnnotationOptionDescriptors.Descriptor,
             RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment, PresentationMaterializerOptionDescriptors.Descriptor,
             OverlayManifestOptionDescriptors.Descriptor,
-            CaptureAnalysisOptionDescriptors.Prediction, CaptureAnalysisOptionDescriptors.StellarAssociations, CaptureAnalysisOptionDescriptors.Astrometry,
+            CaptureAnalysisOptionDescriptors.Prediction,
+            CaptureAnalysisOptionDescriptors.StellarAssociationsV1, CaptureAnalysisOptionDescriptors.StellarAssociations,
+            CaptureAnalysisOptionDescriptors.Astrometry,
+            CaptureAnalysisOptionDescriptors.CenteredStellarAssociationsV1, CaptureAnalysisOptionDescriptors.CenteredStellarAssociations,
+            CaptureAnalysisOptionDescriptors.CenteredAstrometry,
             CaptureSatelliteOptionDescriptors.Tracks, CaptureSatelliteOptionDescriptors.Layer, StorageOptionDescriptors.Descriptor,
             .. PreviewOptionDescriptors.All];
 }

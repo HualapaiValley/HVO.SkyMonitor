@@ -44,7 +44,11 @@ public sealed record ScenePresentationStyleV1(PresentationAnnotationStyleV1 Anno
 public static class SceneStylePresentation
 {
     public const string StepAlias = "SceneStylePresentationLayerV1";
-    public const string ProducerVersion = "projected-scene-presentation-v14-explicit-style";
+    internal const string PreviousProducerVersion = "projected-scene-presentation-v14-explicit-style";
+    public const string ProducerVersion = "projected-scene-presentation-v15-explicit-style";
+    public static ProcessingNodeOptionsDescriptor DescriptorV14 { get; } = new(
+        "scene-style-presentation-options-v1", StepAlias, PreviousProducerVersion, "Scene overlay style",
+        "Choose packaged fonts, RGB colours and a point glyph. Mono8 uses the red channel; display composition promotes monochrome bases to RGB. Qualification captions and measured/expected semantics remain fixed.", Options());
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "scene-style-presentation-options-v1", StepAlias, ProducerVersion, "Scene overlay style",
         "Choose packaged fonts, RGB colours and a point glyph. Mono8 uses the red channel; display composition promotes monochrome bases to RGB. Qualification captions and measured/expected semantics remain fixed.", Options());
@@ -53,12 +57,13 @@ public static class SceneStylePresentation
         bool includeMarkers = true, bool includeLabels = true, bool includeConstellations = true,
         bool includeImageCircle = true, bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null, bool expectedPositionDiagnostics = true,
-        HorizonObstructionSceneEligibility? horizon = null, bool includeDeepSky = true)
+        HorizonObstructionSceneEligibility? horizon = null, bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null, bool allowCompatibleExposureAssociations = false)
     {
         ArgumentNullException.ThrowIfNull(style);
         style.Validate();
         return PresentationLayerProducers.FromProjectedSceneGroupsCore(scene, style.Annotation, includeMarkers, includeLabels,
-            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style, horizon, includeDeepSky);
+            includeConstellations, includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, style, horizon, includeDeepSky, deepSkyStyle, allowCompatibleExposureAssociations);
     }
 
     private static ImmutableArray<ProcessingOptionDescriptor> Options()
@@ -86,7 +91,8 @@ public static class SceneStylePresentation
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(layer);
         return payload.SchemaVersion != PresentationLayerPayloadV1.SceneStyleSchemaVersion ||
-            layer.RendererVersion == PresentationLayerCompositor.SceneStyleAlgorithmVersion && layer.StyleVersion == ProducerVersion;
+            layer.RendererVersion == PresentationLayerCompositor.SceneStyleAlgorithmVersion &&
+            (layer.StyleVersion == ProducerVersion || layer.StyleVersion == PreviousProducerVersion);
     }
 
     /// <summary>Losslessly opts a consumer into the versioned scene payload; no other setting changes.</summary>

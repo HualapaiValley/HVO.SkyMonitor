@@ -24,10 +24,41 @@
     </Actions>
 </OperationsPageHeading>
 
+@if (_status?.Focuser is { } motor)
+{
+    <section class="ops-panel focus-motor" aria-labelledby="motor-heading">
+        <h2 id="motor-heading">Motorized focuser</h2>
+        <p role="status">@(motor.State.Connected ? motor.State.Stalled ? "Stalled" : motor.State.IsMoving ? $"Moving to {motor.State.TargetPosition}" : "Connected" : "Disconnected")
+            · Position @motor.State.Position steps · Limits @motor.Limits.MinimumPosition–@motor.Limits.MaximumPosition
+            · Backlash @motor.Limits.BacklashSteps steps · @(motor.State.TemperatureCelsius is { } temp ? $"{temp.ToString("G", Culture)} °C" : "Temperature unavailable")</p>
+        <fieldset disabled="@(!CanRunMotor)">
+            <legend>Position and sweep</legend>
+            <label>Target (steps) <input id="motor-target" type="number" min="@motor.Limits.MinimumPosition" max="@motor.Limits.MaximumPosition" @bind="_motorTarget" /></label>
+            <button type="button" class="button secondary" id="motor-move" disabled="@(_motorTarget < motor.Limits.MinimumPosition || _motorTarget > motor.Limits.MaximumPosition)"
+                    @onclick="() => StartMotorAsync(new(AbsolutePosition: _motorTarget))">Move to target</button>
+            <label>Step size <input id="motor-step-size" type="number" min="1" max="@(motor.Limits.MaximumPosition - motor.Limits.MinimumPosition)" @bind="_stepSize" /></label>
+            <button type="button" class="button secondary" id="motor-in" disabled="@(_stepSize <= 0 || (long)motor.State.Position - _stepSize < motor.Limits.MinimumPosition)"
+                    @onclick="() => StartMotorAsync(new(RelativeSteps: -_stepSize))">Step in</button>
+            <button type="button" class="button secondary" id="motor-out" disabled="@(_stepSize <= 0 || (long)motor.State.Position + _stepSize > motor.Limits.MaximumPosition)"
+                    @onclick="() => StartMotorAsync(new(RelativeSteps: _stepSize))">Step out</button>
+            <button type="button" class="button primary" id="motor-sweep"
+                    disabled="@(_stepSize <= 0 || 4L * _stepSize + motor.Limits.BacklashSteps > motor.Limits.MaximumPosition - motor.Limits.MinimumPosition)"
+                    @onclick="() => StartMotorAsync(new(SweepSpacing: _stepSize))">Run autofocus</button>
+        </fieldset>
+        <p>Moves, steps, and autofocus hold normal exposures until the operation finishes. Autofocus measures five positions and verifies the best HFD. Save the session to retain its evidence.</p>
+        @if (Session.Motor is { } result)
+        {
+            <p role="status">@Session.LastFailure @result.Recovery @(result.AppliedPosition is { } applied ? $"Applied position {applied} steps." : null)</p>
+        }
+    </section>
+}
+else if (!_focuserRegistered)
+{
 <div class="focus-boundary" role="note">
     <strong>Manual focus only.</strong> Loosen, adjust, and secure the lens at the camera. CameraAgent measures image
     sharpness but does not move hardware.
 </div>
+}
 
 @if (Fidelity is { QualifiesPhysicalFocus: false } fidelity)
 {
@@ -206,7 +237,7 @@
                         <td>@Value(sample.Measurement.HalfFluxDiameterPixels)</td>
                         <td>@Value(sample.Measurement.FwhmPixels)</td>
                         <td>@(sample.Measurement.Centroid is { } c ? $"{c.X.ToString("F2", Culture)}, {c.Y.ToString("F2", Culture)}" : "—")</td>
-                        <td>@SettingsText(sample.Settings, sample.SimulatedFocusPosition)</td>
+                        <td>@SettingsText(sample.Settings, sample.SimulatedFocusPosition) @(sample.MotorPosition is { } pos ? $" · motor {pos} steps" : null)</td>
                     </tr>
                 }
             </tbody>
@@ -214,6 +245,8 @@
     </div>
 </section>
 
+@if (!_focuserRegistered)
+{
 <section class="ops-panel ops-grid" aria-labelledby="focus-procedure-heading">
     <header class="ops-panel-heading">
         <div><h2 id="focus-procedure-heading">Manual focusing procedure</h2><p>Keep the measurement setup fixed while comparing adjustments.</p></div>
@@ -226,6 +259,7 @@
         <article class="ops-step"><strong>Secure &amp; verify</strong><span>Tighten the lens, collect at least three stable samples, and retain the session result.</span></article>
     </div>
 </section>
+}
 
 <section class="ops-panel ops-grid" aria-labelledby="focus-history-heading">
     <header class="ops-panel-heading">
@@ -256,7 +290,7 @@
                                     @onclick="() => _selectedRecordId = record.RecordId">@RecordTitle(record)</button></td>
                         <td>@(record.BestHalfFluxDiameterPixels is { } hfd ? hfd.ToString("F2", Culture) + " px" : "—")</td>
                         <td>@(record.BestTargetSource switch { ManualFocusTargetSource.Operator => "Operator pick", ManualFocusTargetSource.Automatic => "Automatic", _ => "—" })</td>
-                        <td>@RecordConditions(record)</td>
+                        <td>@RecordConditions(record) @(record.Motor is { } savedMotor ? $" · Autofocus · {record.State} · {savedMotor.AppliedPosition?.ToString(Culture) ?? "unapplied"}" : null)</td>
                         <td>@if (record.Verified)
                             {
                                 <span class="state-chip success">Saved</span>

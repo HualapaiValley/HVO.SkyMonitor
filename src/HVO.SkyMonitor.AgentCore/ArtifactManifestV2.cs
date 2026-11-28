@@ -17,6 +17,10 @@ public sealed record ArtifactManifestV2(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CaptureGraphRevisionId { get; init; }
 
+    /// <summary>Local recovery binding between an observed raw capture and its reserved exposure attempts.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredExposureBindingV1? CenteredExposure { get; init; }
+
     public string IdempotencyKey => CaptureContractJson.ComputeDescriptorSha256(Descriptor);
 
     public CaptureContractValidationResult Validate()
@@ -42,6 +46,12 @@ public sealed record ArtifactManifestV2(
         {
             return descriptorValidation;
         }
+        if (CenteredExposure is { } centered &&
+            (CaptureGraphRevisionId is null || !centered.IsValidFor(Descriptor!)))
+        {
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "centeredExposure");
+        }
+
         if (Scene is { RequiresProjectedScene: true } compact &&
             (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(compact.ProjectedSceneSchemaVersion) ||
              compact.Objects is not null || compact.Segments is not null || compact.SceneUtc is null ||
@@ -52,7 +62,7 @@ public sealed record ArtifactManifestV2(
             return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
         if (Scene?.VirtualExposure is { } exposure &&
             (!exposure.IsValid(Descriptor!.Controls.EffectiveExposure) ||
-             exposure.RequestedStartUtc.ToUnixTimeMilliseconds() != Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
+             !exposure.MatchesCaptureTiming(Descriptor.Timing) ||
              Scene.SceneUtc != exposure.CelestialMidpointUtc ||
              Scene.CloudScenario is { } cloud &&
                 (cloud.IntegrationStartUtc != exposure.ScenarioStartUtc || cloud.IntegrationEndUtc != exposure.ScenarioEndUtc) ||

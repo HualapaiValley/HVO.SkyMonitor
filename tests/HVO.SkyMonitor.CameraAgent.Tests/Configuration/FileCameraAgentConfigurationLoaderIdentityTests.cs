@@ -11,12 +11,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class FileCameraAgentConfigurationLoaderIdentityTests
 {
     [TestMethod]
     public async Task CaptureInitializationDefersRetainedRecoveryUntilHostHasStarted()
     {
-        var loader = CreateLoader("synthetic", CentralIntegrationMode.Disabled, "synthetic");
+        var loader = CreateLoader("synthetic", "synthetic");
         var accessor = new CameraAgentConfigurationAccessor();
         var graph = new StartupPipeline();
         using var lifetime = new ControlledStartupLifetime();
@@ -41,7 +42,7 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
     [TestMethod]
     public async Task PostStartupCaptureInitializationReconcilesAnEditBeforePublishingConfiguration()
     {
-        var configuration = await CreateLoader("synthetic", CentralIntegrationMode.Disabled, "synthetic")
+        var configuration = await CreateLoader("synthetic", "synthetic")
             .LoadAsync(CancellationToken.None).ConfigureAwait(false);
         var locations = new StartupEditLocationStore();
         var loader = new StartupEditLoader(configuration, locations);
@@ -108,8 +109,7 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, store, hostLifetime: new RefreshLifetime());
         if (keepsChanging)
         {
@@ -132,8 +132,7 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, store,
             hostLifetime: new RefreshLifetime(), timeProvider: clock);
         async Task RequestAndDrainAsync()
@@ -166,8 +165,7 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, store,
             hostLifetime: new RefreshLifetime(), timeProvider: clock);
         async Task DrainAsync()
@@ -231,8 +229,7 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, store);
         if (keepsChanging)
         {
@@ -292,9 +289,9 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
     }
 
     [TestMethod]
-    public async Task CentralIntegrationDerivesSampleAgentIdFromPersistentDeviceIdentity()
+    public async Task SampleAgentIdResolvesToPersistentLocalIdentity()
     {
-        var loader = CreateLoader(agentId: null, CentralIntegrationMode.Enabled, "device-identity-1");
+        var loader = CreateLoader(agentId: null, "device-identity-1");
 
         var configuration = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -302,26 +299,10 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
     }
 
     [TestMethod]
-    public async Task CentralIntegrationAcceptsExactAgentIdAndRejectsMismatch()
-    {
-        var matching = CreateLoader("device-identity-1", CentralIntegrationMode.Enabled, "device-identity-1");
-        var mismatch = CreateLoader("configured-other-device", CentralIntegrationMode.Enabled, "device-identity-1");
-
-        Assert.AreEqual(
-            "device-identity-1",
-            (await matching.LoadAsync(CancellationToken.None).ConfigureAwait(false)).AgentId);
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
-            await mismatch.LoadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.AreEqual(
-            "Configured AgentId does not match the persistent CameraAgent device identity.",
-            exception.Message);
-    }
-
-    [TestMethod]
     public async Task StandaloneModePreservesConfiguredAgentId()
     {
         var provider = new FixedCaptureAgentIdentityProvider("device-identity-1");
-        var loader = CreateLoader("standalone-agent", CentralIntegrationMode.Disabled, provider);
+        var loader = CreateLoader("standalone-agent", provider);
 
         var configuration = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -330,56 +311,32 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
     }
 
     [TestMethod]
-    public async Task CentralIntegrationRejectsBlankPersistentDeviceIdentity()
+    public async Task SampleAgentIdRejectsBlankLocalIdentity()
     {
-        var loader = CreateLoader("configured-agent", CentralIntegrationMode.Enabled, " ");
+        var loader = CreateLoader(agentId: null, " ");
 
         var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
         Assert.AreEqual(
-            "The persistent CameraAgent device identity does not contain a valid device identifier.",
-            exception.Message);
-    }
-
-    [TestMethod]
-    public async Task CentralIntegrationRejectsMissingPersistentIdentityProvider()
-    {
-        var loader = new FileCameraAgentConfigurationLoader(
-            Options.Create(new CameraAgentHostOptions
-            {
-                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
-                AgentId = "configured-agent",
-                Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
-            }),
-            NullLogger<FileCameraAgentConfigurationLoader>.Instance);
-
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
-            await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-
-        Assert.AreEqual(
-            "Central integration requires a persistent CameraAgent device identity provider.",
+            "An AgentId or a local device identity is required.",
             exception.Message);
     }
 
     private static FileCameraAgentConfigurationLoader CreateLoader(
         string? agentId,
-        CentralIntegrationMode mode,
         string provisionedAgentId)
-        => CreateLoader(agentId, mode, new FixedCaptureAgentIdentityProvider(provisionedAgentId));
+        => CreateLoader(agentId, new FixedCaptureAgentIdentityProvider(provisionedAgentId));
 
     private static FileCameraAgentConfigurationLoader CreateLoader(
         string? agentId,
-        CentralIntegrationMode mode,
         ICaptureAgentIdentityProvider provider)
         => new(
             Options.Create(new CameraAgentHostOptions
             {
                 ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
                 AgentId = agentId,
-                Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
-                CentralIntegration = new CentralIntegrationOptions { Mode = mode }
+                Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
             }),
             NullLogger<FileCameraAgentConfigurationLoader>.Instance,
             captureAgentIdentityProvider: provider);

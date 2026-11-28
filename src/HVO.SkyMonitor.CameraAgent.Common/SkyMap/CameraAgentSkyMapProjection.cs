@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 /// Projects the installed catalog, the authoritative observer location, and the
 /// active rig geometry into one bounded read-only view for a UTC instant. The
 /// projection is offline and deterministic for the same instant, location, rig,
-/// catalog, and planet ephemeris; it never reads LogicHost, the network, or a storage path.
+/// catalog, and planet ephemeris; the caller supplies every input.
 /// </summary>
 public interface ICameraAgentSkyMapProjection
 {
@@ -109,7 +109,6 @@ public sealed class CameraAgentSkyMapProjection(
             location.Version <= 1
                 ? CameraAgentSkyMapLocationOrigin.StartupSeed
                 : CameraAgentSkyMapLocationOrigin.SucceededVersion,
-            deploymentLocationStore?.Staged is not null,
             location.LatitudeDegrees,
             location.LongitudeDegrees,
             location.ElevationMeters,

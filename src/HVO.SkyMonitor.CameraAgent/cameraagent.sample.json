@@ -1,5 +1,5 @@
 {
-    "agentId": "replace-with-registered-device-id",
+    "agentId": "use-local-device-id",
     "module": {
         "type": "VirtualSky",
         "options": {
@@ -238,10 +238,7 @@
             "order": 100,
             "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"],
             "options": {
-                "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
-                "retentionDays": 7,
-                "updateLatestFrame": true,
-                "queueForUpload": false
+                "updateLatestFrame": true
             }
         },
         {
@@ -250,10 +247,8 @@
             "order": 110,
             "dependsOn": ["Annotation", "CalibratedPreview", "ProjectedScene", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"],
             "options": {
-                "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
-                "retentionDays": 30,
                 "updateLatestFrame": false,
-                "queueForUpload": false
+                "publishArchive": true
             }
         },
         {

@@ -8,7 +8,7 @@ public enum CameraAgentSkyMapLocationOrigin
     /// <summary>Version one: the coordinates this agent was seeded with by its startup configuration.</summary>
     StartupSeed,
 
-    /// <summary>A later version that superseded the seed, from an updated startup seed or a central acknowledgement.</summary>
+    /// <summary>A later version that superseded the seed, from an updated startup seed.</summary>
     SucceededVersion
 }
 
@@ -36,7 +36,6 @@ public sealed record CameraAgentSkyMapObserver(
     string Source,
     DeploymentLocationSourceKind SourceKind,
     CameraAgentSkyMapLocationOrigin Origin,
-    bool StagedAcknowledgementPending,
     double LatitudeDegrees,
     double LongitudeDegrees,
     double ElevationMeters,

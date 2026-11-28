@@ -12,13 +12,13 @@ internal sealed class AstrometricCatalogSourceTests
     public async Task InstalledFixturePreservesPackageIdentityWithoutClaimingCompleteSky()
     {
         using var installation = CatalogSnapshotResolverTests.CreateInstallation();
-        var snapshot = CatalogSnapshotResolver.Resolve(new(installation.Root, "hyg-v42-fixture")
+        var snapshot = CatalogSnapshotResolver.Resolve(new(installation.Root, "hyg-v44-fixture")
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture
         });
         var data = await snapshot.Catalog.ReadAsync(7, 2500).ConfigureAwait(false);
 
-        Assert.HasCount(9, data.Stars);
+        Assert.HasCount(13, data.Stars);
         Assert.IsFalse(data.IsCompleteForRequestedMagnitude);
         Assert.AreEqual(7, data.CompletenessMagnitudeLimit);
         Assert.AreEqual(snapshot.Catalog.Metadata, data.Metadata);
@@ -33,7 +33,7 @@ internal sealed class AstrometricCatalogSourceTests
         var catalog = DirectFixture();
         var data = await catalog.ReadAsync(7, 2500).ConfigureAwait(false);
 
-        Assert.HasCount(9, data.Stars);
+        Assert.HasCount(13, data.Stars);
         Assert.IsNull(data.Provenance);
         Assert.IsFalse(data.IsCompleteForRequestedMagnitude);
     }
@@ -85,9 +85,9 @@ internal sealed class AstrometricCatalogSourceTests
         var catalog = DirectFixture();
         var selection = await catalog.ReadAsync(7, maximumEntries).ConfigureAwait(false);
 
-        // The copy is min(matching, bound): nine matching rows, however large the bound.
-        Assert.AreEqual(9, catalog.ObjectCount);
-        Assert.HasCount(Math.Min(catalog.ObjectCount, maximumEntries), selection.Stars);
+        // Only the 13 rows at or brighter than magnitude 7 match, even with a larger bound.
+        Assert.AreEqual(16, catalog.ObjectCount);
+        Assert.HasCount(13, selection.Stars);
         Assert.IsFalse(selection.IsCompleteForRequestedMagnitude, "A direct fixture load never declares complete coverage.");
     }
 
@@ -159,6 +159,6 @@ internal sealed class AstrometricCatalogSourceTests
     }
 
     private static SqliteCelestialCatalog DirectFixture() => new(new(
-        Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
-        "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840", "2", "3", 9));
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite"),
+        "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682", "3", "4", 16));
 }

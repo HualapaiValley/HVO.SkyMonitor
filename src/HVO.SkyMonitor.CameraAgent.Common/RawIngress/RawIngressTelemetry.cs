@@ -120,7 +120,6 @@ public sealed class RawIngressTelemetry : IDisposable
         RecordOutcome("cleaned", summary.Cleaned);
         RecordOutcome("quarantined", summary.Quarantined);
         RecordOutcome("missing", summary.MissingEvidence);
-        RecordOutcome("index-failed", summary.IndexProjectionFailures);
         RecordOutcome("projected-scene-backlog", summary.ProjectedSceneStageBacklog);
     }
 

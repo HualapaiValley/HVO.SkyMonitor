@@ -25,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
     Justification = "The retained-evidence harness passes only fixed SQL queries to its helpers.")]
@@ -240,8 +241,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
     {
         var started = Stopwatch.GetTimestamp();
         var options = CreateOptions(root);
-        var syntheticStore = new SyntheticCalibrationReferenceStore(
-            options, new CameraAgentClearReferenceLoader(options));
+        var syntheticStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
         var validModel = SyntheticModel(Seed);
         var incompleteModel = SyntheticModel(Seed + 1);
         var corruptModel = SyntheticModel(Seed + 2);
@@ -273,7 +273,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         CalibrationLibraryReconciliationSummary first;
         string validBundleId;
-        using (var store = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)))
+        using (var store = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
         {
             var reconciler = new CalibrationLibraryReconciler(store, options);
             first = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
@@ -287,8 +287,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
             Assert.AreEqual(ExpectedSyntheticBundleId, validBundleId);
             Assert.AreEqual(CalibrationLibraryBundleSources.SyntheticReferencesV1, bundles[0].Bundle.Source);
             Assert.AreEqual(valid.ProfileIdentitySha256, bundles[0].Bundle.ProfileIdentitySha256);
-            Assert.AreEqual(valid.EvidenceFiles.Single(static file =>
-                file.RelativePath.EndsWith("/reference-calibration-profile.json", StringComparison.Ordinal)).RelativePath,
+            Assert.AreEqual(valid.LibraryBundle.ProfileRelativePath,
                 bundles[0].Bundle.ProfileRelativePath);
             var beforeActivation = await store.SelectAsync(validLight, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(beforeActivation.IsSelected);
@@ -303,7 +302,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
 
         CalibrationLibraryReconciliationSummary restart;
         CalibrationLibrarySelectionResult selected;
-        using (var restarted = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)))
+        using (var restarted = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
         {
             restart = await new CalibrationLibraryReconciler(restarted, options)
                 .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
@@ -318,7 +317,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
             Assert.IsTrue(selected.IsSelected, selected.ReasonCode);
         }
 
-        using (var reopened = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)))
+        using (var reopened = new SqliteCalibrationLibraryStore(ingress, options, new FixedTimeProvider(FixedUtcNow)) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
         {
             var restartSelected = await reopened.SelectAsync(validLight, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(restartSelected.IsSelected, restartSelected.ReasonCode);
@@ -899,7 +898,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
     }
 
     private static string RelativeDirectory(SyntheticCalibrationBundle bundle)
-        => Normalize(Path.GetDirectoryName(bundle.EvidenceFiles[0].RelativePath)!);
+        => Normalize(Path.GetDirectoryName(bundle.LibraryBundle.ProfileRelativePath)!);
 
     private static Dictionary<string, FileIdentity> HashCalibrationFiles(string root)
     {
@@ -1191,12 +1190,11 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
             var telemetry = new CaptureControlTelemetry();
             var admission = new CaptureAdmissionCoordinator(ingress, options, timeProvider, telemetry);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
+            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(W0Configuration());
-            var publisher = new CalibrationArtifactPublisher(
-                options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
+            var publisher = CalibrationSiloFixture.Publisher(options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
                 store, publisher, admission, accessor, timeProvider);
             return new W0Fixture(store, admission, telemetry, coordinator);

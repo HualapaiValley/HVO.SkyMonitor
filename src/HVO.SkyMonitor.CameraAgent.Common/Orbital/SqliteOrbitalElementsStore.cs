@@ -5,7 +5,7 @@ using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -35,6 +35,8 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
     internal const int MaximumTextLength = 512;
     internal const string DatabaseFileName = "orbital-elements.db";
     internal const string LockFileName = "orbital-elements.lock";
+    private static readonly TimeSpan MinimumServerErrorBackoff = TimeSpan.FromMinutes(15);
+
     internal const string RawDirectoryName = "raw";
     internal const string PayloadDirectoryName = "payloads";
     internal const string ManifestDirectoryName = "manifests";
@@ -161,9 +163,7 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             using var transaction = BeginImmediate(connection);
             var policy = await ReadPolicyAsync(connection, transaction, token).ConfigureAwait(false);
             var now = Truncate(Now());
-            DateTimeOffset? floor = policy.LastAttemptStartedUnixMs is { } last
-                ? FromUnixMilliseconds(last) + _settings.MinimumAttemptInterval
-                : null;
+            var floor = NextPermittedAttempt(policy.LastAttemptStartedUnixMs, policy.LastServerErrorCompletedUnixMs);
             if (policy.Halt is { } halt)
             {
                 return new OrbitalAttemptAdmission(OrbitalAdmissionStatus.Halted, null, floor, halt);
@@ -598,17 +598,15 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
 
     internal string PayloadPath(string payloadSha256) => FilePath(PayloadDirectoryName, payloadSha256);
 
-    internal string RawPath(string rawSha256) => FilePath(RawDirectoryName, rawSha256);
-
-    internal string QuarantinePath(string rawSha256) => FilePath(QuarantineDirectoryName, rawSha256);
+    internal string RawPath(string rawSha256, string extension) => FilePath(RawDirectoryName, rawSha256, extension);
 
     /// <summary>Re-proves that no link has been introduced between the root and an orbital file before it is touched.</summary>
     internal void VerifyContained(string absolutePath, string operation)
         => (_root ?? throw new InvalidOperationException("The orbital elements store has not been initialized."))
             .Verify(absolutePath, operation);
 
-    private string FilePath(string directory, string sha256)
-        => Path.Combine(_rootPath, directory, sha256 + ".json");
+    private string FilePath(string directory, string sha256, string extension = JsonExtension)
+        => Path.Combine(_rootPath, ContentRelativePath(directory, sha256, extension));
 
     private async ValueTask<T> ExecuteGatedAsync<T>(
         Func<SqliteConnection, CancellationToken, ValueTask<T>> operation,
@@ -826,7 +824,8 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 s.minimum_epoch_utc_ticks, s.maximum_epoch_utc_ticks, p.last_attempt_started_unix_ms,
                 a.outcome, a.run_key, a.reason_code, p.last_retrieval_success_utc_ticks, p.last_activation_unix_ms,
                 p.halt_since_unix_ms, p.halt_http_status, p.halt_reason,
-                p.quarantine_observed_unix_ms, p.quarantine_raw_sha256, p.quarantine_reason
+                p.quarantine_observed_unix_ms, p.quarantine_raw_sha256, p.quarantine_reason,
+                CASE WHEN a.http_status BETWEEN 500 AND 599 THEN a.completed_unix_ms END
             FROM orbital_provider_state AS p
             LEFT JOIN orbital_snapshots AS s ON s.manifest_sha256 = p.active_manifest_sha256
             LEFT JOIN orbital_attempts AS a ON a.attempt_sequence = p.attempt_sequence
@@ -852,7 +851,7 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             NullableString(reader, 10),
             NullableTicks(reader, 11),
             NullableLong(reader, 12) is { } activated ? FromUnixMilliseconds(activated) : null,
-            lastAttempt is { } floor ? FromUnixMilliseconds(floor) + _settings.MinimumAttemptInterval : null,
+            NextPermittedAttempt(lastAttempt, NullableLong(reader, 19)),
             NullableLong(reader, 13) is { } since
                 ? new OrbitalProviderHalt(FromUnixMilliseconds(since), NullableInt(reader, 14), reader.GetString(15))
                 : null,
@@ -861,11 +860,27 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 : null);
     }
 
+    private DateTimeOffset? NextPermittedAttempt(long? lastAttemptStartedUnixMs, long? lastServerErrorCompletedUnixMs)
+    {
+        if (lastAttemptStartedUnixMs is not { } started)
+        {
+            return null;
+        }
+        var floor = FromUnixMilliseconds(started) + _settings.MinimumAttemptInterval;
+        // The immutable attempt keeps the 5xx cooldown even after an operator clears the provider halt.
+        if (lastServerErrorCompletedUnixMs is { } completed)
+        {
+            var backoff = FromUnixMilliseconds(completed) + MinimumServerErrorBackoff;
+            return backoff > floor ? backoff : floor;
+        }
+        return floor;
+    }
+
     /// <summary>The restart settlement: interrupted attempts, the attempt whose outcome was unknown, and whether it halted.</summary>
     private readonly record struct LedgerReconciliation(int Interrupted, string? UnknownOutcomeAttemptId, bool HaltRecorded);
 
     private sealed record ProviderPolicy(long AttemptSequence, long? LastAttemptStartedUnixMs, OrbitalProviderHalt? Halt,
-        string? InFlightAttemptId);
+        string? InFlightAttemptId, long? LastServerErrorCompletedUnixMs);
 
     private static async ValueTask<ProviderPolicy> ReadPolicyAsync(
         SqliteConnection connection,
@@ -873,9 +888,12 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
         CancellationToken cancellationToken)
     {
         using var command = CreateCommand(connection, transaction, """
-            SELECT attempt_sequence, last_attempt_started_unix_ms, halt_since_unix_ms, halt_http_status, halt_reason,
-                (SELECT attempt_id FROM orbital_attempts WHERE outcome = 'InFlight')
-            FROM orbital_provider_state WHERE provider = 'celestrak';
+            SELECT p.attempt_sequence, p.last_attempt_started_unix_ms, p.halt_since_unix_ms, p.halt_http_status, p.halt_reason,
+                (SELECT attempt_id FROM orbital_attempts WHERE outcome = 'InFlight'),
+                CASE WHEN a.http_status BETWEEN 500 AND 599 THEN a.completed_unix_ms END
+            FROM orbital_provider_state AS p
+            LEFT JOIN orbital_attempts AS a ON a.attempt_sequence = p.attempt_sequence
+            WHERE p.provider = 'celestrak';
             """);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -888,7 +906,8 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             NullableLong(reader, 2) is { } since
                 ? new OrbitalProviderHalt(FromUnixMilliseconds(since), NullableInt(reader, 3), reader.GetString(4))
                 : null,
-            NullableString(reader, 5));
+            NullableString(reader, 5),
+            NullableLong(reader, 6));
     }
 
     private static async ValueTask RequireInFlightAsync(

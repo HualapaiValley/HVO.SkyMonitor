@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SpaceWeather")]
 public sealed class SpaceWeatherCompositionTests
 {
     [TestMethod]
@@ -24,7 +25,7 @@ public sealed class SpaceWeatherCompositionTests
     {
         using var host = new SpaceWeatherTestHost(false);
         var services = new ServiceCollection(); services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         { ["CameraAgent:RawIngressRoot"] = host.Root }).Build());
         services.AddSingleton<IDeploymentLocationProtector>(new Protector());
         var provider = services.BuildServiceProvider();
@@ -69,7 +70,7 @@ public sealed class SpaceWeatherCompositionTests
     public void OvationCannotBindAtStartup()
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["CameraAgent:SpaceWeather:Products:0"] = "Ovation", ["CameraAgent:RawIngressRoot"] = "ingress" }).Build();
-        var services = new ServiceCollection(); services.AddLogging(); services.AddCameraAgentInfrastructure(config);
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSiloTestInfrastructure(config);
         using var provider = services.BuildServiceProvider();
         Assert.ThrowsExactly<InvalidOperationException>(() => _ = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value);
     }
@@ -79,7 +80,7 @@ public sealed class SpaceWeatherCompositionTests
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         { ["CameraAgent:SpaceWeather:Products:0"] = "Scales", ["CameraAgent:RawIngressRoot"] = "ingress" }).Build();
-        var services = new ServiceCollection(); services.AddLogging(); services.AddCameraAgentInfrastructure(config);
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSiloTestInfrastructure(config);
         using var provider = services.BuildServiceProvider();
         var products = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.SpaceWeather.Products;
         Assert.AreEqual(1, products.Count); Assert.AreEqual(SwpcProduct.Scales, products[0]);

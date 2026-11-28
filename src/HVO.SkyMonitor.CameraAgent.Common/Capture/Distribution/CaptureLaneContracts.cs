@@ -53,6 +53,7 @@ public readonly record struct CaptureLaneHandlerResult(
     string Reason)
 {
     internal bool DiscardExecutionAttempt { get; init; }
+    internal bool PublishedSiloEvidenceFailed { get; init; }
 
     public static CaptureLaneHandlerResult Success { get; } = new(CaptureLaneHandlerOutcome.Completed, "completed");
 
@@ -78,7 +79,10 @@ internal sealed record CaptureLaneLease(
     string LeaseToken,
     string LeaseOwner,
     DateTimeOffset LeaseExpiresUtc,
-    CaptureLaneHandlerContext Context);
+    CaptureLaneHandlerContext Context)
+{
+    internal bool SiloEvidenceVisibleAtClaim { get; init; }
+}
 
 internal sealed record CaptureLanePendingCapture(string AgentId, long CaptureSequence);
 

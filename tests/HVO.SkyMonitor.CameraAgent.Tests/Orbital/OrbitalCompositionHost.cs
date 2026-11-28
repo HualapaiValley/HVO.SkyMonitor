@@ -71,7 +71,6 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
         {
             ["CameraAgent:RawIngressRoot"] = rawIngressRoot,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         };
         if (enabled is { } value)
         {
@@ -80,7 +79,7 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(clock);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
         services.AddHttpClient(CelesTrakGpSource.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => handler);
         if (meter is not null)
@@ -202,8 +201,6 @@ internal sealed class ScriptedCelesTrakHandler : HttpMessageHandler
 
     public void EnqueueBody(byte[] body) => Enqueue((_, _) => Task.FromResult(
         CelesTrakGpTestData.Response(HttpStatusCode.OK, new TrackingContent(body))));
-
-    public void EnqueueFixture(string name) => EnqueueBody(CelesTrakGpTestData.ReadFixture(name));
 
     public void EnqueueStatus(int status) => Enqueue((_, _) => Task.FromResult(
         CelesTrakGpTestData.Response((HttpStatusCode)status, TrackingContent.Of("{\"provider\":\"body never read\"}"))));

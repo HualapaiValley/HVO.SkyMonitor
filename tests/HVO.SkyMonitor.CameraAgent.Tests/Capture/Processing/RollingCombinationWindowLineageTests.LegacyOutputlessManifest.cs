@@ -22,7 +22,9 @@ public sealed partial class RollingCombinationWindowLineageTests
         Guid id;
         Guid? sourceId;
         var initialReason = recorded || (history == WindowSize - 1 && !retry) ? null : CameraAgentRunManifest.UnrecordedInputReason;
-        var prunedReason = recorded ? CameraAgentRunManifest.ArtifactEvidenceUnavailableReason : CameraAgentRunManifest.UnrecordedInputReason;
+        var prunedReason = history > 0
+            ? CameraAgentRunManifest.ArtifactEvidenceUnavailableReason
+            : CameraAgentRunManifest.UnrecordedInputReason;
         try
         {
             var configuration = CreateConfiguration(root, syntheticReferences: false);
@@ -104,13 +106,10 @@ public sealed partial class RollingCombinationWindowLineageTests
                 {
                     var store = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
                     var target = (await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false))!;
-                    var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                        target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                    await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    Assert.IsNull(await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false));
+                    await SiloInfrastructureFixture.ExpireLocalMemberAsync(reopened, target.ArtifactId, target.OutputIdentitySha256,
+                        CancellationToken.None).ConfigureAwait(false);
                     var journal = (await operations.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!;
-                    Assert.HasCount(history - 1, journal.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs);
+                    Assert.HasCount(history, journal.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs);
                 }
                 await RunManifestTestAssertions.ResponseAsync(operations, id, prunedReason).ConfigureAwait(false);
             }

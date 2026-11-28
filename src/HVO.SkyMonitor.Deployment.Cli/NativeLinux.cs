@@ -15,6 +15,7 @@ internal static partial class NativeLinux
     private const uint StatxMode = 0x00000002;
     private const uint StatxInode = 0x00000100;
     private const uint StatxMountId = 0x00001000;
+    private const uint StatxChangeTime = 0x00000080;
     private const uint DirectoryType = 0x4000;
     private const uint RegularFileType = 0x8000;
     internal const uint SocketNodeType = 0xC000;
@@ -209,6 +210,44 @@ internal static partial class NativeLinux
         return ToNodeIdentity(status);
     }
 
+    /// <summary>
+    /// The identity of what <paramref name="path"/> names, links followed, or <see langword="null"/> when it does not exist
+    /// or cannot be examined.
+    /// </summary>
+    public static UnixNodeIdentity? TryGetTargetNodeIdentity(string path)
+    {
+        const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;
+        return StatX(AtFileDescriptorCurrentWorkingDirectory, path, 0, mask, out var status) == 0 && (status.Mask & mask) == mask
+            ? ToNodeIdentity(status)
+            : null;
+    }
+
+    [LibraryImport("libc", EntryPoint = "realpath", StringMarshalling = StringMarshalling.Utf8)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial IntPtr RealPath(string path, IntPtr resolved);
+
+    [LibraryImport("libc", EntryPoint = "free")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial void Free(IntPtr pointer);
+
+    /// <summary>
+    /// <paramref name="path"/> with every link in it resolved, as realpath(3) and <c>realpath -e</c> resolve it, or
+    /// <see langword="null"/> when any part of it does not exist or cannot be searched.
+    /// </summary>
+    public static string? TryResolvePath(string path)
+    {
+        var resolved = RealPath(path, IntPtr.Zero);
+        if (resolved == IntPtr.Zero) return null;
+        try
+        {
+            return Marshal.PtrToStringUTF8(resolved);
+        }
+        finally
+        {
+            Free(resolved);
+        }
+    }
+
     public static UnixNodeIdentity GetTargetNodeIdentity(string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;
@@ -219,7 +258,8 @@ internal static partial class NativeLinux
 
     public static SafeFileHandle OpenReadOnlyNoFollow(string path)
     {
-        var descriptor = Open(path, OpenReadOnly | OpenNoFollow | OpenCloseOnExec);
+        // The caller authenticates the file type on the opened handle. A FIFO must not block that check.
+        var descriptor = Open(path, OpenReadOnly | OpenNoFollow | OpenCloseOnExec | OpenNonBlocking);
         return descriptor >= 0
             ? new SafeFileHandle(descriptor, ownsHandle: true)
             : throw new InstallerException($"Protected file '{path}' could not be opened without following links.");
@@ -301,6 +341,21 @@ internal static partial class NativeLinux
     }
 
     public static void Unlock(SafeFileHandle handle) => _ = FLock(handle.DangerousGetHandle().ToInt32(), LockRelease);
+
+    /// <summary>
+    /// When <paramref name="path"/> last changed status, not following a final symbolic link: its inode change time, which
+    /// a rename into place (publication), a write, a chmod or a chown all advance, unlike its modification time, which a
+    /// rename keeps.
+    /// </summary>
+    public static DateTimeOffset GetChangeTimeUtc(string path)
+    {
+        if (StatX(AtFileDescriptorCurrentWorkingDirectory, path, AtSymbolicLinkNoFollow, StatxChangeTime, out var status) != 0 ||
+            (status.Mask & StatxChangeTime) != StatxChangeTime)
+        {
+            throw new InstallerException($"The change time of '{path}' could not be read.");
+        }
+        return DateTimeOffset.FromUnixTimeSeconds(status.ChangeTimeSeconds).AddTicks(status.ChangeTimeNanoseconds / 100);
+    }
 
     public static UnixFileIdentity GetOpenFileIdentity(SafeFileHandle handle, string path)
     {
@@ -474,6 +529,8 @@ internal static partial class NativeLinux
         [FieldOffset(24)] internal uint Gid;
         [FieldOffset(28)] internal ushort Mode;
         [FieldOffset(32)] internal ulong Inode;
+        [FieldOffset(96)] internal long ChangeTimeSeconds;
+        [FieldOffset(104)] internal uint ChangeTimeNanoseconds;
         [FieldOffset(136)] internal uint DeviceMajor;
         [FieldOffset(140)] internal uint DeviceMinor;
         [FieldOffset(144)] internal ulong MountId;

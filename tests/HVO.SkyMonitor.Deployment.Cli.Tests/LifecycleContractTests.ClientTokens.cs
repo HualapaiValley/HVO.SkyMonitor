@@ -29,17 +29,15 @@ public sealed partial class LifecycleContractTests
         "INSERT INTO processing_graph_registry_state(state_key, selection_mode, active_revision_id, configured_basic_revision_id, state_version, updated_unix_ms) " +
         "VALUES(1, 'ConfiguredBasic', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 4, 0);",
         DisplayName = "processing graph registry")]
-    public async Task RollbackAsync_AVersionAClientWasGivenAfterTheSnapshot_NeverMatchesTheRestoredState(string table, string column, string seed)
+    public async Task PendingUpgradeRecovery_AVersionAClientWasGivenAfterTheSnapshot_NeverMatchesTheRestoredState(string table, string column, string seed)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         SeedRawIngressImage(fixture.Paths);
         ExecuteSql(RawIngressPath(fixture.Paths), seed);
-        await UpgradeAndCommitAsync(fixture);
-        // The upgraded release takes three edits, handing out versions 5, 6 and 7 for states the snapshot never had.
-        ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE {table} SET {column} = 7;");
-
-        await RollBackAsync(fixture);
+        // Before verification, the candidate takes three edits, handing out versions 5, 6 and 7 for states the snapshot never had.
+        await RecoverFromCandidateWriteAsync(fixture, () =>
+            ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE {table} SET {column} = 7;"));
 
         // A client still holding 7 (or 5, or 6) is stale against the restored state, and the next edit issues 9.
         Assert.AreEqual(8, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT {column} FROM {table} WHERE state_key = 1;"));
@@ -47,7 +45,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_AutomationDefinitionVersionsHandedOutAfterTheSnapshot_AreNeverIssuedAgain()
+    public async Task PendingUpgradeRecovery_AutomationDefinitionVersionsHandedOutAfterTheSnapshot_AreNeverIssuedAgain()
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -55,14 +53,13 @@ public sealed partial class LifecycleContractTests
         ExecuteSql(automation, FixtureDump(AutomationStore));
         SaveDefinition(automation, "kept", 1, 2, 3);
         SaveDefinition(automation, "removed-later", 1, 2);
-        await UpgradeAndCommitAsync(fixture);
-        // After the upgrade: one definition is edited to version 6, one is created and edited to 2, one is removed (the
-        // removal itself takes version 3).
-        SaveDefinition(automation, "kept", 4, 5, 6);
-        SaveDefinition(automation, "created", 1, 2);
-        RemoveDefinition(automation, "removed-later", 3);
-
-        await RollBackAsync(fixture);
+        // Fault injection exercises the counter carry with writes made by the uncommitted candidate.
+        await RecoverFromCandidateWriteAsync(fixture, () =>
+        {
+            SaveDefinition(automation, "kept", 4, 5, 6);
+            SaveDefinition(automation, "created", 1, 2);
+            RemoveDefinition(automation, "removed-later", 3);
+        });
 
         Assert.AreEqual(7, ReadCounter(fixture.Paths, AutomationStore, "SELECT version FROM automation_definitions WHERE definition_id = 'kept';"));
         Assert.AreEqual(4, ReadCounter(fixture.Paths, AutomationStore, "SELECT version FROM automation_definitions WHERE definition_id = 'removed-later';"));
@@ -81,17 +78,14 @@ public sealed partial class LifecycleContractTests
     [DataRow("raw/.environment/environmental-observation-outbox.db", "environmental_observation_outbox", DisplayName = "environmental outbox")]
     [DataRow("raw/.environment/environmental-observation-outbox.db", "environmental_observation_journal", DisplayName = "environmental journal")]
     [DataRow("raw/evidence/execution-evidence-outbox.db", "execution_evidence_units", DisplayName = "execution evidence")]
-    public async Task RollbackAsync_ARowIdInAClientActionTokenIsNeverReissued(string store, string table)
+    public async Task PendingUpgradeRecovery_ARowIdInAClientActionTokenIsNeverReissued(string store, string table)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         var path = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, store);
         ExecuteSql(path, FixtureDump(store) + $"INSERT INTO sqlite_sequence(name, seq) VALUES('{table}', 10);");
-        await UpgradeAndCommitAsync(fixture);
-        // Rows 11 to 25 are created after the upgrade, and an operator is shown action tokens naming them.
-        ExecuteSql(path, $"UPDATE sqlite_sequence SET seq = 25 WHERE name = '{table}';");
-
-        await RollBackAsync(fixture);
+        await RecoverFromCandidateWriteAsync(fixture, () =>
+            ExecuteSql(path, $"UPDATE sqlite_sequence SET seq = 25 WHERE name = '{table}';"));
 
         Assert.AreEqual(25, ReadCounter(fixture.Paths, store, $"SELECT seq FROM sqlite_sequence WHERE name = '{table}';"));
     }
@@ -100,25 +94,18 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(1, true, DisplayName = "created at version 1, as the previous release would recreate it")]
     [DataRow(3, false, DisplayName = "advanced to version 3")]
-    public async Task RollbackAsync_ScheduleStateTheSnapshotLacks_IsCarriedOnlyWhenTheLazyRowWouldMatch(int liveVersion, bool matches)
+    public async Task PendingUpgradeRecovery_ScheduleStateTheSnapshotLacks_IsCarriedOnlyWhenTheLazyRowWouldMatch(int liveVersion, bool matches)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         SeedRawIngressImage(fixture.Paths);
         ExecuteSql(RawIngressPath(fixture.Paths), ScheduleRevision);
-        await UpgradeAndCommitAsync(fixture);
-        ExecuteSql(RawIngressPath(fixture.Paths), string.Create(CultureInfo.InvariantCulture,
-            $"INSERT INTO capture_schedule_state(state_key, active_revision_id, version, updated_unix_ms) VALUES(1, 'profile-00000001-abcdefabcdef', {liveVersion}, 0);"));
-
         using var error = new StringWriter();
-        Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: error)).Outcome);
+        await RecoverFromCandidateWriteAsync(fixture, () => ExecuteSql(RawIngressPath(fixture.Paths), string.Create(CultureInfo.InvariantCulture,
+            $"INSERT INTO capture_schedule_state(state_key, active_revision_id, version, updated_unix_ms) VALUES(1, 'profile-00000001-abcdefabcdef', {liveVersion}, 0);")),
+            error);
 
-        // The previous release recreates the row it lacks. A version of 1 is the state that row describes, so nothing is
-        // lost; a higher version cannot be carried into a row the snapshot lacks, and since carrying is best effort the
-        // rollback completes and says so (#1314 R17–R20) rather than refusing.
+        // The restore recreates the original store. A higher version without a matching row is reported.
         Assert.AreEqual(0, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", "SELECT COUNT(*) FROM capture_schedule_state;"));
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         if (matches)
@@ -144,14 +131,24 @@ public sealed partial class LifecycleContractTests
 
     private static async Task UpgradeAndCommitAsync(LifecycleFixture fixture)
         => Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
 
-    private static async Task RollBackAsync(LifecycleFixture fixture)
-        => Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null)).Outcome);
+    private static async Task RecoverFromCandidateWriteAsync(
+        LifecycleFixture fixture, Action candidateWrite, TextWriter? error = null, ICameraAgentLifecycleClient? lifecycle = null)
+    {
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image == CandidateImageId) candidateWrite();
+        };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle ?? new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
+            fixture.Uid, fixture.Gid, CancellationToken.None, error: error ?? TextWriter.Null));
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        var journal = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsNotNull(journal!.StateSnapshotRestoredUtc);
+    }
 
     /// <summary>Saves an automation definition at each of <paramref name="versions"/> in turn, as the store does.</summary>
     private static void SaveDefinition(string automation, string id, params int[] versions)

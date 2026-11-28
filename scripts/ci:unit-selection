@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Prove the full-qualification Unit job lists every test project that owns Unit
-# cases (issue #1255), plus the four supplemental component selections (#1261).
+# cases (issue #1255), plus the two supplemental component selections (#1261).
 #
 # Bounded guarantee: for each inventory-derived Unit-bearing project, the full
 # `unit` job holds exactly one supported selecting command, whose arguments and
 # report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
 # checked, in a step of a closed grammar, ahead of the evidence bind and upload.
-# Component checks use that grammar for the four explicitly named supplemental
+# Component checks use that grammar for the two explicitly named supplemental
 # commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
@@ -16,14 +16,9 @@ set -euo pipefail
 # supplemental TRX publication, catalog availability or checkout trust (see the
 # Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
 #
-# Each test project declares its cases in tests/<project>/test-categories.json,
-# and tests/Directory.Build.props compile-links shared contract tests into
-# projects whose name does not say "Tests", so a project can own Unit cases
-# while looking like an Integration-only assembly. The Unit job in
-# .github/workflows/ci.yml is a hand-written list; that list silently omitted
-# four such assemblies (16 cases) until this check existed. Deriving the
-# expectation from the inventories keeps it attached to what the repository
-# contains instead of to someone remembering to extend the list.
+# tests/unit-test-projects.json declares Unit membership independently of the
+# workflow commands. Full CI compares it to VSTest discovery, including projects
+# that compile-link shared Unit cases alongside their Integration tests.
 #
 # A project whose command collects coverage must be a canonical slot of the
 # Coverage job, and a command without --collect is a supplemental run that must
@@ -34,7 +29,7 @@ set -euo pipefail
 #
 # Every selecting command must sit in a step that always runs: an `if:` or
 # `continue-on-error:` on its step would let the list stay complete while the
-# selection never executes. Component checks below cover only their four named
+# selection never executes. Component checks below cover only their two named
 # supplemental selecting commands and the corresponding component build roots.
 #
 # Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>] [--component-build <path>]
@@ -116,14 +111,14 @@ optional_grep() {
   return 2
 }
 
-declare -a export_lines=() commands=() coverage_slots=() inventories=() projects=()
+declare -a export_lines=() commands=() coverage_slots=() projects=()
 
 [[ -n "$unit_job" ]] || { printf 'Unit selection: the unit job is missing from %s\n' "$workflow" >&2; exit 1; }
 [[ -n "$coverage_job" ]] || { printf 'Unit selection: the coverage job is missing from %s\n' "$workflow" >&2; exit 1; }
 
 grep -qxF '      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock' <<<"$unit_job" ||
   fail 'the Unit job must run with the intentionally invalid Docker endpoint'
-grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance' <<<"$unit_job" ||
   fail 'the Unit job must use the positive Unit filter'
 
 # Anything that changes how the Unit job's steps execute is part of the selection: a
@@ -243,22 +238,20 @@ coverage_text="$(optional_grep "$coverage_job" -oE "TestResults/unit/[a-z0-9-]+/
 split_lines coverage_slots "$coverage_text"
 
 declare -A expected=()
-if ! inventory_text="$(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)"; then
-  fail 'could not inspect inventory paths'
+if ! inventory_text="$(jq -ser '
+  select(length == 1) | .[0]
+  | select(type == "array" and length > 0 and length == (unique | length))
+  | select(all(.[]; type == "string" and test("\\A[A-Za-z0-9]+(\\.[A-Za-z0-9]+)+\\z")))
+  | .[]
+' "$tests_root/unit-test-projects.json")"; then
+  fail 'invalid Unit project membership in unit-test-projects.json'
   exit 1
 fi
-split_lines inventories "$inventory_text"
-for inventory in "${inventories[@]}"; do
-  unit="$(jq -r '.Unit' "$inventory")"
-  ((unit > 0)) || continue
-  dir="$(dirname "$inventory")"
-  if ! project_text="$(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')"; then
-    fail 'could not inspect project paths'
-    exit 1
-  fi
-  split_lines projects "$project_text"
-  ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
-  expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
+split_lines projects "$inventory_text"
+for name in "${projects[@]}"; do
+  [[ -f "$tests_root/$name/$name.csproj" ]] || { fail "unknown Unit project: $name"; continue; }
+  project="tests/$name/$name.csproj"
+  expected["$project"]=1
 done
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
@@ -270,7 +263,7 @@ for project in "${!expected[@]}"; do
     [[ "$command" == *"dotnet test $project "* ]] && matches+=("$command")
   done
   if ((${#matches[@]} != 1)); then
-    fail "$project owns ${expected[$project]} Unit case(s) but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
+    fail "$project owns Unit cases but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
     continue
   fi
   command="${matches[0]}"
@@ -310,10 +303,10 @@ for project in "${!expected[@]}"; do
   if $canonical && ! $collects; then
     fail "$project slot $slot is a canonical coverage slot but its command does not collect coverage"
   fi
-  if ! $canonical && [[ "$command" == *' --collect'* && "$slot" != processing-runner ]]; then
+  if ! $canonical && [[ "$command" == *' --collect'* ]]; then
     fail "$project slot $slot collects coverage that the Coverage job never merges"
   fi
-  if ! $canonical && [[ "$slot" != processing-runner ]]; then
+  if ! $canonical; then
     [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs take none"
     grep -qxF 'ENV DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' <<<"$parsed" ||
       fail "$project slot $slot must run in a step with DOCKER_HOST unix:///tmp/hvo-no-docker.sock, the endpoint its assembly hook treats as Docker-disabled"
@@ -328,17 +321,19 @@ done
 
 for command in "${commands[@]}"; do
   project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
-  [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
+  if [[ -z "${expected[$project]:-}" ]]; then
+    fail "the Unit job selects $project, which owns no Unit cases"
+  fi
 done
 
-# These four compile-linked Unit-bearing assemblies supplement existing component
+# These compile-linked Unit-bearing assemblies supplement existing component
 # coverage runs. This is a selecting-command/build-plan contract, not a whole-job
 # YAML interpreter or proof of checkout, prerequisites or artifact publication.
 while IFS='|' read -r job component name slot; do
   unit_job="$(job_block "$job")" # step_of reads the current job.
   project="tests/$name/$name.csproj"
   [[ -n "${expected[$project]:-}" ]] || fail "$job supplemental project owns no Unit cases: $project"
-  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance' <<<"$unit_job" ||
     fail "$job must use the complete positive Unit filter"
   component_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
   [[ "$component_env" == 'INTEGRATION_FILTER,UNIT_FILTER' ]] ||
@@ -378,12 +373,10 @@ while IFS='|' read -r job component name slot; do
 done <<'COMPONENTS'
 shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
 cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
-logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
-combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
 COMPONENTS
 
 if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) plus four component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d active Unit-bearing project(s) plus two component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"

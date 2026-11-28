@@ -32,6 +32,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Orbital")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : OrbitalStoreTestBase
@@ -1109,7 +1110,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     {
         public ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Enqueued, null));
+            => ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Committed));
     }
 
     private sealed class LocationStore : IDeploymentLocationStore

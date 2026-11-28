@@ -51,8 +51,8 @@ Publishing and re-reading a generation:
 ./scripts/record:cameraagent-final-head-535 clean  --bound-head <40-char-sha> --campaign <id>
 ```
 
-The validator, recorder, importer and component gates run in CI in the Quality
-job's static and lightweight contract checks. The assembler gate builds a fixture
+The validator, recorder and importer gates run in CI in the Quality job's static
+and lightweight contract checks. The assembler gate builds a fixture
 assembly and runs `dotnet fsi`, so it runs in a separate full-mode step after the
 pinned SDK is installed.
 
@@ -151,10 +151,16 @@ the retained telemetry required only as a consistency check:
 A v1 record is refused; the #535 generation 1 record is v1 and remains verifiable,
 but cannot be re-assembled from its producer. A nonzero value is carried, not hidden, so that the validator is what refuses it.
 
-### Producing the real generation
+### Historical generation procedure
 
-The order that was proven end to end on `aa5ec674` (issue #961), all on one
-clean bound head with `development/v1` not advancing between steps:
+The end-to-end procedure was proven on `aa5ec6747f1c2615bb9891e7bdee54a9103ecf07`
+(#961). The closed #535 campaign used four component lanes, including the
+combined lane removed in #2049. Reproduce the campaign with the tooling from
+its original bound commit. The current validator, importer, assembler and
+recorder still read evidence produced by that campaign.
+
+The campaign used this order on one clean bound head with `development/v1`
+held at the same tip between steps.
 
 1. `scripts/test:cameraagent-standalone-211` — the campaign; note its run root.
 2. `scripts/test:cameraagent-dual-standalone-smoke` with the default five trials
@@ -495,24 +501,23 @@ unknown, duplicate, stale-head, wrong-run, failed, cancelled, skipped-required o
 unbound records. A supplied top-level `conclusion: success` cannot override a failed
 job.
 
-The complete matrix deliberately skips the component jobs. #535 independently
-requires `shared`, `cameraagent`, `combined`, and `delivery`; a separate LogicHost
-component rerun is not part of the standalone CameraAgent claim. Produce the four
-exact-head replacements on a clean bound head with the repository-owned runner:
+The historical complete matrix skipped the component jobs. #535 required
+separate evidence for `shared`, `cameraagent`, `combined`, and `delivery`.
+The historical runner produced the four exact-head archives with this command
+from the campaign's bound commit.
 
 ```bash
 ./scripts/record:cameraagent-final-head-components-535 \
   --bound-head <40-char-sha> \
-  --catalog-bundle <verified-hyg-v42-bundle> \
+  --catalog-bundle <verified-hyg-v44-bundle> \
   --output-dir TestResults/issue-535/<head>/<campaign>/components
 ```
 
-The runner executes each lane's existing component restore/build, exact Unit and
-Integration selections, strict TRX result and counter checks, component coverage
-enforcement, and required publish operation. It cleans shared result roots between
-lanes, archives only the resulting evidence, and emits `components.json` after the
-source remains clean and unchanged. The final aggregate cites those four archives;
-the validator and immutable-generation recorder bind their actual bytes.
+The runner performed each lane's component restore and build, Unit and
+Integration selections, strict TRX checks, coverage enforcement, and applicable
+publishes. It archived the resulting evidence and emitted `components.json`
+after confirming the bound tree was clean and unchanged. The validator and
+immutable-generation recorder bind the actual bytes of the four archives.
 
 ## Extending it
 

@@ -44,7 +44,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                 Assert.HasCount(1, rolling.Outputs);
                 Assert.HasCount(WindowSize - 1, rolling.Inputs);
                 await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
-                foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                     await ProcessingGraphOperationsTests.ReadManifestJournalConsumerAsync(root, operations, id, consumer, true).ConfigureAwait(false);
                 if (removeBeforeRestart)
                 {
@@ -57,7 +57,7 @@ public sealed partial class RollingCombinationWindowLineageTests
             {
                 await reopened.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var recovered = reopened.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-                foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                     await ProcessingGraphOperationsTests.ReadManifestJournalConsumerAsync(root, recovered, id, consumer, !removeBeforeRestart).ConfigureAwait(false);
                 if (!removeBeforeRestart)
                 {
@@ -71,12 +71,10 @@ public sealed partial class RollingCombinationWindowLineageTests
                 var sourceId = journal.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs[0].ArtifactId;
                 var store = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
                 var target = (await store.ReadOutputByArtifactIdAsync(sourceId, CancellationToken.None).ConfigureAwait(false))!;
-                var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                    target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                await SiloInfrastructureFixture.ExpireLocalMemberAsync(reopened, target.ArtifactId, target.OutputIdentitySha256,
+                    CancellationToken.None).ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(recovered, id, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
-                Assert.HasCount(WindowSize - 2, (await recovered.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!
+                Assert.HasCount(WindowSize - 1, (await recovered.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!
                     .Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs);
             }
             SqliteConnection.ClearAllPools();

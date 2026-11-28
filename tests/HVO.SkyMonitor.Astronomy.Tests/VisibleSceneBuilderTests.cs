@@ -58,7 +58,7 @@ public sealed class VisibleSceneBuilderTests
     [TestMethod]
     public void Request_InvalidSensorContextOrMetadata_ThrowsAtConstruction()
     {
-        var metadata = new CatalogMetadata("HYG", "4.2", new Uri("https://astronexus.com/projects/hyg"), "fixture");
+        var metadata = new CatalogMetadata("HYG", "4.4", new Uri("https://astronexus.com/projects/hyg"), "fixture");
         Assert.Throws<ArgumentOutOfRangeException>(() => new VisibleSceneRequest(
             PrimaryUtc,
             new ObserverLocation(35.347, -113.878, 0),

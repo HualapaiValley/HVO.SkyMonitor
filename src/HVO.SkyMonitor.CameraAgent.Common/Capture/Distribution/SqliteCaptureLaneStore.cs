@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
@@ -21,7 +22,9 @@ internal sealed class SqliteCaptureLaneStore(
     ICaptureLaneFaultInjector faultInjector,
     Action<TimeSpan>? lockWaitRecorder = null,
     Action? evidenceInvalidated = null,
-    Action<Guid>? liveAstrometryPublished = null) : ICaptureLaneStore
+    CenteredExposureProductChanges? centeredProductChanges = null,
+    Action<Guid>? liveAstrometryPublished = null,
+    SiloArtifactStorage? silo = null)
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -103,32 +106,8 @@ internal sealed class SqliteCaptureLaneStore(
         string? blockedLane = null;
         foreach (var lane in _policy.Definitions.Where(static lane => lane.Enabled && lane.Required))
         {
-            var backlog = await ReadBacklogAsync(connection, lane, transaction, cancellationToken).ConfigureAwait(false);
-            var age = backlog.OldestPendingUtc is { } oldest ? now - oldest : TimeSpan.Zero;
-            var hard = backlog.QuarantineCount > 0 ||
-                       backlog.PendingCount >= _options.RequiredMaximumPendingCount ||
-                       CaptureLanePressureMath.ExceedsAfterAdding(
-                           backlog.PendingBytes, payloadLength, _options.RequiredMaximumPendingBytes) ||
-                       age >= TimeSpan.FromMinutes(_options.RequiredMaximumOldestAgeMinutes);
-            var recovered = backlog.QuarantineCount == 0 &&
-                            backlog.PendingCount * 100 < _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent &&
-                            !CaptureLanePressureMath.IsAtOrAbovePercentage(
-                                backlog.PendingBytes,
-                                _options.RequiredMaximumPendingBytes,
-                                _options.PressureRecoveryPercent) &&
-                            age.TotalMinutes * 100 < _options.RequiredMaximumOldestAgeMinutes * _options.PressureRecoveryPercent;
-            var warning = backlog.PendingCount * 100 >= _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent ||
-                          CaptureLanePressureMath.IsAtOrAbovePercentage(
-                              backlog.PendingBytes,
-                              _options.RequiredMaximumPendingBytes,
-                              _options.PressureRecoveryPercent);
-            var next = hard || backlog.PressureLevel == 2 && !recovered ? 2 : warning ? 1 : 0;
-            using var update = connection.CreateCommand();
-            update.Transaction = transaction;
-            update.CommandText = "UPDATE capture_lane_definitions SET pressure_state = $pressure WHERE lane_name = $lane;";
-            update.Parameters.AddWithValue("$pressure", next);
-            update.Parameters.AddWithValue("$lane", lane.Name);
-            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var next = await RecomputeLanePressureAsync(
+                connection, transaction, lane, _options, now, payloadLength, cancellationToken).ConfigureAwait(false);
             if (next == 2)
             {
                 blockedLane ??= lane.Name;
@@ -156,6 +135,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lane.Name, cancellationToken)
+                .ConfigureAwait(false);
             if (!_hasExecutionSchema)
             {
                 _hasExecutionSchema = await HasExecutionSchemaAsync(connection, cancellationToken, transaction)
@@ -170,18 +151,25 @@ internal sealed class SqliteCaptureLaneStore(
                 connection, transaction, lane, now, cancellationToken).ConfigureAwait(false);
             if (candidate is null || !IsEligible(candidate, now))
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return null;
             }
 
             var token = Guid.NewGuid().ToString("N");
             CaptureLaneHandlerContext context;
+            bool siloEvidenceVisible;
             try
             {
                 var parsed = CaptureContractJson.ParseManifest(candidate.ManifestJson);
                 if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
                 {
                     throw new InvalidDataException("Capture lane work references an invalid committed manifest.");
+                }
+                if (manifest.CenteredExposure is not null && lane.Name == "standard" &&
+                    (candidate.ExecutionId is null || candidate.ContextJson is null || candidate.ContextSha256 is null))
+                {
+                    await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+                    return null;
                 }
                 if (!string.Equals(
                         CaptureContractJson.ComputeManifestSha256(candidate.ManifestJson),
@@ -193,6 +181,35 @@ internal sealed class SqliteCaptureLaneStore(
                 var envelope = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? CaptureLaneEnvelopeSerializer.Deserialize(candidate.ContextJson, candidate.ContextSha256)
                     : CreateFallbackEnvelope(fallbackConfiguration, manifest.Descriptor);
+                if (manifest.CenteredExposure is { } centered &&
+                    manifest.Descriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null)
+                {
+                    CaptureSetpoint request;
+                    try
+                    {
+                        request = await SqliteRawCaptureJournal.ReadCenteredRequestAsync(connection, transaction,
+                            centered.Source, manifest.Descriptor.Capture.CaptureId, allowUnbound: false, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (RawIngressConflictException exception)
+                    {
+                        throw new InvalidDataException("The predecessor lane request has no valid retained dispatch.", exception);
+                    }
+                    var submission = envelope.Submission;
+                    var controls = manifest.Descriptor.Controls;
+                    if (request.Exposure != controls.RequestedExposure || request.Gain != controls.RequestedGain ||
+                        submission.Request.RequestedSetpoint != request &&
+                        submission.Request.RequestedSetpoint != new CaptureSetpoint(
+                            controls.RequestedExposure, controls.RequestedGain, null, null))
+                        throw new InvalidDataException("The predecessor lane request differs from its retained dispatch.");
+                    envelope = envelope with
+                    {
+                        Submission = submission with
+                        {
+                            Request = submission.Request with { RequestedSetpoint = request }
+                        }
+                    };
+                }
                 var capturedRig = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? JsonSerializer.Deserialize<CaptureLaneEnvelope>(candidate.ContextJson,
                         EnvelopeJsonOptions)?.Configuration.Rig
@@ -202,14 +219,29 @@ internal sealed class SqliteCaptureLaneStore(
                 {
                     throw new InvalidDataException("Capture lane rig differs from the committed manifest.");
                 }
-                var absolutePath = Resolve(candidate.PayloadRelativePath);
-                if (!File.Exists(absolutePath) || !File.Exists(Path.ChangeExtension(absolutePath, ".json")))
+                // P4 can advance while the publisher has released the raw lifecycle gate. Take the
+                // lease's visibility sample from the local WAL index, without opening any S3 objects.
+                var stage = RawIngressFileStore.GetPaths(
+                    _root, manifest.Descriptor.Timing.ExposureStartedUtc, manifest.Descriptor.Artifact.ArtifactId);
+                siloEvidenceVisible = silo is not null &&
+                    await silo.HasRawEvidenceAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false);
+                if (!siloEvidenceVisible)
                 {
-                    throw new FileNotFoundException("Capture lane evidence is no longer retained.");
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, stage.PayloadAbsolutePath);
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, stage.SidecarAbsolutePath);
+                    if (!File.Exists(stage.PayloadAbsolutePath) || !File.Exists(stage.SidecarAbsolutePath))
+                    {
+                        if (silo is { BindingVerified: false })
+                        {
+                            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+                            return null;
+                        }
+                        throw new FileNotFoundException("Capture lane evidence is no longer retained.");
+                    }
                 }
                 var stored = new StoredFrameReference(
                     candidate.PayloadRelativePath,
-                    absolutePath,
+                    stage.PayloadAbsolutePath,
                     manifest.Descriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw);
                 var receipt = new RawCaptureReceipt(
@@ -247,7 +279,7 @@ internal sealed class SqliteCaptureLaneStore(
                     candidate.Required ? "quarantined" : "abandoned",
                     candidate.Required ? "evidence-invalid" : "evidence-expired",
                     cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 if (candidate.Required) evidenceInvalidated?.Invoke();
                 return null;
             }
@@ -297,7 +329,7 @@ internal sealed class SqliteCaptureLaneStore(
                 }
             }
             await SetRawRetentionHoldAsync(connection, transaction, candidate.RawRowId, hold: true, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterClaimCommitted);
             return new CaptureLaneLease(
                 candidate.WorkId,
@@ -308,7 +340,10 @@ internal sealed class SqliteCaptureLaneStore(
                 token,
                 owner,
                 expires,
-                context);
+                context)
+            {
+                SiloEvidenceVisibleAtClaim = siloEvidenceVisible
+            };
         }
         finally
         {
@@ -396,6 +431,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -404,12 +441,12 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State == "completed" && string.Equals(current.CompletionToken, lease.LeaseToken, StringComparison.Ordinal))
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return;
             }
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
             }
             _faultInjector.Inject(CaptureLaneFaultPoint.BeforeCompletionCommit);
@@ -422,7 +459,7 @@ internal sealed class SqliteCaptureLaneStore(
             {
                 await ExpireLiveExecutionsAsync(
                     connection, transaction, completedUtc, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException(
                     $"Capture lane '{lease.Lane}' crossed its processing deadline before completion.");
             }
@@ -445,7 +482,7 @@ internal sealed class SqliteCaptureLaneStore(
                 }
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
             if (lease.Context.Execution is { AllowAutomaticPublication: true })
                 liveAstrometryPublished?.Invoke(lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterCompletionCommit);
@@ -456,7 +493,7 @@ internal sealed class SqliteCaptureLaneStore(
         }
     }
 
-    public async ValueTask<CaptureLaneHandlerOutcome> FailAsync(
+    public async ValueTask<(CaptureLaneHandlerOutcome Outcome, bool SiloEvidenceRestored)> FailAsync(
         CaptureLaneLease lease,
         CaptureLaneHandlerResult result,
         CancellationToken cancellationToken)
@@ -467,6 +504,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -475,20 +514,50 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
             }
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
-            var deferred = result.Outcome == CaptureLaneHandlerOutcome.Deferred;
+            var reason = NormalizeReason(result.Reason);
+            var evidenceFailure = reason is "evidence-unavailable" or "evidence-invalid";
+            var publishedEvidenceFailed = evidenceFailure && (lease.SiloEvidenceVisibleAtClaim || result.PublishedSiloEvidenceFailed);
+            var requestedOutcome = publishedEvidenceFailed ? CaptureLaneHandlerOutcome.TerminalFailure : result.Outcome;
+            var deferred = requestedOutcome == CaptureLaneHandlerOutcome.Deferred;
             // Abandoned work is finished without output and never retried; unlike quarantine it leaves the lane and
             // ingress moving, while required sibling lanes keep the raw held until they complete.
-            var abandoned = result.Outcome == CaptureLaneHandlerOutcome.Abandoned;
-            var retry = deferred || result.Outcome == CaptureLaneHandlerOutcome.RetryableFailure && lease.Attempt < _options.MaximumAttempts;
+            var abandoned = requestedOutcome == CaptureLaneHandlerOutcome.Abandoned;
+            var retry = deferred || requestedOutcome == CaptureLaneHandlerOutcome.RetryableFailure && lease.Attempt < _options.MaximumAttempts;
+            // Only a lease issued before visibility may recover from missing staging. The indexed
+            // visibility bit alone says nothing about the integrity of an already-published pair.
+            var siloVisibleNow = publishedEvidenceFailed || !retry && !abandoned && evidenceFailure && silo is not null &&
+                await silo.HasRawEvidenceAsync(lease.Context.RawCapture.Manifest.Descriptor, cancellationToken).ConfigureAwait(false);
+            var restorationStage = !publishedEvidenceFailed && siloVisibleNow
+                ? FormattableString.Invariant($"raw-evidence-silo-restored.lane.{lease.WorkId}")
+                : null;
+            var siloRestored = restorationStage is not null &&
+                await CanRestoreSiloEvidenceAsync(connection, transaction, current.RawRowId, restorationStage, cancellationToken)
+                    .ConfigureAwait(false);
             var now = _timeProvider.GetUtcNow();
             var state = retry ? "retry_wait" : abandoned ? "abandoned" : "quarantined";
             var available = retry ? now + RetryDelay(lease.Attempt) : now;
-            using (var command = connection.CreateCommand())
+            if (siloRestored)
             {
+                EnsureOwned(lease, current, now);
+                using var restore = connection.CreateCommand();
+                restore.Transaction = transaction;
+                restore.Parameters.AddWithValue("$raw", current.RawRowId);
+                restore.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+                if (!await SqliteRawCaptureJournal.RestoreEvidenceLanesAsync(restore, lease.WorkId, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
+                }
+                await SqliteRawCaptureJournal.RecordSiloEvidenceRestorationAsync(restore, cancellationToken, restorationStage)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = """
                     UPDATE capture_lane_work
@@ -501,13 +570,18 @@ internal sealed class SqliteCaptureLaneStore(
                     """;
                 command.Parameters.AddWithValue("$state", state);
                 command.Parameters.AddWithValue("$available", available.ToUnixTimeMilliseconds());
-                command.Parameters.AddWithValue("$reason", NormalizeReason(result.Reason));
+                command.Parameters.AddWithValue("$reason", reason);
                 command.Parameters.AddWithValue("$deferred", deferred ? 1 : 0);
                 command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
                 AddLeaseParameters(command, lease);
                 if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
                     throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
+                }
+                if (silo is not null && siloVisibleNow)
+                {
+                    await SqliteRawCaptureJournal.RecordPublishedSiloEvidenceFailureAsync(
+                        connection, transaction, current.RawRowId, now, cancellationToken).ConfigureAwait(false);
                 }
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
@@ -519,23 +593,47 @@ internal sealed class SqliteCaptureLaneStore(
                     execution.ExecutionId,
                     retry ? ProcessingGraphExecutionStatus.Pending
                         : abandoned ? ProcessingGraphExecutionStatus.Expired : ProcessingGraphExecutionStatus.Failed,
-                    abandoned ? "processing." + NormalizeReason(result.Reason) : result.Reason,
+                    abandoned ? "processing." + reason : result.Reason,
                     terminal: !retry,
                     observedUtc: null,
                     cancellationToken).ConfigureAwait(false);
                 await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (siloRestored)
+            {
+                await RecomputeRequiredPressureAsync(connection, transaction, _options, now, cancellationToken).ConfigureAwait(false);
+            }
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+            if (siloRestored)
+                return (lease.Lane == "standard" ? CaptureLaneHandlerOutcome.Abandoned : CaptureLaneHandlerOutcome.RetryableFailure, true);
+
             _faultInjector.Inject(retry ? CaptureLaneFaultPoint.AfterRetryCommit : CaptureLaneFaultPoint.AfterQuarantineCommit);
-            return deferred
+            var outcome = deferred
                 ? CaptureLaneHandlerOutcome.Deferred
                 : retry ? CaptureLaneHandlerOutcome.RetryableFailure
                 : abandoned ? CaptureLaneHandlerOutcome.Abandoned : CaptureLaneHandlerOutcome.TerminalFailure;
+            return (outcome, false);
         }
         finally
         {
             lifecycleGate.Release();
         }
+    }
+
+    private static async ValueTask<bool> CanRestoreSiloEvidenceAsync(
+        SqliteConnection connection, SqliteTransaction transaction, long rawRowId,
+        string restorationStage, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT NOT EXISTS (SELECT 1 FROM raw_capture_stage_events
+                WHERE raw_capture_row_id = $raw AND candidate_id = ''
+                    AND stage_key IN ('raw-evidence-written-off', 'raw-evidence-silo-published-failure', $restoration));
+            """;
+        command.Parameters.AddWithValue("$raw", rawRowId);
+        command.Parameters.AddWithValue("$restoration", restorationStage);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
 
     public async ValueTask ReleaseAsync(CaptureLaneLease lease, CancellationToken cancellationToken)
@@ -546,6 +644,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -554,7 +654,7 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return;
             }
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
@@ -580,7 +680,7 @@ internal sealed class SqliteCaptureLaneStore(
                     connection, transaction, execution.ExecutionId, ProcessingGraphExecutionStatus.Pending,
                     null, terminal: false, observedUtc: null, cancellationToken).ConfigureAwait(false);
             }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -1004,18 +1104,38 @@ LIMIT 1;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<long?> ReadCenteredRevisionAsync(
+        SqliteConnection connection, SqliteTransaction transaction, string lane, CancellationToken cancellationToken)
+    {
+        if (centeredProductChanges is null || lane != "standard") return null;
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COALESCE(MAX(revision), 0) FROM centered_exposure_products;";
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+    }
+
+    private async Task CommitWithCenteredWakeAsync(
+        SqliteConnection connection, SqliteTransaction transaction, long? revisionBefore, CancellationToken cancellationToken)
+    {
+        var changed = revisionBefore is not null &&
+            await ReadCenteredRevisionAsync(connection, transaction, "standard", cancellationToken).ConfigureAwait(false) != revisionBefore;
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (changed) centeredProductChanges!.NotifyCommitted();
+    }
+
     private async Task ExpireLiveExecutionsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var rawRows = new List<long>();
+        var rawRows = new HashSet<long>();
+        var executions = new HashSet<Guid>();
         using (var read = connection.CreateCommand())
         {
             read.Transaction = transaction;
             read.CommandText = """
-                SELECT DISTINCT COALESCE(pin.raw_capture_row_id, raw.raw_capture_row_id)
+                SELECT DISTINCT COALESCE(pin.raw_capture_row_id, raw.raw_capture_row_id), execution.execution_id
                 FROM processing_executions execution
                 JOIN raw_captures raw ON raw.capture_id = execution.capture_id
                                      AND raw.raw_artifact_id = execution.primary_artifact_id
@@ -1027,7 +1147,11 @@ LIMIT 1;
                 """;
             read.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) rawRows.Add(reader.GetInt64(0));
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rawRows.Add(reader.GetInt64(0));
+                executions.Add(Guid.ParseExact(reader.GetString(1), "N"));
+            }
         }
         if (rawRows.Count == 0) return;
         using (var expire = connection.CreateCommand())
@@ -1077,6 +1201,9 @@ LIMIT 1;
             expire.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             await expire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        foreach (var execution in executions)
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(connection, transaction, execution, cancellationToken)
+                .ConfigureAwait(false);
         foreach (var rawRow in rawRows)
         {
             await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);
@@ -1169,6 +1296,9 @@ LIMIT 1;
         command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        if (terminal)
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(connection, transaction, executionId, cancellationToken)
+                .ConfigureAwait(false);
         foreach (var rawRow in rawRows)
         {
             await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);
@@ -1176,16 +1306,24 @@ LIMIT 1;
         return true;
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is a fixed internal schema capability and all data remains parameterized.")]
-    private async Task RecomputeRetentionHoldAsync(
+    private Task RecomputeRetentionHoldAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         long rawRowId,
+        CancellationToken cancellationToken) =>
+        RecomputeRetentionHoldAsync(connection, transaction, rawRowId, _hasExecutionSchema, cancellationToken);
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is a fixed internal schema capability and all data remains parameterized.")]
+    internal static async Task RecomputeRetentionHoldAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long rawRowId,
+        bool hasExecutionPins,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        var executionPinClause = _hasExecutionSchema
+        var executionPinClause = hasExecutionPins
             ? "OR EXISTS (SELECT 1 FROM processing_execution_input_pins WHERE raw_capture_row_id = $raw AND released_flag = 0)"
             : string.Empty;
         command.CommandText = $"""
@@ -1273,18 +1411,6 @@ LIMIT 1;
         return reason;
     }
 
-    private string Resolve(string relativePath)
-    {
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Capture lane payload path escapes the configured raw ingress root.");
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        return path;
-    }
-
     private const string ValidTransientAbandonmentsCteSql = """
         WITH valid_abandonments(raw_capture_row_id, lane_work_id, completed_unix_ms) AS (
             SELECT operation.raw_capture_row_id, operation.lane_work_id, operation.completed_unix_ms
@@ -1359,10 +1485,7 @@ LIMIT 1;
             connection,
             async (configuredConnection, token) =>
         {
-            configuredConnection.CreateFunction<string?, string>(
-            "hvo_sha256",
-            static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
-            isDeterministic: true);
+            Sqlite.SqliteHashFunctions.RegisterSha256(configuredConnection);
             using var command = configuredConnection.CreateCommand();
             command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
@@ -1519,37 +1642,63 @@ LIMIT 1;
             }
         }
         await RecomputeRetentionHoldAsync(connection, transaction, rawRowId, cancellationToken).ConfigureAwait(false);
-        await RecomputeStandardPressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var standard = _policy.Definitions.Single(static lane => string.Equals(lane.Name, "standard", StringComparison.Ordinal));
+        await RecomputeLanePressureAsync(
+            connection, transaction, standard, _options, occurred, 0, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new ProcessingLaneQuarantineReceipt(false, new ProcessingLaneQuarantineAudit(actor, reason, occurred));
     }
 
-    private async Task RecomputeStandardPressureAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    internal static async Task RecomputeRequiredPressureAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CaptureDistributionOptions options,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var standard = _policy.Definitions.Single(static lane => string.Equals(lane.Name, "standard", StringComparison.Ordinal));
-        var backlog = await ReadBacklogAsync(connection, standard, transaction, cancellationToken).ConfigureAwait(false);
-        var now = _timeProvider.GetUtcNow();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = """
+            SELECT lane_name, ordered, policy_sha256
+            FROM capture_lane_definitions WHERE enabled = 1 AND required = 1;
+            """;
+        var lanes = new List<CaptureLaneDefinition>();
+        using (var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                lanes.Add(new(reader.GetString(0), Enabled: true, Required: true, reader.GetBoolean(1), reader.GetString(2)));
+        }
+        foreach (var lane in lanes)
+        {
+            await RecomputeLanePressureAsync(
+                connection, transaction, lane, options, now, 0, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<int> RecomputeLanePressureAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CaptureLaneDefinition lane,
+        CaptureDistributionOptions options, DateTimeOffset now, long payloadLength, CancellationToken cancellationToken)
+    {
+        var backlog = await ReadBacklogAsync(connection, lane, transaction, cancellationToken).ConfigureAwait(false);
         var age = backlog.OldestPendingUtc is { } oldest ? now - oldest : TimeSpan.Zero;
-        var hard = backlog.QuarantineCount > 0 ||
-                   backlog.PendingCount >= _options.RequiredMaximumPendingCount ||
-                   CaptureLanePressureMath.ExceedsAfterAdding(
-                       backlog.PendingBytes, 0, _options.RequiredMaximumPendingBytes) ||
-                   age >= TimeSpan.FromMinutes(_options.RequiredMaximumOldestAgeMinutes);
-        var recovered = backlog.QuarantineCount == 0 &&
-                        backlog.PendingCount * 100 < _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent &&
-                        !CaptureLanePressureMath.IsAtOrAbovePercentage(
-                            backlog.PendingBytes, _options.RequiredMaximumPendingBytes, _options.PressureRecoveryPercent) &&
-                        age.TotalMinutes * 100 < _options.RequiredMaximumOldestAgeMinutes * _options.PressureRecoveryPercent;
-        var warning = backlog.PendingCount * 100 >= _options.RequiredMaximumPendingCount * _options.PressureRecoveryPercent ||
+        var warning = backlog.PendingCount * 100 >= options.RequiredMaximumPendingCount * options.PressureRecoveryPercent ||
                       CaptureLanePressureMath.IsAtOrAbovePercentage(
-                          backlog.PendingBytes, _options.RequiredMaximumPendingBytes, _options.PressureRecoveryPercent);
+                          backlog.PendingBytes, options.RequiredMaximumPendingBytes, options.PressureRecoveryPercent);
+        var hard = backlog.QuarantineCount > 0 ||
+                   backlog.PendingCount >= options.RequiredMaximumPendingCount ||
+                   CaptureLanePressureMath.ExceedsAfterAdding(
+                       backlog.PendingBytes, payloadLength, options.RequiredMaximumPendingBytes) ||
+                   age >= TimeSpan.FromMinutes(options.RequiredMaximumOldestAgeMinutes);
+        var recovered = backlog.QuarantineCount == 0 && !warning &&
+                        age.TotalMinutes * 100 < options.RequiredMaximumOldestAgeMinutes * options.PressureRecoveryPercent;
         var next = hard || backlog.PressureLevel == 2 && !recovered ? 2 : warning ? 1 : 0;
-        using var update = connection.CreateCommand();
-        update.Transaction = transaction;
-        update.CommandText = "UPDATE capture_lane_definitions SET pressure_state = $pressure WHERE lane_name = 'standard';";
-        update.Parameters.AddWithValue("$pressure", next);
-        await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        if (next != backlog.PressureLevel)
+        {
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE capture_lane_definitions SET pressure_state = $pressure WHERE lane_name = $lane;";
+            update.Parameters.AddWithValue("$pressure", next);
+            update.Parameters.AddWithValue("$lane", lane.Name);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        return next;
     }
 
     private static ProcessingLaneQuarantineAudit ReadProcessingLaneAudit(string state, string actor, long occurred)

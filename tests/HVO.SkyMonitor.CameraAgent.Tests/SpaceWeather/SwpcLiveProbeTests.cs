@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 /// <summary>External opt-in probe: exactly one GET per core product; no body is logged or persisted.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "SpaceWeather")]
 [DoNotParallelize]
 public sealed class SwpcLiveProbeTests
 {

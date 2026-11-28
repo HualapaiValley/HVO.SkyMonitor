@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
@@ -26,6 +27,12 @@ public static class ProcessingIdentity
     public static ProcessingRecipeIdentity CreateRecipeIdentity(RecipeIdentityDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        if (!IsValidUtf16(descriptor.Name) ||
+            !IsValidUtf16(descriptor.SemanticVersion) ||
+            !IsValidUtf16(descriptor.ImplementationVersion))
+        {
+            throw new ArgumentException("Recipe descriptor contains malformed UTF-16.", nameof(descriptor));
+        }
         var envelope = JsonSerializer.SerializeToElement(new
         {
             schema = "hvo-processing-recipe-v1",
@@ -46,6 +53,10 @@ public static class ProcessingIdentity
         IReadOnlyList<Guid> sourceArtifactIds)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(variant);
+        if (!IsValidUtf16(variant))
+        {
+            throw new ArgumentException("Output variant contains malformed UTF-16.", nameof(variant));
+        }
         ArgumentException.ThrowIfNullOrWhiteSpace(recipeIdentitySha256);
         ArgumentNullException.ThrowIfNull(sourceArtifactIds);
         if (recipeIdentitySha256.Length != 64 || recipeIdentitySha256.Any(static character => !Uri.IsHexDigit(character)))
@@ -80,12 +91,77 @@ public static class ProcessingIdentity
         return new Guid(bytes.AsSpan(0, 16));
     }
 
+    internal static bool IsValidUtf16(string? value)
+    {
+        if (value is null)
+        {
+            return true;
+        }
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (!char.IsSurrogate(ch))
+            {
+                continue;
+            }
+            if (char.IsHighSurrogate(ch) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+            {
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    internal static bool IsValidAnnotationUtf16(ProcessingAnnotationInput annotation)
+    {
+        if (annotation.Objects is { } objects &&
+            objects.Any(static item => item is not null &&
+                (!IsValidUtf16(item.Id) || !IsValidUtf16(item.DisplayName))))
+        {
+            return false;
+        }
+        if (annotation.Segments is { } segments &&
+            segments.Any(static item => item is not null && !IsValidUtf16(item.ConstellationId)))
+        {
+            return false;
+        }
+        if (annotation.MetadataOverlay is { } metadata &&
+            (!ValidLines(metadata.TopLeft) || !ValidLines(metadata.TopRight) ||
+             !ValidLines(metadata.BottomLeft) || !ValidLines(metadata.BottomRight)))
+        {
+            return false;
+        }
+        return true;
+
+        static bool ValidLines(IReadOnlyList<string>? lines) =>
+            lines is null || lines.All(static line => IsValidUtf16(line));
+    }
+
     internal static JsonElement BindExecutionInputs(
         JsonElement normalizedOptions,
         ProcessingInputSelector selector,
         ProcessingAnnotationInput? annotation,
-        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null,
+        BayerPattern? deliveredCfaPhase = null)
     {
+        if (!IsValidUtf16(selector.Variant) || !IsValidUtf16(selector.RecipeIdentitySha256))
+        {
+            throw new ArgumentException("Input selector contains malformed UTF-16.", nameof(selector));
+        }
+        if (annotation is not null && !IsValidAnnotationUtf16(annotation))
+        {
+            throw new ArgumentException("Annotation contains malformed UTF-16.", nameof(annotation));
+        }
+        if (auxiliaryInputs is not null && auxiliaryInputs.Any(static input => input is not null &&
+            (!IsValidUtf16(input.Name) ||
+             !IsValidUtf16(input.SchemaVersion) ||
+             input.Selector is { } auxSelector &&
+                 (!IsValidUtf16(auxSelector.Variant) || !IsValidUtf16(auxSelector.RecipeIdentitySha256)))))
+        {
+            throw new ArgumentException("Auxiliary input contains malformed UTF-16.", nameof(auxiliaryInputs));
+        }
         var annotationIdentity = annotation is null
             ? null
             : CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
@@ -97,33 +173,45 @@ public static class ProcessingIdentity
                 annotation.ProjectionOverlay,
                 annotation.MetadataOverlay
             }, SerializerOptions));
-        var envelope = JsonSerializer.SerializeToElement(new
+        var inputBinding = new
         {
-            schema = BoundInputSchemaVersion,
-            input = new
+            kind = selector.Kind.ToString(),
+            role = selector.Role.ToString(),
+            selector.Variant,
+            recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
+        };
+        var boundAuxiliaries = (auxiliaryInputs ?? []).OrderBy(static input => input.Name, StringComparer.Ordinal).Select(static input => new
+        {
+            input.Name,
+            kind = input.Kind.ToString(),
+            selector = input.Selector is null ? null : new
             {
-                kind = selector.Kind.ToString(),
-                role = selector.Role.ToString(),
-                selector.Variant,
-                recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
+                kind = input.Selector.Kind.ToString(),
+                role = input.Selector.Role.ToString(),
+                input.Selector.Variant,
+                recipeIdentitySha256 = input.Selector.RecipeIdentitySha256?.ToUpperInvariant()
             },
-            parameters = normalizedOptions,
-            annotationIdentitySha256 = annotationIdentity,
-            auxiliaryInputs = (auxiliaryInputs ?? []).OrderBy(static input => input.Name, StringComparer.Ordinal).Select(static input => new
+            input.SchemaVersion,
+            identitySha256 = input.IdentitySha256?.ToUpperInvariant()
+        }).ToArray();
+        var envelope = deliveredCfaPhase is { } shiftedCfa && shiftedCfa != BayerPattern.Rggb
+            ? JsonSerializer.SerializeToElement(new
             {
-                input.Name,
-                kind = input.Kind.ToString(),
-                selector = input.Selector is null ? null : new
-                {
-                    kind = input.Selector.Kind.ToString(),
-                    role = input.Selector.Role.ToString(),
-                    input.Selector.Variant,
-                    recipeIdentitySha256 = input.Selector.RecipeIdentitySha256?.ToUpperInvariant()
-                },
-                input.SchemaVersion,
-                identitySha256 = input.IdentitySha256?.ToUpperInvariant()
-            }).ToArray()
-        }, SerializerOptions);
+                schema = BoundInputSchemaVersion,
+                input = inputBinding,
+                deliveredCfa = shiftedCfa.ToString(),
+                parameters = normalizedOptions,
+                annotationIdentitySha256 = annotationIdentity,
+                auxiliaryInputs = boundAuxiliaries
+            }, SerializerOptions)
+            : JsonSerializer.SerializeToElement(new
+            {
+                schema = BoundInputSchemaVersion,
+                input = inputBinding,
+                parameters = normalizedOptions,
+                annotationIdentitySha256 = annotationIdentity,
+                auxiliaryInputs = boundAuxiliaries
+            }, SerializerOptions);
         return CaptureContractJson.Canonicalize(envelope);
     }
 }

@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class HorizonCuratedPresentationTests
 {
     [TestMethod]
@@ -82,6 +83,237 @@ public sealed class HorizonCuratedPresentationTests
             }
             Assert.IsTrue(context.Artifacts.Raw.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
         }
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer")]
+    [DataRow("SceneStylePresentationLayerV1")]
+    public async Task InlineDeepSkyStyleOptionsRequireExplicitOptInAndAreReflectedInRenderingAndPlanIdentity(string alias)
+    {
+        var fixture = await FixtureAsync("clear").ConfigureAwait(false);
+        using var services = Services(fixture);
+        var customColor = new PresentationColor(64, 192, 255);
+
+        // Without explicit opt-in (ApplyInlineDeepSkyStyle = false), pre-existing deepSky* fields do not alter inline rendering.
+        var baselineContext = Context(fixture, replay: false);
+        var defaultStep = CreateSceneStep(alias, new(), services);
+        await defaultStep.ProcessAsync(baselineContext, CancellationToken.None).ConfigureAwait(false);
+        var baselineProduct = baselineContext.ProcessingOutcomes.Single().Products[0];
+
+        var unoptedContext = Context(fixture, replay: false);
+        var unoptedStep = CreateSceneStep(alias, new()
+        {
+            IncludeDeepSkyLayer = false,
+            ApplyInlineDeepSkyStyle = false,
+            DeepSkyLabels = false,
+            DeepSkyRed = 10,
+            DeepSkyLineThickness = 4
+        }, services);
+        await unoptedStep.ProcessAsync(unoptedContext, CancellationToken.None).ConfigureAwait(false);
+        var unoptedProduct = unoptedContext.ProcessingOutcomes.Single().Products[0];
+        Assert.AreEqual(baselineProduct.OutputIdentitySha256, unoptedProduct.OutputIdentitySha256,
+            "Without explicit inline opt-in, pre-existing deepSky* values must not alter inline rendering.");
+
+        // With explicit opt-in (ApplyInlineDeepSkyStyle = true), inline deep-sky rendering consumes configured style options.
+        var optedContext = Context(fixture, replay: false);
+        var optedStep = CreateSceneStep(alias, new()
+        {
+            IncludeDeepSkyLayer = false,
+            ApplyInlineDeepSkyStyle = true,
+            DeepSkyLabels = true,
+            DeepSkyMaximumLabels = 2,
+            DeepSkyLabelCatalogObjects = false,
+            DeepSkyOutlines = false,
+            DeepSkyLineThickness = 4,
+            DeepSkyMinimumGlyphRadius = 10,
+            DeepSkyRed = customColor.Red,
+            DeepSkyGreen = customColor.Green,
+            DeepSkyBlue = customColor.Blue,
+            DeepSkyFont = "MonoBold"
+        }, services);
+
+        await optedStep.ProcessAsync(optedContext, CancellationToken.None).ConfigureAwait(false);
+        var payload = PresentationLayerPayloadJson.Parse(optedContext.ProcessingOutcomes.Single().Products[0].Payload).Payload!;
+        var dashed = payload.Segments.Where(static segment => segment.Stroke is { DashPixels: > 0 }).ToArray();
+        Assert.IsNotEmpty(dashed);
+        Assert.IsTrue(dashed.All(segment => segment.Color == customColor && segment.Thickness == 4),
+            "Inline deep-sky segments must consume the configured style options when opted in.");
+        var deepSkyLabel = payload.TextBlocks.Single(static block => block.Lines.Contains("M31", StringComparer.Ordinal));
+        Assert.AreEqual(PresentationFontFaceV3.MonoBold, deepSkyLabel.Appearance!.Body.Face);
+        Assert.IsTrue(payload.TextBlocks.SelectMany(static block => block.Lines)
+            .Contains(PresentationDeepSkyLayerProducer.Legend, StringComparer.Ordinal));
+        Assert.IsFalse(payload.TextBlocks.SelectMany(static block => block.Lines).Contains("NGC 7000", StringComparer.Ordinal) &&
+                       payload.TextBlocks.Count(block => block.Appearance?.Body.Face == PresentationFontFaceV3.MonoBold) > 2);
+
+        // Verify pipeline factory plan identity stays unchanged without opt-in and changes with explicit opt-in.
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-deepsky-plan");
+        try
+        {
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var defaultPipeline = new CapturePipelineConfig(
+            [
+                new("ProjectedScene", "scene", 10, null, ["$raw"], Enabled: true),
+                new(alias, "layer", 20, null, ["scene"], Enabled: true)
+            ]);
+            var unoptedPipeline = defaultPipeline with
+            {
+                Steps =
+                [
+                    defaultPipeline.Steps[0],
+                    defaultPipeline.Steps[1] with
+                    {
+                        Options = JsonDocument.Parse("""{"includeDeepSkyLayer":false,"deepSkyLabels":false,"deepSkyRed":10}""").RootElement.Clone()
+                    }
+                ]
+            };
+            var styledPipeline = defaultPipeline with
+            {
+                Steps =
+                [
+                    defaultPipeline.Steps[0],
+                    defaultPipeline.Steps[1] with
+                    {
+                        Options = JsonDocument.Parse("""{"applyInlineDeepSkyStyle":true,"deepSkyRed":64,"deepSkyGreen":192,"deepSkyBlue":255,"deepSkyLineThickness":4}""").RootElement.Clone()
+                    }
+                ]
+            };
+            var defaultPlan = factory.PreviewPlan(fixture.Config with { Pipeline = defaultPipeline });
+            var unoptedPlan = factory.PreviewPlan(fixture.Config with { Pipeline = unoptedPipeline });
+            var styledPlan = factory.PreviewPlan(fixture.Config with { Pipeline = styledPipeline });
+            Assert.AreEqual(defaultPlan.EffectiveSha256, unoptedPlan.EffectiveSha256,
+                "Pre-existing deepSky* values with includeDeepSkyLayer=false must preserve the base plan identity.");
+            Assert.AreNotEqual(defaultPlan.EffectiveSha256, styledPlan.EffectiveSha256,
+                "Explicitly opting in to inline deep-sky styling must produce a distinct compiled plan identity.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("ScenePresentationLayer", false)]
+    [DataRow("ScenePresentationLayer", true)]
+    [DataRow("SceneStylePresentationLayerV1", false)]
+    [DataRow("SceneStylePresentationLayerV1", true)]
+    public async Task EveryAdvertisedDeepSkyFontChoiceValidatesSerializesAndRendersEndToEnd(string alias, bool independentLayer)
+    {
+        var fixture = await FixtureAsync("clear").ConfigureAwait(false);
+        using var services = Services(fixture);
+        var fontDescriptor = DeepSkyOptionDescriptors.Presentation.Single(static option => option.Key == "deepSkyFont");
+        Assert.IsNotEmpty(fontDescriptor.AllowedValues);
+        Assert.IsFalse(fontDescriptor.AllowedValues.Contains("PlexRegular", StringComparer.Ordinal),
+            "PlexRegular is prohibited in v3 payloads and must not be advertised by deepSkyFont.");
+
+        foreach (var activeInvalid in new[]
+        {
+            new ScenePresentationLayerProcessingStepOptions { IncludeDeepSkyLayer = true, DeepSkyFont = "PlexRegular" },
+            new ScenePresentationLayerProcessingStepOptions { ApplyInlineDeepSkyStyle = true, DeepSkyFont = "PlexRegular" },
+            new ScenePresentationLayerProcessingStepOptions { DeepSkyFont = "PlexBold" }
+        })
+        {
+            var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+            Assert.IsFalse(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+                activeInvalid, new System.ComponentModel.DataAnnotations.ValidationContext(activeInvalid), validationResults, validateAllProperties: true));
+        }
+
+        // Pre-upgrade saved graphs with inactive deep-sky styling and legacy PlexRegular remain valid.
+        var inactiveLegacy = new ScenePresentationLayerProcessingStepOptions
+        {
+            IncludeDeepSkyLayer = false,
+            ApplyInlineDeepSkyStyle = false,
+            DeepSkyFont = "PlexRegular"
+        };
+        Assert.IsTrue(System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            inactiveLegacy, new System.ComponentModel.DataAnnotations.ValidationContext(inactiveLegacy), [], validateAllProperties: true));
+
+        // Even if a retained graph carries PlexRegular while active, render-time fallback normalizes safely to MonoRegular.
+        var fallbackContext = Context(fixture, replay: false);
+        var fallbackStep = CreateSceneStep(alias, new()
+        {
+            IncludeDeepSkyLayer = independentLayer,
+            ApplyInlineDeepSkyStyle = !independentLayer,
+            DeepSkyLabels = true,
+            DeepSkyFont = "PlexRegular",
+            AllowRetainedLegacyDeepSkyFont = true
+        }, services);
+        await fallbackStep.ProcessAsync(fallbackContext, CancellationToken.None).ConfigureAwait(false);
+        var fallbackProducts = fallbackContext.ProcessingOutcomes.SelectMany(static outcome => outcome.Products).ToArray();
+        var fallbackTarget = independentLayer
+            ? fallbackProducts.Single(static product => product.Variant == "scene-deep-sky-v1")
+            : fallbackProducts.Single(static product => product.Variant == "scene-annotation-layer-v1");
+        var fallbackParsed = PresentationLayerPayloadJson.Parse(fallbackTarget.Payload);
+        Assert.IsTrue(fallbackParsed.IsValid);
+        fallbackParsed.Payload!.ValidateStructure();
+        Assert.AreEqual(PresentationFontFaceV3.MonoRegular,
+            fallbackParsed.Payload.TextBlocks.Single(static block => block.Lines.Contains("M31", StringComparer.Ordinal)).Appearance!.Body.Face);
+
+        var layout = new ImageLayout(484, 304, CameraPixelFormat.Mono8, 484);
+        var basePixels = new byte[layout.RequiredByteLength];
+        foreach (var fontName in fontDescriptor.AllowedValues)
+        {
+            var expectedFace = Enum.Parse<PresentationFontFaceV3>(fontName);
+            var context = Context(fixture, replay: false);
+            var step = CreateSceneStep(alias, new()
+            {
+                IncludeDeepSkyLayer = independentLayer,
+                ApplyInlineDeepSkyStyle = !independentLayer,
+                DeepSkyLabels = true,
+                DeepSkyFont = fontName
+            }, services);
+
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            var products = context.ProcessingOutcomes.SelectMany(static outcome => outcome.Products).ToArray();
+            var targetProduct = independentLayer
+                ? products.Single(static product => product.Variant == "scene-deep-sky-v1")
+                : products.Single(static product => product.Variant == "scene-annotation-layer-v1");
+
+            var parsed = PresentationLayerPayloadJson.Parse(targetProduct.Payload);
+            Assert.IsTrue(parsed.IsValid, $"Failed for {alias} (independent={independentLayer}, font={fontName}).");
+            var payload = parsed.Payload!;
+            payload.ValidateStructure();
+
+            var roundTripped = PresentationLayerPayloadJson.Parse(PresentationLayerPayloadJson.Serialize(payload));
+            Assert.IsTrue(roundTripped.IsValid);
+            var label = roundTripped.Payload!.TextBlocks.Single(static block => block.Lines.Contains("M31", StringComparer.Ordinal));
+            Assert.AreEqual(expectedFace, label.Appearance!.Body.Face);
+
+            var (_, pixels) = PresentationLayerCompositor.CompositeDisplay(layout, basePixels,
+                [new PresentationCompositorLayer(roundTripped.Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+            Assert.IsTrue(pixels.AsSpan().IndexOfAnyExcept((byte)0) >= 0,
+                $"Compositor must render visible deep-sky output for {alias} (independent={independentLayer}, font={fontName}).");
+        }
+    }
+
+    private static ScenePresentationLayerCaptureProcessingStep CreateSceneStep(
+        string alias,
+        ScenePresentationLayerProcessingStepOptions options,
+        IServiceProvider services)
+    {
+        if (alias == "ScenePresentationLayer")
+        {
+            return new ScenePresentationLayerCaptureProcessingStep(new("layer", alias, 1), options, services);
+        }
+        return new SceneStylePresentationCaptureProcessingStep(new("layer", alias, 1), new()
+        {
+            IncludeDeepSkyLayer = options.IncludeDeepSkyLayer,
+            ApplyInlineDeepSkyStyle = options.ApplyInlineDeepSkyStyle,
+            DeepSkyOutputVariant = options.DeepSkyOutputVariant,
+            DeepSkyLabels = options.DeepSkyLabels,
+            DeepSkyMaximumLabels = options.DeepSkyMaximumLabels,
+            DeepSkyMaximumLabelCharacters = options.DeepSkyMaximumLabelCharacters,
+            DeepSkyLabelCatalogObjects = options.DeepSkyLabelCatalogObjects,
+            DeepSkyOutlines = options.DeepSkyOutlines,
+            DeepSkyLabelScale = options.DeepSkyLabelScale,
+            DeepSkyLineThickness = options.DeepSkyLineThickness,
+            DeepSkyMinimumGlyphRadius = options.DeepSkyMinimumGlyphRadius,
+            DeepSkyRed = options.DeepSkyRed,
+            DeepSkyGreen = options.DeepSkyGreen,
+            DeepSkyBlue = options.DeepSkyBlue,
+            DeepSkyFont = options.DeepSkyFont,
+            AllowRetainedLegacyDeepSkyFont = options.AllowRetainedLegacyDeepSkyFont
+        }, services);
     }
 
     [TestMethod]

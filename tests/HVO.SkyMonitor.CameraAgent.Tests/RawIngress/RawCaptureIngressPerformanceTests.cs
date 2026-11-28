@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "RawIngress")]
 [DoNotParallelize]
 public sealed partial class RawCaptureIngressPerformanceTests
 {
@@ -441,7 +442,6 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Assert.AreEqual(W3PayloadCount, reconciliation.Inspected);
             Assert.AreEqual(0, reconciliation.MissingEvidence);
             Assert.AreEqual(0, reconciliation.Quarantined);
-            Assert.AreEqual(0, reconciliation.IndexProjectionFailures);
             recoveryFileFlushes += restarted.Telemetry.FileFlushCount;
             recoveryDirectorySyncs += restarted.Telemetry.DirectorySyncCount;
         }
@@ -582,7 +582,6 @@ public sealed partial class RawCaptureIngressPerformanceTests
                 ConfigFilePath = CanonicalProfilePath,
                 RawIngressRoot = "performance-only",
                 AgentId = "agent-94-performance",
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix")
             }),
             NullLogger<FileCameraAgentConfigurationLoader>.Instance);

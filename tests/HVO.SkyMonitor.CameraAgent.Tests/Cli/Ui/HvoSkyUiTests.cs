@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli.Ui;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 [UnsupportedOSPlatform("windows")]
 public sealed class HvoSkyUiTests
 {
@@ -537,8 +538,8 @@ public sealed class HvoSkyUiTests
     [TestMethod]
     public void Status_CameraAgentsOwnWordsForHealthy_AreNotProblems()
     {
-        // As CameraAgent words them (CameraAgentOperationsSummary): a configuration "validated", lanes and delivery
-        // "Healthy", raw ingress "Accepting", the camera and the heartbeat "Available".
+        // As CameraAgent words them (CameraAgentOperationsSummary): a configuration "validated", lanes "Healthy",
+        // raw ingress "Accepting", and the camera "Available".
         using var harness = new CliHarness();
         using var driver = SkyUiDriver.Start(harness, 120, 32, pollInterval: Quick);
         var page = (SkyUiStatusPage)driver.Ui.Pages[0];
@@ -547,9 +548,9 @@ public sealed class HvoSkyUiTests
         Assert.AreEqual("Capturing; no problem reported.", page.Note);
         var config = SkyUiStatusPage.Capture(summary, driver.Ui.Now).Single(static field => field.Label == "Config");
         Assert.AreEqual(("validated", HvoTone.Success), (config.Value, config.Tone));
-        var delivery = SkyUiStatusPage.Delivery(summary);
+        var delivery = SkyUiStatusPage.Workers(summary);
         Assert.IsTrue(delivery.All(static field => field.Tone == HvoTone.Text), string.Join("; ", delivery));
-        StringAssert.Contains(delivery.Single(static field => field.Label == "Environment").Value, "Healthy", StringComparison.Ordinal);
+        StringAssert.Contains(delivery.Single(static field => field.Label == "Transients").Value, "Healthy", StringComparison.Ordinal);
         StringAssert.Contains(driver.Screen, "Capturing; no problem reported.", StringComparison.Ordinal);
     }
 
@@ -557,14 +558,14 @@ public sealed class HvoSkyUiTests
     public void Status_AConfigurationNotValidatedAndADegradedLane_NeedAttention()
     {
         using var harness = new CliHarness();
-        harness.Api.Json("GET", Fake.SummaryRoute, Fake.Summary(validation: "unavailable", delivery: "Degraded"));
+        harness.Api.Json("GET", Fake.SummaryRoute, Fake.Summary(validation: "unavailable", transientWorker: "Degraded"));
         using var driver = SkyUiDriver.Start(harness, 120, 32, pollInterval: Quick);
         var page = (SkyUiStatusPage)driver.Ui.Pages[0];
         var summary = driver.Ui.Data.Summary.Value;
 
         Assert.AreEqual("Attention: the configuration is unavailable.", page.Note);
         Assert.AreEqual(HvoTone.Warning, SkyUiStatusPage.Capture(summary, driver.Ui.Now).Single(static field => field.Label == "Config").Tone);
-        Assert.AreEqual(HvoTone.Warning, SkyUiStatusPage.Delivery(summary).Single(static field => field.Label == "Environment").Tone);
+        Assert.AreEqual(HvoTone.Warning, SkyUiStatusPage.Workers(summary).Single(static field => field.Label == "Transients").Tone);
     }
 
     [TestMethod]

@@ -4,9 +4,7 @@ using HVO.SkyMonitor.Deployment.Contracts;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// Retiring the signed-release options (#1309) kept their slots in the request identities, so an installation or a
-/// lifecycle operation journaled by an earlier build still matches the same request made with this one, and resumes.
-/// Each value was computed by the build before the retirement (development/v1 at bf66ccf6) from the same request.
+/// Checks request identities for catalog installation and release-based CameraAgent lifecycle operations.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -27,38 +25,14 @@ public sealed class RequestIdentityStabilityTests
     };
 
     [TestMethod]
-    public void OperatorImageUpgrade_KeepsTheIdentityAnEarlierBuildJournaled()
-    {
-        var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, InstanceId, "/var/lib/hvo-sky", false, false, false)
-        {
-            ImageReference = $"sha256:{new string('a', 64)}",
-            NoDownload = true,
-            MigrationBackwardCompatible = true
-        };
-
-        Assert.AreEqual("b2bfe1908f2f261e8d7e5c902b3227508390fd9e69c1341649a10a601f86ac5a", request.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    public void CatalogBundleInstall_KeepsTheIdentityAnEarlierBuildJournaled()
+    public void CatalogBundleInstall_HasTheBaselineRequestIdentity()
     {
         var request = new LifecycleRequest(LifecycleOperationKind.CatalogInstall, null, "/var/lib/hvo-sky", false, false, false)
         {
-            CatalogBundle = "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle"
+            CatalogBundle = "/srv/hvo/hyg-v4.4-p4-s3-r1.bundle"
         };
 
-        Assert.AreEqual("39df4426a9187b68603f1e76ab65fec927555c37fede3e8c74f17dd5f761e14f", request.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    public void OperatorImageInstall_KeepsTheIdentitiesAnEarlierBuildRecorded()
-    {
-        Assert.AreEqual(
-            "97e65646ef5d42bd409f77057977b00e321c4193bdb0e4bd9ba5b210a1afe1d4",
-            CameraAgentInstaller.ComputeRequestSha256(Install, InstanceId));
-        Assert.AreEqual(
-            "a5526fafe466076e6ca2a6028b473782914138faeab75df66e43adebd88cf578",
-            CameraAgentInstaller.ComputeLegacyRequestSha256(Install, InstanceId));
+        Assert.AreEqual("53577bf35c255d7f03192cfbf3b6f6d4433785b027347c9ca6e2b5cb41d49577", request.ComputeRequestSha256());
     }
 
     [TestMethod]
@@ -94,8 +68,5 @@ public sealed class RequestIdentityStabilityTests
         Assert.AreNotEqual(
             identity,
             CameraAgentInstaller.ComputeRequestSha256(request with { ImageSource = ReleaseImageSource.Registry }, InstanceId, verified));
-        // The legacy identity predates releases, so a release install never matches it.
-        Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(
-            CameraAgentInstaller.ComputeLegacyRequestSha256(request, InstanceId), request, InstanceId, verified));
     }
 }

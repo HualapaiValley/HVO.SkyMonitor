@@ -8,11 +8,31 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CaptureScalarOptionsEditorTests
 {
     [TestMethod]
+    public void SatelliteLabelVisibilitySavesToADraftRevision()
+    {
+        const string selector = "#node-options-0-hideObjectLabels";
+        using var context = new BunitContext();
+        var service = Configure(context, "CaptureSatelliteTracks", """{ "catalogNumbers": ["25544"] }""");
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        Assert.IsFalse(cut.Find(selector).HasAttribute("checked"));
+        cut.Find(selector).Change(true);
+        cut.Find("form").Submit();
+        cut.Find("button.btn-primary").Click();
+        var saved = service.Created.Single();
+        var options = saved.Pipeline.Steps[0].Options!.Value;
+        Assert.IsTrue(options.GetProperty("hideObjectLabels").GetBoolean());
+        Assert.AreEqual("25544", options.GetProperty("catalogNumbers")[0].GetString());
+        Assert.IsEmpty(service.Commands);
+        using var reloaded = new BunitContext();
+        Configure(reloaded, "CaptureSatelliteTracks", options.GetRawText());
+        Assert.IsTrue(reloaded.Render<ProcessingGraphEditorPage>().Find(selector).HasAttribute("checked"));
+    }
+
+    [TestMethod]
     [DataRow("MeasuredStellarAssociations", "outputVariant", "measured-custom", " ")]
     [DataRow("MeasuredAstrometry", "captureStride", "120", "59")]
     [DataRow("CaptureSatelliteTracks", "outputVariant", "tracks-custom", " ")]
     [DataRow("CaptureSatelliteLayer", "inputVariant", "tracks-custom", " ")]
-    [DataRow("Storage", "retentionDays", "60", "0")]
     public void RemainingNodePanelRendersRejectsInvalidEditsSavesAndReloads(
         string alias, string key, string edited, string invalid)
     {

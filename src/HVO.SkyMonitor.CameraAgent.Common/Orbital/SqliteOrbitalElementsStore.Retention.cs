@@ -1,4 +1,4 @@
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
@@ -142,7 +142,8 @@ public sealed partial class SqliteOrbitalElementsStore
         }
         if (!await IsUsedByPublishedAsync(connection, RawDirectoryName, files.RawSha256, cancellationToken).ConfigureAwait(false))
         {
-            Account(TryDeleteRegular(RawPath(files.RawSha256)));
+            Account(TryDeleteRegular(RawPath(files.RawSha256, JsonExtension)));
+            Account(TryDeleteRegular(RawPath(files.RawSha256, CsvExtension)));
         }
         SyncDirectories(ManifestDirectoryName, PayloadDirectoryName, RawDirectoryName);
         if (refused)

@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "RawIngress")]
 [DoNotParallelize]
 public sealed class RawIngressInitializationMaintenanceTests
 {
@@ -17,19 +18,23 @@ public sealed class RawIngressInitializationMaintenanceTests
         using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
         var journal = new SqliteRawCaptureJournal(Path.Combine(hold.Path, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var rawRoot = Path.Combine(hold.Path, "frames", "2026", "01", "01", "Raw");
+        var rawRoot = Path.Combine(hold.Path, ".silo", RawIngressFileStore.AdmissionStageDirectory);
         Directory.CreateDirectory(rawRoot);
+        var intents = new List<(Guid ArtifactId, RawIngressPaths Paths)>();
         for (var index = 0; index < 3; index++)
         {
-            var source = $"frames/2026/01/01/Raw/{index}.bin";
+            var id = Guid.NewGuid();
+            var paths = RawIngressFileStore.GetPaths(hold.Path, DateTimeOffset.UnixEpoch, id);
+            intents.Add((id, paths));
             var directory = planned ? Path.Combine(hold.Path, "quarantine", $"planned-{index}") : rawRoot;
             Directory.CreateDirectory(directory);
-            await File.WriteAllBytesAsync(Path.Combine(directory, $"{index}.bin"), [(byte)index]).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(Path.Combine(directory, Path.GetFileName(paths.PayloadAbsolutePath)), [(byte)index])
+                .ConfigureAwait(false);
             if (planned)
             {
                 // Simulate a crash after moving the evidence but before completing its journaled operation.
                 await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine(
-                    $"planned-{index}", source, null, $"quarantine/planned-{index}", "payload-without-sidecar", 1),
+                    $"planned-{index}", paths.PayloadRelativePath, null, $"quarantine/planned-{index}", "payload-without-sidecar", 1),
                     CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -40,7 +45,7 @@ public sealed class RawIngressInitializationMaintenanceTests
             if (pause is not null) return;
             pause = admission.PauseAsync("quarantine-pause", null, "test", null, CancellationToken.None);
             Assert.IsFalse(pause.IsCompleted, "The active quarantine must finish durably before acknowledgement.");
-        });
+        }, siloIntents: intents);
         var interrupted = await reconciler.RunAsync(
             _ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()),
             CancellationToken.None).ConfigureAwait(false);
@@ -67,7 +72,7 @@ public sealed class RawIngressInitializationMaintenanceTests
         Assert.HasCount(3, evidence);
         for (var index = 0; index < 3; index++)
         {
-            var path = evidence.Single(path => Path.GetFileName(path) == $"{index}.bin");
+            var path = evidence.Single(path => Path.GetFileName(path) == Path.GetFileName(intents[index].Paths.PayloadAbsolutePath));
             CollectionAssert.AreEqual(new byte[] { (byte)index }, await File.ReadAllBytesAsync(path).ConfigureAwait(false));
         }
         var finished = await reconciler.RunAsync(

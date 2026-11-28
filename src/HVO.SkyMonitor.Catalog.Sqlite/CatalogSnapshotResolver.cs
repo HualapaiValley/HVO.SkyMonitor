@@ -78,7 +78,7 @@ public static class CatalogSnapshotResolver
     /// <summary>Standalone OpenNGC: no star tables or constellation topology.</summary>
     public const int DeepSkyManifestVersion = 4;
 
-    /// <summary>The lowest catalog manifest version this resolver accepts: the stars-only schema 2 and 3 layout.</summary>
+    /// <summary>The lowest catalog manifest version this resolver accepts, for the stars-only schema 3 layout.</summary>
     public const int MinimumSupportedManifestVersion = 2;
 
     /// <summary>
@@ -375,7 +375,6 @@ public static class CatalogSnapshotResolver
     private static string FixtureDatabaseFile(SnapshotManifest manifest)
         => (manifest.ManifestVersion, manifest.SchemaVersion, manifest.PreprocessingVersion) switch
         {
-            (MinimumSupportedManifestVersion, "2", "3") => "hyg_v42.sqlite",
             (MinimumSupportedManifestVersion, "3", "4") => "hyg_v44.sqlite",
             (ComposedManifestVersion, "4", "5") => "hyg_v44_openngc.sqlite",
             (DeepSkyManifestVersion, "5", "6") => "openngc.sqlite",

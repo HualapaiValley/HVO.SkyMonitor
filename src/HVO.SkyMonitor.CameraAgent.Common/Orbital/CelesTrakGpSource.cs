@@ -1,11 +1,12 @@
 using System.Net;
 using System.Net.Http.Headers;
+using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 /// <summary>
 /// The single approved CelesTrak GP request (#527): canonical HTTPS, the explicitly configured active group and
-/// JSON only. The provider key is the halt scope, so changing the group cannot evade a provider-wide halt.
+/// CSV only. The provider key is the halt scope, so changing the group cannot evade a provider-wide halt.
 /// </summary>
 public static class CelesTrakGpSource
 {
@@ -18,9 +19,18 @@ public static class CelesTrakGpSource
     /// <summary>Equals the shared contract's <c>RawLengthBytes</c> bound for one source descriptor.</summary>
     public const int MaximumRawBytes = 32 * 1024 * 1024;
 
-    public const string UnderlyingLineage = "USSF public GP via CelesTrak";
+    public const string UnderlyingLineage = "US Space Force / Space-Track public GP data via CelesTrak";
+
+    /// <summary>Expands legacy attribution for display while preserving the retained source identity.</summary>
+    public static string DisplayLineage(OrbitalSnapshotSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return source is { Provider: ProviderKey, UnderlyingLineage: "USSF public GP via CelesTrak" or "USSF/Space-Track public GP via CelesTrak" }
+            ? UnderlyingLineage : source.UnderlyingLineage;
+    }
+
     public const string TermsReference = "CelesTrak usage policy: at most one GP query per two hours per group and halt on " +
-        "any non-200 response. Underlying USSF public GP data via CelesTrak; attribution retained; local calculation and " +
+        "any non-200 response. Underlying " + UnderlyingLineage + "; attribution retained; local calculation and " +
         "cache only, no feed redistribution.";
 
     /// <summary>Evidence-only validator bounds; they match the shared snapshot source descriptor.</summary>
@@ -32,7 +42,7 @@ public static class CelesTrakGpSource
 
     public static readonly TimeSpan MaximumRequestTimeout = TimeSpan.FromSeconds(30);
 
-    public static Uri RequestUri { get; } = new("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON");
+    public static Uri RequestUri { get; } = new("https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV");
 
     public static Uri TermsUri { get; } = new("https://celestrak.org/usage-policy.php");
 

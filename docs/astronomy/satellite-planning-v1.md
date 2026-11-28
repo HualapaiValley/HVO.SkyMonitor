@@ -25,11 +25,18 @@ and UTC reference. Retrieval age describes the snapshot source; signed element
 age describes the selected orbital record at the original search endpoints.
 Neither establishes physical orbit accuracy, sunlight, brightness or visibility.
 
+The planner credits US Space Force / Space-Track for public GP data distributed
+by CelesTrak. Search provenance identifies the retained snapshot and its format.
+Selected-pass provenance identifies the actual source dataset, retrieval instant
+and provider payload checksum from that snapshot. Legacy attribution is expanded
+for display while the retained manifest and its hash stay intact. See the
+[source and refresh policy](../runbooks/capture-satellites.md#opt-in-graph).
+
 A valid filter with zero matching records has the explicit `NoMatches` outcome.
 Its fixed UI description states matching zero and selected zero in this snapshot,
 without treating the request as invalid or claiming global absence.
 
-## Solar context in selected pass details
+## Sun and Moon context in selected pass details
 
 Each resolved start, peak and end anchor shows the Sun's geometric altitude at
 the original pass observer and exact anchor UTC. The display reuses the installed
@@ -39,16 +46,21 @@ model version. Day means Sun altitude at or above 0°, night means at or below
 capture-policy thresholds or satellite-visibility decisions. Refraction,
 observer-height horizon dip and custom obstructions are not applied.
 
+The offline disk ephemeris gives the Moon's topocentric geometric altitude for
+the original observer, including the recorded elevation. The illuminated disk
+fraction comes from Astronomy Engine's Earth-centered (geocentric) illumination
+calculation at the same anchor time. Satellite sunlight comes from the orbital
+prediction.
+
 Only declared anchors inside the retained arc's connected segments are evaluated.
 Missing ephemerides or invalid/unavailable positions display Unknown; unresolved
-anchors retain their existing unresolved status. At most three offline ephemeris
-evaluations run when the selected arc/context changes. Path, label and rig-preview
-toggles reuse the same result. The retained orbital product, its illumination,
-track geometry and exposure products are unchanged.
+anchors retain their existing unresolved status. Each body is evaluated at most
+three times when the selected arc/context changes. The display toggles reuse
+those results.
 
 Sky darkness does not show whether a satellite is sunlit, bright, detected or
-optically visible. Moon context, cloud observations, Earth-shadow modelling,
-measured association and complete cadence/physical qualification remain
+optically visible. Cloud observations are unknown on this panel. Earth-shadow
+modelling, measured association and complete cadence/physical qualification remain
 separately retained work. The bounded software evidence and
 issue disposition are in [the solar-context validation note](../validation/satellite-planning-solar-context.md).
 
@@ -60,8 +72,10 @@ pass observer, the retained deployment location and the rig's geometry and
 calibration, and applies the angular test that star overlays and capture
 satellite tracks use. Samples, and the segments joining them, that are
 obstructed, lie over unknown terrain or cannot be matched to that geometry are
-omitted, so the drawn path splits there. The planner says that the site horizon
-was applied.
+omitted by default, so the drawn path splits there. The planner displays the
+profile revision and identity. Clear **Apply site horizon to angular view** to
+inspect the entire geometric arc, including obstructed or unknown portions.
+The configured-rig preview continues to apply the site horizon.
 
 This is display eligibility, not a visibility or detection claim. The retained
 orbital product keeps every original sample. Unknown terrain is never treated as
@@ -184,9 +198,8 @@ the read-only time-data setup instructions. A hash match by itself does not mean
 the file parsed or its coverage is usable. After replacing hand-configured bytes,
 update their pinned hashes to adopt the pair explicitly, then reload setup status.
 
-Capture-time **Predicted satellite tracks** are not available yet: #529/#1393 own
-their producer and integration. Astrometry and its residual layers are also not
-available yet (#526 → #1187 → #523). Enabling planning does not enable either.
+Capture-time **Predicted satellite tracks** use the separate
+[opt-in capture graph](../runbooks/capture-satellites.md#opt-in-graph).
 
 ## Bounded planning and detail
 
@@ -206,7 +219,11 @@ At most four original-query sessions are retained for ten minutes, with a
 128 MiB aggregate source-byte/product allowance. That allowance counts retained
 source payload and canonical product bytes; it is not a claim about exact
 managed working set. Expired, evicted or incompatible details require a new
-search. UI generations discard superseded completions.
+search. Identical validated requests can reuse complete numerical results from
+a retained session and receive a new search handle. Partial or unavailable
+results are recomputed on retry. The cache key binds site, rig and obstruction
+profile, snapshot, time window and input/model identities, search filter and
+policy, and work bounds. UI generations discard superseded completions.
 
 Selecting a row uses its original search identity and exact canonical parent
 pass hash. It never creates a narrower search, reselects an element epoch or
@@ -216,8 +233,8 @@ status remains independent of population completeness and facade availability.
 
 ## Presentation
 
-The planning diagram shows the full angular pass, including portions outside
-the rig. A separate configured-rig preview uses the existing projection. Both
+The angular planning diagram includes off-rig portions and can show the full
+geometric pass. A separate configured-rig preview uses the existing projection. Both
 respect declared segments and exact available anchors. Missing or clipped
 boundaries are labeled accordingly; no gap is joined or extrapolated.
 An isolated accepted sample remains a distinct prediction point with a UTC title,
@@ -227,8 +244,8 @@ including when a narrow rig admits only one non-anchor sample.
 existing typed presentation payload. Its `PredictedSatelliteTracks` layer is
 independent from measured transient trails. Orange dashed paths, endpoint
 circles and bounded optional labels identify predictions without implying a
-detection. No uncertainty band is invented. Optional label omission does not
-remove the canonical source facts.
+detection. The capture graph can hide object labels while keeping its required
+caption, exact trajectory, and canonical source facts.
 Image-layer strokes default to one pixel, with two-pixel-radius endpoint rings.
 Planning paths also use a one-pixel stroke; pass-event and isolated-point radii
 are three and two SVG units, with one-unit outlines. Per-overlay line width,

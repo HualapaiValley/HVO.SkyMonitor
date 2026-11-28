@@ -1,15 +1,17 @@
+using HVO.SkyMonitor.LocalFiles;
+using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using System.Diagnostics;
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,14 +28,14 @@ internal sealed record OnDemandMaterializationResult(
 internal sealed partial class CaptureProcessingPersistence(
     IOptions<CameraAgentHostOptions> options,
     SqliteCaptureProcessingStore store,
-    IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
-    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
+    SiloArtifactStorage silo,
+    ICaptureProcessingFaultInjector? faultInjector = null) :
+    IProcessingRetentionHolds
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;
-    internal Action<string>? BeforeMetadataDirectorySyncForTest { get; set; }
 
     internal async ValueTask<DurableProcessingOutput> RequireCommittedSceneAsync(
         Guid captureId, ProcessingProduct product, CancellationToken cancellationToken)
@@ -46,63 +48,24 @@ internal sealed partial class CaptureProcessingPersistence(
             throw new InvalidDataException("The canonical scene differs from the committed processing product.");
         return output;
     }
-    // Callers hold the storage lifecycle gate through enqueue, so expiry cannot remove
-    // the authenticated payload between this read and the durable outbox hold.
-    internal async ValueTask<StructuredProcessingProductManifestV1?> FindCommittedSceneUploadAsync(
-        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
-    {
-        var candidates = new List<DurableCaptureProduct>(2);
-        foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
-        {
-            candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene).ConfigureAwait(false));
-        }
-        if (candidates.Count == 0) return null;
-        if (candidates.Count != 1)
-            throw new InvalidDataException("The capture's canonical projected scene is ambiguous.");
-        var output = await RequireOutputAsync(candidates[0].ArtifactId, descriptor.Capture.CaptureId,
-            cancellationToken).ConfigureAwait(false);
-        return await CreateSceneUploadManifestAsync(descriptor, output, cancellationToken).ConfigureAwait(false);
-    }
-
     internal ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(Guid captureId, CancellationToken cancellationToken)
         => _store.ReadAbandonedStandardWorkReasonAsync(captureId, cancellationToken);
 
-    internal async ValueTask<StructuredProcessingProductManifestV1> CreateSceneUploadManifestAsync(
-        ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
-    {
-        if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
-            output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ProjectedScene ||
-            !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
-            output.Artifact.SourceArtifactIds.Count != 1 ||
-            output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
-            output.Capture != descriptor.Capture)
-            throw new InvalidDataException("The canonical scene is not bound to this raw capture.");
-        var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-        var product = restored.Product;
-        var parsed = ProjectedSceneJson.Parse(product.Payload);
-        if (!parsed.IsValid || parsed.Scene is not { } scene ||
-            scene.Source != new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
-                CaptureContractJson.ComputeDescriptorSha256(descriptor)) ||
-            scene.SceneIdentitySha256 != product.ContentIdentitySha256)
-            throw new InvalidDataException("The canonical scene's immutable source evidence is invalid.");
-        return new StructuredProcessingProductManifestV1(
-            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
-            new StructuredProcessingProductDescriptorV1(
-                descriptor, output.Artifact, product.OutputIdentitySha256, product.Algorithms,
-                product.Compatibility, product.TotalIntegration.Ticks, product.Payload.Length,
-                product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
-            output.PayloadRelativePath, output.Artifact.SourceId);
-    }
+    // Centered catalog prediction shares the scene recipe and schema. Its fixed producer
+    // and variant distinguish it from the renderer's scene, whose alias and variant are configurable.
+    internal static bool IsExposurePredictionOutput(ReconstructionDescriptor? raw, string? producer, string? variant)
+        => raw?.CenteredAcquisition is not null &&
+            string.Equals(producer, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(variant, ExposureCatalogPredictionProducts.Variant, StringComparison.Ordinal);
 
     private readonly SqliteCaptureProcessingStore _store = store;
-    private readonly IFrameStorageService _frameStorage = frameStorage;
     private readonly CaptureProcessingTelemetry _telemetry = telemetry;
     private readonly ILogger<CaptureProcessingPersistence> _logger = logger;
     private readonly ICaptureProcessingFaultInjector _faultInjector =
         faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
-    private readonly DerivedProductLifecycleOptions _lifecycleOptions = options.Value.DerivedProductLifecycle;
     private readonly TimeProvider _timeProvider = TimeProvider.System;
+
+    internal SiloArtifactStorage Silo => silo;
 
     internal ValueTask InitializeAsync(CancellationToken cancellationToken)
         => _store.InitializeAsync(cancellationToken);
@@ -134,7 +97,15 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        CameraAgentWorkloadTelemetry.RecordMaterializationPending(1);
+        try
+        {
+            await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CameraAgentWorkloadTelemetry.RecordMaterializationPending(-1);
+        }
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -163,7 +134,7 @@ internal sealed partial class CaptureProcessingPersistence(
             }
 
             var started = _timeProvider.GetUtcNow();
-            var product = PresentationMaterializationExecutor.MaterializePacked(
+            var product = CameraAgentWorkloadTelemetry.MaterializePacked(
                 baseArtifact,
                 manifestArtifact,
                 manifest,
@@ -204,9 +175,7 @@ internal sealed partial class CaptureProcessingPersistence(
                 product.Recipe.Descriptor.ImplementationVersion);
             var descriptor = DerivativeDescriptorFactory.Create(
                 baseOutput.Descriptor, artifactId, "gallery-materialization", product);
-            var stored = await _frameStorage.SaveAsync(
-                _storageRoot, artifact, descriptor, "gallery-materialization", cancellationToken).ConfigureAwait(false);
-            var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
+            var relativePayloadPath = GetRasterPublicationReference(artifact, descriptor);
             var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion,
                 descriptor,
@@ -217,7 +186,7 @@ internal sealed partial class CaptureProcessingPersistence(
                 product.OutputIdentitySha256,
                 artifactId,
                 relativePayloadPath,
-                NormalizeRelativePath(Path.ChangeExtension(stored.RelativePath, ".json")),
+                NormalizeRelativePath(Path.ChangeExtension(relativePayloadPath, ".json")),
                 evidenceJson,
                 descriptor,
                 null,
@@ -257,6 +226,8 @@ internal sealed partial class CaptureProcessingPersistence(
                 inputs.Count, "CanonicalContext", "operator", null, null, null, null,
                 "cameraagent-operator-v1", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(actor))), false));
             var completed = _timeProvider.GetUtcNow();
+            await PersistSiloOutputsAsync(baseOutput.Descriptor, [durableOutput], [product], nodeId, null, cancellationToken)
+                .ConfigureAwait(false);
             await _store.WriteNodeAsync(
                 captureId,
                 node,
@@ -329,10 +300,14 @@ internal sealed partial class CaptureProcessingPersistence(
         TimeSpan? duration,
         ProcessingOutcomeStatus? outcome,
         ProcessingNodeExecutionRoute executionRoute,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArtifactManifestV2? rawManifest = null,
+        CaptureProcessingGraph? graph = null)
         => _store.CompleteOutputlessExecutionNodeAsync(
             execution, node, status, reason, attempt, completedUtc, duration, outcome,
-            executionRoute, cancellationToken);
+            executionRoute, cancellationToken,
+            rawManifest is not null && execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+                ? CenteredExposureProductReader.CreateOutputlessViewSettlements(rawManifest, node, status, reason, graph) : null);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -352,122 +327,11 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
 
-    public async ValueTask<int> ExpireOutputsAsync(
-        string storageRoot,
-        DateTimeOffset committedBeforeUtc,
-        IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken,
-        CancellationToken interruptionToken = default)
-    {
-        if (!PathsEqual(storageRoot, _storageRoot)) return 0;
-        var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
-        var deletedFiles = 0;
-        var sceneRetention = new ProjectedSceneRetentionGuard(_storageRoot, _store,
-            maximumCandidates: _lifecycleOptions.ReconciliationBatchSize);
-        var resume = await sceneRetention.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var unavailable in new[] { false, true })
-        {
-            long? cursorTimestamp = unavailable ? null : resume.Timestamp;
-            string? cursorOutput = unavailable ? null : resume.Identity;
-            var checkedTimestamp = cursorTimestamp;
-            var checkedOutput = cursorOutput;
-            do
-            {
-                interruptionToken.ThrowIfCancellationRequested();
-                var page = unavailable
-                    ? await _store.ReadUnavailableExpirationPageAsync(
-                        _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
-                        cursorTimestamp, cursorOutput, _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false)
-                    : await _store.ReadAvailableExpirationPageAsync(
-                        committedBeforeUtc, cursorTimestamp, cursorOutput,
-                        _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-                foreach (var candidate in page.Items)
-                {
-                    interruptionToken.ThrowIfCancellationRequested();
-                    var sourcePaths = candidate.AvailabilityState == "Quarantined" && candidate.QuarantineRelativePath is { } quarantine
-                        ? Directory.Exists(ResolveSafePath(quarantine))
-                            ? Directory.EnumerateFiles(ResolveSafePath(quarantine)).Order(StringComparer.Ordinal).ToArray()
-                            : []
-                        : new[] { ResolveSafePath(candidate.PayloadRelativePath), ResolveSafePath(candidate.SidecarRelativePath) }
-                            .Where(File.Exists).ToArray();
-                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available")
-                    {
-                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
-                        checkedOutput = candidate.OutputIdentitySha256;
-                        continue;
-                    }
-                    if (candidate.AvailabilityState == "Available" && candidate.Role == FrameArtifactRole.Metadata &&
-                        heldAbsolutePaths.Count > 0 &&
-                        await _store.ReadMixedGainCompanionAnchorAsync(candidate.OutputIdentitySha256, cancellationToken)
-                            .ConfigureAwait(false) is { } anchor &&
-                        (heldAbsolutePaths.Contains(ResolveSafePath(anchor.PayloadRelativePath)) ||
-                         heldAbsolutePaths.Contains(ResolveSafePath(anchor.SidecarRelativePath))))
-                    {
-                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
-                        checkedOutput = candidate.OutputIdentitySha256;
-                        continue;
-                    }
-                    if (!unavailable)
-                    {
-                        bool sceneHeld;
-                        try
-                        {
-                            sceneHeld = await sceneRetention.HasRetainedConsumerAsync(candidate, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch (InvalidDataException)
-                        {
-                            await sceneRetention.SaveCursorAsync(checkedTimestamp, checkedOutput, cancellationToken).ConfigureAwait(false);
-                            throw;
-                        }
-                        checkedTimestamp = candidate.CommittedUnixMilliseconds;
-                        checkedOutput = candidate.OutputIdentitySha256;
-                        if (sceneHeld) continue;
-                    }
-                    var operation = new ProcessingLifecycleOperation(
-                        $"delete:{Guid.NewGuid():N}", "delete", candidate.OutputIdentitySha256,
-                        sourcePaths.FirstOrDefault() is { } first ? Relative(first) : null,
-                        sourcePaths.Skip(1).FirstOrDefault() is { } second ? Relative(second) : null,
-                        $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired",
-                        sourcePaths.Where(File.Exists).Sum(static path => new FileInfo(path).Length),
-                        _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-                    await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    await reconciler.ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    deletedFiles += sourcePaths.Length;
-                }
-                cursorTimestamp = page.NextTimestamp;
-                cursorOutput = page.NextOutputIdentitySha256;
-            }
-            while (cursorTimestamp is not null);
-            if (!unavailable) sceneRetention.CompletePass();
-        }
-        long? diagnosticTimestamp = null;
-        long? diagnosticId = null;
-        do
-        {
-            interruptionToken.ThrowIfCancellationRequested();
-            var diagnostics = await _store.ReadDiagnosticExpirationPageAsync(
-                _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
-                diagnosticTimestamp, diagnosticId, _lifecycleOptions.ReconciliationBatchSize,
-                cancellationToken).ConfigureAwait(false);
-            foreach (var diagnostic in diagnostics.Items)
-            {
-                interruptionToken.ThrowIfCancellationRequested();
-                if (diagnostic.QuarantineRelativePath is { } quarantine)
-                {
-                    var path = ResolveSafePath(quarantine);
-                    if (Directory.Exists(path)) RetainedFileMutations.DeleteDirectory(path, recursive: true);
-                    RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
-                }
-                await _store.DeleteDiagnosticAsync(diagnostic.DiagnosticId, cancellationToken).ConfigureAwait(false);
-            }
-            diagnosticTimestamp = diagnostics.NextRecordedUnixMilliseconds;
-            diagnosticId = diagnostics.NextDiagnosticId;
-        }
-        while (diagnosticTimestamp is not null);
-        return deletedFiles;
-    }
+    internal ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSavedSiloViewHoldsAsync(CancellationToken cancellationToken) =>
+        _store.ReadSavedSiloViewHoldsAsync(cancellationToken);
 
-    private string Relative(string path) => Path.GetRelativePath(_storageRoot, path).Replace(Path.DirectorySeparatorChar, '/');
+    internal ValueTask<IReadOnlyList<SiloSceneLineage>> ReadSiloSceneLineageAsync(CancellationToken cancellationToken) =>
+        _store.ReadSiloSceneLineageAsync(cancellationToken);
 
     internal async ValueTask RestoreNodeAsync(
         DurableProcessingNode durableNode,
@@ -543,39 +407,13 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var output in outputs)
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-            var observationStartedUtc = output.Descriptor?.Timing.ExposureStartedUtc;
-            DateTimeOffset? observationEndedUtc = observationStartedUtc is { } startedUtc && output.Descriptor is { } descriptor
-                ? ProcessingArtifact.ResolveObservationEndedUtc(
-                    startedUtc, descriptor.Timing.ExposureEndedUtc, restored.Product.TotalIntegration)
-                : null;
-            artifacts.Add(new ProcessingArtifact(
-                restored.ArtifactId,
-                restored.Product.Role,
-                restored.Product.Variant,
-                restored.Product.Recipe.IdentitySha256,
-                restored.Product.MediaType,
-                restored.Product.Layout,
-                restored.Product.Payload,
-                restored.CreatedUtc,
-                restored.Product.TotalIntegration,
-                restored.Product.Compatibility,
-                CaptureSequence: output.CaptureSequence,
-                SourceArtifactIds: restored.Product.SourceArtifactIds,
-                ObservationStartedUtc: observationStartedUtc,
-                ObservationEndedUtc: observationEndedUtc)
-            {
-                ProductKind = restored.Product.Kind,
-                SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
-                RecipeDescriptor = restored.Product.Recipe.Descriptor
-            });
+            artifacts.Add(CreateProcessingArtifact(output, restored));
         }
         return artifacts;
     }
 
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadRecentRawInputsAsync(
         ReconstructionDescriptor currentDescriptor,
-        ProcessingArtifact current,
         int maximumCount,
         CancellationToken cancellationToken)
     {
@@ -585,42 +423,39 @@ internal sealed partial class CaptureProcessingPersistence(
             maximumCount,
             cancellationToken).ConfigureAwait(false);
         var artifacts = new List<ProcessingArtifact>(maximumCount);
-        foreach (var entry in entries)
+        foreach (var descriptor in entries)
         {
-            if (!RawIsCompatible(currentDescriptor, entry.Descriptor))
+            if (!RawIsCompatible(currentDescriptor, descriptor))
             {
                 break;
             }
-            var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            if (!File.Exists(payloadPath))
-            {
-                break;
-            }
-            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            var storage = Silo;
+            var payload = await storage.ReadLiveRawAsync(descriptor, cancellationToken).ConfigureAwait(false);
+            if (payload is null) break;
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
-                entry.Descriptor.Artifact.ChecksumSha256,
+                descriptor.Artifact.ChecksumSha256,
                 StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("Durable raw rolling input checksum is invalid.");
             }
             artifacts.Add(new ProcessingArtifact(
-                entry.Descriptor.Artifact.ArtifactId,
+                descriptor.Artifact.ArtifactId,
                 FrameArtifactRole.Raw,
-                entry.Descriptor.Artifact.Variant,
-                ProcessingIdentity.CreateRecipeIdentity(entry.Descriptor.Artifact.Recipe).IdentitySha256,
-                entry.Descriptor.Artifact.MediaType,
-                entry.Descriptor.Layout,
+                descriptor.Artifact.Variant,
+                ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
+                descriptor.Artifact.MediaType,
+                descriptor.Layout,
                 payload,
-                entry.Descriptor.Artifact.CreatedUtc,
-                entry.Descriptor.Controls.EffectiveExposure,
-                CameraAgentRecipeExecutionAdapter.CreateCompatibility(entry.Descriptor),
-                CaptureSequence: entry.Descriptor.Capture.CaptureSequence,
-                ObservationStartedUtc: entry.Descriptor.Timing.ExposureStartedUtc,
+                descriptor.Artifact.CreatedUtc,
+                descriptor.Controls.EffectiveExposure,
+                CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor),
+                CaptureSequence: descriptor.Capture.CaptureSequence,
+                ObservationStartedUtc: descriptor.Timing.ExposureStartedUtc,
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
-                    entry.Descriptor.Timing.ExposureStartedUtc,
-                    entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    descriptor.Timing.ExposureStartedUtc,
+                    descriptor.Timing.ExposureEndedUtc,
+                    descriptor.Controls.EffectiveExposure)));
         }
         artifacts.Reverse();
         return artifacts;
@@ -648,12 +483,11 @@ internal sealed partial class CaptureProcessingPersistence(
     {
         var entries = await _store.ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
         var artifacts = new List<ProcessingArtifact>(entries.Count);
+        var storage = Silo;
         foreach (var entry in entries)
         {
-            var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            if (!File.Exists(payloadPath))
-                throw new FileNotFoundException("A frozen replay input is no longer retained.", payloadPath);
-            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            var payload = await storage.ReadRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("A frozen replay input has no settled Silo publication.");
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
                 entry.PayloadSha256,
@@ -725,7 +559,8 @@ internal sealed partial class CaptureProcessingPersistence(
         IReadOnlyList<ProcessingProduct> products,
         CaptureProcessingContext context,
         ProcessingExecutionContext? execution,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CaptureProcessingGraph? graph = null)
     {
         foreach (var product in products)
         {
@@ -746,8 +581,7 @@ internal sealed partial class CaptureProcessingPersistence(
                 using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-artifact.persist");
                 if (product.Layout is null && IsDurableLayoutlessProduct(product))
                 {
-                    outputs.Add(await PersistMetadataProductAsync(
-                        rawCapture.Manifest.Descriptor, node, product, cancellationToken).ConfigureAwait(false));
+                    outputs.Add(DescribeMetadataProduct(rawCapture.Manifest.Descriptor, node.Id, product));
                 }
                 else if (product.Layout is null)
                 {
@@ -757,14 +591,9 @@ internal sealed partial class CaptureProcessingPersistence(
                 else
                 {
                     var artifact = context.FindArtifact(product);
-                    var descriptor = DerivativeDescriptorFactory.Create(
-                        rawCapture.Manifest.Descriptor,
-                        artifact.ArtifactId,
-                        artifact.Frame.Metadata.SourceId ?? node.Id,
-                        product);
-                    var stored = await _frameStorage.SaveAsync(
-                        _storageRoot, artifact, descriptor, node.Id, cancellationToken).ConfigureAwait(false);
-                    var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
+                    var source = artifact.Frame.Metadata.SourceId ?? node.Id;
+                    var descriptor = DerivativeDescriptorFactory.Create(rawCapture.Manifest.Descriptor, artifact.ArtifactId, source, product);
+                    var relativePayloadPath = GetRasterPublicationReference(artifact, descriptor);
                     var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
                         ArtifactManifestV2.CurrentSchemaVersion,
                         descriptor,
@@ -775,7 +604,7 @@ internal sealed partial class CaptureProcessingPersistence(
                         product.OutputIdentitySha256,
                         artifact.ArtifactId,
                         relativePayloadPath,
-                        NormalizeRelativePath(Path.ChangeExtension(stored.RelativePath, ".json")),
+                        NormalizeRelativePath(Path.ChangeExtension(relativePayloadPath, ".json")),
                         evidenceJson,
                         descriptor,
                         null,
@@ -793,7 +622,22 @@ internal sealed partial class CaptureProcessingPersistence(
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
+            if (execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+            {
+                await PublishReplayOutputsAsync(rawCapture.Manifest.Descriptor, node.Id, execution.ExecutionId,
+                    outputs, products, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PersistSiloOutputsAsync(rawCapture.Manifest.Descriptor, outputs, products, node.Id, execution?.ExecutionId,
+                    cancellationToken).ConfigureAwait(false);
+            }
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
+            var inputEvidence = context.GetCurrentInputEvidence();
+            var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
+                execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+                ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence, graph)
+                : null;
             await _store.WriteNodeAsync(
                 rawCapture.Manifest.Descriptor.Capture.CaptureId,
                 node,
@@ -810,13 +654,14 @@ internal sealed partial class CaptureProcessingPersistence(
                 completedUtc,
                 duration,
                 outcome,
-                context.GetCurrentInputEvidence(),
+                inputEvidence,
                 workId,
                 leaseToken,
                 outputs,
                 execution,
                 context.CurrentExecutionRoute,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                centeredProducts).ConfigureAwait(false);
             if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.CaptureProcessingOutputPersisted(
@@ -831,6 +676,112 @@ internal sealed partial class CaptureProcessingPersistence(
         }
     }
 
+    private static string GetRasterPublicationReference(FrameArtifact artifact, ReconstructionDescriptor descriptor)
+    {
+        ValidateVersionedDescriptorAgreement(descriptor, artifact, artifact.Frame);
+        return $"silo/products/{artifact.ArtifactId:N}.bin";
+    }
+
+    private static void ValidateVersionedDescriptorAgreement(
+        ReconstructionDescriptor descriptor,
+        FrameArtifact artifact,
+        CameraFrame frame)
+    {
+        var validation = descriptor.Validate();
+        var sources = artifact.SourceArtifactIds ?? Array.Empty<Guid>();
+        double? frameTemperature = double.IsFinite(frame.Metadata.TemperatureC) ? frame.Metadata.TemperatureC : null;
+        if (!validation.IsValid ||
+            descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
+            descriptor.Artifact.Role != artifact.Role ||
+            !descriptor.Artifact.SourceArtifactIds.SequenceEqual(sources) ||
+            descriptor.Layout.Width != frame.Width ||
+            descriptor.Layout.Height != frame.Height ||
+            descriptor.Layout.PixelFormat != frame.PixelFormat ||
+            descriptor.Layout.StrideBytes != (frame.StrideBytes ?? checked(frame.Width * HVO.SkyMonitor.Imaging.ImageLayout.BytesPerPixel(frame.PixelFormat))) ||
+            descriptor.Layout.ByteLength != frame.PixelData.Length ||
+            descriptor.Timing.ExposureStartedUtc != frame.TimestampUtc.ToUniversalTime() ||
+            descriptor.Controls.EffectiveExposure != frame.Metadata.Exposure ||
+            descriptor.Controls.EffectiveGain != frame.Metadata.Gain ||
+            descriptor.Controls.EffectiveOffset != frame.Metadata.Offset ||
+            descriptor.Controls.EffectiveTemperatureC != frameTemperature ||
+            !string.Equals(descriptor.Artifact.SourceId, frame.Metadata.SourceId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Reconstruction descriptor does not match the stored artifact ({validation.ReasonCode ?? "descriptor.mismatch"}).",
+                nameof(descriptor));
+        }
+    }
+
+    private async ValueTask PublishReplayOutputsAsync(ReconstructionDescriptor raw, string nodeId, Guid executionId,
+        List<DurableProcessingOutput> outputs, IReadOnlyList<ProcessingProduct> products,
+        CancellationToken cancellationToken)
+    {
+        var storage = Silo;
+        var newOutputs = new List<DurableProcessingOutput>(outputs.Count);
+        var newProducts = new List<ProcessingProduct>(outputs.Count);
+        for (var index = 0; index < outputs.Count; index++)
+        {
+            var output = outputs[index];
+            var existing = await _store.ReadOutputByArtifactIdAsync(output.ArtifactId, cancellationToken).ConfigureAwait(false);
+            if (existing is null || existing.EvidenceJson.AsSpan().SequenceEqual(output.EvidenceJson))
+            {
+                newOutputs.Add(output);
+                newProducts.Add(products[index]);
+                continue;
+            }
+
+            // A replay may associate the same immutable raster with a different node alias.
+            // Its existing Silo member and evidence keep their original producer and version.
+            if (existing.Capture.CaptureId != raw.Capture.CaptureId ||
+                existing.OutputIdentitySha256 != output.OutputIdentitySha256 ||
+                !SqliteCaptureProcessingStore.OutputEvidenceMatches(existing.EvidenceJson, output.EvidenceJson, allowProducerAlias: true) ||
+                !await storage.VerifyMemberAsync(existing.ArtifactId, existing.OutputIdentitySha256,
+                    products[index].Payload.Length, output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false) ||
+                !await storage.VerifyMemberAsync(existing.ArtifactId, SiloArtifactStorage.ProductEvidenceRevision,
+                    existing.EvidenceJson.LongLength, SiloHash.Sha256(existing.EvidenceJson), cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("A replay output identity conflicts with retained Silo evidence.");
+        }
+        await PersistSiloOutputsAsync(raw, newOutputs, newProducts, nodeId, executionId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask PersistSiloOutputsAsync(ReconstructionDescriptor raw, List<DurableProcessingOutput> outputs,
+        IReadOnlyList<ProcessingProduct> products, string nodeId, Guid? executionId, CancellationToken cancellationToken)
+    {
+        if (outputs.Count == 0) return;
+        var identity = SiloOutputGroupId(raw, nodeId, executionId, outputs.Select(static output => output.ArtifactId));
+        var inputs = outputs.Select((output, index) => new SiloArtifactInput(output.ArtifactId, output.Artifact.Role.ToString(),
+            output.Artifact.MediaType, output.Artifact.ChecksumSha256, products[index].Payload, output.EvidenceJson,
+            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256)).ToArray();
+        await Silo.PublishProcessingAsync(identity, raw, inputs, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string SiloOutputGroupId(ReconstructionDescriptor raw, string nodeId, Guid? executionId,
+        IEnumerable<Guid> artifacts) =>
+        SiloCenteredViews.LowerHex(CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+        {
+            raw.Capture.CaptureId,
+            NodeId = nodeId,
+            ExecutionId = executionId,
+            Artifacts = artifacts.Order().ToArray()
+        })));
+
+    internal async Task<ProcessingArtifact> RestoreCenteredLinearAsync(
+        ExposureProductRef expected, CancellationToken cancellationToken)
+    {
+        var saved = await _store.ReadOutputByArtifactIdAsync(expected.ArtifactId, cancellationToken).ConfigureAwait(false);
+        if (saved is null || saved.AvailabilityState != "Available" ||
+            saved.Capture.CaptureId != expected.Exposure.CaptureId ||
+            saved.OutputIdentitySha256 != expected.OutputIdentitySha256 ||
+            saved.Artifact.ChecksumSha256 != expected.PayloadSha256)
+            throw new InvalidDataException("The retained linear artifact differs from its centered product binding.");
+        var restored = await RestoreOutputAsync(saved, cancellationToken).ConfigureAwait(false);
+        return CreateProcessingArtifact(saved, restored) with
+        {
+            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(saved.Descriptor ??
+                throw new InvalidDataException("A centered linear product requires a frame descriptor."))
+        };
+    }
+
     private async ValueTask<RestoredProcessingOutput> RestoreOutputAsync(
         DurableProcessingOutput output,
         CancellationToken cancellationToken)
@@ -839,9 +790,9 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             ValidateLayoutlessOutputFacts(output, committedManifest);
         }
-        var payloadPath = ResolveSafePath(output.PayloadRelativePath);
-        var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
-        var sidecar = await ReadCommittedFileAsync(sidecarPath, output.EvidenceJson.LongLength, cancellationToken).ConfigureAwait(false);
+        var sidecar = await Silo.ReadMemberAsync(output.ArtifactId, SiloArtifactStorage.ProductEvidenceRevision,
+            output.EvidenceJson.LongLength, SiloHash.Sha256(output.EvidenceJson), cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The processing evidence has no settled Silo publication.");
         if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
         {
             throw new InvalidDataException("Committed processing output sidecar differs from its durable bytes.");
@@ -849,7 +800,7 @@ internal sealed partial class CaptureProcessingPersistence(
         if (output.ProductManifest is not null)
         {
             return await RestoreMetadataProductAsync(
-                output, payloadPath, sidecar, cancellationToken).ConfigureAwait(false);
+                output, sidecar, cancellationToken).ConfigureAwait(false);
         }
 
         var descriptor = output.Descriptor
@@ -866,7 +817,7 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             throw new InvalidDataException("Committed processing output sidecar conflicts with durable state.");
         }
-        var payload = await ReadCommittedFileAsync(payloadPath, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         if (!reconstruction.IsValid || frame is null)
         {
@@ -913,38 +864,10 @@ internal sealed partial class CaptureProcessingPersistence(
             product);
     }
 
-    private async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
-        ReconstructionDescriptor sourceDescriptor,
-        CaptureProcessingGraphNode node,
-        ProcessingProduct product,
-        CancellationToken cancellationToken)
-        => await PersistMetadataProductAsync(
-            _storageRoot,
-            sourceDescriptor,
-            node.Id,
-            product,
-            BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
-
-    internal static async ValueTask<DurableProcessingOutput> CopyMetadataProductAsync(
-        string storageRoot,
+    internal static DurableProcessingOutput DescribeMetadataProduct(
         ReconstructionDescriptor sourceDescriptor,
         string sourceId,
-        ProcessingProduct product,
-        CancellationToken cancellationToken)
-    {
-        storageRoot = Path.GetFullPath(storageRoot);
-        return await PersistMetadataProductAsync(
-            storageRoot, sourceDescriptor, sourceId, product, null, provisionStorageRoot: true, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
-        string storageRoot,
-        ReconstructionDescriptor sourceDescriptor,
-        string sourceId,
-        ProcessingProduct product,
-        Action<string>? beforeDirectorySync,
-        bool provisionStorageRoot,
-        CancellationToken cancellationToken)
+        ProcessingProduct product)
     {
         var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
         var expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
@@ -960,7 +883,11 @@ internal sealed partial class CaptureProcessingPersistence(
         }
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
         DecodedImage? encodedImage = null;
-        if (product.Role == FrameArtifactRole.Metadata)
+        if (product.MediaType == ExposureMeasurementProducts.MediaType)
+        {
+            _ = ExposureMeasurementProducts.VerifyRawBinding(ExposureMeasurementProducts.Read(product), sourceDescriptor);
+        }
+        else if (product.Role == FrameArtifactRole.Metadata)
         {
             try
             {
@@ -977,23 +904,9 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var createdUtc = sourceDescriptor.Timing.ReadoutCompletedUtc.ToUniversalTime();
-        var directory = Path.Combine(
-            storageRoot,
-            "derived",
-            createdUtc.Year.ToString("D4", CultureInfo.InvariantCulture),
-            createdUtc.Month.ToString("D2", CultureInfo.InvariantCulture),
-            createdUtc.Day.ToString("D2", CultureInfo.InvariantCulture),
-            product.Role.ToString());
-        var stem = string.Concat(
-            createdUtc.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
-            "-",
-            artifactId.ToString("N"));
-        var payloadPath = Path.Combine(directory, string.Concat(
-            stem,
-            product.Role == FrameArtifactRole.Metadata ? ".json" : ".jpg"));
-        var sidecarPath = Path.Combine(directory, string.Concat(stem, ".manifest.json"));
-        var payloadRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, payloadPath));
-        var sidecarRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, sidecarPath));
+        var extension = product.Role == FrameArtifactRole.Metadata ? ".json" : ".jpg";
+        var payloadRelativePath = $"silo/products/{artifactId:N}{extension}";
+        var sidecarRelativePath = $"silo/products/{artifactId:N}.manifest.json";
         var artifact = new ArtifactDescriptor(
             artifactId,
             product.Role,
@@ -1051,37 +964,6 @@ internal sealed partial class CaptureProcessingPersistence(
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
 
-        if (provisionStorageRoot) CameraAgentFileSystem.EnsureStorageRootDurable(storageRoot);
-        Directory.CreateDirectory(directory);
-        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
-        // Visibility can be left behind by a failed earlier namespace barrier. Reestablish
-        // the entire owned directory chain before acknowledging an idempotent retry.
-        beforeDirectorySync?.Invoke(directory);
-        RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
-        var existingEvidence = await ValidateExistingMetadataEvidenceAsync(
-            payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
-        if (existingEvidence is not null)
-        {
-            evidenceJson = existingEvidence;
-            manifest = DurableProcessingProductManifestJson.Parse(existingEvidence);
-        }
-        if (!File.Exists(payloadPath))
-        {
-            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            RawIngressFileStore.SyncFile(storageRoot, payloadPath);
-        }
-        if (!File.Exists(sidecarPath))
-        {
-            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            RawIngressFileStore.SyncFile(storageRoot, sidecarPath);
-        }
-
         var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
         return new DurableProcessingOutput(
             product.OutputIdentitySha256,
@@ -1101,81 +983,20 @@ internal sealed partial class CaptureProcessingPersistence(
             typedManifest?.ContentIdentitySha256);
     }
 
-    private static async ValueTask<byte[]?> ValidateExistingMetadataEvidenceAsync(
-        string payloadPath,
-        string sidecarPath,
-        ReadOnlyMemory<byte> expectedPayload,
-        string expectedChecksum,
-        ReadOnlyMemory<byte> expectedSidecar,
-        CancellationToken cancellationToken)
-    {
-        var payloadExists = File.Exists(payloadPath);
-        var sidecarExists = File.Exists(sidecarPath);
-        if (sidecarExists && !payloadExists)
-        {
-            throw new InvalidDataException("Existing metadata sidecar has no payload.");
-        }
-        if (payloadExists)
-        {
-            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), expectedChecksum, StringComparison.Ordinal) ||
-                !payload.AsSpan().SequenceEqual(expectedPayload.Span))
-            {
-                throw new InvalidDataException("Existing metadata payload conflicts with the requested output identity.");
-            }
-        }
-        if (sidecarExists)
-        {
-            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-            if (!sidecar.AsSpan().SequenceEqual(expectedSidecar.Span) &&
-                !ProducerAliasEquivalent(sidecar, expectedSidecar))
-            {
-                throw new InvalidDataException("Existing metadata sidecar conflicts with the requested output identity.");
-            }
-            return sidecar;
-        }
-        return null;
-    }
+    private async ValueTask<byte[]> ReadProcessingPayloadAsync(DurableProcessingOutput output, long length,
+        CancellationToken cancellationToken) =>
+        await Silo.ReadMemberAsync(output.ArtifactId, output.OutputIdentitySha256, length, output.Artifact.ChecksumSha256,
+            cancellationToken).ConfigureAwait(false) ?? throw new FileNotFoundException("The processing artifact has no settled Silo publication.");
 
-    private static bool ProducerAliasEquivalent(
-        ReadOnlyMemory<byte> existing,
-        ReadOnlyMemory<byte> requested)
-    {
-        var existingManifest = DurableProcessingProductManifestJson.Parse(existing);
-        var requestedManifest = DurableProcessingProductManifestJson.Parse(requested);
-        return NormalizeProducerAlias(existingManifest).AsSpan().SequenceEqual(
-            NormalizeProducerAlias(requestedManifest));
-    }
-
-    private static byte[] NormalizeProducerAlias(IDurableProcessingProductManifest manifest)
-        => DurableProcessingProductManifestJson.Serialize(manifest switch
-        {
-            DurableProcessingProductManifestV1 value => value with
-            {
-                Artifact = value.Artifact with { SourceId = "producer-alias" }
-            },
-            DurableEncodedProductManifestV2 value => value with
-            {
-                Artifact = value.Artifact with { SourceId = "producer-alias" },
-                ProducerStepId = "producer-alias"
-            },
-            DurableTypedMetadataProductManifestV3 value => value with
-            {
-                Artifact = value.Artifact with { SourceId = "producer-alias" }
-            },
-            _ => throw new InvalidDataException("Durable processing product manifest type is unsupported.")
-        });
-
-    private static async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
+    private async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
         DurableProcessingOutput output,
-        string payloadPath,
         byte[] sidecar,
         CancellationToken cancellationToken)
     {
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
         ValidateLayoutlessOutputFacts(output, manifest);
         var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
-        var payload = await ReadCommittedFileAsync(payloadPath, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||
             !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
         {
@@ -1219,34 +1040,16 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = manifest.ProductSchemaVersion,
             ContentIdentitySha256 = manifest.ContentIdentitySha256
         };
+        if (product.MediaType == ExposureMeasurementProducts.MediaType &&
+            ExposureMeasurementProducts.Read(product).Input.Raw.CaptureId != output.Capture.CaptureId)
+        {
+            throw new InvalidDataException("The exposure measurement differs from the durable capture.");
+        }
         return new RestoredProcessingOutput(
             manifest.Artifact.ArtifactId,
             manifest.Artifact.CreatedUtc,
             null,
             product);
-    }
-
-    /// <summary>Restores only the length committed in the journal, never a corrupt file's untrusted length.</summary>
-    private static async Task<byte[]> ReadCommittedFileAsync(string path, long expectedLength, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (expectedLength < 0 || expectedLength > Array.MaxLength)
-            throw new InvalidDataException("Committed processing file length is unsupported.");
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous);
-        if (stream.Length != expectedLength)
-            throw new InvalidDataException("Committed processing file length differs from its durable length.");
-        var bytes = new byte[(int)expectedLength];
-        try
-        {
-            await stream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
-        }
-        catch (EndOfStreamException exception)
-        {
-            throw new InvalidDataException("Committed processing file was truncated during restoration.", exception);
-        }
-        if (stream.Length != expectedLength || await stream.ReadAsync(new byte[1], cancellationToken).ConfigureAwait(false) != 0)
-            throw new InvalidDataException("Committed processing file grew during restoration.");
-        return bytes;
     }
 
     internal static async Task WriteAtomicallyAsync(
@@ -1276,7 +1079,7 @@ internal sealed partial class CaptureProcessingPersistence(
             {
                 CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, destinationPath, overwrite: false);
             }
-            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(destinationPath))
+            catch (IOException exception) when (exception is not FileSystemFaultException { Kind: FileSystemFaultKind.Containment } && File.Exists(destinationPath))
             {
                 RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
                 var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
@@ -1369,20 +1172,6 @@ internal sealed partial class CaptureProcessingPersistence(
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) =>
             throw new NotSupportedException("The on-demand materialization step is a durable operation descriptor only.");
-    }
-
-    private string ResolveSafePath(string relativePath)
-    {
-        var fullPath = Path.GetFullPath(Path.Combine(
-            _storageRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var rootPrefix = string.Concat(_storageRoot.TrimEnd(Path.DirectorySeparatorChar), Path.DirectorySeparatorChar);
-        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        if (!fullPath.StartsWith(rootPrefix, comparison))
-        {
-            throw new InvalidDataException("Committed processing output path escapes the storage root.");
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, fullPath);
-        return fullPath;
     }
 
     private static string NormalizeRelativePath(string path)

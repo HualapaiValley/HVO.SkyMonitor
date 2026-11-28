@@ -11,6 +11,7 @@ public sealed partial class CurrentSkyPage
     private long _latestAstrometryRevision;
     private long _retainedAstrometryInvalidationRevision;
     private long _astrometryObservationRevision;
+    private long _latestAstrometryObservationRevision;
     private bool _latestAstrometryLoading;
     private bool _latestAstrometryRefreshQueued;
     private bool? _latestAstrometryReadSucceeded;
@@ -73,7 +74,6 @@ public sealed partial class CurrentSkyPage
         if (!IsCurrentLatestAstrometryRead(revision)) return;
 
         var read = result.Value;
-        if (read is not null) Interlocked.Increment(ref _astrometryObservationRevision);
         var summary = SummaryIdentity(read?.Summary);
         var previousInvalid = read?.PreviousSummaryInvalidated == true ? SummaryIdentity(previous) : null;
         var selectedInvalid = read?.SelectedAssessmentInvalidated == true ? requestedSelection : null;
@@ -83,6 +83,9 @@ public sealed partial class CurrentSkyPage
         var rejectedSummary = SameIdentity(summary, previousInvalid) || SameIdentity(summary, selectedInvalid);
         var reloadReportedSelection = false;
         var hasReportedInvalidation = previousInvalid is not null || selectedInvalid is not null;
+        var appliedObservationRevision = read is { Completed: true } || hasReportedInvalidation
+            ? Interlocked.Increment(ref _astrometryObservationRevision)
+            : Volatile.Read(ref _astrometryObservationRevision);
         // An exact rejection suspends matching tools before any asynchronous recheck. A fresh
         // authorized layer or standalone read can install a repaired fit, including the same identity.
         if (previousInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(previousInvalid);
@@ -134,7 +137,11 @@ public sealed partial class CurrentSkyPage
 
             _latestAstrometryLoading = false;
             _latestAstrometryReadSucceeded = completed;
-            if (completed) _latestAstrometry = read!.Summary;
+            if (completed)
+            {
+                _latestAstrometry = read!.Summary;
+                _latestAstrometryObservationRevision = appliedObservationRevision;
+            }
             StateHasChanged();
             if (reloadSelected) TryLoadLayers(_runCaptureId);
             return;
@@ -173,6 +180,15 @@ public sealed partial class CurrentSkyPage
             prefetch.Invalidate();
         if (_runCaptureId != identity.CaptureId) return false;
 
+        if (IsCenteredMode)
+        {
+            if (Matches(_astrometry, identity) || RetainedIdentity(_astrometry) is null)
+            {
+                ClearAstrometry();
+            }
+            return false;
+        }
+
         var layered = _layers?.Astrometry;
         var matchingEvidence = Matches(layered, identity) || Matches(_astrometry, identity);
         var hasVerifiedEvidence = RetainedIdentity(layered) is not null || RetainedIdentity(_astrometry) is not null;
@@ -186,6 +202,7 @@ public sealed partial class CurrentSkyPage
     {
         if (!SameIdentity(SummaryIdentity(_latestAstrometry), identity)) return;
         _latestAstrometry = null;
+        _latestAstrometryObservationRevision = 0;
         _latestAstrometryReadSucceeded = false;
     }
 
@@ -197,7 +214,11 @@ public sealed partial class CurrentSkyPage
         => value is not null && value.CaptureId == identity.CaptureId && value.ArtifactId == identity.ArtifactId &&
             string.Equals(value.SolutionIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
-    private sealed record ObservedAstrometryResult<T>(OperatorUiResult<T> Result, long? ObservationRevision = null)
+    private sealed record ObservedAstrometryResult<T>(
+        OperatorUiResult<T> Result,
+        long? ObservationRevision = null,
+        long? InvalidationRevision = null,
+        CameraAgentAstrometryAssessmentIdentity? Identity = null)
     {
         public OperatorUiResultKind Kind => Result.Kind;
         public bool IsSuccess => Result.IsSuccess;
@@ -205,7 +226,22 @@ public sealed partial class CurrentSkyPage
     }
 
     private bool IsCurrentAstrometryObservation<T>(ObservedAstrometryResult<T>? observed)
-        => observed?.ObservationRevision is not { } revision || revision == Volatile.Read(ref _astrometryObservationRevision);
+    {
+        if (observed?.ObservationRevision is not { } revision) return true;
+        var currentRevision = Volatile.Read(ref _astrometryObservationRevision);
+        if (revision == currentRevision) return true;
+        // A non-invalidating headline update that confirmed the exact same fit at the current observation revision
+        // does not contradict this observation.
+        return observed.InvalidationRevision == Volatile.Read(ref _retainedAstrometryInvalidationRevision) &&
+            _latestAstrometryReadSucceeded == true &&
+            _latestAstrometryObservationRevision == currentRevision &&
+            SameIdentity(SummaryIdentity(_latestAstrometry), observed.Identity);
+    }
+
+    private bool CanRevalidateAstrometryObservation<T>(ObservedAstrometryResult<T>? observed, CancellationToken cancellation)
+        => observed is { IsSuccess: true, ObservationRevision: not null, InvalidationRevision: { } invalidationRevision, Identity: not null } &&
+           invalidationRevision == Volatile.Read(ref _retainedAstrometryInvalidationRevision) &&
+           !cancellation.IsCancellationRequested;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unverified optional measurement is never published.")]
     private async ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryObservationAsync(
@@ -244,13 +280,16 @@ public sealed partial class CurrentSkyPage
             while (!cancellation.IsCancellationRequested)
             {
                 var revision = Volatile.Read(ref _astrometryObservationRevision);
+                var invalidationRevision = Volatile.Read(ref _retainedAstrometryInvalidationRevision);
                 var observation = await ReadAstrometryObservationAsync(identity, cancellation).ConfigureAwait(false);
                 if (observation.Kind == OperatorUiResultKind.Unauthorized)
                     return new(OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, observation.Message ?? "Access denied."));
                 if (cancellation.IsCancellationRequested || !observation.IsSuccess ||
                     observation.Value == CameraAgentAstrometryPublicationState.Indeterminate) break;
-                if (revision != Volatile.Read(ref _astrometryObservationRevision)) continue;
-                if (observation.Value == CameraAgentAstrometryPublicationState.Available) return new(result, revision);
+                if (revision != Volatile.Read(ref _astrometryObservationRevision) ||
+                    invalidationRevision != Volatile.Read(ref _retainedAstrometryInvalidationRevision)) continue;
+                if (observation.Value == CameraAgentAstrometryPublicationState.Available)
+                    return new(result, revision, invalidationRevision, identity);
                 if (observation.Value == CameraAgentAstrometryPublicationState.Invalidated)
                 {
                     var withdrawn = false;
@@ -285,10 +324,12 @@ public sealed partial class CurrentSkyPage
     private double? _skyFirst;
     private double? _skySecond;
     private string _skyCoordinates = "equatorial";
+    private AstrometricPixelSpace _pixelSpace;
     private string AstrometryStatus => _astrometryLoading ? "Loading" : _astrometry?.Solution?.Assessment.Status switch
     {
         AstrometricAssessmentStatus.BudgetExceeded => "Budget exceeded",
         { } status => status.ToString(),
+        _ when _astrometry?.Availability == "CadenceSkipped" => "Cadence skipped",
         _ => "Unavailable"
     };
     private string AstrometryChipClass => _astrometry?.Solution?.Assessment.Status switch
@@ -298,12 +339,21 @@ public sealed partial class CurrentSkyPage
         AstrometricAssessmentStatus.BudgetExceeded => "warning",
         _ => "pending"
     };
+    private string MeasuredDiagnosticsReason => !IsCenteredMode && _showingBaseOnlyForMismatch
+        ? "Withheld because the preview and retained layer geometry differ."
+        : _astrometry?.DiagnosticsReason ?? "No compatible accepted result retained";
     private bool CanCalculate => !_accessDenied && _astrometry?.Mapping is not null &&
-        _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId && DisplaySlot is { } slot &&
-        (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
-         _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId));
+        _astrometry.Solution?.Assessment.HasMeasuredMapping == true && _astrometry.CaptureId == _runCaptureId &&
+        ((!IsCenteredMode && !_showingBaseOnlyForMismatch && DisplaySlot is { } slot &&
+          (slot.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId ||
+           _astrometry.CompatibleBaseArtifactId is { } baseId && (slot.DisplayArtifactId == baseId || slot.ArtifactId == baseId))) ||
+         (IsCenteredMode && _centeredDisplay is { } centered &&
+          centered.View.Base.Definition.Reference.Capture.CaptureId == _astrometry.CaptureId &&
+          centered.View.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId == _astrometry.Solution?.Assessment.Frame.SourceArtifactId &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceWidth == _astrometry.WidthPixels &&
+          centered.View.Base.Definition.Preview.Transform.ReferenceHeight == _astrometry.HeightPixels));
     private string CalculatorAvailability => CanCalculate
-        ? "Source output pixels (zero-based); equatorial coordinates are mean of date at the capture midpoint. Geometric horizon; no refraction. Never updates rig calibration."
+        ? "Zero-based pixel-edge coordinates. Equatorial coordinates are mean of date at the exposure midpoint. Uses the geometric horizon without refraction."
         : "Requires an accepted retained mapping and an exact source mapping to the selected image. Never updates rig calibration.";
 
     private void ClearAstrometry()
@@ -313,6 +363,7 @@ public sealed partial class CurrentSkyPage
         _astrometryLoading = false;
         _calculatorResult = null;
         _pixelX = _pixelY = _skyFirst = _skySecond = null;
+        _pixelSpace = AstrometricPixelSpace.Readout;
     }
 
     private void ApplyAstrometry(Guid captureId, CameraAgentRetainedAstrometry value)
@@ -330,7 +381,7 @@ public sealed partial class CurrentSkyPage
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional retained evidence cannot fail the image view.")]
-    private async Task LoadAstrometryAsync(Guid captureId, long generation, CancellationToken cancellation)
+    private async Task LoadAstrometryAsync(Guid captureId, long generation, CancellationToken cancellation, CenteredViewArtifact? evidencePin = null)
     {
         if (_astrometry?.Solution is not null || _astrometryLoading || _accessDenied || cancellation.IsCancellationRequested) return;
         _astrometryLoading = true;
@@ -339,19 +390,34 @@ public sealed partial class CurrentSkyPage
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
-            var result = await OperatorService.GetRetainedAstrometryAsync(captureId, bounded.Token).ConfigureAwait(false);
-            var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
-                ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
-                : new(result);
-            await InvokeAsync(() =>
+            var result = await OperatorService.GetRetainedAstrometryAsync(captureId, evidencePin, bounded.Token).ConfigureAwait(false);
+            while (true)
             {
-                // Authorization revocation is never hidden by a late response or by a changed capture.
-                if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
-                if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
-                var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
-                ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
-                StateHasChanged();
-            });
+                var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
+                    ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
+                    : new(result);
+                var retry = false;
+                await InvokeAsync(() =>
+                {
+                    // Authorization revocation is never hidden by a late response or by a changed capture.
+                    if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                    if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
+                    if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
+                    if (!IsCurrentAstrometryObservation(observed) && CanRevalidateAstrometryObservation(observed, bounded.Token))
+                    {
+                        retry = true;
+                        return;
+                    }
+                    var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
+                    if (evidencePin is not null && eligible is { Solution: not null } && eligible.ArtifactId != evidencePin.ArtifactId)
+                    {
+                        eligible = new(captureId, "Unavailable", "centered-evidence-pin-mismatch");
+                    }
+                    ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
+                    StateHasChanged();
+                });
+                if (!retry) return;
+            }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception)
@@ -359,6 +425,7 @@ public sealed partial class CurrentSkyPage
             await InvokeAsync(() =>
             {
                 if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied) return;
+                if (IsCenteredMode && _centeredAstrometryEvidence != evidencePin) return;
                 ApplyAstrometry(captureId, new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });
@@ -368,10 +435,10 @@ public sealed partial class CurrentSkyPage
     private void CalculatePixelToSky((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
         if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
-        _calculatorResult = "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
-        if (_pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
-        var point = _astrometry!.Mapping!.PixelToSky(new(x, y));
-        if (point is not { AboveGeometricHorizon: true }) return;
+        _calculatorResult = _pixelSpace == AstrometricPixelSpace.NativeSensor
+            ? "Enter finite native-sensor pixel coordinates inside the retained aperture and above the geometric horizon."
+            : "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
+        if (_pixelX is not { } x || _pixelY is not { } y || Calculator().PixelToSky(new(x, y), _pixelSpace) is not { } point) return;
         _skyCoordinates = "equatorial";
         _skyFirst = point.EquatorialMeanOfDate.RightAscensionHours;
         _skySecond = point.EquatorialMeanOfDate.DeclinationDegrees;
@@ -382,32 +449,30 @@ public sealed partial class CurrentSkyPage
     {
         if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite RA [0, 24) h / Dec [−90, 90]°, or altitude [0, 90]° / azimuth [0, 360)°. The point must lie within the retained aperture above the horizon.";
-        if (_skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
-        EquatorialPoint equatorial;
-        if (_skyCoordinates == "horizontal")
-        {
-            if (first < 0 || first > 90 || second < 0 || second >= 360) return;
-            var frame = _astrometry!.Solution!.Assessment.Frame;
-            equatorial = CoordinateTransforms.HorizontalToEquatorial(new(first, second), frame.MidpointUtc,
-                frame.Observer.LatitudeDegrees, frame.Observer.LongitudeDegrees);
-        }
-        else
-        {
-            if (first < 0 || first >= 24 || second < -90 || second > 90) return;
-            equatorial = new(first, second);
-        }
-        var mapping = _astrometry!.Mapping!;
-        if (mapping.SkyToPixel(equatorial) is not { } pixel || !InsideSource(pixel.X, pixel.Y) || mapping.PixelToSky(pixel) is not { AboveGeometricHorizon: true }) return;
+        if (_skyFirst is not { } first || _skySecond is not { } second) return;
+        var calculator = Calculator();
+        var result = _skyCoordinates == "horizontal"
+            ? calculator.HorizontalToPixel(new(first, second), _pixelSpace)
+            : calculator.EquatorialToPixel(new(first, second), _pixelSpace);
+        if (result is not { } pixel) return;
         _pixelX = pixel.X; _pixelY = pixel.Y;
-        _calculatorResult = FormattableString.Invariant($"X {pixel.X:0.########}, Y {pixel.Y:0.########} source pixels. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
+        var space = _pixelSpace == AstrometricPixelSpace.NativeSensor ? "native sensor" : "source";
+        _calculatorResult = FormattableString.Invariant($"X {pixel.X:0.########}, Y {pixel.Y:0.########} {space} pixels. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
     }
 
-    private bool InsideSource(double x, double y) => double.IsFinite(x) && double.IsFinite(y) &&
-        x >= 0 && y >= 0 && x < _astrometry!.WidthPixels && y < _astrometry.HeightPixels;
+    private AstrometricCaptureCalculator Calculator() => _astrometry!.Mapping!.CreateCalculator(_astrometry.SourceDescriptor?.Layout.Readout);
+
+    private void ChangePixelSpace()
+    {
+        _pixelX = _pixelY = null;
+        _calculatorResult = null;
+    }
 
     private string AstrometryAbsence => _astrometry?.Reason switch
     {
         "assessment-not-retained" => "No astrometric assessment was retained for this capture.",
+        "astrometry.capture-cadence" => "This exposure was outside the configured fit cadence.",
+        "astrometry.inputs-unavailable" => "Measured associations or the catalog prediction were unavailable for this exposure.",
         "capture-source-mismatch" => "The retained assessment does not match this capture's source. Mapping is unavailable.",
         _ => "Retained astrometric evidence is unavailable for this capture."
     };

@@ -149,6 +149,7 @@ public sealed class InstallWizardRunnerTests
     [DataRow("--port", "many", "--port must be an integer.")]
     [DataRow("--unknown", "x", "Unknown option '--unknown'.")]
     [DataRow("--image-source", "disk", "--image-source must be archive or registry.")]
+    [DataRow("--silo-archive-endpoint", "https://archive.example", "--silo-archive-endpoint, --silo-archive-bucket")]
     public async Task AMistakeOnTheCommandLine_IsReportedBeforeTheWizardOpens(string option, string value, string message)
     {
         using var host = new WizardHost();
@@ -158,6 +159,24 @@ public sealed class InstallWizardRunnerTests
 
         Assert.AreEqual(2, exitCode);
         StringAssert.StartsWith(error, message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task TheSiloLayoutNamedExplicitly_OpensTheWizard()
+    {
+        using var host = new WizardHost();
+        var opened = false;
+
+        var (exitCode, _, error) = await RunAsync(host, [.. Args, "--storage-layout", "silo"], driver =>
+        {
+            opened = true;
+            driver.Press(Key.Esc);
+        });
+
+        Assert.IsTrue(opened, "The wizard opened.");
+        Assert.AreEqual(130, exitCode);
+        StringAssert.Contains(error, "[CANCELLED] Cancelled: nothing was changed.", StringComparison.Ordinal);
     }
 
     [TestMethod]

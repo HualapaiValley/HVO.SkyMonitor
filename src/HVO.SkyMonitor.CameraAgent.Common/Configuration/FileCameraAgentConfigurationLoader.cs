@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -22,12 +23,13 @@ public sealed class FileCameraAgentConfigurationLoader(
     IDeploymentLocationStore? deploymentLocationStore = null,
     ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null,
     IHostApplicationLifetime? hostLifetime = null,
-    TimeProvider? timeProvider = null) : ICameraAgentConfigurationLoader
+    TimeProvider? timeProvider = null,
+    ICameraModuleConfigurationValidator? moduleConfigurationValidator = null) : ICameraAgentConfigurationLoader
 {
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
     internal static ActivitySource ActivitySource { get; } = new(ActivitySourceName);
-    private const string SampleAgentId = "replace-with-registered-device-id";
+    private const string SampleAgentId = "use-local-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
@@ -195,33 +197,10 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException("Camera agent configuration is invalid.");
         }
 
-        var configuredAgentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
-        var agentId = configuredAgentId;
-        if (_options.CentralIntegration.Mode == CentralIntegrationMode.Enabled)
+        var agentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
+        if ((string.IsNullOrWhiteSpace(agentId) || agentId == SampleAgentId) && captureAgentIdentityProvider is not null)
         {
-            if (captureAgentIdentityProvider is null)
-            {
-                throw new InvalidOperationException(
-                    "Central integration requires a persistent CameraAgent device identity provider.");
-            }
-
-            var provisionedAgentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(provisionedAgentId))
-            {
-                throw new InvalidOperationException(
-                    "The persistent CameraAgent device identity does not contain a valid device identifier.");
-            }
-
-            if (string.IsNullOrWhiteSpace(configuredAgentId) ||
-                string.Equals(configuredAgentId, SampleAgentId, StringComparison.Ordinal))
-            {
-                agentId = provisionedAgentId;
-            }
-            else if (!string.Equals(configuredAgentId, provisionedAgentId, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    "Configured AgentId does not match the persistent CameraAgent device identity.");
-            }
+            agentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
         }
         var locationSeed = new DeploymentLocationSeed(
             _options.DeploymentLocation.LocationId,
@@ -250,11 +229,14 @@ public sealed class FileCameraAgentConfigurationLoader(
             AgentId: agentId)
         {
             DeploymentLocation = location,
-            Schedule = document.Schedule
+            Schedule = document.Schedule,
+            CenteredExposure = document.CenteredExposure
         };
 
         ValidateCurrentFileContract(config);
         var validatedSchedule = ValidateConfigCore(config);
+        if (config.CenteredExposure is not null)
+            moduleConfigurationValidator?.Validate(config);
         if (_deploymentLocationStore is not null)
         {
             bool ConfigurationStillCurrent() => File.Exists(path) &&
@@ -289,7 +271,24 @@ public sealed class FileCameraAgentConfigurationLoader(
 
         if (string.IsNullOrWhiteSpace(config.AgentId))
         {
-            throw new InvalidOperationException("AgentId must be specified and match the registered device identity.");
+            throw new InvalidOperationException("An AgentId or a local device identity is required.");
+        }
+
+        foreach (var step in config.Pipeline.Steps)
+        {
+            if (!string.Equals(step.Type, "Storage", StringComparison.OrdinalIgnoreCase) ||
+                step.Options is not { ValueKind: JsonValueKind.Object } storage)
+                continue;
+
+            foreach (var option in storage.EnumerateObject())
+            {
+                var key = option.Name.ToUpperInvariant();
+                if (key is "STORAGEROOT" or "RETENTIONDAYS" or "QUEUEFORUPLOAD" or "POLICIES")
+                    throw new InvalidOperationException($"Storage option '{option.Name}' is a retired filesystem setting. Configure capture publication for Silo and set retention through the Silo policy.");
+                if (key is not ("UPDATELATESTFRAME" or "PUBLISHARCHIVE") ||
+                    option.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new InvalidOperationException("Storage accepts only the Silo publication options updateLatestFrame and publishArchive, both boolean.");
+            }
         }
 
         var locationValidation = config.DeploymentLocation?.Validate()
@@ -298,6 +297,11 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             throw new InvalidOperationException(
                 $"Deployment location is invalid ({locationValidation.ReasonCode}, {locationValidation.FieldPath}).");
+        }
+
+        if (config.CenteredExposure is { } centered && !centered.IsValid())
+        {
+            throw new InvalidOperationException("Centered exposure requires a valid camera identity and supported execution version.");
         }
 
         var scheduleValidation = CaptureScheduleContract.Validate(config.Schedule);
@@ -564,4 +568,5 @@ internal sealed record CameraModuleDocument(
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
     [property: JsonRequired] CapturePipelineConfig Pipeline,
-    [property: JsonRequired] CaptureScheduleDefinition Schedule);
+    [property: JsonRequired] CaptureScheduleDefinition Schedule,
+    CenteredExposureProfile? CenteredExposure = null);

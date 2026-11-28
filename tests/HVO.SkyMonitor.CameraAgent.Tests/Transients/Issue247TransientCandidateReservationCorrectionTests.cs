@@ -2,16 +2,19 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 public sealed class Issue247TransientCandidateReservationCorrectionTests
 {
@@ -32,32 +35,32 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
     }
 
     [TestMethod]
-    public async Task ReserveAsync_BlockedPhysicalReadDoesNotHoldWriterAndStillFencesLifecycleMutation()
+    public async Task ReserveAsync_BlockedExactVersionReadDoesNotHoldWriterAndStillFencesLifecycleMutation()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Inconclusive("This test requires Linux FIFO semantics.");
-        }
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var token = cancellation.Token;
         using var fixture = await SqliteTransientCandidateJournalTests.Fixture.CreateAsync().ConfigureAwait(false);
         var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
         var reservation = SqliteTransientCandidateJournalTests.Fixture.CreateReservation(source);
-        var sidecarPath = Path.ChangeExtension(fixture.ResolvePayload(source), ".json");
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
-        File.Delete(sidecarPath);
-        await CreateFifoAsync(sidecarPath).ConfigureAwait(false);
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var payloadPath = fixture.ResolvePayload(source);
+        var sidecar = await File.ReadAllBytesAsync(Path.ChangeExtension(payloadPath, ".json"), token).ConfigureAwait(false);
+        var payload = await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false);
+        var manifest = CaptureContractJson.ParseManifest(sidecar).Document?.Manifest;
+        Assert.IsNotNull(manifest);
+        var provider = SiloInfrastructureFixture.ProductStore(fixture.Root);
+        var descriptor = manifest.Descriptor;
+        await SiloInfrastructureFixture.PublishArtifactAsync(provider.GetRequiredService<SiloArtifactStorage>(), descriptor,
+            CaptureContractJson.ComputeDescriptorSha256(descriptor), payload, SiloArtifactStorage.RawEvidenceRevision,
+            sidecar, token).ConfigureAwait(false);
+        var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, descriptor.Artifact.ArtifactId,
+            SiloArtifactStorage.RawEvidenceRevision, token).ConfigureAwait(false);
+        var objects = provider.GetRequiredService<SiloTestStore>();
         var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifoWriter = Task.Run(async () =>
-        {
-            using var stream = new FileStream(
-                sidecarPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous);
-            connected.TrySetResult();
-            await release.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
-            await stream.WriteAsync(sidecar, cancellation.Token).ConfigureAwait(false);
-        }, cancellation.Token);
-        var reservationTask = fixture.Journal.ReserveAsync(reservation, cancellation.Token).AsTask();
+        objects.ReadContentOverride = requested => requested == locator
+            ? new PausedVersionStream(sidecar, connected, release.Task)
+            : null;
+        var reservationTask = fixture.Journal.ReserveAsync(reservation, token).AsTask();
         Task? lifecycleMutation = null;
         try
         {
@@ -72,7 +75,8 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
                 await gate.WaitAsync(cancellation.Token).ConfigureAwait(false);
                 try
                 {
-                    File.Delete(fixture.ResolvePayload(source));
+                    Assert.AreEqual(1L, await fixture.ScalarLongAsync(
+                        "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
                 }
                 finally
                 {
@@ -91,7 +95,8 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
         {
             release.TrySetResult();
             cancellation.CancelAfter(TimeSpan.FromSeconds(2));
-            await DrainAsync(fifoWriter, reservationTask, lifecycleMutation).ConfigureAwait(false);
+            await DrainAsync(reservationTask, lifecycleMutation).ConfigureAwait(false);
+            objects.ReadContentOverride = null;
         }
     }
 
@@ -278,8 +283,7 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
             failure = exception;
         }
 
-        var converges = mutation is "raw-row-identity" or "capture" or "sequence" or
-            "payload-path" or "sidecar-path" or "manifest-bytes";
+        var converges = mutation is "raw-row-identity" or "capture" or "sequence" or "manifest-bytes";
         if (converges)
         {
             Assert.IsGreaterThanOrEqualTo(2, injector.InvocationCount, mutation);
@@ -566,6 +570,7 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
                     ?? throw new InvalidDataException("Test source manifest is invalid.");
                 const string changedPayloadRelative = "frames/changed-payload.bin";
                 var changedPayloadPath = Path.Combine(fixture.Root, "frames", "changed-payload.bin");
+                Directory.CreateDirectory(Path.GetDirectoryName(changedPayloadPath)!);
                 File.Move(payload, changedPayloadPath);
                 var changedPayloadManifest = payloadManifest with { RelativeArtifactPath = changedPayloadRelative };
                 var changedPayloadBytes = CaptureContractJson.Serialize(changedPayloadManifest);
@@ -583,6 +588,7 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
                 break;
             case "sidecar-path":
                 const string changedSidecarRelative = "frames/changed-sidecar.json";
+                Directory.CreateDirectory(Path.Combine(fixture.Root, "frames"));
                 File.Move(sidecarPath, Path.Combine(fixture.Root, "frames", "changed-sidecar.json"));
                 await UpdateAsync(fixture.Root, artifact, "sidecar_relative_path", changedSidecarRelative).ConfigureAwait(false);
                 break;
@@ -725,17 +731,14 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
-    private static async Task CreateFifoAsync(string path)
+    private sealed class PausedVersionStream(byte[] content, TaskCompletionSource entered, Task release)
+        : MemoryStream(content, writable: false)
     {
-        using var process = Process.Start(new ProcessStartInfo("mkfifo", path)
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            RedirectStandardError = true
-        }) ?? throw new InvalidOperationException("Unable to start mkfifo.");
-        var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        if (process.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"mkfifo failed: {error}");
+            entered.TrySetResult();
+            await release.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await base.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
         }
     }
 

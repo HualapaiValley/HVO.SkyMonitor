@@ -42,12 +42,24 @@ public sealed partial class LocalAutomationRunnerService(
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        if (offSweepWorker is not null)
+        var runnerStop = base.StopAsync(cancellationToken);
+        // A callback on the runner's token can fault its stop while an off-sweep claim still holds authority.
+        return offSweepWorker is null ? runnerStop : Task.WhenAll(runnerStop, offSweepWorker.StopAsync(cancellationToken));
+    }
+
+    public override void Dispose()
+    {
+        try
         {
-            await offSweepWorker.StopAsync(cancellationToken).ConfigureAwait(false);
+            base.Dispose();
+        }
+        catch (AggregateException exception)
+        {
+            // BackgroundService cancels synchronously here. The provider still needs to reach the
+            // separately registered worker, whose disposal drains active execution and releases authority.
+            DisposalCancellationFailed(logger, exception);
         }
     }
 
@@ -415,6 +427,9 @@ public sealed partial class LocalAutomationRunnerService(
 
     [LoggerMessage(7423, LogLevel.Warning, "Local automation {DefinitionId} failed to evaluate.")]
     private static partial void DefinitionFailed(ILogger logger, string definitionId, Exception exception);
+
+    [LoggerMessage(7425, LogLevel.Warning, "A local automation cancellation callback failed during runner disposal.")]
+    private static partial void DisposalCancellationFailed(ILogger logger, Exception exception);
 
     [LoggerMessage(7407, LogLevel.Information,
         "Local automation {DefinitionId} on trigger {Trigger} settled with outcome {Outcome}.")]

@@ -269,8 +269,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
         _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10)));
         await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         var product = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Single();
-        var file = Directory.GetFiles(_root, product.ProductId.ToString("N") + ".jpg", SearchOption.AllDirectories).Single();
-        await File.WriteAllBytesAsync(file, [0, 1, 2]);
+        await harness.Silo.DamageAsync(product.ProductId, "rendition-1");
         var retry = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         Assert.AreEqual(1, retry.FailedWindows);
         Assert.AreEqual(0, retry.ProductsPublished);
@@ -287,8 +286,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
         Assert.IsGreaterThan(0, stillReport.ProductsPublished, stillReport.Describe());
         var linkedProduct = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
             .Single(product => product.Kind == NightlyProductKind.StarTrail && product.Scope == NightlyProductScope.Final);
-        var linkedFile = Directory.GetFiles(_root, linkedProduct.ProductId.ToString("N") + ".jpg", SearchOption.AllDirectories).Single();
-        await File.WriteAllBytesAsync(linkedFile, [0, 1, 2]);
+        await harness.Silo.DamageAsync(linkedProduct.ProductId, "rendition-1");
 
         var summaryOccurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
         foreach (var attempt in Enumerable.Range(0, 2))
@@ -336,7 +334,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
     }
 
     [TestMethod]
-    public async Task SchemaTwoUpgradePreservesPublishedFilesLineagePointersAndImmutability()
+    public async Task SchemaTwoUpgradePreservesSiloVersionsLineagePointersAndImmutability()
     {
         _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
         NightlyProductDetail before;
@@ -365,8 +363,9 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
                 await command.ExecuteNonQueryAsync();
             }
         }
-        var hashes = Directory.GetFiles(Path.Combine(_root, SqliteNightlyProductStore.ProductDirectoryName), "*", SearchOption.AllDirectories)
-            .ToDictionary(static path => path, static path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+        using var silo = new NightlySiloFixture(_root);
+        var objects = silo.Objects;
+        var versions = objects.Keys("p/").ToDictionary(key => key, key => objects.VersionsOf(key).ToArray(), StringComparer.Ordinal);
         using (var upgraded = Create())
         {
             var after = (await upgraded.Store.GetAsync(before.Summary.ProductId, CancellationToken.None))!;
@@ -378,8 +377,8 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
             Assert.IsTrue((await upgraded.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
                 .Any(static product => product.Kind == NightlyProductKind.DailySummary));
         }
-        foreach (var pair in hashes)
-            Assert.AreEqual(pair.Value, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(pair.Key))));
+        foreach (var pair in versions)
+            CollectionAssert.AreEqual(pair.Value, objects.VersionsOf(pair.Key).ToArray());
         using var verify = new SqliteConnection("Data Source=" + database);
         await verify.OpenAsync();
         using var check = verify.CreateCommand();
@@ -491,17 +490,18 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
         Directory.CreateDirectory(_root);
         var host = NightlyProductFixture.HostOptions(_root, options ?? NightlyProductFixture.Options());
         var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
-        var store = new SqliteNightlyProductStore(host, clock);
+        var silo = new NightlySiloFixture(_root);
+        var store = silo.OpenStore(host, clock);
         var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
             reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock, logger,
             readMaintenanceDay is null ? null : (date, token) => readMaintenanceDay(store, date, token),
             recordWindow is null ? null : (status, fingerprint, ids, token) => recordWindow(store, status, fingerprint, ids, token));
-        return new(store, generator);
+        return new(store, generator, silo);
     }
 
-    private sealed record Harness(SqliteNightlyProductStore Store, NightlyProductGenerator Generator) : IDisposable
+    private sealed record Harness(SqliteNightlyProductStore Store, NightlyProductGenerator Generator, NightlySiloFixture Silo) : IDisposable
     {
-        public void Dispose() { Generator.Dispose(); Store.Dispose(); }
+        public void Dispose() { Generator.Dispose(); Store.Dispose(); Silo.Dispose(); }
     }
 
     private sealed class CapturingNightlyProductLogger : ILogger<NightlyProductGenerator>

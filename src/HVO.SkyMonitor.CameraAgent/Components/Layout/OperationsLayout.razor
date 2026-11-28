@@ -32,8 +32,9 @@
                             {
                                 <p class="ops-nav-group" id="@GroupId(group)">@group</p>
                             }
-                            foreach (var section in OperationsSectionCatalog.Sections.Where(section => section.Group == group))
+                            foreach (var entry in OperationsSectionCatalog.Sections.Where(section => section.Group == group))
                             {
+                                var section = OperationsSectionCatalog.ForFocuser(entry, _focuserRegistered);
                                 var current = Current is not null && section.Slug == Current.Slug;
                                 var count = _attention?.CountFor(section.Slug) ?? 0;
                                 var note = section.CapabilityNote;
@@ -64,7 +65,6 @@
                     <footer class="operations-scope">
                         <span class="agent-dot" aria-hidden="true"></span>
                         <span><strong>Local authority</strong><small>@ScopeText</small></span>
-                        <a href="/operations/registration" aria-label="View registration"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"></path></svg></a>
                     </footer>
                 </aside>
             </ChildContent>

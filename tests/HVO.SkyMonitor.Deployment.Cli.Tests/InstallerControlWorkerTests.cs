@@ -138,7 +138,7 @@ public sealed class InstallerControlWorkerTests
             return Task.FromResult(new CameraAgentControlSnapshot(Current, false, _process, Drains > 0 ? "Paused" : "Running", 0, true, true, true));
         }
         public Task<LifecycleContinuity> DrainAsync(CameraAgentControlRequest request, CancellationToken cancellationToken)
-        { Drains++; return Task.FromResult(new LifecycleContinuity("Paused", 1, 42, 0, 0, 0, 0, 0, 0, 0, 0)); }
+        { Drains++; return Task.FromResult(new LifecycleContinuity("Paused", 1, 42, 0, 0, 0, 0, 0, 0)); }
         public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken) { Restarts++; return Task.CompletedTask; }
         public Task<LifecycleContinuity> ConfirmDrainedAsync(CancellationToken cancellationToken) => throw new InvalidOperationException();
         public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken) => throw new InvalidOperationException();

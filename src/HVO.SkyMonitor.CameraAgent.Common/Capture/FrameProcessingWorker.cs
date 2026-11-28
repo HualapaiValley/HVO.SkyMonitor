@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using System;
 using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
@@ -12,6 +13,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
@@ -24,12 +27,14 @@ internal sealed class FrameProcessingWorker
     private readonly IReadOnlyList<ICaptureProcessingStep> _steps;
     private readonly ILogger _logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl;
+    private readonly SiloArtifactStorage? _silo;
 
     public FrameProcessingWorker(
         FrameProcessingChannel channel,
         IEnumerable<ICaptureProcessingStep> steps,
         ILogger logger,
-        IRawIngressRecoveryControl? rawIngressControl = null)
+        IRawIngressRecoveryControl? rawIngressControl = null,
+        SiloArtifactStorage? silo = null)
     {
         _channel = channel;
         _steps = steps?
@@ -38,6 +43,7 @@ internal sealed class FrameProcessingWorker
             .ToList() ?? throw new ArgumentNullException(nameof(steps));
         _logger = logger;
         _rawIngressControl = rawIngressControl;
+        _silo = silo;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -46,7 +52,7 @@ internal sealed class FrameProcessingWorker
         {
             try
             {
-                await ProcessItemAsync(item, _steps, _logger, cancellationToken).ConfigureAwait(false);
+                await ProcessItemAsync(item, _steps, _logger, cancellationToken, _silo).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -62,9 +68,10 @@ internal sealed class FrameProcessingWorker
         FrameProcessingItem item,
         IReadOnlyList<ICaptureProcessingStep> steps,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloArtifactStorage? silo = null)
     {
-        var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
+        var context = await CreateContextAsync(item, cancellationToken, silo).ConfigureAwait(false);
         var failed = false;
         foreach (var step in steps)
         {
@@ -159,7 +166,7 @@ internal sealed class FrameProcessingWorker
         }
         try
         {
-            var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
+            var context = await CreateContextAsync(item, cancellationToken, persistence?.Silo).ConfigureAwait(false);
             var rawCapture = context.RawCapture;
             var captureId = rawCapture?.Manifest.Descriptor.Capture.CaptureId;
             if (persistence is not null)
@@ -208,10 +215,18 @@ internal sealed class FrameProcessingWorker
                 }
             }
             var statuses = new Dictionary<string, DurableProcessingNodeStatus>(StringComparer.OrdinalIgnoreCase);
+            var measurement = graph.Nodes.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep);
+            // The centered measurement remains non-fatal once settled, but must not be discarded on its first
+            // transient failure (or on the first transient failure of its pinned step-three input).
+            bool RetryCenteredMeasurement(CaptureProcessingGraphNode node) => measurement is not null &&
+                (node == measurement || measurement.Dependencies.Contains(node.Id, StringComparer.OrdinalIgnoreCase));
+
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
-                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false } || rawCapture?.Manifest.Scene is null))
+                if (storagePolicyMismatch &&
+                    (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false } ||
+                     rawCapture?.Manifest.Scene is null))
                     continue;
                 // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
                 var required = node.Required;
@@ -247,7 +262,7 @@ internal sealed class FrameProcessingWorker
                             rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, persistedAttempt,
                             null, timeProvider.GetUtcNow(), null, ProcessingOutcomeStatus.Skipped,
                             item.WorkId, item.LeaseToken,
-                            [], context, item.Execution, cancellationToken).ConfigureAwait(false);
+                            [], context, item.Execution, cancellationToken, graph).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     context.AddStepTelemetry(new CaptureProcessingStepTelemetry(node.Id, TimeSpan.Zero, false, dependencyReason));
@@ -284,9 +299,11 @@ internal sealed class FrameProcessingWorker
                             if (item.Execution?.AllowAutomaticPublication != false &&
                                 node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
                             {
-                                await RunPostCommitCleanupAsync(
+                                var finished = await RunPostCommitCleanupAsync(
                                     restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                                 cancellationToken.ThrowIfCancellationRequested();
+                                if (!finished)
+                                    return Finish(RetryOrWait("processing.post-commit-incomplete"));
                             }
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
@@ -394,16 +411,13 @@ internal sealed class FrameProcessingWorker
                     }
                     else if (persistence is not null && rawCapture is not null &&
                         node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
-                        context.Artifacts?.Raw is { } rawArtifact)
+                        context.Artifacts?.Raw is not null)
                     {
                         context.SetHistoricalInputs(item.Execution is not null
                             ? await persistence.ReadFrozenExecutionRawInputsAsync(
                                 item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
                             : await persistence.ReadRecentRawInputsAsync(
                                 rawCapture.Manifest.Descriptor,
-                                CameraAgentRecipeExecutionAdapter.CreateArtifact(
-                                    context.Config, rawArtifact, "source", context.AcquisitionTiming,
-                                    context.ReconstructionDescriptor),
                                 rawWindow.MaximumInputCount,
                                 cancellationToken).ConfigureAwait(false));
                     }
@@ -418,7 +432,7 @@ internal sealed class FrameProcessingWorker
                 {
                     throw;
                 }
-                catch (Exception caught)
+                catch (Exception caught) when (caught is not PublishedSiloEvidenceException)
                 {
                     exception = caught;
                     logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
@@ -452,10 +466,12 @@ internal sealed class FrameProcessingWorker
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
-                    reason = "processing.optional-exhausted";
+                    if (!RetryCenteredMeasurement(node))
+                        reason = "processing.optional-exhausted";
                 }
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
-                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch)
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch &&
+                    !RetryCenteredMeasurement(node))
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-degraded";
@@ -463,23 +479,8 @@ internal sealed class FrameProcessingWorker
                 var products = exception is null
                     ? outcomes.SelectMany(static value => value.Products).ToArray()
                     : [];
-                foreach (var product in products)
-                {
-                    context.RegisterProcessingProduct(product);
-                }
-                telemetry.RecordNode(node, status, reason, duration, executionClass);
-                if (logger.IsEnabled(LogLevel.Debug))
-                {
-                    logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
-                }
-                nodeActivity?.SetStatus(
-                    status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error,
-                    reason);
-                context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
-                    node.Id,
-                    duration,
-                    status == DurableProcessingNodeStatus.Completed,
-                    reason));
+                if (node != measurement)
+                    ObserveOutcome();
                 if (persistence is not null && rawCapture is not null)
                 {
                     if (status == DurableProcessingNodeStatus.Completed &&
@@ -506,34 +507,65 @@ internal sealed class FrameProcessingWorker
                                 duration,
                                 outcome?.Status,
                                 context.CurrentExecutionRoute,
-                                cancellationToken).ConfigureAwait(false);
+                                cancellationToken, rawCapture.Manifest, graph).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                     else
                     {
-                        await persistence.WriteNodeAsync(
-                            rawCapture, node, status, reason, persistedAttempt,
-                            startedUtc, completedUtc, duration,
-                            outcome?.Status,
-                            item.WorkId, item.LeaseToken,
-                            products, context, item.Execution, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            await persistence.WriteNodeAsync(
+                                rawCapture, node, status, reason, persistedAttempt,
+                                startedUtc, completedUtc, duration,
+                                outcome?.Status,
+                                item.WorkId, item.LeaseToken,
+                                products, context, item.Execution, cancellationToken, graph).ConfigureAwait(false);
+                        }
+                        catch (IOException caught) when (
+                            node == measurement && status == DurableProcessingNodeStatus.Completed &&
+                            products is [{ SchemaVersion: ExposureMeasurementProducts.SchemaVersion }] &&
+                            rawCapture.Manifest.CenteredExposure is not null &&
+                            item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
+                            caught is not FileSystemFaultException { Kind: FileSystemFaultKind.Containment })
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            // Only a successful fixed product's publication is retried here, not source reads,
+                            // invalid immutable evidence, lost leases, or the SQLite node transaction.
+                            logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
+                            reason = ExposureMeasurementRunRead.PublicationIoReason;
+                            status = attempt < maximumAttempts
+                                ? DurableProcessingNodeStatus.RetryableFailure
+                                : DurableProcessingNodeStatus.TerminalFailure;
+                            var publicationOutcome = status == DurableProcessingNodeStatus.RetryableFailure
+                                ? ProcessingOutcomeStatus.RetryableFailure
+                                : ProcessingOutcomeStatus.TerminalFailure;
+                            await persistence.CompleteOutputlessExecutionNodeAsync(item.Execution, node, status, reason,
+                                persistedAttempt, timeProvider.GetUtcNow(), duration, publicationOutcome,
+                                context.CurrentExecutionRoute, cancellationToken, rawCapture.Manifest, graph).ConfigureAwait(false);
+                        }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             status == DurableProcessingNodeStatus.Completed &&
                             node.Step is IDurableCaptureProcessingPostCommit committed)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 committed, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                 }
+                if (node == measurement)
+                    ObserveOutcome();
                 statuses[node.Id] = status;
                 if (required)
                 {
@@ -559,6 +591,23 @@ internal sealed class FrameProcessingWorker
                 {
                     return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
                 }
+
+                void ObserveOutcome()
+                {
+                    // The fixed product must not reach a dependent node before the durable commit.
+                    if (node != measurement || status == DurableProcessingNodeStatus.Completed)
+                    {
+                        foreach (var product in products)
+                            context.RegisterProcessingProduct(product);
+                    }
+                    telemetry.RecordNode(node, status, reason, duration, executionClass);
+                    if (logger.IsEnabled(LogLevel.Debug))
+                        logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
+                    nodeActivity?.SetStatus(
+                        status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error, reason);
+                    context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
+                        node.Id, duration, status == DurableProcessingNodeStatus.Completed, reason));
+                }
             }
             if (storagePolicyMismatch)
             {
@@ -583,6 +632,19 @@ internal sealed class FrameProcessingWorker
                 Finish(CaptureLaneHandlerResult.Abandon(ProcessingPlanSupersededException.LaneReason));
             }
             throw;
+        }
+        catch (SiloStoreUnavailableException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-store-unavailable"));
+        }
+        catch (SiloSpoolFullException)
+        {
+            return Finish(CaptureLaneHandlerResult.Retry("silo-staging-pressure"));
+        }
+        catch (SiloConflictException exception)
+        {
+            logger.CaptureProcessingStepFailed("Silo", item.Submission.CaptureStartedUtc, exception);
+            return Finish(CaptureLaneHandlerResult.Terminal(exception.Code));
         }
         catch
         {
@@ -615,8 +677,8 @@ internal sealed class FrameProcessingWorker
             ?? throw new InvalidOperationException(
                 "A durable processing window requires the committed raw capture descriptor.");
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
-    private static async ValueTask RunPostCommitCleanupAsync(
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit failures retain the completed node. Callbacks that publish durable evidence request retry.")]
+    private static async ValueTask<bool> RunPostCommitCleanupAsync(
         IDurableCaptureProcessingPostCommit cleanup,
         CaptureProcessingGraphNode node,
         CaptureProcessingContext context,
@@ -628,12 +690,14 @@ internal sealed class FrameProcessingWorker
         {
             await cleanup.OnCommittedAsync(
                 new CaptureDescriptorProcessingContext(context), cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (Exception exception)
         {
             var reason = exception is OperationCanceledException ? "cancelled" : "failed";
             telemetry.RecordPostCommitCleanupFailure(node, reason);
             logger.CaptureProcessingPostCommitCleanupFailed(node.Id, exception);
+            return !cleanup.RequiresSuccessfulCommitCallback;
         }
     }
 
@@ -669,14 +733,20 @@ internal sealed class FrameProcessingWorker
 
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloArtifactStorage? silo = null)
     {
         var submission = item.Submission;
         var rawCapture = item.RawCapture;
         if (rawCapture is { } receipt)
         {
-            var sidecar = await File.ReadAllBytesAsync(
-                Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json"), cancellationToken).ConfigureAwait(false);
+            var descriptor = receipt.Manifest.Descriptor;
+            var replay = item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
+            var storage = silo ?? throw new InvalidOperationException("Durable capture processing requires Silo raw evidence.");
+            var sidecarRead = storage.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
+                allowStaged: !replay, cancellationToken);
+            var sidecar = (replay ? await sidecarRead.ConfigureAwait(false) : await ReadSiloLiveEvidenceAsync(sidecarRead).ConfigureAwait(false))
+                ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or admission stage.");
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
             {
@@ -693,7 +763,10 @@ internal sealed class FrameProcessingWorker
             rawCapture = receipt;
             async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var payload = (replay
+                    ? await storage.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
+                    : await ReadSiloLiveEvidenceAsync(storage.ReadLiveRawAsync(receipt.Manifest.Descriptor, token)).ConfigureAwait(false))
+                    ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or admission stage.");
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)
                 {
@@ -717,4 +790,23 @@ internal sealed class FrameProcessingWorker
         }
         return new CaptureProcessingContext(item.Config, submission, rawCapture, null, item.Execution);
     }
+
+    private static async ValueTask<byte[]?> ReadSiloLiveEvidenceAsync(ValueTask<byte[]?> read)
+    {
+        try
+        {
+            return await read.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException)
+        {
+            // The storage reader returns null for missing staging. These failures came from
+            // resolving or verifying a published exact version, even if P4 followed the claim.
+            throw new PublishedSiloEvidenceException(exception);
+        }
+    }
 }
+
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+    Justification = "A published evidence failure always wraps the original exact-version read failure.")]
+internal sealed class PublishedSiloEvidenceException(Exception innerException)
+    : IOException("The published Silo raw evidence was missing or invalid.", innerException);

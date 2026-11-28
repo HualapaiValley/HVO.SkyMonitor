@@ -65,7 +65,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false)) return;
         }
         throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker while CameraAgent is reachable. " +
-            "If CameraAgent is down, use uninstall then restore/reinstall, or rollback subject to its recovery preconditions. " +
+            "If CameraAgent is down, use uninstall then restore/reinstall. " +
             "Retain both journals and refused evidence for reconciliation; do not edit them.");
     }
 
@@ -89,7 +89,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 { Status: not InstallationStatus.Completed, Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback })
                 throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
             // Already admissible local settlement must not depend on an unnecessary process probe.
-            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation) ||
+            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) ||
                 IsSettledBackupForControl(operation))
                 return deploymentLock;
             var committedRecovery = settleCommittedRecovery && operation is
@@ -108,7 +108,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback
             } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
                 await returnedProcess(cancellationToken).ConfigureAwait(false);
-            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation) && !committedRecovery && !precommitRecovery)
+            if (!committedRecovery && !precommitRecovery)
                 throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
             return deploymentLock;
         }
@@ -187,8 +187,8 @@ internal sealed partial class CameraAgentLifecycleManager
     private static async Task<(InstanceManifest Manifest, InstallationResult Result)> ReadWorkerIdentityAsync(
         InstallationPaths paths, Guid instanceId, CancellationToken cancellationToken, bool allowPartialRollback = false)
     {
-        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
+        var result = await ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true).ConfigureAwait(false);
         try { EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift: false); }
         catch (InstallerException)
         {

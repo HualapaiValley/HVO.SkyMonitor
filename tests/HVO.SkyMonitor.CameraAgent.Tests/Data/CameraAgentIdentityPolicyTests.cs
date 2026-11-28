@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Data;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Hosting")]
 public sealed class CameraAgentIdentityPolicyTests
 {
     private const string OwnerEmail = "owner@cameraagent.test";

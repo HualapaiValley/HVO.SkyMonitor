@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# infra:reset - Remove local application containers and CameraAgent runtime state.
-# Usage: ./scripts/infra:reset [logichost|cameraagent|all]
+# infra:reset - Remove the development container and its CameraAgent runtime state.
+# Usage: ./scripts/infra:reset [cameraagent|all]
 
 set -euo pipefail
 
@@ -55,8 +55,6 @@ validate_runtime_directory() {
 reset_runtime_directory() {
     local directory="$1"
     case "$directory" in
-        "$RUNTIME_DATA_ROOT/logichost/dataprotection"|\
-        "$RUNTIME_DATA_ROOT/logichost/home"|\
         "$RUNTIME_DATA_ROOT/cameraagent/identity"|\
         "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"|\
         "$RUNTIME_DATA_ROOT/cameraagent/provisioning"|\
@@ -75,40 +73,27 @@ reset_runtime_directory() {
 
 services=("$@")
 [[ ${#services[@]} -gt 0 ]] || {
-    echo "Usage: $0 [logichost|cameraagent|all]" >&2
+    echo "Usage: $0 [cameraagent|all]" >&2
     exit 1
 }
-[[ " ${services[*]} " == *" all "* ]] && services=(logichost cameraagent)
-
 for service in "${services[@]}"; do
-    [[ "$service" == "logichost" || "$service" == "cameraagent" ]] || {
+    [[ "$service" == cameraagent || "$service" == all ]] || {
         echo "Unknown application service: $service" >&2
         exit 1
     }
 done
 
-for service in "${services[@]}"; do
-    if [[ "$service" == "logichost" ]]; then
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
-    else
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/agent"
-        validate_runtime_directory "$RUNTIME_DATA_ROOT/archive"
-    fi
+paths=(
+    "$RUNTIME_DATA_ROOT/cameraagent/identity"
+    "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
+    "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
+    "$RUNTIME_DATA_ROOT/agent"
+    "$RUNTIME_DATA_ROOT/archive"
+)
+for path in "${paths[@]}"; do
+    validate_runtime_directory "$path"
 done
-
-docker compose -f docker-compose.apps.yml rm -sf "${services[@]}"
-if [[ " ${services[*]} " == *" logichost "* ]]; then
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/dataprotection"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/logichost/home"
-fi
-if [[ " ${services[*]} " == *" cameraagent "* ]]; then
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/agent"
-    reset_runtime_directory "$RUNTIME_DATA_ROOT/archive"
-fi
+docker compose -f docker-compose.apps.yml rm -sf cameraagent
+for path in "${paths[@]}"; do
+    reset_runtime_directory "$path"
+done

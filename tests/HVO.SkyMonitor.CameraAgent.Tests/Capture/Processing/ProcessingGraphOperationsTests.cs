@@ -8,6 +8,8 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -27,6 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class ProcessingGraphOperationsTests
 {
@@ -56,9 +59,9 @@ public sealed partial class ProcessingGraphOperationsTests
         };
         foreach (var exception in expectedFailures)
         {
-            Assert.IsTrue(ProcessingGraphOperationsCoordinator.IsExpectedProposalValidationFailure(exception));
+            Assert.IsTrue(ProcessingGraphOperationsCoordinator.IsExpectedGraphValidationFailure(exception));
         }
-        Assert.IsFalse(ProcessingGraphOperationsCoordinator.IsExpectedProposalValidationFailure(
+        Assert.IsFalse(ProcessingGraphOperationsCoordinator.IsExpectedGraphValidationFailure(
             new InvalidOperationException()));
 
         var explicitPipeline = new CapturePipelineConfig(
@@ -172,9 +175,8 @@ public sealed partial class ProcessingGraphOperationsTests
             }
 
             ProcessingGraphExecutionDetail external;
-            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            using (var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
                 ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = authorizationKey,
@@ -259,9 +261,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     CapturePipelineSchemaVersions.ExplicitV2,
                     CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
-            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            using var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = FileSystemTestPaths.CreateShortUnixSocketPath(),
@@ -365,7 +366,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await using var runnerLifetime = runner.ConfigureAwait(false);
                 var runnerTask = runner.RunAsync(runnerStopping.Token);
                 await WaitForPathAsync(socketPath).ConfigureAwait(false);
-                using var provider = CreateProvider(root, LocalRunnerSettings());
+                using var provider = CreateReplayTransportProvider(root, LocalRunnerSettings());
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -415,7 +416,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await using var runnerLifetime = runner.ConfigureAwait(false);
                 var runnerTask = runner.RunAsync(runnerStopping.Token);
                 await WaitForPathAsync(socketPath).ConfigureAwait(false);
-                using var recoveredProvider = CreateProvider(root, LocalRunnerSettings());
+                using var recoveredProvider = CreateReplayTransportProvider(root, LocalRunnerSettings());
                 await recoveredProvider.GetRequiredService<IRawCaptureIngress>()
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = recoveredProvider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -453,7 +454,6 @@ public sealed partial class ProcessingGraphOperationsTests
 
             Dictionary<string, string?> LocalRunnerSettings() => new()
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayLeaseSeconds"] = "3",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
@@ -640,14 +640,15 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await provider.GetRequiredService<IRawCaptureIngress>()
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-                var rawHash = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+                var rawId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+                var rawHash = await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false);
                 var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
 
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Expired, detail.Execution.Status, detail.Execution.FailureReason);
                 Assert.AreEqual(ProcessingReplayReasons.PlanSuperseded, detail.Execution.FailureReason);
                 Assert.AreEqual(1, detail.Execution.AttemptCount, "A superseded plan spends no further attempt.");
                 Assert.IsTrue(detail.Nodes.All(static node => node.Reason == ProcessingReplayReasons.PlanSuperseded));
-                Assert.AreEqual(rawHash, Sha256OfFile(receipt.StoredFrame.AbsolutePath), "Raw evidence is untouched.");
+                Assert.AreEqual(rawHash, await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false), "Raw evidence is untouched.");
                 Assert.AreEqual(("Expired", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
 
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -777,12 +778,14 @@ public sealed partial class ProcessingGraphOperationsTests
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 // Damage only the oldest frozen window input after acceptance; the replay's own raw capture is intact,
                 // so only a check of every frozen input can tell this replay from one that is safe to abandon.
-                var damaged = receipts[0].StoredFrame.AbsolutePath;
-                var payload = await File.ReadAllBytesAsync(damaged).ConfigureAwait(false);
-                payload[^1] ^= 0xFF;
-                await File.WriteAllBytesAsync(damaged, payload).ConfigureAwait(false);
-                var damagedHash = Sha256OfFile(damaged);
-                var primaryHash = Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath);
+                var damagedDescriptor = receipts[0].Manifest.Descriptor;
+                var damaged = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, damagedDescriptor.Artifact.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(damagedDescriptor), CancellationToken.None).ConfigureAwait(false);
+                var objects = provider.GetRequiredService<SiloTestStore>();
+                objects.Damage(damaged);
+                var damagedHash = SiloHash.Sha256(objects.Read(damaged.Key, damaged.VersionId));
+                var primaryId = receipts[^1].Manifest.Descriptor.Artifact.ArtifactId;
+                var primaryHash = await ReadArtifactShaAsync(provider, primaryId).ConfigureAwait(false);
 
                 var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
 
@@ -793,8 +796,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(
                     frozenRecord == "current" ? "processing.step-exception" : "processing.replay-exception",
                     detail.Execution.FailureReason);
-                Assert.AreEqual(damagedHash, Sha256OfFile(damaged), "Damaged evidence is kept as found.");
-                Assert.AreEqual(primaryHash, Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath));
+                Assert.AreEqual(damagedHash, SiloHash.Sha256(objects.Read(damaged.Key, damaged.VersionId)), "Damaged evidence is kept as found.");
+                Assert.AreEqual(primaryHash, await ReadArtifactShaAsync(provider, primaryId).ConfigureAwait(false));
                 Assert.AreEqual(("Failed", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
                 var durable = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                     .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -953,11 +956,10 @@ public sealed partial class ProcessingGraphOperationsTests
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:RawIngressSqliteBusyTimeoutSeconds"] = "2",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             };
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(
+            services.AddSiloTestInfrastructure(
                 new ConfigurationBuilder().AddInMemoryCollection(values).Build());
             using var provider = services.BuildServiceProvider();
             var rawIngress = provider.GetRequiredService<IRawCaptureIngress>();
@@ -975,7 +977,7 @@ public sealed partial class ProcessingGraphOperationsTests
             using var replayPreemption = new CancellationTokenSource();
             using var replayPreemptionRegistration = provider.GetRequiredService<ProcessingReplayWakeup>()
                 .RegisterLivePreemption(replayPreemption);
-            var receipt = await rawIngress.AcceptAsync(
+            var receipt = await rawIngress.AcceptAndSettleAsync(
                 configuration, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
@@ -1089,7 +1091,6 @@ public sealed partial class ProcessingGraphOperationsTests
             using var provider = CreateProvider(root, new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressSqliteBusyTimeoutSeconds"] = "2",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             });
             var rawIngress = provider.GetRequiredService<IRawCaptureIngress>();
             await rawIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1097,7 +1098,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var configuration = CreateConfiguration();
             var registry = await operations.EnsureConfiguredBasicAsync(
                 configuration, CancellationToken.None).ConfigureAwait(false);
-            var receipt = await rawIngress.AcceptAsync(
+            var receipt = await rawIngress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
             Assert.AreEqual(RawIngressOutcome.Committed, receipt.Outcome);
@@ -1198,7 +1199,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var basic = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-                receipt = await ingress.AcceptAsync(configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false)
+                receipt = await ingress.AcceptAndSettleAsync(configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false)
                     ?? throw new AssertFailedException("The fixture must retain its raw capture.");
                 var named = await operations.CreateRevisionAsync("nightly", "old", configuration.Pipeline,
                     "create-old", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
@@ -1254,7 +1255,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var before = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
                 var revisionBefore = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
-                var rawHash = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+                var rawId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+                var rawHash = await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false);
                 var tables = new[] { "processing_graph_commands", "replay_executions", "processing_replay_work", "processing_execution_input_pins" };
                 var counts = tables.Select(table => CountRows(root, table)).ToArray();
                 if (acknowledged)
@@ -1275,7 +1277,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var revisionAfter = await operations.ReadRevisionSnapshotAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(JsonSerializer.Serialize(revisionBefore), JsonSerializer.Serialize(revisionAfter));
                 CollectionAssert.AreEqual(counts, tables.Select(table => CountRows(root, table)).ToArray());
-                Assert.AreEqual(rawHash, Sha256OfFile(receipt.StoredFrame.AbsolutePath));
+                Assert.AreEqual(rawHash, await ReadArtifactShaAsync(provider, rawId).ConfigureAwait(false));
             }
 
             async Task<string> SelectAsync(ProcessingGraphOperationsCoordinator operations, string? reason)
@@ -1309,7 +1311,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -1470,545 +1472,6 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public async Task CentralProposalLifecycleStagesActivatesRollsBackAndSettlesDurably()
-    {
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery");
-        try
-        {
-            using var provider = CreateProvider(root);
-            await provider.GetRequiredService<IRawCaptureIngress>()
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var baseConfiguration = CreateConfiguration() with
-            {
-                Pipeline = new CapturePipelineConfig(
-                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
-                    CapturePipelineSchemaVersions.ExplicitV2,
-                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
-            };
-            var configured = await operations.EnsureConfiguredBasicAsync(
-                baseConfiguration, CancellationToken.None).ConfigureAwait(false);
-            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-            var graph = factory.CreateGraph(baseConfiguration);
-            ProcessingGraphDefinition definition;
-            ProcessingGraphExecutionPlan plan;
-            try
-            {
-                var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(
-                    graph.SharedPlan!.CanonicalDefinition.GetRawText()));
-                Assert.IsTrue(parsed.IsValid);
-                definition = parsed.Definition!;
-                plan = graph.SharedPlan;
-                Assert.AreEqual(
-                    "application/x-hvo-packed-image",
-                    definition.Nodes.Single().Outputs.Single().MediaType);
-            }
-            finally
-            {
-                graph.DisposeSteps();
-            }
-            var now = DateTimeOffset.UtcNow;
-            ProcessingGraphDeliveryProposalV1 CreateProposal(
-                Guid proposalId,
-                ProcessingGraphDefinition proposalDefinition,
-                string definitionIdentity,
-                string sharedPlanIdentity,
-                string? expectedActiveRevisionId = null,
-                DateTimeOffset? issuedAtUtc = null,
-                DateTimeOffset? expiresAtUtc = null)
-                => new(
-                    ProcessingGraphDeliverySchemaVersions.Current,
-                    proposalId,
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    expectedActiveRevisionId ?? configured.ActiveRevisionId,
-                    operations.Capabilities.IdentitySha256,
-                    definitionIdentity,
-                    sharedPlanIdentity,
-                    proposalDefinition,
-                    issuedAtUtc ?? now.AddMinutes(-1),
-                    expiresAtUtc ?? now.AddHours(1));
-
-            var proposal = CreateProposal(
-                Guid.NewGuid(), definition, plan.DefinitionIdentitySha256, plan.PlanIdentitySha256);
-            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
-            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
-            var accepted = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(accepted);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, accepted.Kind);
-            Assert.AreEqual(plan.DefinitionIdentitySha256, accepted.DefinitionIdentitySha256);
-            Assert.AreEqual(plan.PlanIdentitySha256, accepted.SharedPlanIdentitySha256);
-            await operations.RetryFactAsync(
-                accepted.FactId, now.AddMinutes(-1), "retry-test", CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                accepted.FactId,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.FactId);
-            await operations.AcknowledgeFactAsync(accepted.FactId, CancellationToken.None).ConfigureAwait(false);
-
-            var active = await operations.ActivateRevisionAsync(
-                accepted.LocalRevisionId!,
-                configured.StateVersion,
-                "central-activate",
-                "central-delivery",
-                "accepted",
-                CancellationToken.None).ConfigureAwait(false);
-            var activated = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(activated);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Activated, activated.Kind);
-            await operations.AcknowledgeFactAsync(activated.FactId, CancellationToken.None).ConfigureAwait(false);
-
-            var rolledBackRegistry = await operations.RollbackRevisionAsync(
-                configured.ActiveRevisionId,
-                active.StateVersion,
-                "central-rollback",
-                "operator",
-                "rollback-test",
-                CancellationToken.None).ConfigureAwait(false);
-            await operations.ObserveActiveRevisionAsync(CancellationToken.None).ConfigureAwait(false);
-            var rolledBack = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(rolledBack);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.RolledBack, rolledBack.Kind);
-            Assert.AreEqual(rolledBackRegistry.ActiveRevisionId, configured.ActiveRevisionId);
-            await operations.AcknowledgeFactAsync(rolledBack.FactId, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNull(await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false));
-
-            var expired = proposal with
-            {
-                ProposalId = Guid.NewGuid(),
-                CatalogRevisionId = Guid.NewGuid(),
-                AssignmentId = Guid.NewGuid(),
-                IssuedAtUtc = now.AddHours(-2),
-                ExpiresAtUtc = now.AddHours(-1)
-            };
-            await operations.StageAsync(expired, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphDeliveryFactKind.Expired,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
-            await operations.SupersedeProposalAsync(expired.ProposalId, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNull(await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false));
-
-            var activeChanged = proposal with
-            {
-                ProposalId = Guid.NewGuid(),
-                CatalogRevisionId = Guid.NewGuid(),
-                AssignmentId = Guid.NewGuid(),
-                ExpectedActiveLocalRevisionId = new string('0', 64)
-            };
-            await operations.StageAsync(activeChanged, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphDeliveryFactKind.Rejected,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
-            await operations.SupersedeProposalAsync(activeChanged.ProposalId, CancellationToken.None).ConfigureAwait(false);
-
-            var originalNode = definition.Nodes[0];
-            var unknownNode = new ProcessingGraphNodeDefinition(
-                originalNode.Id,
-                "UnknownStep",
-                originalNode.StepVersion,
-                originalNode.OperationKind,
-                originalNode.Enabled,
-                originalNode.FailurePolicy,
-                originalNode.Order,
-                originalNode.EffectiveOptions,
-                originalNode.Dependencies,
-                originalNode.Inputs,
-                originalNode.Outputs,
-                originalNode.Window,
-                originalNode.CapabilityLabels,
-                originalNode.HostApplicability);
-            var unsupportedDefinition = definition with
-            {
-                Name = "unsupported",
-                Nodes = [unknownNode]
-            };
-            var unsupportedPlan = ProcessingGraphCompiler.Compile(unsupportedDefinition).Plan!;
-            var unsupported = CreateProposal(
-                Guid.NewGuid(),
-                unsupportedDefinition,
-                unsupportedPlan.DefinitionIdentitySha256,
-                unsupportedPlan.PlanIdentitySha256);
-            await operations.StageAsync(unsupported, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphDeliveryFactKind.Rejected,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
-            await operations.SupersedeProposalAsync(unsupported.ProposalId, CancellationToken.None).ConfigureAwait(false);
-
-            var wrongCaseDefinition = definition with
-            {
-                Name = "wrong-case",
-                Nodes = [new ProcessingGraphNodeDefinition(
-                    originalNode.Id,
-                    "preview",
-                    originalNode.StepVersion,
-                    originalNode.OperationKind,
-                    originalNode.Enabled,
-                    originalNode.FailurePolicy,
-                    originalNode.Order,
-                    originalNode.EffectiveOptions,
-                    originalNode.Dependencies,
-                    originalNode.Inputs,
-                    originalNode.Outputs,
-                    originalNode.Window,
-                    originalNode.CapabilityLabels,
-                    originalNode.HostApplicability)]
-            };
-            var wrongCasePlan = ProcessingGraphCompiler.Compile(wrongCaseDefinition).Plan!;
-            var wrongCase = CreateProposal(
-                Guid.NewGuid(), wrongCaseDefinition,
-                wrongCasePlan.DefinitionIdentitySha256, wrongCasePlan.PlanIdentitySha256);
-            await operations.StageAsync(wrongCase, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphDeliveryFactKind.Rejected,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
-            await operations.SupersedeProposalAsync(wrongCase.ProposalId, CancellationToken.None).ConfigureAwait(false);
-
-            var disabledNode = new ProcessingGraphNodeDefinition(
-                "disabled-unknown",
-                "UnknownStep",
-                "cameraagent-v2-disabled",
-                ProcessingOperationKind.Transform,
-                false,
-                ProcessingGraphNodeFailurePolicy.Required,
-                100,
-                JsonSerializer.SerializeToElement(new { }),
-                [],
-                [],
-                [],
-                null,
-                [],
-                [ProcessingGraphHosts.CameraAgent]);
-            var disabledDefinition = definition with
-            {
-                Name = "disabled-unsupported",
-                Nodes = [originalNode, disabledNode]
-            };
-            var disabledPlan = ProcessingGraphCompiler.Compile(disabledDefinition).Plan!;
-            var disabledUnsupported = CreateProposal(
-                Guid.NewGuid(), disabledDefinition,
-                disabledPlan.DefinitionIdentitySha256, disabledPlan.PlanIdentitySha256);
-            await operations.StageAsync(disabledUnsupported, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphDeliveryFactKind.Accepted,
-                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
-            await operations.SupersedeProposalAsync(
-                disabledUnsupported.ProposalId, CancellationToken.None).ConfigureAwait(false);
-
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-                await operations.StageAsync(
-                    proposal with
-                    {
-                        ProposalId = Guid.NewGuid(),
-                        CapabilitySnapshotSha256 = new string('9', 64)
-                    },
-                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            var backlog = await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, backlog.PendingFactCount);
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public async Task CentralDeliverySettlesRejectedFactsExpiredProposalsStaleAcceptanceAndBlocksRetirement()
-    {
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-terminal");
-        try
-        {
-            using var provider = CreateProvider(root);
-            await provider.GetRequiredService<IRawCaptureIngress>()
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-            var baseConfiguration = CreateConfiguration() with
-            {
-                Pipeline = new CapturePipelineConfig(
-                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
-                    CapturePipelineSchemaVersions.ExplicitV2,
-                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
-            };
-            var configured = await operations.EnsureConfiguredBasicAsync(
-                baseConfiguration, CancellationToken.None).ConfigureAwait(false);
-            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-            var graph = factory.CreateGraph(baseConfiguration);
-            ProcessingGraphDefinition definition;
-            ProcessingGraphExecutionPlan plan;
-            try
-            {
-                definition = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(
-                    graph.SharedPlan!.CanonicalDefinition.GetRawText())).Definition!;
-                plan = graph.SharedPlan;
-            }
-            finally
-            {
-                graph.DisposeSteps();
-            }
-            var now = DateTimeOffset.UtcNow;
-            ProcessingGraphDeliveryProposalV1 CreateProposal(
-                string? expectedActiveRevisionId = null,
-                DateTimeOffset? issuedAtUtc = null,
-                DateTimeOffset? expiresAtUtc = null)
-                => new(
-                    ProcessingGraphDeliverySchemaVersions.Current,
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    expectedActiveRevisionId ?? configured.ActiveRevisionId,
-                    operations.Capabilities.IdentitySha256,
-                    plan.DefinitionIdentitySha256,
-                    plan.PlanIdentitySha256,
-                    definition,
-                    issuedAtUtc ?? now.AddMinutes(-1),
-                    expiresAtUtc ?? now.AddHours(1));
-
-            // Central rejected (HTTP 400/404/409) an immutable fact: it settles terminally and leaves the backlog.
-            var proposal = CreateProposal();
-            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
-            var accepted = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(accepted);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, accepted.Kind);
-
-            // While the Accepted fact is pending (central may still record it), the staged revision cannot be retired
-            // locally; retiring would strand a delivery central is about to hold as accepted.
-            var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-            var staged = registry.Revisions.Single(item => item.RevisionId == accepted.LocalRevisionId);
-            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Validated, staged.Lifecycle);
-            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                await operations.RetireRevisionAsync(
-                    staged.RevisionId, registry.StateVersion, "retire-delivered-pending", "operator", null,
-                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-
-            // Central rejected the Accepted fact: it never recorded the acceptance, so the block lifts.
-            await operations.RejectFactAsync(accepted.FactId, "http-409", CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNull(await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false));
-            var backlog = await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, backlog.PendingFactCount);
-            Assert.AreEqual(1, backlog.RejectedFactCount);
-            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                await operations.RejectFactAsync(accepted.FactId, "http-409", CancellationToken.None)
-                    .ConfigureAwait(false)).ConfigureAwait(false);
-            registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-            registry = await operations.RetireRevisionAsync(
-                staged.RevisionId, registry.StateVersion, "retire-delivered-rejected", "operator", null,
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphRevisionLifecycle.Retired,
-                registry.Revisions.Single(item => item.RevisionId == staged.RevisionId).Lifecycle);
-
-            // An Accepted fact central acknowledged keeps blocking retirement: central holds the acceptance durably.
-            var acknowledgedProposal = CreateProposal();
-            await operations.StageAsync(acknowledgedProposal, CancellationToken.None).ConfigureAwait(false);
-            var acknowledgedFact = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(acknowledgedFact);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, acknowledgedFact.Kind);
-            await operations.AcknowledgeFactAsync(acknowledgedFact.FactId, CancellationToken.None).ConfigureAwait(false);
-            registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-            var acknowledgedStaged = registry.Revisions.Single(item => item.RevisionId == acknowledgedFact.LocalRevisionId);
-            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                await operations.RetireRevisionAsync(
-                    acknowledgedStaged.RevisionId, registry.StateVersion, "retire-delivered-acknowledged", "operator",
-                    null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(
-                ProcessingGraphRevisionLifecycle.Validated,
-                registry.Revisions.Single(item => item.RevisionId == acknowledgedStaged.RevisionId).Lifecycle);
-            var local = await operations.CreateRevisionAsync(
-                baseConfiguration, "local", "1", baseConfiguration.Pipeline, "create-local", "operator", null,
-                CancellationToken.None).ConfigureAwait(false);
-            _ = await operations.ValidateRevisionAsync(
-                local.RevisionId, "validate-local", "operator", null, CancellationToken.None).ConfigureAwait(false);
-            _ = await operations.RetireRevisionAsync(
-                local.RevisionId, registry.StateVersion, "retire-local", "operator", null, CancellationToken.None)
-                .ConfigureAwait(false);
-
-            // A proposal durably received but never settled (crash before staging) expires through the sweep.
-            var stale = CreateProposal(issuedAtUtc: now.AddHours(-2), expiresAtUtc: now.AddHours(-1));
-            Assert.AreEqual(
-                ProcessingGraphLocalProposalDisposition.Pending,
-                await store.UpsertDeliveryProposalAsync(stale, CancellationToken.None).ConfigureAwait(false));
-            Assert.AreEqual(1, (await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false)).PendingProposalCount);
-            Assert.AreEqual(1, await operations.ExpirePendingProposalsAsync(CancellationToken.None).ConfigureAwait(false));
-            Assert.AreEqual(0, await operations.ExpirePendingProposalsAsync(CancellationToken.None).ConfigureAwait(false));
-            var expiredFact = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(expiredFact);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Expired, expiredFact.Kind);
-            Assert.AreEqual(stale.ProposalId, expiredFact.ProposalId);
-            Assert.AreEqual("proposal-expired", expiredFact.ReasonCode);
-            Assert.AreEqual(0, (await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false)).PendingProposalCount);
-            await operations.AcknowledgeFactAsync(expiredFact.FactId, CancellationToken.None).ConfigureAwait(false);
-
-            // Acceptance re-reads the active revision inside its settlement transaction: a stale expectation is
-            // rejected durably instead of recording Accepted evidence against changed local state.
-            var raced = CreateProposal();
-            Assert.AreEqual(
-                ProcessingGraphLocalProposalDisposition.Pending,
-                await store.UpsertDeliveryProposalAsync(raced, CancellationToken.None).ConfigureAwait(false));
-            await store.AcceptDeliveryProposalAsync(
-                raced.ProposalId,
-                staged,
-                CancellationToken.None,
-                expectedActiveRevisionId: new string('0', 64),
-                enforceExpectedActive: true).ConfigureAwait(false);
-            var stalePending = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(stalePending);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Rejected, stalePending.Kind);
-            Assert.AreEqual(raced.ProposalId, stalePending.ProposalId);
-            Assert.AreEqual("active-revision-changed", stalePending.ReasonCode);
-            Assert.IsNull(stalePending.LocalRevisionId);
-            await operations.AcknowledgeFactAsync(stalePending.FactId, CancellationToken.None).ConfigureAwait(false);
-
-            var matching = CreateProposal();
-            _ = await store.UpsertDeliveryProposalAsync(matching, CancellationToken.None).ConfigureAwait(false);
-            await store.AcceptDeliveryProposalAsync(
-                matching.ProposalId,
-                staged,
-                CancellationToken.None,
-                expectedActiveRevisionId: configured.ActiveRevisionId,
-                enforceExpectedActive: true).ConfigureAwait(false);
-            var matchingFact = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(matchingFact);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, matchingFact.Kind);
-            Assert.AreEqual(staged.RevisionId, matchingFact.LocalRevisionId);
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    public async Task CentralStagingDoesNotDeadlockWithCaptureAcceptOrRecoveryAndStillRejectsStaleAcceptance()
-    {
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-delivery-lockorder");
-        var bound = TimeSpan.FromSeconds(30);
-        try
-        {
-            using var provider = CreateProvider(root);
-            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
-            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var baseConfiguration = CreateConfiguration() with
-            {
-                Pipeline = new CapturePipelineConfig(
-                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
-                    CapturePipelineSchemaVersions.ExplicitV2,
-                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
-            };
-            var configured = await operations.EnsureConfiguredBasicAsync(
-                baseConfiguration, CancellationToken.None).ConfigureAwait(false);
-            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-            var graph = factory.CreateGraph(baseConfiguration);
-            ProcessingGraphDefinition definition;
-            ProcessingGraphExecutionPlan plan;
-            try
-            {
-                definition = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(
-                    graph.SharedPlan!.CanonicalDefinition.GetRawText())).Definition!;
-                plan = graph.SharedPlan;
-            }
-            finally
-            {
-                graph.DisposeSteps();
-            }
-            var now = DateTimeOffset.UtcNow;
-            ProcessingGraphDeliveryProposalV1 CreateProposal(string? expectedActiveRevisionId = null)
-                => new(
-                    ProcessingGraphDeliverySchemaVersions.Current,
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
-                    expectedActiveRevisionId ?? configured.ActiveRevisionId,
-                    operations.Capabilities.IdentitySha256,
-                    plan.DefinitionIdentitySha256,
-                    plan.PlanIdentitySha256,
-                    definition,
-                    now.AddMinutes(-1),
-                    now.AddHours(1));
-
-            // Deterministic inversion: raw-ingress accept and recovery binding hold the lifecycle lock while they call
-            // PrepareLiveExecutionAsync (which takes the configuration gate). Hold the lifecycle lock here, start
-            // staging so it blocks on that lock, then drive the accept-side call. Before the fix staging owned the
-            // configuration gate while waiting for the lifecycle lock and this step never completed.
-            var lifecycleGate = HVO.SkyMonitor.CameraAgent.Common.Storage.RawIngressLifecycleLock.ForRoot(root);
-            await lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            Task staging;
-            try
-            {
-                staging = operations.StageAsync(CreateProposal(), CancellationToken.None).AsTask();
-                await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
-                Assert.IsFalse(staging.IsCompleted, "staging must wait for the lifecycle lock held by raw ingress");
-                var prepared = await operations.PrepareLiveExecutionAsync(
-                        baseConfiguration, Guid.NewGuid(), Guid.NewGuid(), now, CancellationToken.None).AsTask()
-                    .WaitAsync(bound).ConfigureAwait(false);
-                Assert.AreEqual(configured.ActiveRevisionId, prepared.Seed.Revision.State.RevisionId);
-            }
-            finally
-            {
-                lifecycleGate.Release();
-            }
-            await staging.WaitAsync(bound).ConfigureAwait(false);
-            var accepted = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(accepted);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, accepted.Kind);
-            await operations.AcknowledgeFactAsync(accepted.FactId, CancellationToken.None).ConfigureAwait(false);
-
-            // Real concurrency: interleave staging with capture accepts and recovery binding within a bounded window.
-            var work = new List<Task>();
-            for (var index = 0; index < 12; index++)
-            {
-                var offset = index;
-                work.Add(Task.Run(() => operations.StageAsync(CreateProposal(), CancellationToken.None).AsTask()));
-                work.Add(Task.Run(async () => _ = await ingress.AcceptAsync(
-                    baseConfiguration, CreateSubmission(offset), CancellationToken.None).ConfigureAwait(false)));
-                work.Add(Task.Run(() => ingress.BindRecoveredLiveExecutionsAsync(
-                    baseConfiguration, CancellationToken.None).AsTask()));
-            }
-            await Task.WhenAll(work).WaitAsync(bound).ConfigureAwait(false);
-            var executions = await operations.ReadExecutionsAsync(
-                ProcessingGraphExecutionClass.Live, 100, CancellationToken.None).ConfigureAwait(false);
-            Assert.HasCount(12, executions);
-            var backlog = await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, backlog.PendingProposalCount);
-            Assert.AreEqual(12, backlog.PendingFactCount);
-            for (var index = 0; index < 12; index++)
-            {
-                var fact = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(fact);
-                Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, fact.Kind);
-                await operations.AcknowledgeFactAsync(fact.FactId, CancellationToken.None).ConfigureAwait(false);
-            }
-
-            // Dropping the configuration gate from staging must not weaken stale-acceptance rejection: a proposal
-            // whose expected active revision no longer matches settles as Rejected(active-revision-changed).
-            var stale = CreateProposal(expectedActiveRevisionId: new string('0', 64));
-            await operations.StageAsync(stale, CancellationToken.None).AsTask().WaitAsync(bound).ConfigureAwait(false);
-            var rejected = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(rejected);
-            Assert.AreEqual(stale.ProposalId, rejected.ProposalId);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Rejected, rejected.Kind);
-            Assert.AreEqual("active-revision-changed", rejected.ReasonCode);
-            Assert.IsNull(rejected.LocalRevisionId);
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
     public async Task ReplayFreezesTrailingRawWindowAtSubmission()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-window");
@@ -2016,7 +1479,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -2047,7 +1510,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var receipts = new List<RawCaptureReceipt>();
             for (var index = 0; index < 3; index++)
             {
-                var receipt = await ingress.AcceptAsync(
+                var receipt = await ingress.AcceptAndSettleAsync(
                     configuration, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(receipt);
                 receipts.Add(receipt);
@@ -2062,7 +1525,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 "owner-test",
                 CancellationToken.None).ConfigureAwait(false);
 
-            _ = await ingress.AcceptAsync(
+            _ = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(3, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false);
             var processingStore = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var frozen = await processingStore
@@ -2193,7 +1656,9 @@ public sealed partial class ProcessingGraphOperationsTests
             _ = await operations.CancelReplayAsync(
                 centeredReplay.Execution.ExecutionId, "centered-cancel-key", "owner-test", null,
                 CancellationToken.None).ConfigureAwait(false);
-            File.Delete(receipts[0].StoredFrame.AbsolutePath);
+            var oldest = receipts[0].Manifest.Descriptor;
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, oldest.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(oldest), CancellationToken.None).ConfigureAwait(false);
             var idempotentReplay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     receipts[^1].Manifest.Descriptor.Capture.CaptureId,
@@ -2548,7 +2013,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var original = await ingress.AcceptAsync(
+            var original = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(original);
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -2577,7 +2042,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await barrier.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
-                var liveReceipt = await ingress.AcceptAsync(
+                var liveReceipt = await ingress.AcceptAndSettleAsync(
                     configuration, CreateSubmission(sequenceOffset: 1), timeout.Token).ConfigureAwait(false);
                 Assert.IsNotNull(liveReceipt);
 
@@ -2673,7 +2138,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var original = await ingress.AcceptAsync(
+            var original = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(original);
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -2773,7 +2238,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var receipt = await ingress.AcceptAsync(
+            var receipt = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
                 .ConfigureAwait(false);
             Assert.IsNotNull(receipt);
@@ -2951,7 +2416,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
                     ["CameraAgent:RawIngressRoot"] = root,
@@ -2972,8 +2437,9 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
-            var receipt = await ingress.AcceptAsync(
-                configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
+            var submission = CreateSubmission();
+            var receipt = await ingress.AcceptAndSettleAsync(
+                configuration, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
 
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -3147,7 +2613,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 deferredReplay.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(cancelledDetail);
             Assert.AreEqual("TerminalFailure", cancelledDetail.Nodes.Single().Status);
-            var futureReceipt = await ingress.AcceptAsync(
+            var futureReceipt = await ingress.AcceptAndSettleAsync(
                 configuration, CreateSubmission(sequenceOffset: 1), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(futureReceipt);
 
@@ -3299,7 +2765,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var liveOutputs = ReadProjectedSceneOutputs(root, captureId);
                 Assert.HasCount(1, liveOutputs, "the live commit must retain exactly one projected-scene product");
                 liveOutputIdentity = liveOutputs[0].OutputIdentity;
-                livePayloadSha256 = Sha256OfFile(Path.Combine(root, liveOutputs[0].PayloadRelativePath));
+                livePayloadSha256 = await ReadArtifactShaAsync(provider, ProcessingIdentity.CreateArtifactId(liveOutputIdentity)).ConfigureAwait(false);
             }
 
             using (var provider = CreateProvider(root))
@@ -3329,7 +2795,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(liveOutputIdentity, node.Outputs.Single().OutputIdentitySha256);
                 var replayOutputs = ReadProjectedSceneOutputs(root, captureId);
                 Assert.HasCount(1, replayOutputs);
-                Assert.AreEqual(livePayloadSha256, Sha256OfFile(Path.Combine(root, replayOutputs[0].PayloadRelativePath)));
+                Assert.AreEqual(livePayloadSha256, await ReadArtifactShaAsync(provider,
+                    ProcessingIdentity.CreateArtifactId(replayOutputs[0].OutputIdentity)).ConfigureAwait(false));
                 Assert.IsEmpty(ReadOutputPins(root, executionId, "projected-scene"), "pins are released once the replay completes");
                 Assert.IsNull(
                     await provider.GetRequiredService<IProjectedSceneStagingReader>()
@@ -3361,7 +2828,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 stageKey, new string('E', 64), await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
                 .ConfigureAwait(false);
             // Accepted but never processed live: no committed projected-scene product exists for the capture.
-            var receipt = await ingress.AcceptAsync(
+            var receipt = await ingress.AcceptAndSettleAsync(
                 configuration,
                 WithSceneProvenance(CreateSubmission(0, CameraPixelFormat.Mono16), new string('E', 64), stageKey),
                 CancellationToken.None).ConfigureAwait(false);
@@ -3526,6 +2993,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("sidecar-tampered", "processing.invalid-projected-scene")]
     public async Task ReplayFailsClosedWhenPinnedProjectedSceneBytesAreMissingOrAltered(string fault, string expectedReason)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory($"hvo-processing-replay-projected-scene-{fault}");
         try
         {
@@ -3545,23 +3013,15 @@ public sealed partial class ProcessingGraphOperationsTests
             await provider.GetRequiredService<IProjectedSceneStagingStore>().StageAsync(
                 stageKey, sceneId, await CreateProjectedSceneAsync().ConfigureAwait(false), CancellationToken.None)
                 .ConfigureAwait(false);
-            var payloadPath = Path.Combine(root, live.PayloadRelativePath);
-            var sidecarPath = Path.Combine(root, live.SidecarRelativePath);
-            switch (fault)
-            {
-                case "missing":
-                    File.Delete(payloadPath);
-                    break;
-                case "tampered":
-                    await File.WriteAllBytesAsync(payloadPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
-                    break;
-                case "sidecar-missing":
-                    File.Delete(sidecarPath);
-                    break;
-                default:
-                    await File.WriteAllBytesAsync(sidecarPath, Encoding.UTF8.GetBytes("{\"tampered\":true}")).ConfigureAwait(false);
-                    break;
-            }
+            var revision = fault.StartsWith("sidecar-", StringComparison.Ordinal)
+                ? SiloArtifactStorage.ProductEvidenceRevision : live.OutputIdentity;
+            var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider,
+                ProcessingIdentity.CreateArtifactId(live.OutputIdentity), revision, CancellationToken.None).ConfigureAwait(false);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            if (fault.EndsWith("missing", StringComparison.Ordinal))
+                objects.Delete(locator);
+            else
+                objects.Damage(locator);
 
             var detail = await RunReplayToCompletionAsync(provider, submitted.Execution.ExecutionId).ConfigureAwait(false);
 
@@ -3602,7 +3062,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 executionId = submitted.Execution.ExecutionId;
                 Assert.HasCount(1, ReadOutputPins(root, executionId, "projected-scene"));
                 // Capacity accounting includes both frozen classes: the raw payload and the pinned scene payload.
-                var scenePayloadBytes = new FileInfo(Path.Combine(root, live.PayloadRelativePath)).Length;
+                var scenePayloadBytes = (await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider,
+                    ProcessingIdentity.CreateArtifactId(live.OutputIdentity), CancellationToken.None).ConfigureAwait(false)).LongLength;
                 var operational = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                     .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(8L + scenePayloadBytes, operational.ReplayPendingBytes, "pending bytes must count the raw payload and the pinned projected-scene payload");
@@ -3673,9 +3134,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Task? runnerTask = null;
 
             ProcessingGraphExecutionDetail external;
-            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            using (var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
                 ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = authorizationKey,
@@ -3936,7 +3396,7 @@ public sealed partial class ProcessingGraphOperationsTests
             SceneUtc: DateTimeOffset.UnixEpoch,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion, CatalogId: "test-catalog");
         return submission with
         {
             Result = submission.Result with
@@ -3982,6 +3442,9 @@ public sealed partial class ProcessingGraphOperationsTests
         return pins;
     }
 
+    private static async ValueTask<string> ReadArtifactShaAsync(IServiceProvider provider, Guid artifactId) =>
+        PayloadChecksum.ComputeSha256(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, artifactId, CancellationToken.None).ConfigureAwait(false));
+
     private static string Sha256OfFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 
     internal static async Task<ProcessingGraphExecutionDetail> RunReplayToCompletionAsync(ServiceProvider provider, Guid executionId)
@@ -4007,6 +3470,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private static async Task CompleteLiveAsync(ServiceProvider provider, CameraModuleConfig configuration)
     {
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
         var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
         await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
         var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
@@ -4097,6 +3561,17 @@ public sealed partial class ProcessingGraphOperationsTests
             CapturePipelineConfig.Empty,
             "agent-test");
 
+    // The installed Silo profile runs in process. These tests compose the bounded runner
+    // adapter explicitly to exercise the transport and durable replay scheduling in isolation.
+    private static ServiceProvider CreateReplayTransportProvider(
+        string root, IReadOnlyDictionary<string, string?> overrides)
+        => CreateProvider(root, overrides, configureServices: services =>
+            services.Replace(ServiceDescriptor.Singleton(provider => new CameraAgentRecipeExecutionAdapter(
+                provider.GetRequiredService<IProcessingRecipeExecutor>(),
+                ReplayExecutionProfile.LocalRunner,
+                provider.GetRequiredService<LocalReplayRunnerClient>(),
+                provider.GetRequiredService<GainNormalizationPreparer>))));
+
     internal static ServiceProvider CreateProvider(
         string root,
         IReadOnlyDictionary<string, string?>? overrides = null,
@@ -4115,7 +3590,7 @@ public sealed partial class ProcessingGraphOperationsTests
         var services = new ServiceCollection();
         services.AddLogging();
         if (timeProvider is not null) services.AddSingleton(timeProvider);
-        services.AddCameraAgentInfrastructure(
+        services.AddSiloTestInfrastructure(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         configureServices?.Invoke(services);
         return services.BuildServiceProvider();

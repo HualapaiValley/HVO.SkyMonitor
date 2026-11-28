@@ -9,6 +9,7 @@
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Common\HVO.SkyMonitor.Common.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.LocalFiles\HVO.SkyMonitor.LocalFiles.csproj" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
   </ItemGroup>
   <ItemGroup>

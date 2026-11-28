@@ -21,10 +21,11 @@ public sealed partial class SatellitePassArc : ComponentBase
     private IReadOnlyList<string> _rigPaths = [];
     private IReadOnlyList<PredictionPoint> _fullPoints = [];
     private IReadOnlyList<PredictionPoint> _rigPoints = [];
-    private IReadOnlyList<Anchor> _anchors = [];
+    private List<Anchor> _anchors = [];
     private HorizonObstructionPredictionProduct? _projectedObstruction;
     private OrbitalPassArcV1? _projectedArc;
     private CameraAgentSatellitePlanningContext? _projectedContext;
+    private bool _projectedAngularHorizon;
     private string? _solarModelVersion;
 
     [Inject] internal IServiceProvider Services { get; set; } = default!;
@@ -34,51 +35,72 @@ public sealed partial class SatellitePassArc : ComponentBase
     [Parameter] public bool ShowPath { get; set; } = true;
     [Parameter] public bool ShowLabels { get; set; } = true;
     [Parameter] public bool ShowRigPreview { get; set; }
+    [Parameter] public bool ApplyHorizonToAngularView { get; set; } = true;
 
-    private sealed record Anchor(string Name, OrbitalTrackSample? Sample, PixelPoint? Point, string? LabelX, string? LabelY,
-        SolarAltitudeClassification? Solar);
+    private sealed record Anchor(string Name, OrbitalTrackSample? Sample, PixelPoint? Point, PixelPoint? Label,
+        SolarAltitudeClassification? Solar, SolarDiskAppearance? Moon, int? SampleIndex);
     private readonly record struct PredictionPoint(DateTimeOffset Utc, PixelPoint Point);
 
     protected override void OnParametersSet()
     {
-        if (ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context) &&
-            ReferenceEquals(_projectedObstruction, Obstruction)) return;
-        _projectedArc = Arc;
+        var sameArcContext = ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context);
+        var sameObstruction = ReferenceEquals(_projectedObstruction, Obstruction);
+        if (!sameArcContext)
+        {
+            ReadAnchorFacts();
+            _projectedArc = Arc;
+            _projectedContext = Context;
+        }
+        if (!sameArcContext || !sameObstruction || _projectedAngularHorizon != ApplyHorizonToAngularView)
+        {
+            (_fullPaths, _fullPoints) = ProjectSegments(FullSky, ApplyHorizonToAngularView ? Obstruction : null);
+            LayoutAngularLabels();
+            _projectedAngularHorizon = ApplyHorizonToAngularView;
+        }
+        if (sameArcContext && sameObstruction) return;
+        (_rigPaths, _rigPoints) = ProjectSegments(ProjectorFactory.Create(Context.RigProjection), Obstruction);
         _projectedObstruction = Obstruction;
-        _projectedContext = Context;
+    }
+
+    private void ReadAnchorFacts()
+    {
         var ephemeris = Services.GetService<IPlanetEphemeris>();
         _solarModelVersion = ephemeris?.ModelVersion;
-        (_fullPaths, _fullPoints) = ProjectSegments(FullSky);
-        (_rigPaths, _rigPoints) = ProjectSegments(ProjectorFactory.Create(Context.RigProjection));
-        var anchors = new List<Anchor>(3);
-        AddAnchor(Boundary(Arc.Pass.StartBoundary, true), Arc.Anchors.StartSampleIndex);
-        AddAnchor("Peak", Arc.Anchors.PeakSampleIndex);
-        AddAnchor(Boundary(Arc.Pass.EndBoundary, false), Arc.Anchors.EndSampleIndex);
-        _anchors = anchors;
+        _anchors =
+        [
+            ReadAnchor(Boundary(Arc.Pass.StartBoundary, true), Arc.Anchors.StartSampleIndex),
+            ReadAnchor("Peak", Arc.Anchors.PeakSampleIndex),
+            ReadAnchor(Boundary(Arc.Pass.EndBoundary, false), Arc.Anchors.EndSampleIndex)
+        ];
 
-        void AddAnchor(string name, int? index)
+        Anchor ReadAnchor(string name, int? index)
         {
             var sample = index is { } i && i >= 0 && i < Arc.Samples.Count &&
                 Arc.Segments.Any(segment => i >= segment.StartSampleIndex && (long)i < (long)segment.StartSampleIndex + segment.SampleCount)
                 ? Arc.Samples[i] : null;
             var point = sample is null ? null : ProjectValid(FullSky, sample);
-            string? x = null;
-            string? y = null;
-            if (point is { } p)
-            {
-                var labelX = Math.Clamp(p.X + 9, 12, 330);
-                var labelY = Math.Clamp(p.Y - 10, 22, 490);
-                // At most three labels, with conservative fixed screen-space collision boxes.
-                if (!anchors.Any(anchor => anchor.LabelX is not null && anchor.LabelY is not null &&
-                    Math.Abs(double.Parse(anchor.LabelX, CultureInfo.InvariantCulture) - labelX) < 170 &&
-                    Math.Abs(double.Parse(anchor.LabelY, CultureInfo.InvariantCulture) - labelY) < 24))
-                {
-                    x = Number(labelX);
-                    y = Number(labelY);
-                }
-            }
-            anchors.Add(new(name, sample, point, x, y, SolarAt(ephemeris, sample)));
+            return new(name, sample, point, null, SolarAt(ephemeris, sample), MoonAt(sample), index);
         }
+    }
+
+    private void LayoutAngularLabels()
+    {
+        var placed = new List<Anchor>(_anchors.Count);
+        foreach (var anchor in _anchors)
+        {
+            PixelPoint? label = null;
+            if (anchor.Point is { } point && ShowAngularAnchor(anchor))
+            {
+                var x = Math.Clamp(point.X + 9, 12, 330);
+                var y = Math.Clamp(point.Y - 10, 22, 490);
+                // At most three labels, with conservative fixed screen-space collision boxes.
+                if (!placed.Any(earlier => earlier.Label is { } other &&
+                    Math.Abs(other.X - x) < 170 && Math.Abs(other.Y - y) < 24))
+                    label = new PixelPoint(x, y);
+            }
+            placed.Add(anchor with { Label = label });
+        }
+        _anchors = placed;
     }
 
     private SolarAltitudeClassification? SolarAt(IPlanetEphemeris? ephemeris, OrbitalTrackSample? sample)
@@ -101,9 +123,36 @@ public sealed partial class SatellitePassArc : ComponentBase
         ? $"Sun geometric altitude {Number(solar.AltitudeDegrees)}°; sky context {solar.Regime}."
         : "Sun geometric altitude Unknown; sky context Unknown.";
 
+    private SolarDiskAppearance? MoonAt(OrbitalTrackSample? sample)
+    {
+        if (sample is null) return null;
+        try
+        {
+            var moon = SolarDiskEphemeris.Get(SolarSystemBody.Moon, sample.Utc, Arc.Pass.Observer);
+            return double.IsFinite(moon.Direction.AltitudeDegrees) && moon.IlluminatedFraction is >= 0 and <= 1
+                ? moon : null;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or ArithmeticException)
+        {
+            return null;
+        }
+    }
+
+    private static string MoonContext(Anchor anchor) => anchor.Moon is { } moon
+        ? $"Moon geometric altitude {Number(moon.Direction.AltitudeDegrees)}°; geocentric lunar disk {Number(moon.IlluminatedFraction * 100)}% illuminated."
+        : "Moon geometric altitude Unknown; geocentric lunar disk illumination Unknown.";
+
     [Parameter] public HorizonObstructionPredictionProduct? Obstruction { get; set; }
 
-    private (List<string> Paths, List<PredictionPoint> Points) ProjectSegments(IImageProjector projector)
+    private bool ShowAngularAnchor(Anchor anchor) => anchor.SampleIndex is { } index &&
+        (!ApplyHorizonToAngularView || IsClear(Obstruction, index));
+
+    private bool IsClear(HorizonObstructionPredictionProduct? obstruction, int index) =>
+        obstruction is null || (obstruction.Binding.SourceIdentitySha256 == Arc.ProductSha256 &&
+            index < obstruction.Eligibility.Count && obstruction.Eligibility[index] == HorizonObstructionEligibility.Clear);
+
+    private (List<string> Paths, List<PredictionPoint> Points) ProjectSegments(IImageProjector projector,
+        HorizonObstructionPredictionProduct? obstruction)
     {
         var paths = new List<string>();
         var points = new List<PredictionPoint>();
@@ -117,18 +166,15 @@ public sealed partial class SatellitePassArc : ComponentBase
             for (var i = segment.StartSampleIndex; i < segment.StartSampleIndex + segment.SampleCount; i++)
             {
                 var sample = Arc.Samples[i];
-                var point = Obstruction is { } obstruction &&
-                    (obstruction.Binding.SourceIdentitySha256 != Arc.ProductSha256 || i >= obstruction.Eligibility.Count ||
-                        obstruction.Eligibility[i] != HorizonObstructionEligibility.Clear)
-                    ? null : ProjectValid(projector, sample);
+                var point = IsClear(obstruction, i) ? ProjectValid(projector, sample) : null;
                 if (point is null || previous is { } utc && sample.Utc <= utc)
                 {
                     Flush();
                     previous = null;
                     continue;
                 }
-                if (Obstruction is { } segmentFacts && run.Count > 0 &&
-                    (i - 1 >= segmentFacts.ClearSegments.Count || !segmentFacts.ClearSegments[i - 1])) Flush();
+                if (obstruction is not null && run.Count > 0 &&
+                    (i - 1 >= obstruction.ClearSegments.Count || !obstruction.ClearSegments[i - 1])) Flush();
                 run.Add(new(sample.Utc, point.Value));
                 previous = sample.Utc;
             }

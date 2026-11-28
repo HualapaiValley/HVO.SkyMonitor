@@ -59,8 +59,7 @@ public sealed partial class StoragePage : SiteTimeComponent, IAsyncDisposable
             var summary = _view.Summary;
             var ingress = summary.RawIngress.Value;
             var lanes = summary.CaptureLanes.Value;
-            var outbox = summary.ArtifactOutbox.Value;
-            // Lane and outbox totals include their quarantined items, which are listed once under Quarantine instead.
+            // Lane totals include their quarantined items, which are listed once under Quarantine instead.
             // The processing queue is the standard capture lane, so it is not listed a second time. The raw figure
             // counts captures whose hold is set for any reason, including lane work and quarantined lane items, so
             // it overlaps the rows below it; the page says so rather than presenting the rows as a breakdown.
@@ -68,8 +67,7 @@ public sealed partial class StoragePage : SiteTimeComponent, IAsyncDisposable
             [
                 new Hold("Raw captures held", ingress.PendingCount, ingress.OldestPendingUtc),
                 new Hold("Capture lanes", Waiting(lanes.PendingCount, lanes.QuarantineCount), lanes.OldestPendingUtc),
-                new Hold("Delivery", Waiting(outbox.PendingCount, outbox.QuarantineCount), outbox.OldestPendingUtc),
-                new Hold("Quarantine", ingress.QuarantineCount + lanes.QuarantineCount + outbox.QuarantineCount, null),
+                new Hold("Quarantine", ingress.QuarantineCount + lanes.QuarantineCount, null),
             ];
         }
     }
@@ -85,67 +83,26 @@ public sealed partial class StoragePage : SiteTimeComponent, IAsyncDisposable
         }
     }
 
-    private DateTimeOffset? LastReconciledUtc
+    private DateTimeOffset? LastReconciledUtc => _reconciliation?.RawIngress?.CompletedUtc;
+
+    private IEnumerable<ReconciliationLine> ReadReconciliationLines()
     {
-        get
+        var raw = _reconciliation?.RawIngress;
+        if (raw is null)
         {
-            var raw = _reconciliation?.RawIngress?.CompletedUtc;
-            var derived = _reconciliation?.DerivedProducts?.CompletedUtc;
-            return raw is null ? derived : derived is null ? raw : raw > derived ? raw : derived;
+            yield return new ReconciliationLine("neutral", "Raw ingress has yet to finish its startup check.");
+            yield break;
         }
-    }
 
-    private IEnumerable<ReconciliationLine> ReconciliationLines
-    {
-        get
+        var problems = raw.Quarantined + raw.MissingEvidence;
+        yield return new ReconciliationLine(problems > 0 ? "failed" : string.Empty, string.Create(
+            CultureInfo.InvariantCulture,
+            $"Raw ingress at startup, {FormatSiteTime(raw.CompletedUtc)}. {Count(raw.Inspected, "frame", "frames")} inspected, {raw.Recovered} recovered, {raw.Cleaned} cleaned up."));
+        if (problems > 0)
         {
-            var raw = _reconciliation?.RawIngress;
-            if (raw is null)
-            {
-                yield return new ReconciliationLine("neutral", "Raw ingress: no reconciliation has completed since the agent started.");
-            }
-            else
-            {
-                var problems = raw.Quarantined + raw.MissingEvidence + raw.IndexProjectionFailures;
-                yield return new ReconciliationLine(problems > 0 ? "failed" : string.Empty, string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Raw ingress at startup, {FormatSiteTime(raw.CompletedUtc)}: {Count(raw.Inspected, "frame", "frames")} inspected, {raw.Recovered} recovered, {raw.Cleaned} cleaned up."));
-                if (raw.Quarantined > 0 || raw.MissingEvidence > 0)
-                {
-                    yield return new ReconciliationLine("failed", string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"Raw ingress: {raw.Quarantined} quarantined and {raw.MissingEvidence} missing their evidence file. Review them under Quarantine & recovery."));
-                }
-                if (raw.IndexProjectionFailures > 0)
-                {
-                    yield return new ReconciliationLine("failed", string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"Raw ingress: {Count(raw.IndexProjectionFailures, "frame", "frames")} could not be added to the local index."));
-                }
-            }
-
-            var derived = _reconciliation?.DerivedProducts;
-            if (derived is null)
-            {
-                yield return new ReconciliationLine("neutral", "Derived products: the first check runs within 5 minutes of startup.");
-            }
-            else if (!derived.Succeeded)
-            {
-                yield return new ReconciliationLine("failed", $"Derived products: the check at {FormatSiteTime(derived.CompletedUtc)} failed. It runs again within 5 minutes.");
-            }
-            else
-            {
-                var problems = derived.Missing + derived.Quarantined;
-                yield return new ReconciliationLine(problems > 0 ? "failed" : string.Empty, string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Derived products, {FormatSiteTime(derived.CompletedUtc)}: {Count(derived.Inspected, "product", "products")} inspected, {derived.Recoverable} recoverable, {derived.Cleaned} cleaned up."));
-                if (problems > 0)
-                {
-                    yield return new ReconciliationLine("failed", string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"Derived products: {derived.Missing} missing and {derived.Quarantined} quarantined."));
-                }
-            }
+            yield return new ReconciliationLine("failed", string.Create(
+                CultureInfo.InvariantCulture,
+                $"Raw ingress has {raw.Quarantined} quarantined and {raw.MissingEvidence} missing their evidence. Review them under Quarantine & recovery."));
         }
     }
 
@@ -305,12 +262,7 @@ public sealed partial class StoragePage : SiteTimeComponent, IAsyncDisposable
         _ => "pending",
     };
 
-    private static string Percent(double value)
-        => string.Create(CultureInfo.InvariantCulture, $"{value:0.#}%");
-
     private static string Days(int days) => days == 1 ? "1 day" : string.Create(CultureInfo.InvariantCulture, $"{days} days");
-
-    private static string Minutes(int minutes) => minutes == 1 ? "minute" : string.Create(CultureInfo.InvariantCulture, $"{minutes} minutes");
 
     private static string Count(long value, string singular, string plural)
         => string.Create(CultureInfo.InvariantCulture, $"{value:N0} {(value == 1 ? singular : plural)}");

@@ -1,11 +1,13 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class ProcessingGraphDraftModelTests
 {
     private static readonly string[] PreviewOnly = ["preview"];
@@ -132,6 +134,69 @@ public sealed class ProcessingGraphDraftModelTests
     }
 
     [TestMethod]
+    public void RegionalVisibilityEditsPreserveRetainedStepSettingsAndPruneUnusedPrediction()
+    {
+        var storage = new CaptureProcessingStepConfig("Storage", "archive", Order: 75,
+            Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = false, futureOption = 7 }),
+            DependsOn: ["$raw"], Enabled: true, Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
+        var measurement = new CaptureProcessingStepConfig(ExposureMeasurementProducts.StepAlias,
+            ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false);
+        var original = new CapturePipelineConfig([measurement, storage]);
+        var draft = ProcessingGraphDraftModel.FromPipeline(original, "retained", "regional", "2");
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        Assert.IsTrue(draft.TryBuild(out var added, out var errors), string.Join(" ", errors));
+        Assert.AreEqual(storage, added.Steps.Single(step => step.Id == storage.Id));
+        Assert.AreEqual(measurement, added.Steps.Single(step => step.Id == measurement.Id));
+        Assert.HasCount(1, added.Steps.Where(static step => step.Type == ExposureCatalogPredictionProducts.StepAlias).ToArray());
+
+        // Disable the last consumer on a freshly reopened revision.
+        draft = ProcessingGraphDraftModel.FromPipeline(added, "retained-regional", "regional", "3");
+        var regional = draft.Nodes.Single(static row => row.Type == RegionalStellarVisibilityProducts.StepAlias);
+        regional.Enabled = false;
+        draft.EnsureRegionalVisibilityWiring(regional);
+        Assert.IsTrue(draft.TryBuild(out var disabled, out errors), string.Join(" ", errors));
+        Assert.IsFalse(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsFalse(regional.DependsOn.Contains(ExposureCatalogPredictionProducts.StepAlias));
+        Assert.AreEqual(storage, disabled.Steps.Single(step => step.Id == storage.Id));
+
+        regional.Enabled = true;
+        draft.EnsureRegionalVisibilityWiring(regional);
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        var otherConsumer = draft.Nodes.Single(row => row.Type == RegionalStellarVisibilityProducts.StepAlias && row != regional);
+        draft.Remove(regional);
+        Assert.IsTrue(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        draft.Remove(otherConsumer);
+        Assert.IsFalse(draft.Nodes.Any(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsTrue(draft.TryBuild(out var removed, out errors), string.Join(" ", errors));
+        Assert.AreEqual(JsonSerializer.Serialize(original), JsonSerializer.Serialize(removed));
+    }
+
+    [TestMethod]
+    public void EnsureRegionalVisibilityWiringDoesNotAddLaterIneligibleAstrometryDependency()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var original = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, Order: 4, DependsOn: ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", Order: 30, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: false, Publication: durable),
+            new(CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, "solve", Order: 40, DependsOn: ["$raw", ExposureMeasurementProducts.StepAlias], Required: false, Enabled: true, Publication: durable)
+        ]);
+
+        var draft = ProcessingGraphDraftModel.FromPipeline(original, "retained", "regional", "2");
+        var regional = draft.Nodes.Single(static row => row.Id == "regional");
+        regional.Enabled = true;
+        draft.EnsureRegionalVisibilityWiring(regional);
+
+        Assert.IsFalse(regional.DependsOn.Contains("solve"),
+            "EnsureRegionalVisibilityWiring must not wire a later astrometry node that is ineligible as a predecessor.");
+        Assert.IsTrue(regional.DependsOn.Contains(ExposureCatalogPredictionProducts.StepAlias));
+        Assert.IsTrue(draft.TryBuild(out var rebuilt, out var errors), string.Join(" ", errors));
+        var rebuiltRegional = rebuilt.Steps.Single(static step => step.Id == "regional");
+        Assert.IsFalse(rebuiltRegional.DependsOn!.Contains("solve", StringComparer.Ordinal));
+        Assert.IsTrue(rebuiltRegional.DependsOn!.Contains(ExposureCatalogPredictionProducts.StepAlias, StringComparer.Ordinal));
+    }
+
+    [TestMethod]
     public void FromPipeline_CarriesSchemaAndDependencyPolicyIntoTheBuiltDraft()
     {
         var legacy = new CapturePipelineConfig(
@@ -146,5 +211,306 @@ public sealed class ProcessingGraphDraftModelTests
         Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, built.DependencyPolicy);
         Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, built.SchemaVersion);
         Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, ProcessingGraphDraftModel.Empty().SchemaVersion);
+    }
+
+    [TestMethod]
+    [DataRow("12")]
+    [DataRow("+12")]
+    [DataRow("012")]
+    [DataRow("-0")]
+    public void UntouchedOverlayManifestWithQuotedZOrderSurvivesUnrelatedNodeEditByteForByte(string quotedZOrder)
+    {
+        var manifestJson = $$"""{ "layers": [ { "kind": "scene-constellations", "enabled": false, "zOrder": "{{quotedZOrder}}", "future": 1e+02 } ] }""";
+        var source = new CapturePipelineConfig(
+        [
+            new CaptureProcessingStepConfig("JpegEncoding", "jpeg", 10,
+                JsonDocument.Parse("""{ "jpegQuality": 85 }""").RootElement.Clone(), ["$raw"], Enabled: true),
+            new CaptureProcessingStepConfig("OverlayManifest", "manifest", 20,
+                JsonDocument.Parse(manifestJson).RootElement.Clone(), ["jpeg"], Enabled: true)
+        ]);
+
+        var model = ProcessingGraphDraftModel.FromPipeline(source, "rev-quoted", "night", "2");
+        Assert.IsTrue(model.TryBuild(out var unchanged, out var initialErrors), string.Join(' ', initialErrors));
+        Assert.IsFalse(model.HasGraphChanges(unchanged));
+        Assert.AreEqual(manifestJson, unchanged.Steps[1].Options!.Value.GetRawText());
+
+        model.Nodes[0].OptionsForm!.Set("jpegQuality", "92");
+        Assert.IsTrue(model.TryBuild(out var edited, out var errors), string.Join(' ', errors));
+        Assert.IsTrue(model.HasGraphChanges(edited));
+        Assert.AreEqual(92, edited.Steps[0].Options!.Value.GetProperty("jpegQuality").GetInt32());
+        Assert.AreEqual(manifestJson, edited.Steps[1].Options!.Value.GetRawText(),
+            "An untouched OverlayManifest with retained quoted zOrder and unknown fields must survive byte-for-byte.");
+    }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_DistinguishesSavedNodesFromUnsavedAndRenamedNodes()
+    {
+        var empty = ProcessingGraphDraftModel.Empty();
+        empty.AddNode("Preview");
+        Assert.IsFalse(empty.ExistsInSourceRevision(empty.Nodes[0]));
+
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var source = new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true)
+        ]);
+        var draft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[0]));
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[1]));
+
+        draft.AddNode(RegionalStellarVisibilityProducts.StepAlias);
+        var regional = draft.Nodes.Single(static row => row.Type == RegionalStellarVisibilityProducts.StepAlias);
+        var prediction = draft.Nodes.Single(static row => row.Type == ExposureCatalogPredictionProducts.StepAlias);
+        Assert.IsFalse(draft.ExistsInSourceRevision(regional), "Newly added editable node does not exist in the source revision.");
+        Assert.IsFalse(draft.ExistsInSourceRevision(prediction), "Auto-added ExposureCatalogPrediction does not exist in the source revision.");
+
+        draft.Nodes[1].Id = "preview-renamed";
+        Assert.IsFalse(draft.ExistsInSourceRevision(draft.Nodes[1]), "Renamed node ID does not exist in the source revision.");
+        draft.Nodes[1].Id = "PREVIEW";
+        Assert.IsTrue(draft.ExistsInSourceRevision(draft.Nodes[1]), "Source revision lookup matches case-insensitively like the config page.");
+
+        var converted = draft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable)
+        ]));
+        Assert.IsTrue(converted.ExistsInSourceRevision(converted.Nodes[0]));
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes[1]),
+            "WithConvertedPipeline must retain the original source revision's node set.");
+    }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_RejectsDeletedIdReuseTypeChangesConversionsAndDuplicateIds()
+    {
+        var source = new CapturePipelineConfig(
+        [
+            new("ImageQuality", "quality", 10, null, ["$raw"], Enabled: true),
+            new("Preview", "preview", 20, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene", 30, null, ["$raw"], Enabled: true)
+        ]);
+
+        // 1. Deleting a saved row and renaming another saved row (or a brand-new row) to that deleted ID must return false.
+        var draft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var qualityRow = draft.Nodes.Single(static row => row.Id == "quality");
+        var previewRow = draft.Nodes.Single(static row => row.Id == "preview");
+        draft.Remove(qualityRow);
+        previewRow.Id = "quality";
+        Assert.IsFalse(draft.ExistsInSourceRevision(previewRow),
+            "Renaming an existing row to a deleted saved row's ID must not link to the deleted source stage.");
+
+        draft.AddNode("ImageQuality");
+        var addedQuality = draft.Nodes[^1];
+        addedQuality.Id = "quality";
+        Assert.IsFalse(draft.ExistsInSourceRevision(addedQuality),
+            "A newly added row renamed to a deleted saved ID (even with the same type) must not link to the source revision.");
+
+        // 2. Changing a saved row's type directly or via WithConvertedPipeline must return false while unchanged rows stay true.
+        var typeChangeDraft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var changedRow = typeChangeDraft.Nodes.Single(static row => row.Id == "preview");
+        changedRow.Type = "CombinedPreview";
+        Assert.IsFalse(typeChangeDraft.ExistsInSourceRevision(changedRow),
+            "Changing a saved row's type must disable source-revision linking for that row.");
+        Assert.IsTrue(typeChangeDraft.ExistsInSourceRevision(typeChangeDraft.Nodes.Single(static row => row.Id == "quality")));
+
+        var converted = typeChangeDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new("ImageQuality", "quality", 10, null, ["$raw"], Enabled: true),
+            new("CombinedPreview", "preview", 20, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene", 30, null, ["$raw"], Enabled: true)
+        ]));
+        Assert.IsTrue(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "quality")),
+            "Untouched saved row must stay linked after WithConvertedPipeline.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "preview")),
+            "Type-changed row must stay unlinked after WithConvertedPipeline.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(converted.Nodes.Single(static row => row.Id == "scene")),
+            "Row whose type was upgraded by WithConvertedPipeline must not link to the old source-revision stage.");
+
+        // 3. Duplicate trimmed IDs across two rows disable source-revision linking for both conflicting rows until resolved.
+        var duplicateDraft = ProcessingGraphDraftModel.FromPipeline(source, "rev-active", "night", "2");
+        var originalPreview = duplicateDraft.Nodes.Single(static row => row.Id == "preview");
+        duplicateDraft.AddNode("Preview");
+        var duplicatePreview = duplicateDraft.Nodes[^1];
+        duplicatePreview.Id = " PREVIEW ";
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(originalPreview),
+            "Duplicating a saved ID in the draft must disable source-revision linking for the conflicting saved row.");
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(duplicatePreview),
+            "Duplicating a saved ID in the draft must disable source-revision linking for the duplicate row.");
+
+        duplicatePreview.Id = "preview-extra";
+        Assert.IsTrue(duplicateDraft.ExistsInSourceRevision(originalPreview),
+            "Resolving the duplicate ID restores source-revision linking for the original saved row.");
+        Assert.IsFalse(duplicateDraft.ExistsInSourceRevision(duplicatePreview));
+    }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_TreatsRegeneratedPredictionAsUnsavedAndPreservesProvenanceAcrossUnrelatedConversion()
+    {
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+
+        // 1. Disabling and re-enabling the sole regional visibility consumer regenerates ExposureCatalogPrediction as an unsaved replacement.
+        var centeredSource = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(predictionAlias, predictionAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable)
+        ]);
+        var toggleDraft = ProcessingGraphDraftModel.FromPipeline(centeredSource, "rev-active", "night", "2");
+        var initialPrediction = toggleDraft.Nodes.Single(static row => row.Type == predictionAlias);
+        var regional = toggleDraft.Nodes.Single(static row => row.Id == "regional");
+        Assert.IsTrue(toggleDraft.ExistsInSourceRevision(initialPrediction));
+
+        regional.Enabled = false;
+        toggleDraft.EnsureRegionalVisibilityWiring(regional);
+        Assert.IsFalse(toggleDraft.Nodes.Any(static row => row.Type == predictionAlias));
+
+        regional.Enabled = true;
+        toggleDraft.EnsureRegionalVisibilityWiring(regional);
+        var regeneratedPrediction = toggleDraft.Nodes.Single(static row => row.Type == predictionAlias);
+        Assert.IsFalse(toggleDraft.ExistsInSourceRevision(regeneratedPrediction),
+            "A regenerated ExposureCatalogPrediction row must not inherit source provenance in the same draft.");
+
+        // 2. Temporarily renaming a saved row across an unrelated conversion preserves provenance once the original ID is restored.
+        var conversionSource = new CapturePipelineConfig(
+        [
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene", 20, null, ["$raw"], Enabled: true)
+        ]);
+        var renameDraft = ProcessingGraphDraftModel.FromPipeline(conversionSource, "rev-active", "night", "2");
+        var previewRow = renameDraft.Nodes.Single(static row => row.Id == "preview");
+        previewRow.Id = "preview-temp";
+        Assert.IsFalse(renameDraft.ExistsInSourceRevision(previewRow));
+
+        var converted = renameDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new("Preview", "preview-temp", 10, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene", 20, null, ["$raw"], Enabled: true)
+        ]));
+        var convertedPreview = converted.Nodes.Single(static row => row.Id == "preview-temp");
+        var convertedScene = converted.Nodes.Single(static row => row.Id == "scene");
+        Assert.AreEqual("preview", convertedPreview.OriginalSourceNodeId,
+            "An untouched saved row must retain its OriginalSourceNodeId across an unrelated conversion.");
+        Assert.AreEqual("Preview", convertedPreview.OriginalSourceNodeType,
+            "An untouched saved row must retain its OriginalSourceNodeType across an unrelated conversion.");
+        Assert.IsNull(convertedScene.OriginalSourceNodeId,
+            "A step-type-changing conversion must clear OriginalSourceNodeId independently of ExistsInSourceRevision.");
+        Assert.IsNull(convertedScene.OriginalSourceNodeType,
+            "A step-type-changing conversion must clear OriginalSourceNodeType independently of ExistsInSourceRevision.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(convertedPreview),
+            "While temporarily renamed, the converted draft row must remain unlinked.");
+        Assert.IsFalse(converted.ExistsInSourceRevision(convertedScene),
+            "A row whose type changed during conversion must remain unlinked.");
+
+        convertedPreview.Id = "preview";
+        Assert.IsTrue(converted.ExistsInSourceRevision(convertedPreview),
+            "Restoring the original ID on an untouched saved row after an unrelated conversion must restore source-revision linking.");
+    }
+
+    [TestMethod]
+    public void ExistsInSourceRevision_PinsSameTypeIdCheckManualTypeRevertAndUnrelatedConversionReset()
+    {
+        // 1. Line :40 ID check: renaming a saved row onto a deleted saved ID of the SAME type must stay unlinked.
+        var sameTypeSource = new CapturePipelineConfig(
+        [
+            new("Preview", "preview-a", 10, null, ["$raw"], Enabled: true),
+            new("Preview", "preview-b", 20, null, ["$raw"], Enabled: true)
+        ]);
+        var sameTypeDraft = ProcessingGraphDraftModel.FromPipeline(sameTypeSource, "rev-active", "night", "2");
+        var previewA = sameTypeDraft.Nodes.Single(static row => row.Id == "preview-a");
+        var previewB = sameTypeDraft.Nodes.Single(static row => row.Id == "preview-b");
+        sameTypeDraft.Remove(previewA);
+        previewB.Id = "preview-a";
+        Assert.AreEqual("preview-b", previewB.OriginalSourceNodeId);
+        Assert.AreEqual("Preview", previewB.OriginalSourceNodeType);
+        Assert.IsFalse(sameTypeDraft.ExistsInSourceRevision(previewB),
+            "Renaming a saved row onto a deleted saved ID of the same type must not link to the deleted stage.");
+        previewB.Id = "preview-b";
+        Assert.IsTrue(sameTypeDraft.ExistsInSourceRevision(previewB),
+            "Restoring the saved row's own original ID must restore source-revision linking.");
+
+        // 2. Line :116 type-match check in WithConvertedPipeline: converting a step's type clears provenance,
+        //    so manually reverting the type afterward must still leave ExistsInSourceRevision false.
+        var revertSource = new CapturePipelineConfig(
+        [
+            new("ScenePresentationLayer", "scene", 20, null, ["$raw"], Enabled: true)
+        ]);
+        var revertDraft = ProcessingGraphDraftModel.FromPipeline(revertSource, "rev-active", "night", "2");
+        var upgraded = revertDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new(SceneStylePresentation.StepAlias, "scene", 20, null, ["$raw"], Enabled: true)
+        ]));
+        var upgradedScene = upgraded.Nodes.Single(static row => row.Id == "scene");
+        Assert.IsNull(upgradedScene.OriginalSourceNodeId);
+        Assert.IsNull(upgradedScene.OriginalSourceNodeType);
+        upgradedScene.Type = "ScenePresentationLayer";
+        Assert.IsFalse(upgraded.ExistsInSourceRevision(upgradedScene),
+            "Manually reverting a converted step's type must not resurrect cleared source provenance.");
+
+        // 3a. Lines :121-125 else provenance reset: a brand-new row reusing a deleted saved ID of the same type
+        //     must keep cleared provenance after an unrelated conversion.
+        var newRowSource = new CapturePipelineConfig(
+        [
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true),
+            new("ScenePresentationLayer", "scene", 20, null, ["$raw"], Enabled: true)
+        ]);
+        var newRowDraft = ProcessingGraphDraftModel.FromPipeline(newRowSource, "rev-active", "night", "2");
+        newRowDraft.Remove(newRowDraft.Nodes.Single(static row => row.Id == "preview"));
+        newRowDraft.AddNode("Preview");
+        var replacementPreview = newRowDraft.Nodes[^1];
+        replacementPreview.Id = "preview";
+        Assert.IsNull(replacementPreview.OriginalSourceNodeId);
+        Assert.IsNull(replacementPreview.OriginalSourceNodeType);
+
+        var convertedNewRow = newRowDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new("Preview", "preview", 10, null, ["$raw"], Enabled: true),
+            new(SceneStylePresentation.StepAlias, "scene", 20, null, ["$raw"], Enabled: true)
+        ]));
+        var convertedReplacement = convertedNewRow.Nodes.Single(static row => row.Id == "preview");
+        Assert.IsNull(convertedReplacement.OriginalSourceNodeId,
+            "An unrelated conversion must reset provenance on a brand-new same-type row reusing a deleted saved ID.");
+        Assert.IsNull(convertedReplacement.OriginalSourceNodeType);
+        Assert.IsFalse(convertedNewRow.ExistsInSourceRevision(convertedReplacement));
+
+        // 3b. Lines :121-125 else provenance reset: a regenerated ExposureCatalogPrediction undergoing an
+        //     unrelated conversion must stay unlinked while surviving saved rows retain provenance.
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        const string measurementAlias = ExposureMeasurementProducts.StepAlias;
+        const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+        var regeneratedSource = new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(predictionAlias, predictionAlias, 5, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable),
+            new("ScenePresentationLayer", "scene", 40, null, ["$raw"], Enabled: true)
+        ]);
+        var regeneratedDraft = ProcessingGraphDraftModel.FromPipeline(regeneratedSource, "rev-active", "night", "2");
+        var regional = regeneratedDraft.Nodes.Single(static row => row.Id == "regional");
+        regional.Enabled = false;
+        regeneratedDraft.EnsureRegionalVisibilityWiring(regional);
+        regional.Enabled = true;
+        regeneratedDraft.EnsureRegionalVisibilityWiring(regional);
+
+        var convertedRegenerated = regeneratedDraft.WithConvertedPipeline(new CapturePipelineConfig(
+        [
+            new(measurementAlias, measurementAlias, 4, null, ["$raw"], Required: false, Enabled: true, Publication: durable),
+            new(RegionalStellarVisibilityProducts.StepAlias, "regional", 30, null,
+                ["$raw", measurementAlias, predictionAlias], Required: false, Enabled: true, Publication: durable),
+            new(SceneStylePresentation.StepAlias, "scene", 40, null, ["$raw"], Enabled: true),
+            new(predictionAlias, predictionAlias, DependsOn: ["$raw"], Required: false, Publication: durable)
+        ]));
+        var convertedPrediction = convertedRegenerated.Nodes.Single(static row => row.Type == predictionAlias);
+        Assert.IsNull(convertedPrediction.OriginalSourceNodeId,
+            "An unrelated conversion must reset provenance on a regenerated ExposureCatalogPrediction row.");
+        Assert.IsNull(convertedPrediction.OriginalSourceNodeType);
+        Assert.IsFalse(convertedRegenerated.ExistsInSourceRevision(convertedPrediction));
+        Assert.IsTrue(convertedRegenerated.ExistsInSourceRevision(
+            convertedRegenerated.Nodes.Single(static row => row.Type == measurementAlias)));
+        Assert.IsTrue(convertedRegenerated.ExistsInSourceRevision(
+            convertedRegenerated.Nodes.Single(static row => row.Id == "regional")));
     }
 }

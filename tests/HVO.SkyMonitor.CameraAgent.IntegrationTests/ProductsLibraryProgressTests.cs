@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -37,7 +38,8 @@ public sealed class ProductsLibraryProgressTests
             SqliteLocalAutomationStore Open() => new(new FixtureRegistry(), new CaptureSequence(), options, clock,
                 NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner);
             var query = new NightlyProductLibraryQuery(1, kind, NightlyProductLibraryState.Running, date);
-            using var catalog = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var catalog = silo.OpenStore(options, clock);
             DateTimeOffset? started;
             string runKey;
             using (var store = Open())
@@ -129,7 +131,8 @@ public sealed class ProductsLibraryProgressTests
                     Assert.AreEqual(LocalAutomationCommandStatus.Applied, disabled.Status);
                 }
             }
-            using var catalog = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var catalog = silo.OpenStore(options, clock);
             using var reader = new SqliteLocalAutomationStore(new FixtureRegistry(), new CaptureSequence(),
                 Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, Automation = new() { Enabled = disableDefinition } }), clock,
                 NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner);
@@ -185,7 +188,8 @@ public sealed class ProductsLibraryProgressTests
             var captureSequence = new CaptureSequence();
             using var store = new SqliteLocalAutomationStore(registry, captureSequence, options, clock,
                 NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: planner);
-            using var catalog = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var catalog = silo.OpenStore(options, clock);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var target = NightlyProductContract.TargetFor(kind) + ":" + new string('A', 64);
             Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await store.SaveAsync(new("daily", "Virtual daily", true,

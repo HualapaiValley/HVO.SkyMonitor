@@ -1,0 +1,194 @@
+@page "/operations/pipeline/graphs/{RevisionId}/node"
+@page "/operations/pipeline/configure"
+@page "/operations/pipeline/graphs/{RevisionId}/nodes/{NodeId}"
+@page "/operations/pipeline/configure/{NodeId}"
+@layout OperationsLayout
+@using HVO.SkyMonitor.AgentCore
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>@PageHeading</PageTitle>
+
+<div class="node-config-page">
+    <PageHeader Eyebrow="@Eyebrow" Title="@PageHeading" Lead="@Lead">
+        <a class="btn btn-outline-light" href="@BackHref">@BackLabel</a>
+    </PageHeader>
+
+    <nav class="node-config-links" aria-label="Configuration navigation">
+        <a href="/operations/pipeline/graphs">Named graphs</a>
+        @if (_resolvedRevisionId is not null)
+        {
+            <a href="/operations/pipeline/graphs/@Uri.EscapeDataString(_resolvedRevisionId)">Revision detail</a>
+            <a href="@FullEditorHref">Open in full graph editor</a>
+        }
+    </nav>
+
+    @if (_loading)
+    {
+        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading stage configuration" Message="Reading the immutable source revision and resolving typed option descriptors." />
+    }
+    else if (_detail is null || _node is null)
+    {
+        <PageStateNotice Kind="@(_notFound ? PageStateNotice.PageStateKind.Info : PageStateNotice.PageStateKind.Error)"
+                         Title="@(_notFound ? "Filter or overlay not found" : "Configuration unavailable")"
+                         Message="@(_message ?? "The requested processing node could not be loaded.")">
+            @if (_detail is not null && _model.Nodes.Count > 0)
+            {
+                <p class="node-config-note">Choose a stage from this revision:</p>
+                <ul class="missing-node-list">
+                    @foreach (var row in _model.Nodes)
+                    {
+                        <li><a href="@NodeConfigHref(_resolvedRevisionId!, row.Id)">@row.Id</a> (@row.Type)</li>
+                    }
+                </ul>
+            }
+        </PageStateNotice>
+    }
+    else
+    {
+        @if (_model.Nodes.Count > 1)
+        {
+            <nav class="node-switcher" aria-label="Filters and overlays in this revision">
+                @foreach (var row in _model.Nodes)
+                {
+                    var current = ReferenceEquals(row, _node);
+                    var label = row.IsSystemManaged
+                        ? $"{row.Id} (Built-in)"
+                        : row.OptionsForm is { } rowForm ? $"{row.Id} · {rowForm.Descriptor.Title}" : row.Id;
+                    @if (CanLinkToSourceRevision(row))
+                    {
+                        <a class="node-switcher__item @(current ? "node-switcher__item--current" : null)"
+                           aria-current="@(current ? "page" : null)"
+                           href="@NodeConfigHref(_resolvedRevisionId!, row.Id.Trim())">@label</a>
+                    }
+                    else if (_savedRevisionId is not null)
+                    {
+                        <span class="node-switcher__item node-switcher__item--unsaved"
+                              aria-disabled="true"
+                              title="Added in the saved draft. Open the saved draft link in the save banner to view this stage on its own page.">@label · Saved in new draft</span>
+                    }
+                    else
+                    {
+                        <span class="node-switcher__item node-switcher__item--unsaved"
+                              aria-disabled="true"
+                              title="Added in this unsaved draft. Save the draft before opening this stage on its own page.">@label · Unsaved draft</span>
+                    }
+                }
+            </nav>
+        }
+
+        @if (_node.IsSystemManaged)
+        {
+            var stage = ProcessingNodeSectionRegistry.DescribeBuiltInStage(_node.Type);
+            <section class="config-card config-card--builtin" data-node-alias="@_node.Type" aria-labelledby="builtin-stage-heading">
+                <h2 id="builtin-stage-heading">@stage.Title</h2>
+                <p>@stage.RoleSummary</p>
+                <dl class="fact-grid">
+                    <div><dt>Node identifier</dt><dd><code>@_node.Id</code></dd></div>
+                    <div><dt>Step alias</dt><dd><code>@stage.StepAlias</code></dd></div>
+                    <div><dt>Enable control</dt><dd>Built-in mandatory stage (always runs; no enable switch)</dd></div>
+                    <div><dt>Declared inputs</dt><dd>@string.Join(", ", _node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</dd></div>
+                    <div><dt>Fixed settings</dt><dd>@stage.FixedSettingsSummary</dd></div>
+                    <div><dt>Source revision</dt><dd><code>@_detail.State.RevisionId</code> (@_detail.State.Name @_detail.State.Revision)</dd></div>
+                </dl>
+            </section>
+        }
+        else if (_node.OptionsForm is { } optionsForm)
+        {
+            @if (_message is not null)
+            {
+                <section class="config-banner @(_messageIsError ? "config-banner--error" : null)" role="@(_messageIsError ? "alert" : "status")">
+                    @_message
+                    @if (_savedRevisionId is not null)
+                    {
+                        <a href="/operations/pipeline/graphs/@Uri.EscapeDataString(_savedRevisionId)">Open the saved draft</a>
+                        <a href="/operations/pipeline/graphs">Validate and activate in Named graphs</a>
+                    }
+                </section>
+            }
+
+            <section class="config-card" aria-label="Stage identity">
+                <dl class="fact-grid">
+                    <div><dt>Source revision</dt><dd><code>@_detail.State.RevisionId</code> (@_detail.State.Name @_detail.State.Revision)</dd></div>
+                    <div><dt>Node identifier</dt><dd><code>@_node.Id</code></dd></div>
+                    <div><dt>Step alias</dt><dd><code>@optionsForm.Descriptor.StepAlias</code></dd></div>
+                    <div><dt>Descriptor</dt><dd><code>@optionsForm.Descriptor.DescriptorId</code></dd></div>
+                    <div><dt>Pinned version</dt><dd><code>@optionsForm.Descriptor.StepVersion</code></dd></div>
+                    <div><dt>Inputs</dt><dd>@string.Join(", ", _node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</dd></div>
+                </dl>
+            </section>
+
+            <form class="config-form" aria-labelledby="node-options-heading" @onsubmit="PreviewAsync" @onsubmit:preventDefault>
+                <fieldset class="config-card" disabled="@_busy">
+                    <legend>New draft revision</legend>
+                    <p class="node-config-note" role="note">
+                        Defaults come from code. Editing here never mutates revision <code>@_detail.State.RevisionId</code> in place; saving creates a new immutable draft revision for explicit validation and activation.
+                    </p>
+                    <div class="field-grid">
+                        <label>Graph name<input class="form-control" @bind="_model.Name" @bind:after="FormChanged" /></label>
+                        <label>Revision label<input class="form-control" @bind="_model.Revision" @bind:after="FormChanged" /></label>
+                    </div>
+                </fieldset>
+
+                <fieldset class="config-card" disabled="@_busy">
+                    <legend id="node-options-heading">@optionsForm.Descriptor.Title</legend>
+                    @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
+                    {
+                        <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{_nodeIndex}")" Form="optionsForm" Changed="FormChanged" ShowResetToDefaults="true" />
+                    }
+                    else
+                    {
+                        <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{_nodeIndex}")" Form="optionsForm" Changed="FormChanged"
+                            NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? _node.Enabled : null)"
+                            NodeEnabledChanged="OnNodeEnabledChanged"
+                            ShowResetToDefaults="true" />
+                    }
+                </fieldset>
+
+                @if (FrameFactsDraftConversion.IsLegacy(_node.Type) || SceneStyleDraftUpgrade.IsLegacy(_node.Type))
+                {
+                    <section class="config-card" aria-label="Explicit whole-draft upgrades">
+                        <h2>Versioned upgrades</h2>
+                        <p class="node-config-note">
+                            Whole-draft conversions (such as Frame Facts templates or versioned scene styling) update producers and consumers together in the <a href="@FullEditorHref">full graph editor</a>.
+                        </p>
+                    </section>
+                }
+
+                <div class="config-actions">
+                    <button type="submit" class="btn btn-outline-light" disabled="@_busy">Preview plan</button>
+                    <button type="button" class="btn btn-primary" disabled="@(_busy || _preview is null || !_preview.GraphChanged || _savedRevisionId is not null)" @onclick="SaveDraftAsync">Save immutable draft</button>
+                    @if (_preview is null)
+                    {
+                        <span class="node-config-note">Preview the plan before saving.</span>
+                    }
+                </div>
+            </form>
+
+            @if (_preview is not null)
+            {
+                <section class="config-card" aria-labelledby="config-preview-heading">
+                    <h2 id="config-preview-heading">Compiled preview</h2>
+                    <GraphPlanView Plan="_preview.Plan" />
+                </section>
+            }
+        }
+        else
+        {
+            <section class="config-card" aria-labelledby="opaque-stage-heading">
+                <h2 id="opaque-stage-heading">@_node.Id (@_node.Type)</h2>
+                <p>No typed option descriptor covers this step alias or pinned version. Its options remain preserved byte-for-byte from revision <code>@_detail.State.RevisionId</code> without silent migration.</p>
+                <dl class="fact-grid">
+                    <div><dt>Node identifier</dt><dd><code>@_node.Id</code></dd></div>
+                    <div><dt>Step alias</dt><dd><code>@_node.Type</code></dd></div>
+                    <div><dt>Inputs</dt><dd>@string.Join(", ", _node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</dd></div>
+                </dl>
+            </section>
+        }
+    }
+</div>

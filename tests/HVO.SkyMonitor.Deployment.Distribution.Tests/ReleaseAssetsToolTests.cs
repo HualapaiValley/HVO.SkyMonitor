@@ -20,20 +20,16 @@ public sealed class ReleaseAssetsToolTests
     private static readonly string[] OfflineArchiveEntries =
         ["oci-layout", "index.json", "manifest.json", "blobs/", "blobs/sha256/"];
 
-    private static readonly string[] ReleaseFiles =
-    [
-        "SHA256SUMS", "hvo-sky-install-linux-arm64", "hvo-sky-install-linux-x64", "release.json",
-        "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar", "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar"
-    ];
-
     private const string StateContractsLabel = "io.hvo.skymonitor.state-contracts";
 
     private static readonly string[] Platforms = ["linux/amd64", "linux/arm64"];
 
     [TestMethod]
-    public async Task CreateRelease_WritesTheContractsAssetsReleaseJsonAndSha256Sums()
+    [DataRow(OciReleaseFixture.Version)]
+    [DataRow("1.2.0-beta.1")]
+    public async Task CreateRelease_WritesTheContractsAssetsReleaseJsonAndSha256Sums(string version)
     {
-        using var fixture = OciReleaseFixture.Create();
+        using var fixture = OciReleaseFixture.Create(version);
         fixture.WriteNote("1.1.0", "Eleven.\r\nSecond line.");
         fixture.WriteNote("1.2.0", "Twelve.\n\tIndented.");
         fixture.WriteNote("1.3.0", "A later release's notes are not this release's.");
@@ -42,22 +38,26 @@ public sealed class ReleaseAssetsToolTests
         Assert.AreEqual(0, await Program.Main(fixture.Arguments(output)));
 
         var names = Directory.GetFiles(output).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
-        CollectionAssert.AreEqual(ReleaseFiles, names);
+        CollectionAssert.AreEqual(new[]
+        {
+            "SHA256SUMS", "hvo-sky-install-linux-arm64", "hvo-sky-install-linux-x64", "release.json",
+            $"skymonitor-cameraagent-{version}-linux-amd64.oci.tar", $"skymonitor-cameraagent-{version}-linux-arm64.oci.tar"
+        }, names);
         var release = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(output, "release.json")))!.AsObject();
         Assert.AreEqual(1, (int)release["schemaVersion"]!);
         Assert.AreEqual("HVO SkyMonitor", (string)release["product"]!);
-        Assert.AreEqual(OciReleaseFixture.Version, (string)release["version"]!);
-        Assert.AreEqual($"v{OciReleaseFixture.Version}", (string)release["tag"]!);
+        Assert.AreEqual(version, (string)release["version"]!);
+        Assert.AreEqual($"v{version}", (string)release["tag"]!);
         Assert.IsTrue((bool)release["prerelease"]!);
         Assert.AreEqual(OciReleaseFixture.Commit, (string)release["commit"]!);
         Assert.AreEqual(OciReleaseFixture.Created, (string)release["created"]!);
         Assert.AreEqual("https://github.com/HualapaiValley/HVO.SkyMonitor", (string)release["repository"]!);
         var image = release["images"]!["cameraAgent"]!.AsObject();
         Assert.AreEqual("ghcr.io/hualapaivalley/skymonitor-cameraagent", (string)image["repository"]!);
-        Assert.AreEqual(OciReleaseFixture.Version, (string)image["tag"]!);
+        Assert.AreEqual(version, (string)image["tag"]!);
         Assert.AreEqual(fixture.IndexDigest, (string)image["digest"]!);
         Assert.AreEqual(
-            $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{OciReleaseFixture.Version}@{fixture.IndexDigest}", (string)image["reference"]!);
+            $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{version}@{fixture.IndexDigest}", (string)image["reference"]!);
         CollectionAssert.AreEqual(Platforms, image["platforms"]!.AsArray().Select(static node => (string)node!).ToArray());
         // The image's state contract label, as the image declares it, under the image's key (install contract section 6).
         Assert.AreEqual($$"""{"cameraAgent":{{OciReleaseFixture.StateContracts}}}""", release["stateContracts"]!.ToJsonString());
@@ -232,7 +232,7 @@ public sealed class ReleaseAssetsToolTests
         {
             case "version": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.version", "1.2.0-dev.4")); break;
             case "revision": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.revision", new string('f', 40))); break;
-            case "component": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "io.hvo.skymonitor.component", "LogicHost")); break;
+            case "component": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "io.hvo.skymonitor.component", "OtherProduct")); break;
             case "created-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, "org.opencontainers.image.created")); break;
             case "created-other": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.created", "2026-10-17T18:00:00+00:00")); break;
             case "state-contracts-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, StateContractsLabel)); break;
@@ -754,24 +754,6 @@ public sealed class ReleaseAssetsToolTests
             entries.Add(entry.Name, buffer.ToArray());
         }
         return entries;
-    }
-
-    [TestMethod]
-    public void ReadUpgradeNotes_091_ExplainsCustomizedAndEarlyPrereleaseGraphSupersessionWithinInstallerBounds()
-    {
-        var notes = Program.ReadUpgradeNotes(Path.Combine(RepositoryRoot(), "docs", "upgrade-notes"), "0.9.1");
-        var note = notes.Single(static note => note.Version == "0.9.1");
-        foreach (var expected in new[]
-        {
-            "cloud producer from v4 to v5", "environment producer from v5 to v6",
-            "without a scene-overlay node", "0.9.1-dev.1 through dev.5", "v11/v12", "v13",
-            "active-revision-superseded", "Raw capture and upload continue",
-            "processing.plan-superseded", "new revision", "fresh replay",
-            "ASP.NET Core runtime images use 10.0.14", "self-contained ProcessingRunner runtime remain at 10.0.13"
-        })
-        {
-            StringAssert.Contains(string.Join(" ", note.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), expected, StringComparison.Ordinal);
-        }
     }
 
     private static string RepositoryRoot()

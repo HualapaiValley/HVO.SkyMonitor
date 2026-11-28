@@ -1,13 +1,15 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOptions> options) : IProcessingRetentionHolds
+internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOptions> options,
+    SiloArtifactStorage? silo = null, SqliteCalibrationLibraryStore? calibration = null) : IProcessingRetentionHolds
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly ConcurrentDictionary<string, byte> _configuredManifests = new(
@@ -17,7 +19,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
     {
         if (!string.IsNullOrWhiteSpace(relativeManifestPath))
         {
-            _ = ResolveSafePath(relativeManifestPath);
+            ValidateSiloReference(relativeManifestPath);
             _configuredManifests.TryAdd(relativeManifestPath, 0);
         }
     }
@@ -26,7 +28,7 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (!PathsEqual(_storageRoot, storageRoot))
+        if (silo is null || !PathsEqual(_storageRoot, storageRoot))
         {
             return [];
         }
@@ -34,36 +36,33 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         foreach (var relativeManifestPath in _configuredManifests.Keys.Order(StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var manifestPath = ResolveSafePath(relativeManifestPath);
-            byte[] manifestBytes;
-            try
-            {
-                manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
-            {
-                continue;
-            }
-            var parsed = CaptureContractJson.ParseManifest(manifestBytes);
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
-            {
-                throw new InvalidDataException("Configured clear-reference manifest is invalid.");
-            }
-            _ = ResolveSafePath(manifest.RelativeArtifactPath);
-            holds.Add(new ProcessingRetentionHold(
-                manifest.Descriptor.Artifact.ArtifactId,
-                manifest.RelativeArtifactPath,
-                relativeManifestPath));
+            var id = ParseSiloRawReference(relativeManifestPath);
+            if (id is null && calibration is not null)
+                id = await calibration.FindArtifactByManifestPathUnderLifecycleLockAsync(relativeManifestPath, cancellationToken)
+                    .ConfigureAwait(false);
+            if (id is { } retained)
+                holds.Add(new(retained));
         }
         return holds;
     }
 
     internal async ValueTask<ProcessingArtifact> LoadAsync(
         string relativeManifestPath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? artifactId = null)
     {
-        var manifestPath = ResolveSafePath(relativeManifestPath);
-        var manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        ValidateSiloReference(relativeManifestPath);
+        var rawId = ParseSiloRawReference(relativeManifestPath);
+        if (artifactId is { } expected && rawId is { } named && expected != named)
+            throw new InvalidDataException("Configured clear-reference identities differ.");
+        var id = artifactId ?? rawId ?? (calibration is null ? null :
+            await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
+        if (id is null || silo is null)
+            throw new FileNotFoundException("The configured clear reference has no Silo identity.");
+        var manifestBytes = await silo.ReadMetadataAsync(id.Value,
+            rawId is not null ? SiloArtifactStorage.RawEvidenceRevision : CalibrationArtifactPublisher.SiloEvidenceRevision,
+            CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The configured clear reference has no settled Silo evidence.");
         var parsed = CaptureContractJson.ParseManifest(manifestBytes);
         if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
         {
@@ -72,7 +71,25 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         return await LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
     }
 
-    internal async ValueTask<ProcessingArtifact> LoadAsync(
+    private static void ValidateSiloReference(string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference) || Path.IsPathRooted(reference) ||
+            reference.Contains('\\', StringComparison.Ordinal) || reference.Contains('\0', StringComparison.Ordinal) ||
+            reference.Split('/').Any(static component => component is "" or "." or ".."))
+            throw new InvalidDataException("Configured clear-reference name is not canonical.");
+    }
+
+    private static Guid? ParseSiloRawReference(string reference)
+    {
+        const string prefix = "silo/raw/";
+        const string suffix = ".json";
+        return reference.Length == prefix.Length + 32 + suffix.Length &&
+            reference.StartsWith(prefix, StringComparison.Ordinal) && reference.EndsWith(suffix, StringComparison.Ordinal) &&
+            Guid.TryParseExact(reference.AsSpan(prefix.Length, 32), "N", out var id) && id != Guid.Empty
+            ? id : null;
+    }
+
+    private async ValueTask<ProcessingArtifact> LoadAsync(
         ArtifactManifestV2 manifest,
         CancellationToken cancellationToken)
     {
@@ -83,8 +100,9 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         {
             throw new InvalidDataException("Configured clear reference is not a linear frame artifact.");
         }
-        var payloadPath = ResolveSafePath(manifest.RelativeArtifactPath);
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var storage = silo ?? throw new InvalidOperationException("A configured clear reference requires Silo storage.");
+        var payload = await storage.ReadRawAsync(descriptor, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The configured clear reference has no settled Silo payload.");
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out _);
         if (!reconstruction.IsValid)
         {
@@ -119,24 +137,6 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
                 descriptor.Controls.EffectiveGain,
                 descriptor.Controls.EffectiveOffset,
                 descriptor.Controls.EffectiveTemperatureC));
-
-    private string ResolveSafePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
-        {
-            throw new InvalidDataException("Configured clear-reference path must be relative to CameraAgent storage.");
-        }
-        var path = Path.GetFullPath(Path.Combine(_storageRoot, relativePath));
-        var rootPrefix = string.Concat(Path.TrimEndingDirectorySeparator(_storageRoot), Path.DirectorySeparatorChar);
-        if (!path.StartsWith(
-                rootPrefix,
-                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Configured clear-reference path escapes CameraAgent storage.");
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, path);
-        return path;
-    }
 
     private static bool PathsEqual(string left, string right)
         => string.Equals(

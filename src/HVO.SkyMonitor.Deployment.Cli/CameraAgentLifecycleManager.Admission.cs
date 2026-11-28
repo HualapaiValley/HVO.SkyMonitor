@@ -50,8 +50,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 _ = UpgradeNotes.Plan(
                     await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false),
-                    targetRelease,
-                    manifest.InstanceId);
+                    targetRelease);
             }
         }
         if (kind == LifecycleOperationKind.Reinstall && manifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled &&
@@ -70,6 +69,9 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
+        if (resumed?.SignedReleaseChecksumsSha256 is { } checksums &&
+            checksums != signedImage?.VerifiedRelease.ChecksumsSha256)
+            throw InstallerException.Refused("The retained image operation has different release checksums.");
         if (request.Abort && resumed is not null)
         {
             await EnsureBackupUnpublishedAsync(BackupVault.For(request),
@@ -92,6 +94,8 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (imageChange && resumed is null)
         {
+            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, kind == LifecycleOperationKind.Rollback,
+                snapshotRequired: true);
             await AdmitCandidateAsync(request, paths, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
         // Every check that only reads has admitted the rollback, so it goes ahead: the warning comes now, before anything
@@ -109,10 +113,8 @@ internal sealed partial class CameraAgentLifecycleManager
     /// The host's container limits an image change is held to before it changes anything (#1357, install contract
     /// section 7, as HVO.RoofController#151). An upgrade, its plan and its <c>--resume</c> refuse a host whose Docker
     /// cannot enforce the CameraAgent limits, or has fewer CPUs than the CPU limit, with every finding and its remedy, as
-    /// an install does; there is no override. A rollback and a restore-only recovery are the recovery path: they go
-    /// ahead, with <see cref="WarnOfUnenforcedLimitsAsync"/>'s warning. A rollback is still refused for a CPU limit
-    /// Docker enforces on a host with fewer CPUs, a container Docker refuses to create. A restore-only recovery is never
-    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. A backup that starts
+    /// an install does. Rollback can proceed with <see cref="WarnOfUnenforcedLimitsAsync"/>'s warning. Docker still
+    /// refuses a CPU limit greater than the host's CPU count. A backup that starts
     /// the instance it stopped is held as a rollback is (#1353, <see cref="BackupStartsInstanceAsync"/>). Returns the
     /// report a recovery goes ahead with.
     /// </summary>
@@ -122,7 +124,7 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         DockerHostCapabilities capabilities)
     {
-        var upgrade = request.Operation == LifecycleOperationKind.Upgrade && !request.RestoreOnly;
+        var upgrade = request.Operation == LifecycleOperationKind.Upgrade;
         var report = HostPrerequisites.EvaluateContainerLimits(
             capabilities,
             paths.ProductRoot,
@@ -131,7 +133,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 ? CameraAgentContainerResources.UpgradeTarget(manifest.Resources)
                 : manifest.Resources ?? CameraAgentContainerResources.Legacy,
             rollback: !upgrade);
-        if (!report.Satisfied && !request.RestoreOnly)
+        if (!report.Satisfied)
         {
             throw new HostPrerequisiteException(report);
         }
@@ -151,7 +153,6 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
-    private static string RecoveryName(LifecycleRequest request) => request.RestoreOnly ? "restore-only recovery" : "rollback";
 
     /// <summary>
     /// Whether a backup will start the instance (#1353 PR-1369-R2 F19): a fresh backup stops and starts an installed
@@ -179,7 +180,7 @@ internal sealed partial class CameraAgentLifecycleManager
         => request.Operation == LifecycleOperationKind.Backup
             ? HostPrerequisites.RollbackWarning(
                 hostLimits, "backup", "A backup starts the instance it stopped again, on the image it ran")
-            : HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request));
+            : HostPrerequisites.RollbackWarning(hostLimits, "rollback");
 
     /// <summary>The result with the warnings of each limit the recovery went ahead without (#1357).</summary>
     private static LifecycleResult WithHostLimitWarnings(LifecycleResult result, HostPrerequisiteReport? hostLimits)
@@ -236,11 +237,6 @@ internal sealed partial class CameraAgentLifecycleManager
         if (request.Operation == LifecycleOperationKind.Rollback)
         {
             if (manifest.PreviousImage!.ImageId == manifest.Image.ImageId) throw InstallerException.Refused(AlreadyActive);
-            if (!CameraAgentStateContract.IsKnown(manifest.Image.UpgradeCompatibility) &&
-                !CameraAgentStateContract.IsKnown(manifest.UpgradeCompatibility))
-            {
-                throw InstallerException.Refused("Automatic rollback is forbidden because the active image did not declare a supported state contract.");
-            }
             return;
         }
         // A release names every identity Docker can give its image, so a release whose image is the active one is
@@ -256,11 +252,7 @@ internal sealed partial class CameraAgentLifecycleManager
             return;
         }
         if (candidate.ImageId == manifest.Image.ImageId) throw InstallerException.Refused(AlreadyActive);
-        if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
-        {
-            throw InstallerException.Refused(
-                $"The candidate image declares state compatibility '{CameraAgentStateContract.Describe(candidate.UpgradeCompatibility)}' instead of the supported '{CameraAgentStateContract.Current}' contract; an explicit state-disposition procedure is required.");
-        }
+        RequireLifecycleImageContract(manifest, candidate);
         // The state preflight the upgrade makes before it changes anything, read-only: a bind source the command would
         // create or normalize is evaluated as the command leaves it.
         var preparedSources = new HashSet<string>(
@@ -271,14 +263,13 @@ internal sealed partial class CameraAgentLifecycleManager
                 paths,
                 manifest.InstanceId,
                 candidate,
-                manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
+                manifest.Image.StateContract ?? manifest.StateContract,
                 manifest.RuntimeUid,
                 manifest.RuntimeGid,
                 manifest.ReplayProfile,
                 persist: false,
                 renderToStandardError: !request.Json,
                 cancellationToken,
-                CameraAgentStateContractPolicy.RequireCurrent,
                 signedImage?.Release.Tag,
                 preparedSources: preparedSources)
             .ConfigureAwait(false);

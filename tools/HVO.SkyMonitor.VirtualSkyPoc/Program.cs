@@ -77,9 +77,9 @@ internal static partial class Program
             throw new ArgumentException("Use a new empty output directory; retained evidence is immutable.");
         Directory.CreateDirectory(output);
         WriteIdentity(output);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(args[2], "hyg-v42-production")
+        var snapshot = CatalogSnapshotResolver.Resolve(new(args[2], "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         });
         var config = Config("SolarDriven");
         var start = Find(SolarEventKind.Sunrise, LocalDateStart, LocalDateStart.AddDays(1));

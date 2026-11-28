@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
 {
     [TestMethod]
@@ -22,7 +23,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
         var root = Root();
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var local = EnvironmentalAdapterContractsTests.Fact("local", EnvironmentalObservationKind.AirTemperature, 20);
             var provider = EnvironmentalAdapterContractsTests.Fact("provider", local.Value.Kind, 21, EnvironmentalObservationSourceKind.Imported);
             await store.CommitLocalAsync(root, local, CancellationToken.None).ConfigureAwait(false);
@@ -36,7 +37,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
             var first = (await original.AssociateAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false))[0];
             var retainedBytes = JsonSerializer.SerializeToUtf8Bytes((await store.ReadAssociationsAsync(root, capture,
                 CancellationToken.None).ConfigureAwait(false)).Single());
-            using var restarted = new SqliteEnvironmentalObservationOutbox();
+            using var restarted = new SqliteEnvironmentalObservationStore();
             var changed = new EnvironmentalAssociationService(restarted, restarted, Configure(["provider", "local"]), TimeProvider.System, acquisitionStates: restarted);
             var recovered = await changed.ReadCompletedAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(recovered);
@@ -57,7 +58,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
         var root = Root();
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var fact = EnvironmentalAdapterContractsTests.Fact("station-temperature", EnvironmentalObservationKind.AirTemperature, 20);
             await store.CommitLocalAsync(root, fact, CancellationToken.None).ConfigureAwait(false);
             var humidity = EnvironmentalAdapterContractsTests.Configuration("station", EnvironmentalObservationKind.RelativeHumidity);
@@ -85,7 +86,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
         try
         {
             var clock = new ExposureTestTimeProvider(Epoch);
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var configuration = new EnvironmentalSourceConfiguration
             {
                 Id = "sqm",
@@ -140,7 +141,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
         try
         {
             var clock = new ExposureTestTimeProvider(Epoch);
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var configurations = new[] { OnlineConfiguration("temperature", EnvironmentalObservationKind.AirTemperature, 300),
                 OnlineConfiguration("humidity", EnvironmentalObservationKind.RelativeHumidity, 3600) };
             var options = Options.Create(new CameraAgentHostOptions
@@ -196,7 +197,7 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
         try
         {
             var device = new BarrierDevice();
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "sqm",
@@ -284,12 +285,19 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
     private static string Root() => Path.Combine(Path.GetTempPath(), "hvo-review-" + Guid.NewGuid().ToString("N"));
     private static void Delete(string root) { if (Directory.Exists(root)) Directory.Delete(root, true); }
-    private sealed class Publisher(SqliteEnvironmentalObservationOutbox store, string root) : IEnvironmentalObservationPublisher
+    private sealed class Publisher(SqliteEnvironmentalObservationStore store, string root)
+        : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
+        public bool SupportsHeldPollSettlement => true;
+
+        public async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+            EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+            => (await store.CommitHeldPollAsync(root, fact, poll, cancellationToken).ConfigureAwait(false)).HeldPollReceipt!;
+
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)
         {
             await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
-            return new(EnvironmentalObservationPublishDisposition.Enqueued, null);
+            return new(EnvironmentalObservationPublishDisposition.Committed);
         }
     }
     private sealed class LocationStore : IDeploymentLocationStore

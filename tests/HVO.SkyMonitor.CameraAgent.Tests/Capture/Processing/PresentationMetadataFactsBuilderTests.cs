@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class PresentationMetadataFactsBuilderTests
 {
@@ -42,7 +43,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task BuildAsync_PreservesFreshStaleMissingAndContradictoryAssociationEvidence()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         await CommitAsync(store, Fact(Guid.Parse("10000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature, 12, staleAfter: Epoch.AddSeconds(10))).ConfigureAwait(false);
         await CommitAsync(store, Fact(Guid.Parse("10000000-0000-0000-0000-000000000002"),
@@ -106,7 +107,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task BuildAsync_UsesDurableCadenceStackAndCanonicalInputEvidence()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
         fixture.Context.BeginNode("environment-presentation", []);
 
@@ -130,7 +131,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task BuildAsync_RecordsCanonicalAssociationAndObservationEvidence()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         await CommitAsync(store, Fact(Guid.Parse("20000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature, 12)).ConfigureAwait(false);
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
@@ -160,7 +161,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     {
         string firstFactsIdentity;
         string firstOutputIdentity;
-        using (var store = new SqliteEnvironmentalObservationOutbox())
+        using (var store = new SqliteEnvironmentalObservationStore())
         {
             await CommitAsync(store, Fact(Guid.Parse("50000000-0000-0000-0000-000000000001"),
                 EnvironmentalObservationKind.AirTemperature, 12)).ConfigureAwait(false);
@@ -194,7 +195,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 result.Product.SourceArtifactIds.ToArray());
         }
 
-        using var restartedStore = new SqliteEnvironmentalObservationOutbox();
+        using var restartedStore = new SqliteEnvironmentalObservationStore();
         var restarted = await CreateFixtureAsync(restartedStore).ConfigureAwait(false);
         var replay = await CreateFactsProductAsync(restarted).ConfigureAwait(false);
 
@@ -224,7 +225,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task ChangedEnvironmentalKindSet_DoesNotReuseOldPolicyAndChangesFactsIdentity()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         await CommitAsync(store, Fact(Guid.Parse("70000000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature, 12)).ConfigureAwait(false);
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
@@ -262,7 +263,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task RichFactsOptInRetainsTypedObservationAndPortableContextWithoutChangingLegacyFacts()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         await CommitAsync(store, Fact(Guid.Parse("15520000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature, 12)).ConfigureAwait(false);
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
@@ -290,9 +291,9 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     }
 
     [TestMethod]
-    public async Task RichRetainedInputHasCameraAgentAndLogicHostRenderingParity()
+    public async Task RichRetainedInputHasLiveAndRetainedRenderingParity()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
         Assert.IsTrue(fixture.Descriptor.Validate().IsValid, JsonSerializer.Serialize(fixture.Descriptor.Validate()));
         var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), [],
@@ -323,11 +324,11 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         var manifest = LayeredPresentationJson.CreateManifest(
             new(Guid.Parse("15520000-0000-0000-0000-000000000003"), new string('C', 64), "application/x-hvo-packed-image", compatibility), null, [layer]);
         var camera = CameraAgentLayeredPresentationService.Render(fixture.Descriptor.Capture.CaptureId, manifest, [edge], new string('D', 64));
-        // CentralLayeredPresentationService invokes this exact shared seam on parsed retained bytes.
-        var logicHost = GroupedSvgPresentationRenderer.Render(manifest, [central], new string('D', 64));
+        // Render directly from the parsed retained bytes through the shared renderer.
+        var retainedSvg = GroupedSvgPresentationRenderer.Render(manifest, [central], new string('D', 64));
         Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, camera.Status);
-        CollectionAssert.AreEqual(camera.Presentation!.Svg.ToArray(), logicHost.Svg.ToArray());
-        Assert.AreEqual(camera.Presentation.SvgChecksumSha256, logicHost.SvgChecksumSha256);
+        CollectionAssert.AreEqual(camera.Presentation!.Svg.ToArray(), retainedSvg.Svg.ToArray());
+        Assert.AreEqual(camera.Presentation.SvgChecksumSha256, retainedSvg.SvgChecksumSha256);
         var layout = new ImageLayout(1936, 1216, CameraPixelFormat.Mono8, 1936);
         var raw = new byte[layout.RequiredByteLength];
         var edgeRaster = PresentationLayerCompositor.CompositeDisplay(layout, raw, [new(edge, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
@@ -336,12 +337,13 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task ExplicitRichStepProducesVersionedProductsOrFailsAtomicallyWithoutChangingSources(bool oversize)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task ExplicitRichStepProducesVersionedProductsOrFailsAtomicallyWithoutChangingSources(bool oversize, bool centered)
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
-        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        using var store = new SqliteEnvironmentalObservationStore();
+        var fixture = await CreateFixtureAsync(store, centered: centered).ConfigureAwait(false);
         var sceneBytes = ProjectedSceneJson.Serialize(fixture.Scene);
         var scene = fixture.Stack with
         {
@@ -386,6 +388,20 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion!));
             Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion));
             Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion));
+            if (centered)
+            {
+                var facts = PresentationProcessingProducts.ParseMetadataFacts(
+                    fixture.Context.ProcessingProducts.Single(product =>
+                        product.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion).Payload);
+                Assert.AreEqual("continuous", facts.Capture.GetProperty("SetpointProfileId").GetString());
+                Assert.AreEqual(CaptureCadenceMode.Continuous, facts.Capture.GetProperty("CadenceMode").Deserialize<CaptureCadenceMode>());
+                Assert.AreEqual(0d, facts.Capture.GetProperty("CadenceSeconds").GetDouble());
+                CollectionAssert.Contains(facts.Corners.TopRight.ToArray(), "SCHEDULE continuous");
+                var tokens = facts.FrameFacts!.ToContext();
+                Assert.AreEqual(FrameFactsValue.FromText("continuous"), tokens.Get("acquisition.scheduleProfile").Value);
+                Assert.AreEqual(FrameFactsValue.FromText("Continuous"), tokens.Get("acquisition.cadenceMode").Value);
+                Assert.AreEqual(FrameFactsValue.FromNumber(0), tokens.Get("acquisition.cadenceSeconds").Value);
+            }
         }
         Assert.AreEqual(sourceChecksum, fixture.Context.RawCapture.Manifest.Descriptor.Artifact.ChecksumSha256);
         CollectionAssert.AreEqual(sceneBytes, scene.Payload.ToArray());
@@ -402,7 +418,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         _root = root;
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             if (addUnrelatedFirst)
                 await CommitAsync(store, Fact(Guid.Parse("60000000-0000-0000-0000-000000000002"),
                     EnvironmentalObservationKind.RelativeHumidity, 45)).ConfigureAwait(false);
@@ -429,8 +445,8 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             fixture.Descriptor.Capture.RigId, [EnvironmentalObservationKind.AirTemperature],
             CancellationToken.None).ConfigureAwait(false);
 
-    private async Task<Fixture> CreateFixtureAsync(SqliteEnvironmentalObservationOutbox store,
-        EnvironmentalAcquisitionOptions? acquisition = null)
+    private async Task<Fixture> CreateFixtureAsync(SqliteEnvironmentalObservationStore store,
+        EnvironmentalAcquisitionOptions? acquisition = null, bool centered = false)
     {
         var payload = new byte[8];
         var original = ReconstructableCaptureContractTests.CreateManifest(
@@ -487,6 +503,16 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 ScheduleAdmission = CreateScheduleAdmission()
             }
         };
+        if (centered)
+        {
+            descriptor = descriptor with
+            {
+                CycleEvidence = null,
+                CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero, Epoch,
+                    TimeSpan.FromSeconds(5), null, false, null,
+                    CreateScheduleAdmission() with { SetpointProfileId = "continuous" })
+            };
+        }
         var manifest = original with { Descriptor = descriptor };
         var path = Path.Combine(_root!, "raw.bin");
         await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
@@ -550,7 +576,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         };
     }
 
-    private async Task CommitAsync(SqliteEnvironmentalObservationOutbox store, EnvironmentalObservationFactV1 fact) =>
+    private async Task CommitAsync(SqliteEnvironmentalObservationStore store, EnvironmentalObservationFactV1 fact) =>
         _ = await store.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
 
     private static ProcessingArtifact Artifact(Guid id, FrameArtifactRole role, TimeSpan integration,

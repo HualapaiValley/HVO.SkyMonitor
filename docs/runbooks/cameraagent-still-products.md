@@ -6,6 +6,29 @@ neutral; CameraAgent owns source admission, publication, catalog and automation
 adoption. Video encoding, custom scripts, the general wizard and archive page
 adoption retain their separate issues.
 
+## Optional measured deep-sky assessment
+
+For centered capture, enable **Assess measured deep sky on centered stacks** in
+the active pipeline's **Projected scene query** settings. This setting defaults
+to off. Admission freezes the graph selection and the installed OpenNGC snapshot
+identity for the run. Profile changes affect subsequent admissions. Each retained
+assessment identifies its catalog, frozen stack and analysis recipe.
+
+On startup, assessment follows recent and new revisions and checks older
+revisions in separate bounded pages. It settles previously admitted work against
+its original run. A missing snapshot at admission or incompatible retained input
+has an explicit disposition. Archive views and their saved layer selections stay
+available by revision.
+
+The expected OpenNGC layer is separately selectable. A measured control appears
+on the stack revision only when a qualified identification fits the preview.
+The exact revision exposes the assessment artifact under the measured layer's
+evidence pin. Use the artifact content endpoint to inspect a retained result,
+including explicit insufficient evidence and assessed-empty dispositions.
+Absolute association needs an independently accepted map on the actual reference
+exposure. The default astrometry stride attempts a fit on every 60th capture,
+so many references have no accepted map.
+
 ## Source configuration and preset identity
 
 The configured `Preview` graph alias can produce an absolute fixed transfer:
@@ -227,7 +250,7 @@ and never cached as one. Its tile opens the player in the same viewer. Large sam
 ## Reproducible qualification
 
 `FullDayStillProductQualificationTests` uses actual 640×640 RGGB VirtualSky
-output and the verified 119,625-row production catalog. Its fixed site is
+output and the verified 119,613-row production catalog. Its fixed site is
 35.347° N, 113.878° W, America/Phoenix, starting October 12, 2026. It resolves
 both sunrise boundaries through shared Astronomy and retains every actual raw
 capture and published fixed preview. The bounded exposure recipe is documented
@@ -342,12 +365,4 @@ identity. Unchanged retries verify the immutable publication; changed captures,
 exclusions or linked products publish a new identity while preserving prior
 outputs. A link is a snapshot of a published product, not a mutable latest pointer.
 
-The schema-3 reader advances the existing `minimum-compatible-revision` image
-boundary to `ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c`. This makes existing
-installers take their paired SQLite checkpoint before adoption; `state-contracts`
-alone is descriptive in the current installer. The frozen previous-release SQL
-images are unchanged. Only the nightly catalog version marker and the two
-extended table constraints are declared as snapshot-rollback exceptions. Rollback
-restores the paired schema-2 checkpoint; a schema-2 binary does not open schema 3.
-This preserves the existing upgrade-checkpoint policy and its documented scope,
-without adding reverse migrations or changing the filesystem layout.
+The installer lifecycle starts with the [0.10.0-beta.1 state contract](../hvo-install-contract.md#cameraagent-state-contract-baseline).

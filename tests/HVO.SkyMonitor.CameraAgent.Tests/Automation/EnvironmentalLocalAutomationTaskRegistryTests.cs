@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Automation")]
 public sealed class EnvironmentalLocalAutomationTaskRegistryTests
 {
     [TestMethod]
@@ -269,7 +270,7 @@ public sealed class EnvironmentalLocalAutomationTaskRegistryTests
             EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
             => ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued, null));
+                EnvironmentalObservationPublishDisposition.Committed));
     }
 
     private sealed class FixedDeploymentLocationStore(DeploymentLocationSnapshot active) : IDeploymentLocationStore

@@ -11,7 +11,6 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class UpgradeNoteTerminalSafetyTests
 {
     private const string Version = "1.2.0";
-    private static readonly Guid InstanceId = Guid.Parse("4f7a2c51-8a1e-4c3b-9d2e-0b6f5a1c7e90");
 
     [TestMethod]
     [DataRow(0x202E)]
@@ -107,7 +106,7 @@ public sealed class UpgradeNoteTerminalSafetyTests
         var root = JsonNode.Parse(ReleaseManifestTests.Fixture())!.AsObject();
         root["upgradeNotes"] = new JsonArray(new JsonObject { ["version"] = Version, ["text"] = text });
         var json = JsonSerializer.SerializeToUtf8Bytes(root);
-        return UpgradeNotes.Render(UpgradeNotes.Plan("1.0.0", ReleaseManifest.Parse(json), InstanceId));
+        return UpgradeNotes.Render(UpgradeNotes.Plan("1.0.0", ReleaseManifest.Parse(json)));
     }
 
     private static string RenderDirect(string text)

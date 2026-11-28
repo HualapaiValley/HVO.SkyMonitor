@@ -12,16 +12,18 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class OwnerRecoveryManagerTests
 {
     [TestMethod]
-    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Execute_GeneratesPrivateCredentialAndUsesAuthenticatedSocketPath(bool silo)
     {
-        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await RecoveryFixture.CreateAsync(silo).ConfigureAwait(false);
         var recoveryClient = new FakeRecoveryClient();
 
         var result = await OwnerRecoveryManager.ExecuteAsync(
             fixture.Request(),
             socketPath =>
             {
-                var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
+                var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV44.CatalogId);
                 Assert.AreEqual(OwnerRecoverySocket.PathFor(paths), socketPath);
                 return recoveryClient;
             },
@@ -82,7 +84,7 @@ public sealed class OwnerRecoveryManagerTests
         // Nothing reached CameraAgent, nothing was recorded for a resume to repeat, and no copy of the refused
         // credential stays behind, so a fresh recovery is not blocked.
         Assert.AreEqual(0, recoveryClient.RequestCount);
-        var operationsRoot = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId).OperationsRoot;
+        var operationsRoot = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV44.CatalogId).OperationsRoot;
         Assert.IsFalse(File.Exists(Path.Combine(operationsRoot, $"cameraagent-{fixture.InstanceId:D}.owner-recovery.json")));
         var stagedRoot = Path.Combine(operationsRoot, "owner-recovery");
         Assert.IsFalse(Directory.Exists(stagedRoot) && Directory.EnumerateFiles(stagedRoot, "*", SearchOption.AllDirectories).Any());
@@ -133,7 +135,7 @@ public sealed class OwnerRecoveryManagerTests
             fixture.Uid,
             fixture.Gid,
             CancellationToken.None)).ConfigureAwait(false);
-        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
+        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV44.CatalogId);
         var stagedCredential = Path.Combine(
             paths.OperationsRoot,
             "owner-recovery",
@@ -264,7 +266,7 @@ public sealed class OwnerRecoveryManagerTests
     public async Task Execute_CorruptRetainedStateReturnsBoundedError()
     {
         using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
-        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
+        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV44.CatalogId);
         var statePath = Path.Combine(paths.OperationsRoot, $"cameraagent-{fixture.InstanceId:D}.owner-recovery.json");
         SafeFileSystem.WriteTextAtomic(statePath, "{ invalid retained state");
 
@@ -345,14 +347,14 @@ public sealed class OwnerRecoveryManagerTests
         {
             _recoverySocket.Dispose();
             File.Delete(OwnerRecoverySocket.PathFor(
-                InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId)));
+                InstallationPaths.Create(Root, InstanceId, HygV44.CatalogId)));
         }
 
-        internal static async Task<RecoveryFixture> CreateAsync()
+        internal static async Task<RecoveryFixture> CreateAsync(bool silo = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-or-{Guid.NewGuid():N}"[..15]);
             var instanceId = Guid.NewGuid();
-            var paths = InstallationPaths.Create(root, instanceId, HygV42.CatalogId);
+            var paths = InstallationPaths.Create(root, instanceId, HygV44.CatalogId);
             foreach (var directory in new[]
             {
                 paths.ProductRoot,
@@ -372,13 +374,13 @@ public sealed class OwnerRecoveryManagerTests
             var gid = NativeLinux.getgid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
             var catalog = new CatalogInstallationIdentity(
-                HygV42.CatalogId,
-                HygV42.PackageVersion,
-                "2",
+                HygV44.CatalogId,
+                HygV44.PackageVersion,
                 "3",
-                HygV42.DatabaseSha256,
-                HygV42.DatabaseLength,
-                HygV42.RowCount,
+                "4",
+                HygV44.DatabaseSha256,
+                HygV44.DatabaseLength,
+                HygV44.RowCount,
                 paths.CatalogRoot,
                 new string('a', 64),
                 "local-offline");
@@ -388,18 +390,18 @@ public sealed class OwnerRecoveryManagerTests
                 $"sha256:{new string('c', 64)}",
                 "amd64",
                 null,
-                UpgradeCompatibility: "backward-compatible",
+                StateContract: CameraAgentStateContract.Current,
                 SourceRevision: new string('8', 40),
                 Component: "CameraAgent",
                 ConfigurationContract: "cameraagent-install-v1",
-                CatalogContract: "hyg-v42-production-p3-s2");
+                CatalogContract: CameraAgentImageContract.CatalogContract);
             var installationId = Guid.NewGuid();
             var configurationSha = new string('e', 64);
             var rigSha = new string('f', 64);
             var scheduleSha = new string('1', 64);
             var composeSha = ComposeDeployment.ComputeSha256("services: {}\n");
             var manifest = new InstanceManifest(
-                1,
+                DeploymentSchemaVersions.InstanceManifest,
                 "HVO.SkyMonitor",
                 "cameraagent-install-v1",
                 DeploymentComponent.CameraAgent,
@@ -434,13 +436,13 @@ public sealed class OwnerRecoveryManagerTests
                 image,
                 null,
                 daemon,
-                "backward-compatible",
+                CameraAgentStateContract.Current,
                 DateTimeOffset.UtcNow,
                 LifecycleCondition: InstanceLifecycleCondition.Installed,
                 Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"));
             var result = new InstallationResult(
-                1,
+                DeploymentSchemaVersions.InstallationResult,
                 InstallationOutcome.Installed,
                 installationId,
                 instanceId,
@@ -475,6 +477,19 @@ public sealed class OwnerRecoveryManagerTests
                 true,
                 "owner-password-change-required",
                 DateTimeOffset.UtcNow);
+            if (silo)
+            {
+                using var harness = new SiloHarness(paths, instanceId, seed: false);
+                image = image with { FirstBootContract = SiloInstallation.FirstBootContract };
+                manifest = manifest with
+                {
+                    ComponentSchemaVersion = SiloRuntimeProfile.ComponentSchemaVersion,
+                    ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion,
+                    Image = image,
+                    Silo = harness.Identity with { DataRootFileSystem = SiloRuntimeProfile.RequiredFileSystem }
+                };
+                result = result with { ComposeTemplateVersion = SiloRuntimeProfile.ComposeTemplateVersion, Image = image };
+            }
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ManifestPath,
                 manifest,

@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using SharedLinuxOpenFlags = HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags;
+using SharedLinuxOpenFlags = HVO.SkyMonitor.LocalFiles.LinuxOpenFlags;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 

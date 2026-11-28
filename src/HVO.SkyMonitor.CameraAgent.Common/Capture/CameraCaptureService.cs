@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
@@ -8,7 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
@@ -28,7 +29,7 @@ public sealed class CameraCaptureService(
     IPlanetEphemeris planetEphemeris,
     CaptureControlTelemetry captureControlTelemetry,
     CaptureAdmissionCoordinator captureAdmissionCoordinator,
-    FleetRuntimeState fleetRuntimeState,
+    CaptureRuntimeState captureRuntimeState,
     IHostApplicationLifetime applicationLifetime,
     ILogger<CameraCaptureService> logger,
     CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
@@ -37,6 +38,7 @@ public sealed class CameraCaptureService(
     ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
     CaptureProjectedSceneStager? projectedSceneStager = null,
     SqliteNamedRigProfileStore? namedRigProfiles = null,
+    SqliteCalibrationLibraryStore? calibrationLibrary = null,
     CameraModuleOwnership? moduleOwnership = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
@@ -49,7 +51,7 @@ public sealed class CameraCaptureService(
     private readonly CaptureControlTelemetry _captureControlTelemetry = captureControlTelemetry;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureAdmissionCoordinator _captureAdmissionCoordinator = captureAdmissionCoordinator;
-    private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
+    private readonly CaptureRuntimeState _captureRuntimeState = captureRuntimeState;
     private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
@@ -63,6 +65,7 @@ public sealed class CameraCaptureService(
     private readonly CameraModuleOwnership? _moduleOwnership = moduleOwnership;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
     internal TimeSpan ModuleLeaseDrainTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    internal Func<CaptureScheduleCaptureContext, CancellationToken, Task>? PreparedAttachmentCommitted { get; init; }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -119,6 +122,7 @@ public sealed class CameraCaptureService(
                 stoppingToken, prepared is null ? captureContext?.RevisionChanged ?? CancellationToken.None : CancellationToken.None);
             var captureToken = revisionCancellation.Token;
             ICameraModule? module = null;
+            CancellationTokenSource? runnerCancellation = null;
             var moduleInitialized = false;
             var activationFailed = false;
             var retryPreparedConflict = false;
@@ -127,16 +131,49 @@ public sealed class CameraCaptureService(
                 module = _moduleFactory.Create(config.ModuleType);
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
-                await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
+                var durableIngress = _rawCaptureIngress as RawCaptureIngress;
+                if (config.CenteredExposure is not null && (durableIngress is null || module is not ICameraBoundExposureCapture))
+                    throw new InvalidOperationException("The selected camera cannot bind durable centered exposure attempts.");
+                if (config.CenteredExposure is { } centeredProfile && (!centeredProfile.IsValid() ||
+                    string.IsNullOrWhiteSpace(config.AgentId) || config.DeploymentLocation is null))
+                    throw new InvalidOperationException("Centered exposure requires a valid camera identity and authorized site.");
+                var transition = durableIngress is not null && config.AgentId is { } agentId
+                    ? await durableIngress.FenceCenteredOwnerAsync(agentId, config.CenteredExposure?.CameraId,
+                        config.CenteredExposure is null ? null : CaptureContractJson.ComputeCanonicalJsonSha256(config), captureToken)
+                        .ConfigureAwait(false)
+                    : null;
+                string? deviceIdentity = null;
+                if (config.CenteredExposure is not null && transition is { } attachment &&
+                    module is ICameraBoundExposureCapture bound)
+                {
+                    await bound.InitializeBoundAsync(config, async (identity, token) =>
+                    {
+                        await durableIngress!.FenceCenteredDeviceAsync(attachment, identity, token).ConfigureAwait(false);
+                        deviceIdentity = identity;
+                    }, captureToken).ConfigureAwait(false);
+                }
+                else if (transition?.RequiresLegacyQuiescence == true && module is ICameraBoundExposureCapture legacyBound)
+                {
+                    await legacyBound.InitializeBoundAsync(config, static (_, _) => ValueTask.CompletedTask, captureToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
+                }
                 if (prepared is not null)
                 {
                     try
                     {
-                        await _scheduleRuntimeCoordinator!.CommitPreparedStartupAsync(prepared,
-                            token => namedRigProfiles!.CommitInitializedAsync(pending!, config, token),
-                            stoppingToken).ConfigureAwait(false);
-                        captureContext = _scheduleRuntimeCoordinator.CaptureContext;
+                        captureContext = await _scheduleRuntimeCoordinator!.CommitPreparedAttachmentAsync(prepared, async token =>
+                        {
+                            await namedRigProfiles!.CommitInitializedAsync(pending!, config, token).ConfigureAwait(false);
+                            if (transition is not null)
+                                await durableIngress!.ActivateCenteredOwnerAsync(transition, token).ConfigureAwait(false);
+                        }, stoppingToken).ConfigureAwait(false);
                         startupPending = null;
+                        if (PreparedAttachmentCommitted is { } afterCommit)
+                            await afterCommit(captureContext.Value, stoppingToken).ConfigureAwait(false);
                     }
                     catch (CaptureScheduleStoreConflictException) when (
                         _captureAdmissionCoordinator.Snapshot.State != CaptureAdmissionState.Unavailable)
@@ -153,18 +190,28 @@ public sealed class CameraCaptureService(
                         throw;
                     }
                 }
+                if (prepared is null && transition is not null)
+                    await durableIngress!.ActivateCenteredOwnerAsync(transition, captureToken).ConfigureAwait(false);
                 moduleInitialized = true;
                 startupPending = null;
                 if (prepared is not null)
                     namedRigProfiles!.ReportPendingRuntimeFailure(null);
                 namedRigProfiles?.ReportActiveRuntimeFailure(null);
-                _fleetRuntimeState.ModuleAvailable();
+                _captureRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
-                _moduleOwnership?.Publish(module, config);
+                runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
+                if (runnerCancellation.IsCancellationRequested)
+                {
+                    if (stoppingToken.IsCancellationRequested) break;
+                    continue;
+                }
+                _moduleOwnership?.Publish(module, config, runnerCancellation.Token);
 
                 var hostContext = new CaptureHostContext(
                      config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
-                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger);
+                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger, calibrationLibrary,
+                     deviceIdentity, transition);
 
                 var runner = new CameraModuleRunner(
                     module,
@@ -174,11 +221,9 @@ public sealed class CameraCaptureService(
                     _captureAdmissionCoordinator,
                     _planetEphemeris,
                     _captureControlTelemetry,
-                    _fleetRuntimeState,
+                    _captureRuntimeState,
                     _scheduleRuntimeCoordinator,
                     _environmentalTriggers);
-                using var runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                    captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
                 await runner.RunAsync(runnerCancellation.Token).ConfigureAwait(false);
                 if (_scheduleRuntimeCoordinator is not null &&
                     runnerCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
@@ -205,13 +250,19 @@ public sealed class CameraCaptureService(
                     namedRigProfiles?.ReportPendingRuntimeFailure(
                         $"Pending rig failed capture initialization ({ex.GetType().Name}); cancel it or correct the hardware and restart.");
                 }
+                var isStorageFailure = ex is RawIngressConflictException or IOException or InvalidDataException or
+                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException;
                 if (!moduleInitialized && ex is not OperationCanceledException && !activationFailed)
                     namedRigProfiles?.ReportActiveRuntimeFailure(
                         prepared is null ? $"Active camera module initialization failed ({ex.GetType().Name}); capture unavailable."
                             : null);
-                _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
-                if (ex is RawIngressConflictException or IOException or InvalidDataException or
-                    UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+                _captureRuntimeState.CaptureFailed(
+                    ex.GetType().Name,
+                    isCameraDisconnected: !isStorageFailure && !activationFailed &&
+                                          CaptureRuntimeState.IsCameraDisconnectException(ex),
+                    isStorageFailure: isStorageFailure,
+                    isStartupStorageFailure: isStorageFailure && !moduleInitialized);
+                if (isStorageFailure)
                 {
                     _logger.RawIngressRefused("capture-loop", "storage-unavailable");
                 }
@@ -224,29 +275,16 @@ public sealed class CameraCaptureService(
                     break;
                 }
 
-                if (activationFailed)
-                {
-                    try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-                    break;
-                }
-
                 if (retryPreparedConflict)
                 {
                     continue;
                 }
-
-                try
-                {
-                    await Task.Delay(RestartDelay, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
             }
             finally
             {
+                using var lifetime = runnerCancellation;
+                if (_rawCaptureIngress is RawCaptureIngress durableIngress)
+                    durableIngress.RecentCenteredExposures.Deactivate(config);
                 if (module is not null)
                 {
                     // Side-path leases (focus previews) are cancelled and drained before the module is closed.
@@ -262,7 +300,9 @@ public sealed class CameraCaptureService(
                     }
                     catch (Exception ex)
                     {
-                        _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
+                        _captureRuntimeState.CaptureFailed(
+                            ex.GetType().Name,
+                            isCameraDisconnected: CaptureRuntimeState.IsCameraDisconnectException(ex));
                         _logger.CaptureLoopFailed(ex);
                         if (!stoppingToken.IsCancellationRequested)
                         {
@@ -277,6 +317,16 @@ public sealed class CameraCaptureService(
                         }
                     }
                 }
+            }
+
+            try
+            {
+                await Task.Delay(activationFailed ? Timeout.InfiniteTimeSpan : RestartDelay, _timeProvider, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
         }
     }

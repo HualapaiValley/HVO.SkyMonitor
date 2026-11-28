@@ -118,6 +118,8 @@ internal sealed partial class InstallWizardSession
     /// <summary>The value the command line gave <paramref name="option"/>.</summary>
     public string? GivenValue(string option) => _given.TryGetValue(option, out var value) ? value : null;
 
+    public CameraAgentStorageLayout StorageLayout => CommandLine.ParseStorageLayout(GivenValue("--storage-layout"));
+
     /// <summary>Where the instance ID came from, for the operator.</summary>
     public string InstanceIdSource
         => Given("--instance-id") ? "from --instance-id"
@@ -134,6 +136,8 @@ internal sealed partial class InstallWizardSession
     {
         var a = Answers;
         var handedRelease = Given("--release") || Given("--image-ref");
+        var storageLayout = StorageLayout;
+        var savedSilo = storageLayout == CameraAgentStorageLayout.Silo ? Saved : null;
         return new InstallAnswers
         {
             SchemaVersion = InstallAnswers.CurrentSchemaVersion,
@@ -157,6 +161,12 @@ internal sealed partial class InstallWizardSession
             AcknowledgePlaintextHttp = Given("--acknowledge-plaintext-http") ? true : IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
             GeneratePassword = a.Password == OwnerPasswordChoice.Generate ? true : null,
             ReplayProfile = a.ReplayProfile,
+            StorageLayout = storageLayout,
+            SiloImageArchive = GivenValue("--silo-image-archive") ?? savedSilo?.SiloImageArchive,
+            SiloArchiveEndpoint = GivenValue("--silo-archive-endpoint") ?? savedSilo?.SiloArchiveEndpoint,
+            SiloArchiveBucket = GivenValue("--silo-archive-bucket") ?? savedSilo?.SiloArchiveBucket,
+            SiloArchiveCaFile = GivenValue("--silo-archive-ca-file") ?? savedSilo?.SiloArchiveCaFile,
+            SiloArchiveCredentialFile = GivenValue("--silo-archive-credential-file") ?? savedSilo?.SiloArchiveCredentialFile,
             IlluminationMode = a.IlluminationMode,
             Cpus = Blank(a.Cpus) is { } cpus ? decimal.Parse(cpus, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) : null,
             Memory = Given("--memory") ? GivenValue("--memory") : Blank(a.Memory)
@@ -497,7 +507,11 @@ internal sealed partial class InstallWizardSession
             TimeZone = Text("--time-zone", saved?.TimeZoneId, "UTC"),
             Cpus = Text("--cpus", saved?.Cpus?.ToString(CultureInfo.InvariantCulture), string.Empty),
             Memory = Text("--memory", saved?.Memory, string.Empty),
-            ReplayProfile = GivenValue("--replay-profile") is { } profile ? CommandLine.ParseReplayProfile(profile) : saved?.ReplayProfile ?? CameraAgentReplayProfile.InProcess,
+            ReplayProfile = StorageLayout == CameraAgentStorageLayout.Silo
+                ? CameraAgentReplayProfile.InProcess
+                : GivenValue("--replay-profile") is { } replay
+                    ? CommandLine.ParseReplayProfile(replay)
+                    : saved?.ReplayProfile ?? CameraAgentReplayProfile.InProcess,
             IlluminationMode = GivenValue("--illumination-mode") ?? saved?.IlluminationMode,
             Password = password,
             PasswordFile = Text("--password-file", saved?.PasswordFile, string.Empty)

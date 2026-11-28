@@ -3,10 +3,10 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
@@ -21,7 +21,7 @@ internal static class MeasuredTrailBrowserFixture
     {
         using var provider = CreateProvider(root);
         var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
-        var configuration = CreateConfiguration(root, CreateOneFrameScenario(epoch));
+        var configuration = CreateConfiguration(CreateOneFrameScenario(epoch));
         provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -81,7 +81,7 @@ internal static class MeasuredTrailBrowserFixture
     internal static async Task FinalizeAsync(string root)
     {
         using var provider = CreateProvider(root);
-        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(CreateConfiguration(root));
+        provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(CreateConfiguration());
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var worker = provider.GetRequiredService<TransientWorkerService>();
         for (var index = 0; index < 24; index++)
@@ -95,13 +95,12 @@ internal static class MeasuredTrailBrowserFixture
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:TransientDetection:Mode"] = "Edge",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }
@@ -112,7 +111,6 @@ internal static class MeasuredTrailBrowserFixture
             Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
 
     private static CameraModuleConfig CreateConfiguration(
-        string root,
         VirtualTransientScenarioDefinition? scenario = null,
         VirtualCloudScenarioDefinition? cloudScenario = null,
         int width = 64,
@@ -163,8 +161,7 @@ internal static class MeasuredTrailBrowserFixture
                     new { widthPixels = width, heightPixels = height, environmentalKinds = Array.Empty<string>() }),
                 Step("OverlayManifest", "manifest", 50, ["combined-preview", "scene-layers", "facts"], new { }),
                 new CaptureProcessingStepConfig("Storage", "storage", 100,
-                    JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 3650,
-                        updateLatestFrame = false, queueForUpload = false }), DependsOn: ["$raw", "manifest"])
+                    JsonSerializer.SerializeToElement(new { updateLatestFrame = false }), DependsOn: ["$raw", "manifest"])
 
             ]),
             AgentId: CameraAgentKestrelFixture.AgentId);

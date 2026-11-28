@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class HealthPageTests
 {
     [TestMethod]
@@ -23,8 +24,7 @@ public sealed class HealthPageTests
         {
             var rail = cut.Find(".ops-status-rail");
             StringAssert.Contains(rail.TextContent, "Degraded", StringComparison.Ordinal);
-            StringAssert.Contains(rail.TextContent, "1 of 5 checks need attention", StringComparison.Ordinal);
-            StringAssert.Contains(rail.TextContent, "Heartbeat acknowledged 2s ago", StringComparison.Ordinal);
+            StringAssert.Contains(rail.TextContent, "1 of 4 checks need attention", StringComparison.Ordinal);
             Assert.AreEqual("Degraded", Chip(cut, "health-processing-heading"));
             Assert.AreEqual("Healthy", Chip(cut, "health-acquisition-heading"));
             Assert.AreEqual("Healthy", Chip(cut, "health-host-heading"));
@@ -40,28 +40,6 @@ public sealed class HealthPageTests
             StringAssert.Contains(cut.Markup, "3.3% avg", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "2h 5m", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("form"));
-        });
-    }
-
-    [TestMethod]
-    public void Standalone_ShowsCentralChecksAsNotUsed()
-    {
-        using var context = new BunitContext();
-        Configure(context, out var system, out _);
-        system.HealthHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<SystemHealthView>.Success(TestSystemUiService.Health(centralEnabled: false)));
-
-        var cut = context.Render<HealthPage>();
-
-        cut.WaitForAssertion(() =>
-        {
-            var rail = cut.Find(".ops-status-rail");
-            StringAssert.Contains(rail.TextContent, "Not used", StringComparison.Ordinal);
-            StringAssert.Contains(rail.TextContent, "Standalone agent", StringComparison.Ordinal);
-            var delivery = Row(cut, "Artifact delivery");
-            StringAssert.Contains(delivery.TextContent, "Not used", StringComparison.Ordinal);
-            StringAssert.Contains(delivery.TextContent, "Standalone agent", StringComparison.Ordinal);
-            Assert.IsNull(delivery.QuerySelector("a"));
         });
     }
 

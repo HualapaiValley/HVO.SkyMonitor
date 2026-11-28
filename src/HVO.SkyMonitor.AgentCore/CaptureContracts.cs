@@ -7,7 +7,33 @@ public sealed record CaptureRequest(
     DateTimeOffset RequestedStartUtc,
     TimeSpan TargetInterval,
     CaptureMode Mode,
-    CaptureSetpoint? RequestedSetpoint = null);
+    CaptureSetpoint? RequestedSetpoint = null)
+{
+    [JsonIgnore]
+    public string? BoundGraphRevisionId { get; init; }
+
+    [JsonIgnore]
+    public CapturePipelineConfig? BoundGraph { get; init; }
+
+    /// <summary>The earliest authorized shutter start for a confirmed bound capture grant.</summary>
+    [JsonIgnore]
+    public DateTimeOffset? BoundStartNotBeforeUtc { get; init; }
+
+    /// <summary>The exclusive shutter-start limit for a confirmed bound capture grant.</summary>
+    [JsonIgnore]
+    public DateTimeOffset? BoundStartBeforeUtc { get; init; }
+
+    /// <summary>Check the confirmed grant at the device-owned shutter boundary.</summary>
+    public void RequireOpenBoundStart(DateTimeOffset utc) => RequireOpenBoundStart(utc, null);
+
+    /// <summary>Check the shutter sample and its chronology after device controls were applied.</summary>
+    public void RequireOpenBoundStart(DateTimeOffset utc, DateTimeOffset? appliedUtc)
+    {
+        if (BoundStartBeforeUtc is { } limit && utc >= limit ||
+            BoundStartNotBeforeUtc is { } opening && (utc < opening || utc < appliedUtc))
+            throw new CaptureStartWindowClosedException();
+    }
+}
 
 public sealed record CaptureResult(
     CameraFrame? Frame,
@@ -35,7 +61,13 @@ public sealed record CaptureSetpoint(
     TimeSpan Exposure,
     double Gain,
     TimeSpan? NextIntervalOverride,
-    double? TargetFps);
+    double? TargetFps)
+{
+    public bool IsValid() =>
+        Exposure > TimeSpan.Zero && double.IsFinite(Gain) && Gain >= 0 &&
+        (TargetFps is not { } fps || double.IsFinite(fps) && fps > 0) &&
+        NextIntervalOverride is not { Ticks: <= 0 };
+}
 
 [Flags]
 public enum CameraModuleCapabilities

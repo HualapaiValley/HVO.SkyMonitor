@@ -18,11 +18,12 @@ internal sealed partial class CameraAgentLifecycleManager
         InstallationPaths paths,
         InstanceManifest manifest,
         LifecycleOperationKind kind,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VerifiedRelease? admittedRelease = null)
     {
         if (kind is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall)
             await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, admittedRelease).ConfigureAwait(false);
         else if (kind == LifecycleOperationKind.Uninstall)
             await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: false, cancellationToken).ConfigureAwait(false);
         return await InstallRecordStore.SettleInstanceAsync(
@@ -58,8 +59,6 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         ImageInstallationIdentity candidate,
         bool rollback,
-        bool stateSnapshotRequired,
-        LifecycleStateSnapshot? retainedSnapshot,
         HostPrerequisiteReport? hostLimits)
     {
         var resources = rollback ? manifest.Resources : CameraAgentContainerResources.UpgradeTarget(manifest.Resources);
@@ -80,16 +79,8 @@ internal sealed partial class CameraAgentLifecycleManager
             new(DeploymentPlanAction.Change, "file", Path.Combine(paths.ConfigRoot, "compose", "compose.yml"), "Compose model"),
             new(DeploymentPlanAction.Change, "file", paths.ManifestPath, "instance manifest")
         };
-        if (retainedSnapshot is not null)
-        {
-            items.Add(new(DeploymentPlanAction.Change, "databases", paths.StateRoot,
-                $"restored from snapshot {retainedSnapshot.SnapshotId:D}; database changes made since the upgrade are lost"));
-        }
-        if (stateSnapshotRequired)
-        {
-            items.Add(new(DeploymentPlanAction.Create, "snapshot", Path.Combine(paths.OperationsRoot, "lifecycle"),
-                "the small databases, before the candidate starts"));
-        }
+        items.Add(new(DeploymentPlanAction.Create, "snapshot", Path.Combine(paths.OperationsRoot, "lifecycle"),
+            "the small databases, before the candidate starts"));
         items.Add(new(DeploymentPlanAction.Unchanged, "folder", paths.StateRoot,
             "frames, archives and derived products are never copied"));
         items.Add(RecordItem(request, paths, manifest, DeploymentPlanAction.Change));

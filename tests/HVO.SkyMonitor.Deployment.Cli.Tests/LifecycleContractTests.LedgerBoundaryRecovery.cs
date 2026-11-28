@@ -14,10 +14,9 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    public async Task RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails(bool interruptRecovery, bool unexpectedProtectedEdit)
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task BaselineRollbackPreservesCommittedLedgerAuthority(bool plan)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -36,74 +35,34 @@ public sealed partial class LifecycleContractTests
         await File.WriteAllBytesAsync(history, protector.Protect(JsonSerializer.SerializeToUtf8Bytes(
             new JsonObject { ["schemaVersion"] = 1, ["locationId"] = "synthetic" })));
         var ledger = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
-        var startedOld = false;
-        var recoveredStarts = 0;
-        byte[]? upgradedHistory = null;
         fixture.Runner.OnComposeUp = image =>
         {
-            if (image != CandidateImageId)
-            {
-                startedOld = true;
-                Assert.IsFalse(File.Exists(ledger), "The old image must be started on its paired pre-ledger state.");
-                if (unexpectedProtectedEdit)
-                    File.WriteAllBytes(history, protector.Protect("{\"locationId\":\"unexpected-edit\"}"u8.ToArray()));
-                return;
-            }
-            if (startedOld)
-            {
-                Assert.IsTrue(File.Exists(ledger), "Recovery must restore S1 authority before restarting the committed image.");
-                CollectionAssert.AreEqual(upgradedHistory!, File.ReadAllBytes(history));
-                recoveredStarts++;
-            }
-            if (!File.Exists(ledger)) SeedBoundaryLedger(ledger, retained, history, protector);
+            if (image == CandidateImageId && !File.Exists(ledger)) SeedBoundaryLedger(ledger, retained, history, protector);
         };
-        _ = await CameraAgentLifecycleManager.ExecuteAsync(UpgradeRequest(fixture, assertMigration: false), fixture.Runner,
+        _ = await CameraAgentLifecycleManager.ExecuteAsync(UpgradeRequest(fixture), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
             CancellationToken.None, error: TextWriter.Null);
-        upgradedHistory = await File.ReadAllBytesAsync(history);
-        var upgradedFacts = ReadStoreFacts(fixture.Paths);
-        var interrupted = false;
-        var oldHook = CameraAgentStateSnapshot.StepCompleted;
-        CameraAgentStateSnapshot.StepCompleted = step =>
+        var committedHistory = await File.ReadAllBytesAsync(history);
+        var committedLedger = await File.ReadAllBytesAsync(ledger);
+        var committedFacts = ReadStoreFacts(fixture.Paths);
+        var committedJournal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var dockerCalls = fixture.Runner.InvocationCount;
+
+        var rollback = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback) with { DryRun = plan }, fixture.Runner,
+            _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual(plan ? "planned" : "completed", rollback.Outcome);
+        Assert.AreEqual(plan ? CandidateImageId : fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        if (plan)
         {
-            if (!interruptRecovery || !startedOld || interrupted || step != "restore-boundary-authority") return;
-            interrupted = true;
-            throw new IOException("Synthetic interruption after recovery authority became durable.");
-        };
-        try
-        {
-            var rejectingOwner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-                _ => rejectingOwner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
-            Assert.IsTrue(startedOld);
-            if (unexpectedProtectedEdit)
-            {
-                Assert.IsFalse(File.Exists(ledger), "Unknown protected edits must not authorize reconstruction of authority.");
-                Assert.AreEqual(0, recoveredStarts);
-                Assert.AreEqual("{}", await File.ReadAllTextAsync(retained));
-                return;
-            }
-            if (interruptRecovery)
-            {
-                Assert.IsTrue(interrupted, "The first recovery must reach its durable authority boundary.");
-                var resumed = await CameraAgentLifecycleManager.ExecuteAsync(
-                    fixture.Request(LifecycleOperationKind.Rollback) with { Resume = true }, fixture.Runner,
-                    _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-                    fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
-                Assert.AreEqual("completed", resumed.Outcome);
-            }
-            else
-            {
-                Assert.IsTrue(fixture.Runner.Running, "A failed old image must not leave the committed image stopped.");
-                Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-                CollectionAssert.AreEqual(upgradedHistory, await File.ReadAllBytesAsync(history));
-                CollectionAssert.AreEqual(upgradedFacts, ReadStoreFacts(fixture.Paths));
-            }
-            Assert.IsGreaterThan(0, recoveredStarts);
-            Assert.AreEqual("{}", await File.ReadAllTextAsync(retained));
+            Assert.IsTrue(fixture.Runner.InvocationCount >= dockerCalls);
+            CollectionAssert.AreEqual(committedJournal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
         }
-        finally { CameraAgentStateSnapshot.StepCompleted = oldHook; }
+        CollectionAssert.AreEqual(committedHistory, await File.ReadAllBytesAsync(history));
+        CollectionAssert.AreEqual(committedLedger, await File.ReadAllBytesAsync(ledger));
+        CollectionAssert.AreEqual(committedFacts, ReadStoreFacts(fixture.Paths));
+        Assert.AreEqual("{}", await File.ReadAllTextAsync(retained));
     }
 
     private static void SeedBoundaryLedger(string ledger, string retained, string history, IDataProtector protector)

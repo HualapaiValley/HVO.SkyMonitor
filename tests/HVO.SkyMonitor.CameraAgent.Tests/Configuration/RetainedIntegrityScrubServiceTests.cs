@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class RetainedIntegrityScrubServiceTests
 {
     private static readonly double[] CompleteBackoff = [1, 2, 4, 8];
@@ -26,8 +27,7 @@ public sealed class RetainedIntegrityScrubServiceTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -113, 0, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -113, 0, "UTC")
         });
         var configuration = await new FileCameraAgentConfigurationLoader(options,
             NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None).ConfigureAwait(false);
@@ -59,8 +59,7 @@ public sealed class RetainedIntegrityScrubServiceTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
             AgentId = "synthetic",
-            Observatory = new ObservatoryLocation(35, -113, 0, "UTC"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = new ObservatoryLocation(35, -113, 0, "UTC")
         });
         var configuration = await new FileCameraAgentConfigurationLoader(options,
             NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None).ConfigureAwait(false);

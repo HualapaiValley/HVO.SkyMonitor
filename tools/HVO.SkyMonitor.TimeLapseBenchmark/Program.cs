@@ -65,9 +65,9 @@ internal static partial class Program
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any())
             throw new ArgumentException("Use a fresh evidence directory.");
         Directory.CreateDirectory(root);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production")
+        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         });
         var assemblyBytes = await File.ReadAllBytesAsync(typeof(Program).Assembly.Location).ConfigureAwait(false);
         Write(Path.Combine(root, "identity.json"), new
@@ -179,9 +179,9 @@ internal static partial class Program
         if (Directory.Exists(root) && Directory.EnumerateFileSystemEntries(root).Any())
             throw new ArgumentException("Use a fresh evidence directory.");
         Directory.CreateDirectory(root);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production")
+        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         });
         Write(Path.Combine(root, "identity.json"), new
         {

@@ -25,8 +25,6 @@ internal sealed record LifecycleContinuity(
     long LaneLeased,
     long ProcessingPending,
     long ProcessingLeased,
-    long OutboxPending,
-    long OutboxLeased,
     bool CaptureInitialized = true,
     long ReplayPending = 0,
     long ReplayLeased = 0,
@@ -147,9 +145,13 @@ internal sealed class CameraAgentLifecycleClient(
         var payload = new Dictionary<string, object>
         {
             ["operationId"] = commandId,
+            // The stable pause owner (#1966): a first-boot-profile CameraAgent lets a resume lift only the pause its own
+            // operation placed. Other CameraAgents ignore it and keep the command identity as the owner.
+            ["ownerOperationId"] = operationId,
             ["reason"] = $"transactional lifecycle operation {operationId:D} {action}"
         };
         if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;
+        var route = new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative);
         try
         {
             while (true)
@@ -162,7 +164,7 @@ internal sealed class CameraAgentLifecycleClient(
                 using var response = await WithBudgetAsync(
                     remaining,
                     token => client.PostAsJsonAsync(
-                        new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
+                        route,
                         payload,
                         token),
                     cancellationToken).ConfigureAwait(false);
@@ -287,9 +289,9 @@ internal sealed class CameraAgentLifecycleClient(
                 // inputs at submission and never builds a scene from the mounted catalog, and a host stop returns
                 // in-flight replay to its queue without consuming an attempt.
                 if (state.CaptureState == "Paused" && state.CaptureInitialized && state.RawLeased == 0 && state.LaneLeased == 0 &&
-                    state.ProcessingLeased == 0 && state.OutboxLeased == 0 &&
+                    state.ProcessingLeased == 0 &&
                     (!requireEmpty || state.QueuesObserved && state.RawPending == 0 && state.LanePending == 0 &&
-                        state.ProcessingPending == 0 && state.OutboxPending == 0))
+                        state.ProcessingPending == 0))
                 {
                     return state;
                 }
@@ -320,7 +322,7 @@ internal sealed class CameraAgentLifecycleClient(
     // Archived replay is reported but never waited for, so it is named only when present.
     private static string Describe(LifecycleContinuity state)
         => $"last observed capture control '{state.CaptureState}' (initialized: {state.CaptureInitialized}, " +
-            $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased}" +
+            $"leased raw/lane/processing {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}" +
             (state.ReplayPending > 0 || state.ReplayLeased > 0
                 ? $"; archived replay pending/leased {state.ReplayPending}/{state.ReplayLeased}, which the drain does not wait for)"
                 : ")");
@@ -419,7 +421,6 @@ internal sealed class CameraAgentLifecycleClient(
         var raw = Value(root, "rawIngress");
         var lanes = Value(root, "captureLanes");
         var processing = Value(root, "captureProcessing");
-        var outbox = Value(root, "artifactOutbox");
         // A CameraAgent image that predates the archived-replay section omits it; its replay is reported as none.
         var replay = root.TryGetProperty("archivedReplay", out var replaySection)
             ? replaySection.GetProperty("value")
@@ -434,8 +435,6 @@ internal sealed class CameraAgentLifecycleClient(
             lanes.GetProperty("leasedCount").GetInt64(),
             processing.GetProperty("pendingCount").GetInt64(),
             processing.GetProperty("leasedCount").GetInt64(),
-            outbox.GetProperty("pendingCount").GetInt64(),
-            outbox.GetProperty("leasedCount").GetInt64(),
             // A CameraAgent image that predates the operations summary omits the
             // flag; treating it as initialized deliberately keeps that image's
             // fast-fail contract on "Unavailable".
@@ -446,7 +445,7 @@ internal sealed class CameraAgentLifecycleClient(
             // annotate from whichever catalog is mounted when it runs.
             root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean(),
             QueueObserved(root, "rawIngress") && QueueObserved(root, "captureLanes") &&
-            QueueObserved(root, "captureProcessing") && QueueObserved(root, "artifactOutbox"));
+            QueueObserved(root, "captureProcessing"));
     }
 
     private static bool QueueObserved(JsonElement root, string name)

@@ -6,10 +6,11 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 /// <summary><c>status</c>, <c>status --watch</c> and <c>info</c> against the fake API.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Cli")]
 public sealed class SkyCliStatusTests
 {
     [TestMethod]
-    public async Task Status_ShowsCaptureQueuesStorageAndLogicHostAsRowsAsync()
+    public async Task Status_ShowsCaptureQueuesAndStorageAsRowsAsync()
     {
         using var harness = new CliHarness();
 
@@ -21,11 +22,9 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "Capture:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "Running", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "4.0 captures/min", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "Artifact outbox: 2 pending (4.0 KiB), 0 quarantined", StringComparison.Ordinal);
+        StringAssert.Contains(result.Out, "Raw ingress:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "Storage raw:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "120.0 GiB free of 500.0 GiB", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "LogicHost:", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "Enabled; heartbeat Available, last acknowledged 2026-10-18T19:29:50Z", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "As of:", StringComparison.Ordinal);
         Assert.DoesNotContain(", Healthy", result.Out, StringComparison.Ordinal);
         Assert.DoesNotContain(", Accepting", result.Out, StringComparison.Ordinal);
@@ -195,7 +194,7 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "0.9.0-test+" + new string('c', 40), StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "CameraAgent: 0.9.0-test+" + new string('b', 40), StringComparison.Ordinal);
         StringAssert.Contains(result.Out, ".NET 10.0.13 (linux-arm64)", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "hyg-v42-production 4.2 (118218 rows)", StringComparison.Ordinal);
+        StringAssert.Contains(result.Out, "hyg-v44-production 4.4 (119613 rows)", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "supervised: 'hvo-sky restart' restarts it", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, $"API key {CliHarness.KeyId} (read-write), from {harness.CredentialsPath}", StringComparison.Ordinal);
     }

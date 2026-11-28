@@ -60,10 +60,8 @@ public sealed partial class ProcessingGraphOperationsTests
 
             // Expired: retention deletes the node's output, and with it the evidence of what the node produced.
             var target = (await store.ReadOutputByArtifactIdAsync(journal.Outputs.Single().ArtifactId, CancellationToken.None).ConfigureAwait(false))!;
-            var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-            await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-            await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId,
+                target.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
             var expired = await ReadRunPageAsync(operations, id).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentRunManifest.ArtifactEvidenceUnavailableReason, expired.ManifestUnavailableReason);
             Assert.HasCount(1, expired.Nodes);

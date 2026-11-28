@@ -10,7 +10,9 @@ dt { color: var(--hvo-muted-weak); font-size: .64rem; letter-spacing: .09em; tex
 dd { margin: .1rem 0 0; overflow-wrap: anywhere; }
 code { color: #e9c986; overflow-wrap: anywhere; }
 .definition-list { margin: 0; padding-left: 1.25rem; }
-.definition-list li { display: grid; padding: .4rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.definition-list li { display: grid; gap: .15rem; padding: .45rem 0; border-top: 1px solid var(--hvo-border-muted); }
+.definition-node__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; }
+.definition-node__link { color: var(--hvo-info-fg); font-size: .85rem; }
 .definition-list span, .definition-list small { color: var(--hvo-muted-strong); }
 .definition-node--disabled strong { text-decoration: line-through; color: var(--hvo-muted); }
 .state-chip { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }

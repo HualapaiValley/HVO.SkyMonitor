@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # HYG 4.4 schema-3 constants and validators, sourced by build-hyg-v44.sh and bundle-hyg-v44.sh. The generic
-# helpers and the HYG 4.2 constants come from catalog-common.sh, which this file sources first; nothing here
-# redefines or weakens a HYG 4.2 value. The values below are the shell copy of the hyg-v44-production entry in
-# src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json, and a unit test proves they agree.
+# helpers and shared bundle constants come from catalog-common.sh. The values below mirror the approved
+# hyg-v44-production entry in ApprovedCatalogSpecifications.json.
 # shellcheck disable=SC2034
 
 HYG44_LIBRARY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

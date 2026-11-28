@@ -21,7 +21,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// </remarks>
 internal static partial class CameraAgentStateSnapshot
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
     private const string ManifestFileName = "manifest.json";
 
     /// <summary>
@@ -197,7 +197,8 @@ internal static partial class CameraAgentStateSnapshot
                 .ConfigureAwait(false);
         }
         var locations = manifest.Databases.Select(static database => database.RelativePath).ToArray();
-        if (manifest.SchemaVersion != SchemaVersion || manifest.SnapshotId != snapshot.SnapshotId ||
+        if (manifest.SchemaVersion != SchemaVersion ||
+            !CameraAgentStateContract.IsCurrent(manifest.Image?.StateContract) || manifest.SnapshotId != snapshot.SnapshotId ||
             manifest.OperationId != snapshot.OperationId || manifest.InstanceId != instanceId ||
             !locations.All(CameraAgentStateInventory.IsValidStoreLocation) ||
             locations.Distinct(StringComparer.Ordinal).Count() != locations.Length ||
@@ -214,7 +215,7 @@ internal static partial class CameraAgentStateSnapshot
             if (VerifyFile(file, database.RelativePath) != new StoreFacts(database.UserVersion, database.SchemaSha256!, database.Tables))
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
-        await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
+        await VerifyProtectedFilesAsync(root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
         return manifest;
     }
 
@@ -590,27 +591,7 @@ internal static partial class CameraAgentStateSnapshot
 
     private static StoreFacts ReadFacts(SqliteConnection connection)
     {
-        long userVersion;
-        using (var version = connection.CreateCommand())
-        {
-            version.CommandText = "PRAGMA user_version;";
-            userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
-        }
-        var schema = new StringBuilder();
-        var tables = new List<string>();
-        using (var objects = connection.CreateCommand())
-        {
-            objects.CommandText = "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema ORDER BY type, name;";
-            using var reader = objects.ExecuteReader();
-            while (reader.Read())
-            {
-                var type = reader.GetString(0);
-                var name = reader.GetString(1);
-                schema.Append(type).Append('\u001f').Append(name).Append('\u001f').Append(reader.GetString(2))
-                    .Append('\u001f').Append(reader.GetString(3)).Append('\u001e');
-                if (type == "table") tables.Add(name);
-            }
-        }
+        var (userVersion, schema, tables) = ReadSchema(connection);
         var counts = new List<StateSnapshotTableCount>(tables.Count);
         foreach (var table in tables)
         {
@@ -621,9 +602,32 @@ internal static partial class CameraAgentStateSnapshot
             counts.Add(new StateSnapshotTableCount(table, Convert.ToInt64(count.ExecuteScalar(), CultureInfo.InvariantCulture)));
         }
         return new StoreFacts(
-            userVersion,
-            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(schema.ToString()))),
-            counts);
+            userVersion, Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(schema)))), counts);
+    }
+
+    private static (long UserVersion, List<string> Objects, List<string> Tables) ReadSchema(SqliteConnection connection)
+    {
+        long userVersion;
+        using (var version = connection.CreateCommand())
+        {
+            version.CommandText = "PRAGMA user_version;";
+            userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+        var schema = new List<string>();
+        var tables = new List<string>();
+        using (var objects = connection.CreateCommand())
+        {
+            objects.CommandText = "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema ORDER BY type, name;";
+            using var reader = objects.ExecuteReader();
+            while (reader.Read())
+            {
+                var type = reader.GetString(0);
+                var name = reader.GetString(1);
+                schema.Add(string.Concat(type, "\u001f", name, "\u001f", reader.GetString(2), "\u001f", reader.GetString(3), "\u001e"));
+                if (type == "table") tables.Add(name);
+            }
+        }
+        return (userVersion, schema, tables);
     }
 
     private static async Task<string> CopySyncedAsync(string source, string destination, CancellationToken cancellationToken)

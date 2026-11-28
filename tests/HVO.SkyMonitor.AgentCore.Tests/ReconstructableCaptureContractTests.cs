@@ -23,7 +23,7 @@ public sealed class ReconstructableCaptureContractTests
             EphemerisModelVersion: "ephemeris-v1", ConstellationTopologyVersion: "topology-v1",
             ConstellationIds: ["ORI"], RigProfileHashSha256: new string('B', 64),
             ProjectionCalibrationVersion: "calibration-v1", SceneUtc: DateTimeOffset.UnixEpoch,
-            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64));
+            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64), CatalogId: "test-catalog");
         var legacy = original with { Scene = scene };
         var compact = original with { Scene = scene.WithoutProjectedGeometry() };
         var oldBytes = CaptureContractJson.Serialize(legacy);
@@ -61,7 +61,7 @@ public sealed class ReconstructableCaptureContractTests
             new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
             "astronomy-v1", "sensor-v1", RigProfileHashSha256: new string('B', 64),
             SceneUtc: DateTimeOffset.UnixEpoch, ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1",
-            ProjectedSceneStageKey: new string('C', 64)).WithoutProjectedGeometry();
+            ProjectedSceneStageKey: new string('C', 64), CatalogId: "test-catalog").WithoutProjectedGeometry();
         var valid = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
         Assert.IsTrue(valid.Validate().IsValid);
         var invalid = valid with
@@ -127,6 +127,22 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void SensorReadoutResolver_UsesOneBytePerBayer8Sample()
+    {
+        var sensor = new SensorProfile("Bayer camera", 8, 6, 5.86, SensorColorMode.Color, CameraPixelFormat.BayerRggb8);
+        var profile = new SensorReadoutProfile(new SensorCrop(0, 0, 8, 6), 1, 1, FrameBinningAlgorithm.IdentityV1,
+            CameraPixelFormat.BayerRggb8, 8, 8, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1,
+            FrameLevelCodeSpace.StoredContainer, 0, 255, CfaPattern: ColorFilterArrayPattern.Rggb, CfaOriginX: 0, CfaOriginY: 0);
+
+        var layout = SensorReadoutResolver.Resolve(sensor, profile).Layout;
+
+        Assert.AreEqual(8, layout.StrideBytes);
+        Assert.AreEqual(48L, layout.ByteLength);
+        Assert.AreEqual(FrameByteOrder.NotApplicable, layout.ByteOrder);
+        Assert.AreEqual(ColorFilterArrayPattern.Rggb, layout.CfaPattern);
+    }
+
+    [TestMethod]
     public void ManifestV2_CloudScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
     {
         var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
@@ -158,7 +174,7 @@ public sealed class ReconstructableCaptureContractTests
                 DateTimeOffset.UnixEpoch.AddSeconds(10),
                 DateTimeOffset.UnixEpoch.AddSeconds(14),
                 4,
-                parameters));
+                parameters), CatalogId: "test-catalog");
         var enriched = original with { Scene = scene };
 
         var encoded = CaptureContractJson.Serialize(enriched);
@@ -219,7 +235,7 @@ public sealed class ReconstructableCaptureContractTests
             "projection-v1",
             "astronomy-v1",
             "sensor-v1",
-            TransientScenario: transient);
+            TransientScenario: transient, CatalogId: "test-catalog");
         var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
         var enriched = original with { Scene = scene };
 
@@ -370,7 +386,10 @@ public sealed class ReconstructableCaptureContractTests
         Assert.IsTrue(parse.IsValid);
         Assert.IsNotNull(parsed);
         Assert.AreEqual(evidence, parsedEvidence);
-        Assert.AreEqual(activeSetpointAppliedUtc, parsed!.Descriptor.Timing.SetpointAppliedUtc);
+        Assert.AreEqual(enriched.Descriptor.Timing, parsed.Descriptor.Timing);
+        Assert.AreEqual<CaptureCadenceMode?>(evidence.CadenceMode, parsed.Descriptor.RetainedCadenceMode);
+        Assert.IsNull(parsed.Descriptor.RetainedEffectiveInterval);
+        Assert.AreEqual(activeSetpointAppliedUtc, parsed.Descriptor.Timing.SetpointAppliedUtc);
         Assert.AreEqual(decidedSetpointAppliedUtc, parsedEvidence!.Decision.SetpointAppliedUtc);
         Assert.AreEqual(10d, parsedEvidence.Decision.ActiveTargetFps);
         Assert.AreEqual(12d, parsedEvidence.Decision.DecidedTargetFps);
@@ -1186,6 +1205,105 @@ public sealed class ReconstructableCaptureContractTests
                     }
                 }
             }).Validate().ReasonCode);
+    }
+
+    [TestMethod]
+    public void CenteredManifestRequiresTheFrozenGraphAndMatchingAdjacentAttempts()
+    {
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var hash = new string('A', 64);
+        var camera = new CameraKey(original.Descriptor.Capture.AgentId, "camera-a");
+        var source = new ExposureAttemptKey(camera, Guid.NewGuid(), 103, Guid.NewGuid());
+        var target = source with { Ordinal = 104, AttemptId = Guid.NewGuid() };
+        var binding = new CenteredExposureBindingV1(source, target, hash);
+        var centered = original with { CenteredExposure = binding, CaptureGraphRevisionId = hash };
+
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(centered));
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(binding, parsed.Document!.Manifest.CenteredExposure);
+        Assert.AreEqual(original.IdempotencyKey, parsed.Document.Manifest.IdempotencyKey);
+
+        var invalidManifests = new[]
+        {
+            centered with { CaptureGraphRevisionId = null },
+            centered with { CenteredExposure = binding with { Target = target with { Ordinal = 105 } } },
+            centered with { CenteredExposure = binding with { Target = target with { Camera = camera with { CameraId = "camera-b" } } } },
+            centered with { CenteredExposure = binding with { Target = target with { RunId = Guid.NewGuid() } } },
+            centered with { CenteredExposure = binding with { Target = target with { AttemptId = source.AttemptId } } },
+            centered with { CenteredExposure = binding with { FrozenRunSha256 = new string('Z', 64) } }
+        };
+        foreach (var invalid in invalidManifests)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "centeredExposure"),
+                invalid.Validate());
+        }
+    }
+
+    [TestMethod]
+    public void CenteredAcquisitionRejectsInvalidObservedAndModuleReportingFacts()
+    {
+        var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var descriptor = manifest.Descriptor;
+        var setpoint = new CaptureSetpoint(TimeSpan.FromMilliseconds(20), 7, TimeSpan.FromSeconds(1), 2);
+        var module = new CenteredModuleReportingEvidence(
+            CaptureMode.Still, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint, TimeSpan.Zero, false);
+        var evidence = new CenteredCaptureAcquisitionEvidence(
+            CaptureCadenceMode.MinimumStartInterval, TimeSpan.FromSeconds(1), descriptor.Timing.ExposureStartedUtc,
+            TimeSpan.FromMilliseconds(25), Guid.NewGuid(), false, ["weather"], null)
+        {
+            Module = module
+        };
+
+        var admitted = manifest with { Descriptor = descriptor with { CenteredAcquisition = evidence } };
+        Assert.IsTrue(admitted.Descriptor.Validate().IsValid);
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(admitted));
+        Assert.IsTrue(parsed.IsValid);
+        var retained = parsed.Document?.Manifest;
+        Assert.IsNotNull(retained);
+        Assert.AreEqual<TimeSpan?>(evidence.EffectiveInterval, retained.Descriptor.RetainedEffectiveInterval);
+
+        Assert.IsTrue((descriptor with { CenteredAcquisition = evidence with { EnvironmentalUnavailable = true, EnvironmentalBeforeCaptureSources = null } })
+            .Validate().IsValid);
+        Assert.AreEqual("descriptor.centeredAcquisition",
+            (descriptor with { CenteredAcquisition = evidence, CycleEvidence = CreateCycleEvidence(descriptor) }).Validate().FieldPath);
+
+        var invalidAcquisitions = new[]
+        {
+            evidence with { CadenceMode = (CaptureCadenceMode)(-1) },
+            evidence with { EffectiveInterval = TimeSpan.Zero },
+            evidence with { ModuleDuration = TimeSpan.FromTicks(-1) },
+            evidence with { ModuleCallStartedUtc = evidence.ModuleCallStartedUtc.ToOffset(TimeSpan.FromHours(1)) },
+            evidence with { AcquisitionAttemptId = Guid.Empty },
+            evidence with { AcquisitionAttemptId = null, EnvironmentalUnavailable = true, EnvironmentalBeforeCaptureSources = null },
+            evidence with { AcquisitionAttemptId = null },
+            evidence with { EnvironmentalBeforeCaptureSources = [] },
+            evidence with { EnvironmentalBeforeCaptureSources = [" "] },
+            evidence with { EnvironmentalBeforeCaptureSources = [new string('x', 129)] },
+            evidence with { EnvironmentalBeforeCaptureSources = ["weather", "weather"] }
+        };
+        foreach (var invalid in invalidAcquisitions)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition"),
+                (descriptor with { CenteredAcquisition = invalid }).Validate());
+        }
+
+        var invalidReporting = new[]
+        {
+            module with { RequestMode = (CaptureMode)(-1) },
+            module with { ResultMode = (CaptureMode)(-1) },
+            module with { RequestedInterval = TimeSpan.Zero },
+            module with { ProcessingLatency = TimeSpan.FromTicks(-1) },
+            module with { ReportedSetpoint = setpoint with { Exposure = TimeSpan.Zero } },
+            module with { ReportedSetpoint = setpoint with { Gain = double.NaN } },
+            module with { ReportedSetpoint = setpoint with { Gain = -1 } },
+            module with { ReportedSetpoint = setpoint with { TargetFps = 0 } },
+            module with { ReportedSetpoint = setpoint with { NextIntervalOverride = TimeSpan.Zero } }
+        };
+        foreach (var invalid in invalidReporting)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition.module"),
+                (descriptor with { CenteredAcquisition = evidence with { Module = invalid } }).Validate());
+        }
     }
 
     [TestMethod]

@@ -17,10 +17,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
 {
     private const int SixHours = 6 * 60 * 60;
-    private const string UnknownMemberFixture = "invalid-unknown-member.json";
     private static readonly TimeSpan Floor = SqliteOrbitalElementsStore.MinimumProviderAttemptInterval;
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(30);
 
@@ -79,7 +79,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.IsEmpty(await host.RunsAsync().ConfigureAwait(false));
 
         host.AdvanceTo(due);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
 
         var run = (await host.RunsAsync().ConfigureAwait(false)).Single();
@@ -135,7 +135,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         var first = await host.StateAsync().ConfigureAwait(false);
 
         host.AdvanceTo(due + Floor);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
 
         var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
@@ -162,6 +162,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(2L, host.Scalar("SELECT COUNT(*) FROM orbital_snapshots;"));
         Assert.AreEqual(1L, host.Scalar("SELECT COUNT(DISTINCT payload_sha256) FROM orbital_snapshots;"));
         Assert.HasCount(1, Directory.GetFiles(Path.Combine(host.OrbitalRoot, "payloads")), "The payload is stored once.");
+        Assert.HasCount(1, Directory.GetFiles(Path.Combine(host.OrbitalRoot, "raw"), "*.csv"), "The CSV body is stored once.");
         Assert.HasCount(2, Directory.GetFiles(Path.Combine(host.OrbitalRoot, "manifests")));
 
         var current = await host.Reader.ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
@@ -251,7 +252,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(1, host.Handler.Count);
 
         host.AdvanceTo(due + Floor);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
 
         var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
@@ -331,16 +332,16 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         await AssertNoRetryAsync(host, third, requests: 3).ConfigureAwait(false);
 
         host.AdvanceTo(third + Floor);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await host.RunsAsync().ConfigureAwait(false))[^1].Outcome);
         Assert.AreEqual(4, host.Handler.Count);
     }
 
     [TestMethod]
-    [DataRow(UnknownMemberFixture, "orbital.unknown-member")]
-    [DataRow("invalid-duplicate-record.json", "orbital.duplicate-record")]
-    public async Task InvalidContentIsQuarantinedAndLastKnownGoodStaysActive(string fixture, string reasonCode)
+    [DataRow("orbital.unknown-member")]
+    [DataRow("orbital.duplicate-record")]
+    public async Task InvalidContentIsQuarantinedAndLastKnownGoodStaysActive(string reasonCode)
     {
         var host = await StartAsync(CreateRoot()).ConfigureAwait(false);
         await using var lifetime = host.ConfigureAwait(false);
@@ -348,7 +349,11 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         var good = (await host.StateAsync().ConfigureAwait(false)).CurrentManifestSha256;
 
         host.AdvanceTo(due + Floor);
-        host.Handler.EnqueueFixture(fixture);
+        var record = CelesTrakGpTestData.Record();
+        var raw = reasonCode == "orbital.unknown-member"
+            ? CelesTrakGpTestData.Payload(CelesTrakGpTestData.Record(("DECAY_DATE", "2026-10-18")))
+            : CelesTrakGpTestData.Payload(record, record);
+        host.Handler.EnqueueBody(raw);
         await host.SweepAsync().ConfigureAwait(false);
 
         var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
@@ -362,7 +367,9 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(due + Floor, state.LastRetrievalSuccessUtc, "The provider still answered with a valid 200.");
         Assert.AreEqual(good, state.CurrentManifestSha256);
         var quarantine = Path.Combine(host.OrbitalRoot, "quarantine");
-        Assert.HasCount(1, Directory.Exists(quarantine) ? Directory.GetFiles(quarantine) : []);
+        var quarantined = Directory.GetFiles(quarantine).Single();
+        Assert.AreEqual(CelesTrakGpTestData.Sha256(raw) + ".raw", Path.GetFileName(quarantined));
+        CollectionAssert.AreEqual(raw, await File.ReadAllBytesAsync(quarantined).ConfigureAwait(false));
         var current = await host.Reader.ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(good, current.Snapshot?.Manifest.ManifestSha256);
         var health = await host.Health.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -413,7 +420,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
             "provider status confirmed"), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status, resumed.ReasonCode);
         host.AdvanceTo(second + (2 * Floor));
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
         var after = (await host.RunsAsync().ConfigureAwait(false))[^1];
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, after.Outcome, after.Detail);
@@ -469,7 +476,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
             "owner", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status, resumed.ReasonCode);
         after.AdvanceTo(second + (2 * Floor));
-        after.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        after.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await after.SweepAsync().ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await after.RunsAsync().ConfigureAwait(false))[^1].Outcome);
         Assert.AreEqual(1, after.Handler.Count);
@@ -531,12 +538,12 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         var slip = TimeSpan.FromSeconds(slipSeconds);
         var due = (await host.SaveDefinitionAsync().ConfigureAwait(false)).NextRunUtc!.Value;
         host.AdvanceTo(due + slip);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
 
         host.AdvanceTo(due + Floor);
         host.Clock.DrainCreatedTimers();
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         var sweep = host.SweepAsync();
         var wait = await host.Clock.WaitForTimerAsync().ConfigureAwait(false);
 
@@ -561,7 +568,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         await using var lifetime = host.ConfigureAwait(false);
         var due = (await host.SaveDefinitionAsync().ConfigureAwait(false)).NextRunUtc!.Value;
         host.AdvanceTo(due + TimeSpan.FromSeconds(slipSeconds));
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
 
         host.AdvanceTo(due + Floor);
@@ -575,7 +582,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(1, host.Handler.Count);
 
         host.AdvanceTo(due + (2 * Floor));
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await host.RunsAsync().ConfigureAwait(false))[^1].Outcome);
         Assert.AreEqual(2, host.Handler.Count);
@@ -632,7 +639,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
     {
         var due = (await host.SaveDefinitionAsync(interval).ConfigureAwait(false)).NextRunUtc!.Value;
         host.AdvanceTo(due);
-        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        host.Handler.EnqueueBody(CelesTrakGpTestData.ValidCsv());
         await host.SweepAsync().ConfigureAwait(false);
         var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome, run.Detail);

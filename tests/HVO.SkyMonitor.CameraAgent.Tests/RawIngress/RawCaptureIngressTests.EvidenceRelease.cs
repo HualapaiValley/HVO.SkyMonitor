@@ -1,4 +1,8 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
@@ -14,11 +18,11 @@ public sealed partial class RawCaptureIngressTests
             using (var original = CreateIngress(root, new(TimeProvider.System)))
                 receipt = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false))!;
             using (var legacy = await OpenJournalAsync(root).ConfigureAwait(false))
-                await ExecuteTestSqlAsync(legacy, "PRAGMA user_version=14;").ConfigureAwait(false);
+                await ExecuteTestSqlAsync(legacy, DropCenteredSchemaSql + "PRAGMA user_version=14;").ConfigureAwait(false);
             using var upgraded = CreateIngress(root, new(TimeProvider.System));
             await upgraded.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(16L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(17L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
             var retry = await upgraded.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
@@ -213,7 +217,7 @@ public sealed partial class RawCaptureIngressTests
             // A later hold recomputation must not make written-off bytes eligible for retention.
             await ExecuteTestSqlAsync(verify, "UPDATE raw_captures SET retention_hold = 0 WHERE capture_sequence = 1;").ConfigureAwait(false);
             var holds = await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1).ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(holds.Any(hold => hold.ArtifactId == terminal.ArtifactId));
+            Assert.Contains(terminal.ArtifactId, holds);
         }
         finally { DeleteRoot(root); }
     }
@@ -278,6 +282,75 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(0L, await ScalarLongAsync(setup, "SELECT COUNT(*) FROM raw_capture_stage_events WHERE stage_key GLOB 'raw-evidence*';").ConfigureAwait(false));
         }
         finally { DeleteRoot(root); }
+    }
+
+    [TestMethod]
+    public async Task EvidenceRelease_PreservesReconciliationAndRawStateWhenPostCommitLaneRefreshFails()
+    {
+        var root = CreateRoot();
+        try
+        {
+            string payload;
+            using (var original = CreateIngress(root, new(TimeProvider.System)))
+                payload = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(6), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false))!.StoredFrame.AbsolutePath;
+            File.Move(payload, Path.Combine(root, "saved.bin"));
+
+            var options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+            var state = new RawIngressState(TimeProvider.System);
+            var laneState = new CaptureLaneState(TimeProvider.System, options);
+            var fault = new LaneStateRefreshFaultInjector();
+            using var telemetry = new RawIngressTelemetry(state);
+            using var restarted = new RawCaptureIngress(
+                options,
+                new FixedCapacityProvider(long.MaxValue),
+                state,
+                TimeProvider.System,
+                telemetry,
+                NullLogger<RawCaptureIngress>.Instance,
+                fault,
+                laneState: laneState);
+
+            var target = (await restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single().Target;
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+
+            fault.Arm();
+            await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() => restarted.ReleaseEvidenceAsync(
+                target, RawEvidenceReleaseAction.WriteOff, "post-commit-refresh-fail", "owner", "operator-approved-loss",
+                CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+            // Post-commit ordering must update raw ingress reconciliation and availability before RefreshLaneStateAsync runs.
+            Assert.AreEqual(CaptureLaneAvailability.Unhealthy, laneState.Snapshot.Availability);
+            Assert.AreEqual("lane-state-unavailable", laneState.Snapshot.Reason);
+            Assert.AreEqual(RawIngressAvailability.Initializing, state.Snapshot.Availability);
+            Assert.AreEqual("evidence-release-reinitializing", state.Snapshot.Reason);
+
+            var admitted = await restarted.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(7), [1, 2, 3, 4]),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressOutcome.Committed, admitted?.Outcome);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual(CaptureLaneAvailability.Healthy, laneState.Snapshot.Availability);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    private sealed class LaneStateRefreshFaultInjector : IRawIngressFaultInjector
+    {
+        private int _armed;
+
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+
+        public void Inject(RawIngressFaultPoint point) { }
+
+        public void BeforeLaneStateRefresh()
+        {
+            if (Interlocked.Exchange(ref _armed, 0) == 1)
+                throw new InjectedRawIngressFaultException("Simulated lane state refresh failure after evidence release commit.");
+        }
     }
     private static async Task<Dictionary<string, byte[]>> SnapshotEvidenceFilesAsync(string root, string pattern)
     {

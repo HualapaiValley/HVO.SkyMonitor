@@ -61,6 +61,5 @@ unchanged saves. The existing nullable intensity control restores the original
 palette when cleared. Pipeline JSON remains authoritative for dimensions,
 output/input variants and all source/stack bindings. There are no dimension
 defaults, reference inputs, providers, new rendering identities or automatic
-conversion to Frame Facts. The shared descriptor validation applies on both
-hosts; LogicHost gains no edge collection or configuration surface. #1386
+conversion to Frame Facts. CameraAgent applies the shared descriptor validation. #1386
 remains open for the remaining editor families and final acceptance.

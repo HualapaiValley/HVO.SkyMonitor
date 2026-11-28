@@ -1,8 +1,10 @@
 using Bunit;
 using Bunit.JSInterop;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,8 +13,11 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class GalleryDetailTests
 {
+    private static readonly string[] ScientificFormats = ["fits", "fits.fz", "xisf"];
+
     private static void ConfigureGraphService(BunitContext context)
     {
         context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new ProcessingExecutionPagesTests.GraphUiService());
@@ -435,7 +440,6 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "preview-node", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Manifest schema", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw retention hold", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Delivery statuses", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Dependencies", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Cloud assessment", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Mask SHA-256", StringComparison.Ordinal);
@@ -446,8 +450,14 @@ public sealed class GalleryDetailTests
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][href$='/content']"));
             Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='jpeg'][href$='/preview?download=1']"));
-            Assert.HasCount(2, cut.FindAll("#evidence-panel-Artifacts [data-format='fits'][aria-disabled='true']"));
-            Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[data-format='fits']"));
+            var raw = capture.Artifacts[0];
+            foreach (var format in ScientificFormats)
+            {
+                Assert.AreEqual($"/api/v1/operations/gallery/{capture.CaptureId:D}/artifacts/{raw.ArtifactId:D}/export/{format}",
+                    cut.Find($"#evidence-panel-Artifacts a[download][data-format='{format}']").GetAttribute("href"));
+                StringAssert.Contains(cut.Find($"#evidence-panel-Artifacts [data-format='{format}'][aria-disabled='true']").TextContent,
+                    "Choose the raw capture artifact", StringComparison.Ordinal);
+            }
             StringAssert.Contains(cut.Markup, "raw 16-bit mono (.bin)", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll(".comparison-grid"));
             Assert.HasCount(5, cut.FindAll("[role='tab']"));
@@ -465,6 +475,45 @@ public sealed class GalleryDetailTests
         Assert.AreEqual("true", cut.Find("#evidence-tab-Replay").GetAttribute("aria-selected"));
         cut.Find("#evidence-tab-Replay").KeyDown(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "ArrowRight" });
         Assert.AreEqual("true", cut.Find("#evidence-tab-Overview").GetAttribute("aria-selected"));
+    }
+
+    [TestMethod]
+    [DataRow("missing_evidence", CameraPixelFormat.Mono16, false, "The raw capture artifact is missing.")]
+    [DataRow("quarantined", CameraPixelFormat.Mono16, false, "The raw capture artifact is quarantined.")]
+    [DataRow("committed", CameraPixelFormat.Rgb24, false, "This raw pixel format is unsupported.")]
+    [DataRow("committed", null, false, "The raw capture layout could not be verified.")]
+    [DataRow("committed", CameraPixelFormat.Mono16, true, "The raw capture exceeds the scientific export size limit.")]
+    public void ScientificDownloadsExplainUnavailableRawEvidence(string state, CameraPixelFormat? format, bool tooLarge, string reason)
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        var sample = OperatorUiTestData.Capture();
+        var capture = sample with
+        {
+            RawState = state,
+            Artifacts =
+            [
+                sample.Artifacts[0] with
+                {
+                    PixelFormat = format,
+                    ByteLength = tooLarge ? ScientificCaptureExport.MaximumSourceBytes + 1 : sample.Artifacts[0].ByteLength
+                },
+                sample.Artifacts[1]
+            ]
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement("#evidence-tab-Artifacts").Click();
+        cut.Find(".download-menu__toggle").Click();
+        foreach (var extension in ScientificFormats)
+        {
+            Assert.IsEmpty(cut.FindAll($"a[data-format='{extension}']"));
+            Assert.HasCount(2, cut.FindAll($"[data-format='{extension}'][aria-disabled='true']"));
+            StringAssert.Contains(cut.Find($"[data-format='{extension}']").TextContent, reason, StringComparison.Ordinal);
+        }
     }
 
     [TestMethod]
@@ -601,7 +650,7 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
-    public void DetailWithoutDisplayableArtifact_RendersUnsupportedTextAndTechnicalDownload()
+    public void DetailWithoutDisplayableArtifact_KeepsOriginalAndScientificDownloads()
     {
         using var context = new BunitContext();
         ConfigureGraphService(context);
@@ -621,8 +670,10 @@ public sealed class GalleryDetailTests
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
 
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "This capture cannot be displayed", StringComparison.Ordinal));
-        Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download]"));
+        Assert.HasCount(4, cut.FindAll("#evidence-panel-Artifacts a[download]"));
         Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts a[download][data-format='original']"));
+        foreach (var format in ScientificFormats)
+            Assert.HasCount(1, cut.FindAll($"#evidence-panel-Artifacts a[download][data-format='{format}']"));
         Assert.HasCount(1, cut.FindAll("#evidence-panel-Artifacts [data-format='jpeg'][aria-disabled='true']"));
         Assert.IsEmpty(cut.FindAll("#evidence-panel-Artifacts a[href$='/preview']"));
     }
@@ -829,6 +880,103 @@ public sealed class GalleryDetailTests
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void DetailBindsCenteredBaseRevisionLegacyAndSelectionQueryParameters()
+    {
+        var capture = OperatorUiTestData.Capture();
+        var primaryBase = new string('A', 64);
+        var legacyBase = new string('B', 64);
+        var primaryRev = new string('C', 64);
+        var legacyRev = new string('D', 64);
+        var selectionId = Guid.Parse("19230000-0000-0000-0000-000000007777");
+
+        AssertRequest($"/gallery/{capture.CaptureId:D}?base={primaryBase}&revision={primaryRev}",
+            expectedBase: primaryBase, expectedRevision: primaryRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?baseId={legacyBase}&revisionId={legacyRev}",
+            expectedBase: legacyBase, expectedRevision: legacyRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?base={primaryBase}&baseId={legacyBase}&revision={primaryRev}&revisionId={legacyRev}",
+            expectedBase: primaryBase, expectedRevision: primaryRev, expectedSelection: null);
+        AssertRequest($"/gallery/{capture.CaptureId:D}?selection={selectionId:D}",
+            expectedBase: null, expectedRevision: null, expectedSelection: selectionId);
+
+        void AssertRequest(string url, string? expectedBase, string? expectedRevision, Guid? expectedSelection)
+        {
+            using var context = new BunitContext();
+            ConfigureGraphService(context);
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            CameraAgentCenteredArchiveRequest? observed = null;
+            var service = new TestOperatorUiService
+            {
+                CenteredDetailViewHandler = (id, request, _) =>
+                {
+                    Assert.AreEqual(capture.CaptureId, id);
+                    observed = request;
+                    return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureDetailView>.Success(
+                        new(capture, new(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages))));
+                }
+            };
+            context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+            var navigation = context.Services.GetRequiredService<NavigationManager>();
+            navigation.NavigateTo(url);
+
+            var cut = context.Render<GalleryDetail>(parameters =>
+                parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+            cut.WaitForAssertion(() => Assert.IsNotNull(observed));
+            Assert.AreEqual(expectedBase, observed!.BaseId);
+            Assert.AreEqual(expectedRevision, observed.RevisionId);
+            Assert.AreEqual(expectedSelection, observed.SelectionId);
+        }
+    }
+
+    [TestMethod]
+    public void DetailHandlesMalformedSelectionQueryParameterWithExplicitUnavailableNotice()
+    {
+        using var context = new BunitContext();
+        ConfigureGraphService(context);
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        CameraAgentCenteredArchiveRequest? observed = null;
+        var service = new TestOperatorUiService
+        {
+            CenteredDetailViewHandler = (id, request, _) =>
+            {
+                Assert.AreEqual(capture.CaptureId, id);
+                observed = request;
+                var archive = new CameraAgentCenteredArchiveView(
+                    id,
+                    [],
+                    null,
+                    null,
+                    CameraAgentLayeredPresentationStatus.NotRetained,
+                    null,
+                    null,
+                    "The requested saved personal selection is invalid.",
+                    null);
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureDetailView>.Success(
+                    new(capture, new(CameraAgentPresentationStage.Raw, OperatorUiTestData.CurrentImage().Stages))
+                    {
+                        CenteredArchive = archive
+                    }));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo($"/gallery/{capture.CaptureId:D}?selection=not-a-guid");
+
+        var cut = context.Render<GalleryDetail>(parameters =>
+            parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsNotNull(observed);
+            Assert.IsTrue(observed!.HasExplicitTarget);
+            Assert.AreEqual(Guid.Empty, observed.SelectionId);
+            StringAssert.Contains(cut.Find(".centered-selection-error").TextContent, "saved personal selection is invalid", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".sky-layer-workspace"));
+        });
     }
 
     private sealed class NoPollingTimeProvider : TimeProvider

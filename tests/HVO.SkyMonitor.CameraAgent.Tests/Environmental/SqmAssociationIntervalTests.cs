@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Environmental")]
 public sealed class SqmAssociationIntervalTests
 {
     private static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
@@ -50,7 +51,7 @@ public sealed class SqmAssociationIntervalTests
         {
             LocalEnvironmentalCaptureAssociation original;
             byte[] persisted;
-            using (var store = new SqliteEnvironmentalObservationOutbox(new Clock()))
+            using (var store = new SqliteEnvironmentalObservationStore(new Clock()))
             {
                 await store.CommitLocalAsync(root, sample, CancellationToken.None).ConfigureAwait(false);
                 var service = new EnvironmentalAssociationService(store, store, options, new Clock());
@@ -89,7 +90,7 @@ public sealed class SqmAssociationIntervalTests
                 if (relationship == "preceding") Assert.AreEqual(-sampleEndSeconds * 1000, diagnostic["gap_ms"]);
                 else Assert.IsFalse(diagnostic.ContainsKey("gap_ms"));
             }
-            using var restarted = new SqliteEnvironmentalObservationOutbox(new Clock());
+            using var restarted = new SqliteEnvironmentalObservationStore(new Clock());
             var changed = new EnvironmentalAssociationService(restarted, restarted, OptionsFor(root, changed: true), new Clock());
             var recovered = (await changed.ReadCompletedAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null,
                 [EnvironmentalObservationKind.SkyQuality], CancellationToken.None).ConfigureAwait(false))!.Single();
@@ -125,7 +126,7 @@ public sealed class SqmAssociationIntervalTests
         ActivitySource.AddActivityListener(listener);
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(new Clock());
+            using var store = new SqliteEnvironmentalObservationStore(new Clock());
             await store.CommitLocalAsync(root, sample, CancellationToken.None).ConfigureAwait(false);
             var association = (await new EnvironmentalAssociationService(store, store, OptionsFor(root), new Clock())
                 .AssociateAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [EnvironmentalObservationKind.SkyQuality],

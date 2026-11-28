@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The test owns asynchronous process and client lifetimes without a synchronization-context dependency.")]
 public sealed class LocalReplayRunnerPerformanceTests
@@ -1027,7 +1028,6 @@ public sealed class LocalReplayRunnerPerformanceTests
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:ProcessingGraphs:ReplayProfile"] = profile.ToString(),
             ["CameraAgent:ProcessingGraphs:ReplayMaximumConcurrency"] = "1",
             ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingCount"] = "1000",
@@ -1050,7 +1050,7 @@ public sealed class LocalReplayRunnerPerformanceTests
         }
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(
+        services.AddSiloTestInfrastructure(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         return services.BuildServiceProvider();
     }

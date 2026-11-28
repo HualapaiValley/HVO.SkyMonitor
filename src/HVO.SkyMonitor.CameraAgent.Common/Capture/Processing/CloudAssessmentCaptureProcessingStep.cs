@@ -67,12 +67,15 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
                 var clear = await clearReferenceLoader.LoadAsync(
                     Options.ClearReferenceManifestPath,
                     cancellationToken).ConfigureAwait(false);
-                inputs.Add(clear);
-                auxiliary.Add(new ProcessingAuxiliaryInput(
-                    "clear-reference",
-                    ProcessingAuxiliaryInputKind.Artifact,
-                    CreateSelector(clear),
-                    ArtifactId: clear.ArtifactId));
+                if (clear.ArtifactId != current.ArtifactId)
+                {
+                    inputs.Add(clear);
+                    auxiliary.Add(new ProcessingAuxiliaryInput(
+                        "clear-reference",
+                        ProcessingAuxiliaryInputKind.Artifact,
+                        CreateSelector(clear),
+                        ArtifactId: clear.ArtifactId));
+                }
             }
             catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
             {
@@ -240,7 +243,7 @@ internal sealed class CameraAgentCloudEnvironment(
         return CreateInput(environment);
     }
 
-    private static ProcessingAuxiliaryInput CreateInput(CloudAssessmentEnvironmentV1 environment)
+    internal static ProcessingAuxiliaryInput CreateInput(CloudAssessmentEnvironmentV1 environment)
     {
         var element = CaptureContractJson.SerializeToElement(environment);
         var payload = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(element));

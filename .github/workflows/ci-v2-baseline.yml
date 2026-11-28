@@ -70,7 +70,7 @@ jobs:
             dotnet test HVO.SkyMonitor.v9.slnx \
               --no-build \
               --configuration Release \
-              --filter "TestCategory=Unit" \
+              --filter "TestCategory=Unit&TestCategory!=Performance" \
               --results-directory "$CI_V2_EVIDENCE_ROOT/unit" \
               --logger trx
 

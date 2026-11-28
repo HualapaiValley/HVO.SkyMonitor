@@ -22,6 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed partial class VirtualSkyCameraModuleTests
 {
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
@@ -308,7 +309,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     public void AddCameraAgentInfrastructure_RegistersConstellationTopologyByInterface()
     {
         var services = new ServiceCollection();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().Build());
         using var provider = services.BuildServiceProvider();
 
         var topology = provider.GetRequiredService<IConstellationTopology>();
@@ -397,8 +398,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsFalse(steps.Any(static step =>
             step.Id is "Upload" or "ArchiveStorage" || step.Type.Contains("Upload", StringComparison.Ordinal)));
         var storage = steps.Single(static step => step.Id == "LocalStorage");
-        Assert.AreEqual(false, storage.Options!.Value.GetProperty("queueForUpload").GetBoolean());
-        Assert.AreEqual(7, storage.Options.Value.GetProperty("retentionDays").GetInt32());
+        Assert.IsTrue(storage.Options!.Value.GetProperty("updateLatestFrame").GetBoolean());
 
         var deployment = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
@@ -406,19 +406,13 @@ public sealed partial class VirtualSkyCameraModuleTests
             .AddJsonFile("appsettings.StandaloneProductionSmoke.json")
             .Build();
         Assert.AreEqual(fileName, deployment["CameraAgent:ConfigFilePath"]);
-        Assert.AreEqual("Disabled", deployment["CameraAgent:CentralIntegration:Mode"]);
-        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:CaptureDistribution:UploadEnabled"));
-        Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:EnvironmentalDelivery:Enabled"));
         Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
-        Assert.AreEqual("hyg-v42-production", deployment["Catalog:RequiredCatalogId"]);
+        Assert.AreEqual("hyg-v44-production", deployment["Catalog:RequiredCatalogId"]);
         Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
-        Assert.AreEqual(
-            deployment["CameraAgent:RawIngressRoot"],
-            storage.Options.Value.GetProperty("storageRoot").GetString());
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -447,7 +441,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = path,
             AgentId = "canonical-profile-test",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
 
@@ -613,7 +606,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var config = await LoadProfileAsync("virtual-asi174-mono8-roi-bin4.json").ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -886,7 +879,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var config = await LoadProfileAsync("virtual-asi174mc-telescope.full.json").ConfigureAwait(false);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
         using var provider = services.BuildServiceProvider();
 
@@ -915,7 +908,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             var catalog = CreateCanonicalStarCatalog();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(catalog);
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = root }).Build());
             using var provider = services.BuildServiceProvider();
             var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
@@ -1956,7 +1949,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     public async Task CaptureAsyncUsesValidatedCatalogMetadataForSceneProvenance()
     {
         var catalog = new ProvenanceCatalog(new CatalogMetadata(
-            "validated fixture", "4.2-fixture.1", new Uri("https://example.test/hyg"),
+            "validated fixture", "4.4-fixture.1", new Uri("https://example.test/hyg"),
             new string('A', 64), "CC BY-SA 4.0", "1"));
         var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await module.InitializeAsync(CreateConfig(), CancellationToken.None).ConfigureAwait(false);
@@ -2335,7 +2328,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
             AgentId = "canonical-profile-test",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

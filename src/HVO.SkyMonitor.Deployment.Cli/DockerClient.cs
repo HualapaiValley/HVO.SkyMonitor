@@ -20,12 +20,14 @@ internal sealed record DockerHostCapabilities(
     int? CpuCount = null,
     long? MemoryBytes = null);
 
-internal sealed class DockerClient(IProcessRunner processRunner)
+internal sealed partial class DockerClient(IProcessRunner processRunner)
 {
     private string? endpoint;
 
     internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
     {
+        internal string? ContainerId { get; init; }
+
         // Ephemeral Docker observation: only an explicit failed /alive check proves a running host unavailable.
         internal string? LivenessStatus { get; init; }
 
@@ -611,32 +613,6 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 $"The selected CameraAgent container does not match the installation manifest: {string.Join(", ", failed)}.");
     }
 
-    public async Task VerifyRecoveryContainerAsync(
-        ComposeFiles compose, InstallationPaths paths, InstanceManifest manifest, CancellationToken cancellationToken)
-    {
-        var result = await RunDockerAsync(["container", "inspect", compose.ContainerName], cancellationToken).ConfigureAwait(false);
-        using var document = JsonDocument.Parse(result.StandardOutput);
-        var container = document.RootElement[0];
-        var host = container.GetProperty("HostConfig");
-        var mounts = container.GetProperty("Mounts").EnumerateArray().ToArray();
-        var ports = host.GetProperty("PortBindings").EnumerateObject().ToArray();
-        var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
-        {
-            ["capabilities-dropped"] = host.GetProperty("CapDrop").EnumerateArray().Any(static item => item.GetString() == "ALL"),
-            ["no-added-capabilities"] = !host.TryGetProperty("CapAdd", out var added) || added.ValueKind == JsonValueKind.Null || added.GetArrayLength() == 0,
-            ["no-new-privileges"] = host.GetProperty("SecurityOpt").EnumerateArray().Any(static item => item.GetString() == "no-new-privileges:true"),
-            ["ports"] = ports.Length == 1 && ports[0].Name == "8080/tcp" && ports[0].Value.GetArrayLength() == 1 &&
-                        ports[0].Value[0].GetProperty("HostIp").GetString() == manifest.BindAddress &&
-                        ports[0].Value[0].GetProperty("HostPort").GetString() == manifest.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["secrets-mount"] = mounts.Any(mount => MountMatches(mount, Path.Combine(paths.ConfigRoot, "secrets"), "/run/hvo-secrets", writable: false))
-        };
-        foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, manifest.ReplayProfile))
-            checks[source.ContainerPath] = mounts.Any(mount => MountMatches(mount, source.HostPath, source.ContainerPath, writable: true));
-        var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
-        if (failed.Length > 0)
-            throw new InstallerException($"Restore-only runtime authority differs from the original instance: {string.Join(", ", failed)}.");
-    }
-
     public async Task VerifyContainerAsync(
         ComposeFiles compose,
         InstallationPaths paths,
@@ -693,6 +669,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                         imageIdentity,
                         uid,
                         gid,
+                        requireReadiness: true,
                         cancellationToken).ConfigureAwait(false);
                 }
                 return;
@@ -707,12 +684,13 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         }
     }
 
-    private async Task VerifyReplayRunnerAsync(
+    internal async Task VerifyReplayRunnerAsync(
         ComposeFiles compose,
         InstallationPaths paths,
         ImageInstallationIdentity imageIdentity,
         uint uid,
         uint gid,
+        bool requireReadiness,
         CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
@@ -731,8 +709,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             var expectedInstance = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
             var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
             {
-                ["runner-running"] = state.GetProperty("Running").GetBoolean(),
-                ["runner-healthy"] = state.TryGetProperty("Health", out var health) &&
+                ["runner-running"] = !requireReadiness || state.GetProperty("Running").GetBoolean(),
+                ["runner-healthy"] = !requireReadiness || state.TryGetProperty("Health", out var health) &&
                                      health.GetProperty("Status").GetString() == "healthy",
                 ["runner-image"] = container.GetProperty("Image").GetString() == imageIdentity.ImageId,
                 ["runner-user"] = config.GetProperty("User").GetString() == $"{uid}:{gid}",
@@ -803,6 +781,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             healthy,
             container.GetProperty("Image").GetString())
         {
+            ContainerId = container.TryGetProperty("Id", out var id) ? id.GetString() : null,
             Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null,
             LivenessStatus = state.TryGetProperty("Health", out var observedHealth)
                 ? observedHealth.GetProperty("Status").GetString() : null
@@ -812,9 +791,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// <summary>Probe the fixed container-local liveness endpoint; cached Docker health never proves current unreachability.</summary>
     internal async Task<bool> IsContainerAliveNowAsync(string containerName, CancellationToken cancellationToken)
     {
-        var probe = await RunDockerRawAsync(["exec", containerName, "curl", "--noproxy", "*", "--silent", "--show-error",
-            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", "http://127.0.0.1:8080/alive"],
-            cancellationToken).ConfigureAwait(false);
+        var probe = await ProbeContainerHttpAsync(containerName, "/alive", cancellationToken).ConfigureAwait(false);
         var status = probe.StandardOutput.Trim();
         // Any HTTP reply proves reachability, including authentication/readiness refusals. Only curl's explicit
         // connection failure or bounded no-response timeout can authorize the offline recovery exception.
@@ -823,6 +800,35 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         if (status == "000" && probe.ExitCode is 7 or 28) return false;
         throw new InstallerException("The current CameraAgent liveness probe could not establish reachability; retain pending control evidence.");
     }
+
+    internal async Task<int?> ReadApplicationHealthAsync(string? containerId, CancellationToken cancellationToken)
+    {
+        // Pin the observation to the inspected container, even if Compose reuses its name during a concurrent restart.
+        if (containerId is not { Length: 64 } || !containerId.All(char.IsAsciiHexDigit)) return null;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(7));
+        try
+        {
+            var probe = await ProbeContainerHttpAsync(containerId, "/health", deadline.Token).ConfigureAwait(false);
+            return probe.ExitCode == 0 &&
+                   int.TryParse(probe.StandardOutput.Trim(), System.Globalization.NumberStyles.None,
+                       System.Globalization.CultureInfo.InvariantCulture, out var status) && status is >= 100 and <= 599
+                ? status : null;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception exception) when (exception is InstallerException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private Task<ProcessResult> ProbeContainerHttpAsync(string container, string path, CancellationToken cancellationToken)
+        => RunDockerRawAsync(["exec", container, "curl", "--noproxy", "*", "--silent", "--show-error",
+            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", $"http://127.0.0.1:8080{path}"],
+            cancellationToken);
 
     public async Task EnsureNoInstanceReferencesAsync(
         Guid instanceId,

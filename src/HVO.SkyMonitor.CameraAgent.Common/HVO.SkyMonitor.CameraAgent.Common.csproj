@@ -11,16 +11,17 @@
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Imaging\HVO.SkyMonitor.Imaging.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.Fleet.Contracts\HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Processing\HVO.SkyMonitor.Processing.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Video.FFmpeg\HVO.SkyMonitor.Video.FFmpeg.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.CameraAgent.Replay\HVO.SkyMonitor.CameraAgent.Replay.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.Storage.FileSystem\HVO.SkyMonitor.Storage.FileSystem.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.LocalFiles\HVO.SkyMonitor.LocalFiles.csproj" />
     <PackageReference Include="HVO.Core" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Http" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />

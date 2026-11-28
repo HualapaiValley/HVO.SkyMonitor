@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 /// <summary>Explicit commands prepare one fixed window/attempt; the existing runner remains execution authority.</summary>
@@ -8,7 +10,12 @@ public sealed record LocalAutomationBackfillRequest(
     long ExpectedVersion,
     string IdempotencyKey,
     string Actor,
-    string Reason);
+    string Reason)
+{
+    /// <summary>When a caller previewed a window, admit only that same resolved window.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpectedWindowIdentitySha256 { get; init; }
+}
 
 public sealed record LocalAutomationRetryRequest(
     string DefinitionId,

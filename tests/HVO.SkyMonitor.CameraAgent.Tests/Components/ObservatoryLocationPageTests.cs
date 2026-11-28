@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ObservatoryLocationPageTests
 {
     private const string OwnerId = "7d3c1f0e-4b2a-4c8d-9e1f-2a3b4c5d6e7f";
@@ -29,13 +30,6 @@ public sealed class ObservatoryLocationPageTests
     private static readonly string[] FixtureStarNames = ["Sirius", "Vega"];
     private static readonly string[] AddedBodyNames = ["Jupiter", "Moon"];
     private static readonly string[] FixturePillTexts = ["Lyra", "Orion, not in the image at this instant"];
-
-    private static readonly string[] ExpectedDialogNotes =
-    [
-        "LogicHost reviews this draft first.",
-        "An acknowledged version is already staged.",
-        "An earlier draft was superseded."
-    ];
 
     [TestMethod]
     public void Render_ShowsTheProfileLocationCatalogRigAndVisibleSkyWithoutIdentifiers()
@@ -565,42 +559,6 @@ public sealed class ObservatoryLocationPageTests
     }
 
     [TestMethod]
-    [DataRow("candidate", "Central review pending.", "LogicHost has not yet acknowledged location version 4. Local geometry version 3 remains active")]
-    [DataRow("staged", "Acknowledged version staged.", "Location version 4 was acknowledged by LogicHost and activates at the next CameraAgent start. Version 3 governs")]
-    [DataRow("restart", "Local draft awaiting restart.", "Location version 4 was recorded 1 Mar 2026 04:00:00 +00:00 (UTC (site time zone unavailable)) and activates at the next CameraAgent start. Version 3 governs")]
-    [DataRow("outside", "Outside the effective window.", "Location version 1 did not govern at the chosen instant")]
-    [DataRow("active", "Location version 1 is active.", "It governs schedules, the sky projection, and capture evidence")]
-    public void Render_StatesWhichLocationVersionGovernsTruthfully(string scenario, string title, string text)
-    {
-        var pending = new ManualDeploymentLocationOverride(
-            31.5, -110.25, 1400, "America/Phoenix", PendingRestart: true, Instant, OwnerId, "moved");
-        var result = SkyMapTestData.Result(Instant);
-        var manual = scenario switch
-        {
-            "candidate" => ManualState(knownVersion: 4, activeVersion: 3, pendingVersion: 4, manualSequence: 1,
-                centralAcknowledgementRequired: true, candidateAwaitingAcknowledgement: true, pending: pending),
-            "staged" => ManualState(knownVersion: 4, activeVersion: 3, pendingVersion: 4, manualSequence: 1,
-                centralAcknowledgementRequired: true, stagedAcknowledgementPending: true, pending: pending),
-            "restart" => ManualState(knownVersion: 3, manualSequence: 1, pending: pending),
-            _ => ManualState()
-        };
-        if (scenario == "outside")
-        {
-            result = result with { Observer = result.Observer with { EffectiveAtInstant = false } };
-        }
-        using var context = CreateContext();
-        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(result, manual: manual));
-
-        var cut = context.Render<ObservatoryLocationPage>();
-
-        var banner = cut.WaitForElement("section[aria-label='Location state']");
-        Assert.AreEqual(title, banner.QuerySelector("strong")!.TextContent);
-        Assert.Contains(text, banner.TextContent, StringComparison.Ordinal);
-        // Only a version that is waiting for the next start is applied by restarting.
-        Assert.AreEqual(scenario is "staged" or "restart", banner.QuerySelector("button.restart-now") is not null);
-    }
-
-    [TestMethod]
     public void Render_History_NamesTheAccountThatActedAndNeverItsIdentifier()
     {
         using var context = CreateContext();
@@ -626,57 +584,6 @@ public sealed class ObservatoryLocationPageTests
         Assert.Contains("Not recorded", rows[1].TextContent, StringComparison.Ordinal);
         Assert.DoesNotContain("a-deleted-account", cut.Markup, StringComparison.Ordinal);
         Assert.DoesNotContain(OwnerId, cut.Markup, StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    public void Render_Assignment_DistinguishesStandaloneUnregisteredAndRegisteredCameras()
-    {
-        using var context = CreateContext();
-        var service = new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState());
-        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(service);
-        var cut = context.Render<ObservatoryLocationPage>();
-        var assignment = cut.WaitForElement("section[aria-labelledby='site-assignment-heading']");
-
-        Assert.AreEqual("Standalone", assignment.QuerySelector(".state-chip")!.TextContent);
-        Assert.Contains("never contacts LogicHost", assignment.TextContent, StringComparison.Ordinal);
-        Assert.IsNull(assignment.QuerySelector("a"));
-
-        service.Site = SiteView(assignment: Assignment(CameraAgentSiteAssignmentState.NotRegistered));
-        RefreshButton(cut).Click();
-        assignment = cut.Find("section[aria-labelledby='site-assignment-heading']");
-
-        Assert.AreEqual("Not registered", assignment.QuerySelector(".state-chip")!.TextContent);
-        Assert.Contains("has not completed device registration", assignment.TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("/operations/registration", assignment.QuerySelector("a")!.GetAttribute("href"));
-
-        service.Site = SiteView(assignment: Assignment(
-            CameraAgentSiteAssignmentState.Registered,
-            "North ridge camera",
-            DeploymentLocationResolutionStatus.Acknowledged,
-            acknowledgedVersion: 3));
-        RefreshButton(cut).Click();
-        assignment = cut.Find("section[aria-labelledby='site-assignment-heading']");
-
-        // The camera holds LogicHost's review of its location, which is not an Observatory membership decision.
-        Assert.AreEqual("Location acknowledged", assignment.QuerySelector(".state-chip")!.TextContent);
-        var facts = Facts(cut, "site-assignment-heading");
-        Assert.AreEqual("North ridge camera", facts["Registered as"]);
-        Assert.AreEqual("Acknowledged by LogicHost", facts["Location review"]);
-        Assert.AreEqual("Not reported to this camera", facts["Observatory membership"]);
-        Assert.AreEqual("3", facts["Acknowledged version"]);
-        Assert.AreEqual("1 Mar 2026 04:00:00 +00:00 (UTC (site time zone unavailable))", facts["Last check"]);
-        Assert.DoesNotContain("Assigned", assignment.TextContent, StringComparison.Ordinal);
-        Assert.DoesNotContain("Active", assignment.TextContent, StringComparison.Ordinal);
-
-        service.Site = SiteView(assignment: Assignment(
-            CameraAgentSiteAssignmentState.Registered,
-            "North ridge camera",
-            DeploymentLocationResolutionStatus.Rejected));
-        RefreshButton(cut).Click();
-        assignment = cut.Find("section[aria-labelledby='site-assignment-heading']");
-
-        Assert.AreEqual("Location rejected", assignment.QuerySelector(".state-chip")!.TextContent);
-        Assert.AreEqual("Rejected by LogicHost", Facts(cut, "site-assignment-heading")["Location review"]);
     }
 
     [TestMethod]
@@ -721,26 +628,6 @@ public sealed class ObservatoryLocationPageTests
 
         Assert.IsEmpty(cut.FindAll("dialog.site-dialog"));
         Assert.IsEmpty(service.Commands);
-    }
-
-    [TestMethod]
-    public void LocationDraft_WithCentralStagedAndSupersededState_ExplainsEachInTheDialog()
-    {
-        using var context = CreateContext();
-        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(
-            SkyMapTestData.Result(Instant),
-            manual: ManualState(
-                centralAcknowledgementRequired: true,
-                stagedAcknowledgementPending: true,
-                supersededAtUtc: Instant.AddDays(-1))));
-        var cut = context.Render<ObservatoryLocationPage>();
-        cut.WaitForElement($"#{ObservatoryLocationPage.LocationTriggerId}");
-
-        cut.Find($"#{ObservatoryLocationPage.LocationTriggerId}").Click();
-
-        var notes = cut.FindAll("dialog.site-dialog .dialog-note strong").Select(static note => note.TextContent).ToArray();
-        CollectionAssert.AreEqual(ExpectedDialogNotes, notes);
-        Assert.Contains("changed at 28 Feb 2026 04:00:00 +00:00 (UTC (site time zone unavailable))", cut.Find("dialog.site-dialog").TextContent, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -1490,9 +1377,6 @@ public sealed class ObservatoryLocationPageTests
         long? activeVersion = null,
         long? pendingVersion = null,
         long manualSequence = 0,
-        bool centralAcknowledgementRequired = false,
-        bool stagedAcknowledgementPending = false,
-        bool candidateAwaitingAcknowledgement = false,
         ManualDeploymentLocationOverride? pending = null,
         DateTimeOffset? supersededAtUtc = null,
         IReadOnlyList<ManualDeploymentLocationAuditEntry>? history = null)
@@ -1502,11 +1386,7 @@ public sealed class ObservatoryLocationPageTests
             ActiveVersion: activeVersion ?? knownVersion,
             KnownVersion: knownVersion,
             NextVersion: knownVersion + 1,
-            PendingVersion: pendingVersion,
             ManualSequence: manualSequence,
-            CentralAcknowledgementRequired: centralAcknowledgementRequired,
-            StagedAcknowledgementPending: stagedAcknowledgementPending,
-            CandidateAwaitingAcknowledgement: candidateAwaitingAcknowledgement,
             Override: pending,
             OverrideSupersededAtUtc: supersededAtUtc,
             History: history ?? []);
@@ -1524,16 +1404,8 @@ public sealed class ObservatoryLocationPageTests
             settingsFilePath,
             problem);
 
-    private static CameraAgentSiteAssignment Assignment(
-        CameraAgentSiteAssignmentState state,
-        string? name = null,
-        DeploymentLocationResolutionStatus? locationReview = null,
-        long? acknowledgedVersion = null)
-        => new(state, name, locationReview, acknowledgedVersion, null, "none", Instant, Instant);
-
     private static CameraAgentSiteView SiteView(
         SiteProfileState? profile = null,
-        CameraAgentSiteAssignment? assignment = null,
         bool mapEnabled = true,
         int zoom = 13,
         CameraAgentObjectLimitSetting? objectLimit = null,
@@ -1542,7 +1414,6 @@ public sealed class ObservatoryLocationPageTests
         => new(
             profile ?? ProfileState(),
             OwnerEmail,
-            assignment ?? Assignment(CameraAgentSiteAssignmentState.Standalone),
             new CameraAgentSiteMapSettings(
                 mapEnabled,
                 TileTemplate,

@@ -951,6 +951,27 @@ cp "$WORK/central-summary-duplicate/trial-1.json" "$WORK/central-summary-duplica
 central_summary_gate "$WORK/central-summary-duplicate" "$WORK/central-summary-duplicate.json" &&
     fail 'central aggregate accepted duplicate and missing labels'
 
+network_gate_case() {
+    jq -n -f "$SCRIPT_DIR/issue-211-central-traffic-gate.jq" \
+        --argjson networkOnly true --arg trial trial-1 --arg trialKind w6 \
+        --arg inTestCountersReason 'Recorded by the profile evidence schema.' \
+        --argjson inTestCountersApplicable true --argjson inTestCentralTrafficAttempts "$1" \
+        --argjson inTestCentralHandlerAttempts null --argjson finalCentralHandlerAttempts null \
+        --argjson finalCentralHandlerReadyRecords null --argjson finalDenyHits "$2"
+}
+network_gate_case 0 0 > "$WORK/network-gate.json"
+network_gate_case 1 0 | jq -e '.passed == false' >/dev/null || fail 'network gate accepted a live deny hit'
+network_gate_case 0 1 | jq -e '.passed == false' >/dev/null || fail 'network gate accepted a final deny hit'
+jq -es -f "$SCRIPT_DIR/issue-211-central-traffic-summary.jq" \
+    --argjson networkOnly true --argjson expectedTrials '["trial-1"]' "$WORK/network-gate.json" |
+    jq -e '.allPassed and .trialsIdentified and .recordedFlagsAgreeWithCounters and
+      (has("centralHandlerAttempts") | not)' >/dev/null || fail 'network aggregate refused a valid recorded trial'
+jq '.finalDenyHits = 1' "$WORK/network-gate.json" |
+    jq -es -f "$SCRIPT_DIR/issue-211-central-traffic-summary.jq" \
+        --argjson networkOnly true --argjson expectedTrials '["trial-1"]' |
+    jq -e '(.allPassed | not) and (.recordedFlagsAgreeWithCounters | not)' >/dev/null ||
+    fail 'network aggregate accepted a passing flag with a deny hit'
+
 campaign_contract() {
     local script="$1" receipt stop marker manifest sanitization down deletion reset up test
     local pair health process stats names cleanup final final_acceptance localrunner_call run_manifest final_scan terminal
@@ -985,7 +1006,6 @@ campaign_contract() {
       run_manifest < final_scan && final_scan < terminal)) || return 1
     grep -q 'profile_evidence_file="issue-719-replay-${replay_profile}.json"' "$script" || return 1
     grep -q 'Replay evidence schema does not record in-test central traffic counters.' "$script" || return 1
-    grep -q 'rm -f -- "$trial_local/runtime/central-http-attempts.log"' "$script" || return 1
     grep -q "assert_gate \"\$pair_summary\" 'replay pair'" "$script" || return 1
     grep -q 'replay_atomic_copy "$pair_summary" "$RESULTS/replay-pair-summary.json"' "$script" || return 1
     grep -q '^    replay_receipt_cleanup$' "$script" || return 1

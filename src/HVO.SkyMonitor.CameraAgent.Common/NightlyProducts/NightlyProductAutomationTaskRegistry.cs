@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
@@ -13,15 +14,25 @@ internal sealed class NightlyProductAutomationTaskRegistry(
     {
         var preset = options.Value.NightlyProducts;
         var enabled = preset.Enabled && Validator.TryValidateObject(preset, new ValidationContext(preset), [], true);
+        LocalAutomationProducerPreset[] presets = enabled ?
+        [
+            new(NightlyProductPreset.Target(NightlyProductKind.Keogram, preset), "Keogram",
+                [new("Source node", preset.SourceNodeId!),
+                 new("Column width", preset.KeogramColumnSeconds.ToString(CultureInfo.InvariantCulture) + " seconds"),
+                 new("Maximum gap between frames", preset.KeogramMaximumGapSeconds.ToString(CultureInfo.InvariantCulture) + " seconds")]),
+            new(NightlyProductPreset.Target(NightlyProductKind.StarTrail, preset), "Star trail",
+                [new("Source node", preset.SourceNodeId!), new("Dark-night threshold", "−18° geometric solar altitude")]),
+            new(NightlyProductPreset.Target(NightlyProductKind.DailySummary, preset), "Daily summary",
+                [new("Source node", preset.SourceNodeId!)])
+        ] : [];
         return new(LocalAutomationTaskKind.StillImageGeneration,
             "Generates a planned-window keogram, a dark-night star trail, or a sunrise-day summary from fixed-transfer sources.",
             [LocalAutomationTriggerKind.SourceWindowClosed],
-            enabled ? [NightlyProductPreset.Target(NightlyProductKind.Keogram, preset),
-                NightlyProductPreset.Target(NightlyProductKind.StarTrail, preset),
-                NightlyProductPreset.Target(NightlyProductKind.DailySummary, preset)] : [],
+            [.. presets.Select(static item => item.Target)],
             Available: enabled, UnavailableReason: enabled ? null : "Still generation requires an enabled, pinned source recipe and rig.")
         {
-            SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay]
+            SupportedSourceWindows = [LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceWindowKind.SunriseDay],
+            ProducerPresets = presets
         };
     }
 

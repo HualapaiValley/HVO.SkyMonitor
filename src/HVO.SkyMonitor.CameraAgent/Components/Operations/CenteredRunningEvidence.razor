@@ -1,0 +1,135 @@
+@inherits SiteTimeComponent
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+
+<section class="running-evidence" aria-label="Acquisition and buffer">
+    <h2>Acquisition and buffer</h2>
+    <dl class="running-facts">
+        <div><dt>Acquisition telemetry</dt><dd>@AcquisitionStatus
+            @if (CenteredPublicationEvidence.Reason(Snapshot.Acquisition?.Reason) is { } reason)
+            {
+                <span> · @reason</span>
+            }
+        </dd></div>
+        <div><dt>Observed</dt><dd>@ObservedTime(Snapshot.Acquisition?.ObservedUtc)</dd></div>
+        <div><dt>Camera</dt><dd>@(Snapshot.Camera?.CameraId ?? "Unavailable")</dd></div>
+        <div><dt>Acquisition run</dt><dd>@(Snapshot.Acquisition?.RunId?.ToString("D") ?? "Unavailable")</dd></div>
+        <div><dt>Execution version</dt><dd><code>@(Snapshot.Acquisition?.ExecutionVersion ?? "Unavailable")</code></dd></div>
+        <div><dt>Active acquisition generation</dt><dd>
+            @if (LiveAcquisition && Snapshot.Acquisition?.GraphRevisionId is { } active)
+            {
+                <a href="@GraphUrl(active)"><code>@active</code></a>
+            }
+            else
+            {
+                <span>Unavailable</span>
+            }
+        </dd></div>
+        @if (!LiveAcquisition && Snapshot.Acquisition?.GraphRevisionId is { } recorded)
+        {
+            <div><dt>Recorded graph revision</dt><dd><a href="@GraphUrl(recorded)"><code>@recorded</code></a></dd></div>
+        }
+        <div><dt>Acquisition head</dt><dd>
+            @if (Snapshot.Acquisition?.AcquisitionHead is { } head)
+            {
+                <a href="@CenteredPublicationEvidence.CaptureUrl(head.Exposure.CaptureId)">@CaptureLabel(head.Exposure.CaptureId, Snapshot.Head?.Raw.Capture.CaptureSequence)</a>
+                @if (Snapshot.HeadExecutionId is { } run)
+                {
+                    <span> · <a href="@CenteredPublicationEvidence.RunUrl(run)">View run</a></span>
+                }
+                <br /><span>Started @ObservedTime(head.ExposureStartedUtc) · committed @ObservedTime(head.CommittedUtc)</span>
+                @if (Snapshot.Head is { } input)
+                {
+                    <br /><span>@CenteredPublicationEvidence.FormatLayout(input.Raw.Layout)</span>
+                    <br /><span>@CenteredPublicationEvidence.FormatReadout(input.Raw.Layout)</span>
+                }
+                else
+                {
+                    <br /><span>Actual input layout unavailable</span>
+                }
+            }
+            else
+            {
+                @(LiveAcquisition ? "No exposure admitted yet" : "Unavailable")
+            }
+        </dd></div>
+        <div><dt>Buffer occupancy / capacity</dt><dd>@CenteredPublicationEvidence.Number(LiveAcquisition ? Snapshot.Acquisition?.BufferOccupancy : null) / @CenteredPublicationEvidence.Number(Snapshot.Acquisition?.BufferCapacity)</dd></div>
+        <div><dt>Pending metering</dt><dd>@CenteredPublicationEvidence.Number(Snapshot.Acquisition?.Holds?.PendingMeteringCount)</dd></div>
+        <div><dt>Consumer retention leases</dt><dd>@CenteredPublicationEvidence.Number(Snapshot.Acquisition?.Holds?.ConsumerLeaseCount)</dd></div>
+        <div><dt>Consumer leased bytes</dt><dd>@CenteredPublicationEvidence.Number(Snapshot.Acquisition?.Holds?.ConsumerLeaseBytes)</dd></div>
+    </dl>
+</section>
+
+<section class="running-evidence" aria-label="Live display publication">
+    <h2>Live display publication</h2>
+    @if (Snapshot.Display is { } display)
+    {
+        var stream = display.View.Base.Definition.Stream;
+        @if (Snapshot.Acquisition is { RunId: { } runId } observed && (stream.RunId != runId || stream.GenerationId != observed.GraphRevisionId))
+        {
+            <p>The issued display belongs to a different acquisition run or generation.</p>
+        }
+        <dl class="running-facts">
+            <div><dt>Issued live</dt><dd>@ObservedTime(display.Interval.StartedUtc)</dd></div>
+            <div><dt>Display run</dt><dd>@stream.RunId.ToString("D")</dd></div>
+            <div><dt>Display generation</dt><dd><a href="@GraphUrl(stream.GenerationId)"><code>@stream.GenerationId</code></a></dd></div>
+            <div><dt>Reference age at observation</dt><dd>@CenteredPublicationEvidence.FormatDuration(ReferenceAge(display))</dd></div>
+        </dl>
+        <CenteredPublicationEvidence View="display.View" Live="true" PendingLayers="Snapshot.PendingLayers" />
+    }
+    else
+    {
+        <p>No issued display revision is available for this camera.</p>
+    }
+</section>
+
+<section class="running-evidence" aria-label="Centered window">
+    <h2>Centered window</h2>
+    @if (_windowState is { } state)
+    {
+        <dl class="running-facts">
+            <div><dt>State</dt><dd>@state</dd></div>
+            <div><dt>Deadline</dt><dd>@ObservedTime(_deadline)</dd></div>
+            <div><dt>Closure evidence cutoff</dt><dd>@ObservedTime(_cutoff)</dd></div>
+            @if (CenteredPublicationEvidence.Reason(Snapshot.Window?.FailureReason) is { } failure)
+            {
+                <div><dt>Reason</dt><dd>@failure</dd></div>
+            }
+        </dl>
+    }
+    @if (_slots.Count == 0)
+    {
+        <p>Slot evidence unavailable.</p>
+    }
+    else
+    {
+        <div class="running-table">
+            <table>
+                <caption class="visually-hidden">Five centered window slots</caption>
+                <thead><tr><th scope="col">Offset</th><th scope="col">Expected start</th><th scope="col">Capture and actual bounds</th><th scope="col">Outcome</th><th scope="col">Reason</th><th scope="col">Registration</th></tr></thead>
+                <tbody>
+                    @foreach (var slot in _slots)
+                    {
+                        <tr>
+                            <th scope="row">@(slot.Offset == 0 ? "0 (reference)" : $"{slot.Offset:+0;-0}")</th>
+                            <td>@ObservedTime(slot.ExpectedUtc)</td>
+                            <td>
+                                @if (slot.CaptureId is { } capture)
+                                {
+                                    <a href="@CenteredPublicationEvidence.CaptureUrl(capture)">@CaptureLabel(capture, slot.Sequence)</a><br />
+                                    <span>@ObservedTime(slot.StartedUtc) to @ObservedTime(slot.EndedUtc)</span>
+                                }
+                                else
+                                {
+                                    <span>Unavailable</span>
+                                }
+                            </td>
+                            <td>@slot.Outcome</td>
+                            <td>@CenteredPublicationEvidence.Reason(slot.Reason)</td>
+                            <td>@slot.Registration</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

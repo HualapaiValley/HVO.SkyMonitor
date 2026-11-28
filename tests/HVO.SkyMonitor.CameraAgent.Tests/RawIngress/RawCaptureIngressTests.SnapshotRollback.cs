@@ -1,29 +1,29 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 public sealed partial class RawCaptureIngressTests
 {
-    /// <summary>
-    /// What an installer snapshot rollback (#1314) leaves for raw frames: the journal goes back to the snapshot while
-    /// every frame written since stays on disk. The next start records each frame it can verify again, with its own
-    /// capture sequence, and never hands that sequence out a second time.
-    /// </summary>
+    /// <summary>A durable Silo admission intent can restore a staged capture absent from a journal checkpoint.</summary>
     [TestMethod]
-    public async Task InitializeAsync_AfterASnapshotRollback_RecordsFramesWrittenSinceTheSnapshotAgainWithTheirOwnSequences()
+    public async Task InitializeAsync_RecoversPendingSiloAdmissionMissingFromJournalCheckpoint()
     {
         var root = CreateRoot();
         var snapshot = Path.Combine(Path.GetTempPath(), $"hvo-raw-snapshot-{Guid.NewGuid():N}.db");
         try
         {
             var journal = Path.Combine(root, "journal", "raw-ingress.db");
-            RawCaptureReceipt later;
-            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System), siloProvider: silo))
             {
                 _ = await ingress.AcceptAsync(
                     CreateConfiguration(), CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false);
-                // The installer's snapshot, taken with the SQLite backup API.
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(ingress, CancellationToken.None).ConfigureAwait(false);
+                // Take a checkpoint after the first admitted capture has settled in Silo.
                 using (var source = new SqliteConnection($"Data Source={journal};Pooling=False"))
                 using (var copy = new SqliteConnection($"Data Source={snapshot};Pooling=False"))
                 {
@@ -31,19 +31,29 @@ public sealed partial class RawCaptureIngressTests
                     await copy.OpenAsync().ConfigureAwait(false);
                     source.BackupDatabase(copy);
                 }
-                later = (await ingress.AcceptAsync(
-                    CreateConfiguration(), CreateSubmission(Timestamp(6), [6, 6, 6, 6]), CancellationToken.None).ConfigureAwait(false))!;
             }
+            var configuration = CreateConfiguration();
+            var submission = CreateSubmission(Timestamp(6), [6, 6, 6, 6]);
+            var artifactId = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission).ArtifactId;
+            var paths = RawIngressFileStore.GetPaths(root, Timestamp(6), artifactId);
+            using (var interrupted = CreateIngress(root, new RawIngressState(TimeProvider.System),
+                new OneShotFaultInjector(RawIngressFaultPoint.AfterJournalCommit), siloProvider: silo))
+            {
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                    await interrupted.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+            }
+            var later = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(paths.SidecarAbsolutePath)
+                .ConfigureAwait(false)).Document!.Manifest!;
             long laterSequence;
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 laterSequence = await ScalarLongAsync(connection,
-                    $"SELECT capture_sequence FROM raw_captures WHERE raw_artifact_id = '{later.Manifest.Descriptor.Artifact.ArtifactId:N}';").ConfigureAwait(false);
+                    $"SELECT capture_sequence FROM raw_captures WHERE raw_artifact_id = '{later.Descriptor.Artifact.ArtifactId:N}';").ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();
 
-            // The rollback: the journal is replaced by the snapshot and its sidecars removed, the files are left alone,
-            // and the installer carries the capture-sequence counter forward to the highest value it ever reached.
+            // Restore only the journal checkpoint while the second capture is still owned by its Silo staging intent.
             foreach (var suffix in DatabaseSuffixes) File.Delete(journal + suffix);
             File.Copy(snapshot, journal);
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
@@ -55,10 +65,10 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(1, await floor.ExecuteNonQueryAsync().ConfigureAwait(false));
             }
             SqliteConnection.ClearAllPools();
-            Assert.IsTrue(File.Exists(later.StoredFrame.AbsolutePath), "A rollback never removes a frame.");
+            Assert.IsTrue(File.Exists(paths.PayloadAbsolutePath), "A rollback never removes a frame.");
 
             var state = new RawIngressState(TimeProvider.System);
-            using (var restarted = CreateIngress(root, state))
+            using (var restarted = CreateIngress(root, state, siloProvider: silo))
             {
                 await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -66,7 +76,7 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(0L, state.Snapshot.QuarantineCount);
                 using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
                 {
-                    var recovered = $"raw_artifact_id = '{later.Manifest.Descriptor.Artifact.ArtifactId:N}'";
+                    var recovered = $"raw_artifact_id = '{later.Descriptor.Artifact.ArtifactId:N}'";
                     Assert.AreEqual(2L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
                     Assert.AreEqual(laterSequence, await ScalarLongAsync(connection,
                         $"SELECT capture_sequence FROM raw_captures WHERE {recovered} AND state = 'committed' AND retention_hold = 1;").ConfigureAwait(false));
@@ -74,9 +84,11 @@ public sealed partial class RawCaptureIngressTests
                     Assert.IsGreaterThan(0L, await ScalarLongAsync(connection,
                         $"SELECT COUNT(*) FROM capture_lane_work WHERE raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE {recovered});").ConfigureAwait(false));
                 }
-                var index = await File.ReadAllTextAsync(Path.Combine(root, "index", "frames_2026-07-14.jsonl")).ConfigureAwait(false);
-                Assert.AreEqual(1, index.Split(later.Manifest.Descriptor.Artifact.ArtifactId.ToString()).Length - 1,
-                    "The compatibility index names the recovered frame exactly once.");
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(restarted, CancellationToken.None).ConfigureAwait(false);
+                var storage = silo.GetRequiredService<SiloArtifactStorage>();
+                CollectionAssert.AreEqual(new byte[] { 6, 6, 6, 6 },
+                    await storage.ReadRawAsync(later.Descriptor, CancellationToken.None).ConfigureAwait(false));
+                Assert.IsFalse(File.Exists(paths.PayloadAbsolutePath), "Settled Silo staging is reclaimed.");
 
                 var next = (await restarted.AcceptAsync(
                     CreateConfiguration(), CreateSubmission(Timestamp(7), [7, 7, 7, 7]), CancellationToken.None).ConfigureAwait(false))!;

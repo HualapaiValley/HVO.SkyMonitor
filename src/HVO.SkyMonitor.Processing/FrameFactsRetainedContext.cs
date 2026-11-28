@@ -97,8 +97,8 @@ public sealed class FrameFactsRetainedContext
             Number("acquisition.offset", descriptor.Controls.EffectiveOffset, source);
             Number("acquisition.sensorSetpointC", descriptor.Controls.TemperatureSetpointC, source with { Nature = "Configured setpoint" });
             Number("acquisition.sensorTemperatureC", descriptor.Controls.EffectiveTemperatureC, source with { Nature = "Module-reported effective sensor temperature" });
-            Text("acquisition.scheduleProfile", descriptor.CycleEvidence?.ScheduleAdmission?.SetpointProfileId, source);
-            Text("acquisition.cadenceMode", descriptor.CycleEvidence?.CadenceMode.ToString(), source);
+            Text("acquisition.scheduleProfile", descriptor.RetainedScheduleAdmission?.SetpointProfileId, source);
+            Text("acquisition.cadenceMode", descriptor.RetainedCadenceMode?.ToString(), source);
             Timestamp("time.captureUtc", descriptor.Timing.ExposureStartedUtc, source);
             Timestamp("time.captureEndUtc", descriptor.Timing.ExposureEndedUtc, source);
             Timestamp("time.artifactCreatedUtc", descriptor.Artifact.CreatedUtc, source);

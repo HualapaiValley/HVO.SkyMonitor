@@ -2,13 +2,12 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture")]
 [DoNotParallelize]
 public sealed class CaptureContractPerformanceTests
 {
@@ -45,7 +44,7 @@ public sealed class CaptureContractPerformanceTests
             MeasuredOperations,
             Concurrency = 1,
             InitialBacklog = 0,
-            Result = "Per-workload fields report absolute and percentage changes for descriptor size and filesystem save latency/throughput. Metadata growth is accepted because it supplies complete reconstruction facts while remaining below 0.04% of W1/W2 payload size. The v2 save regression is the explicit cost of one post-write sequential checksum read; it prevents mutable caller memory from publishing a false checksum, performs no payload copy, and remains bounded by payload size.",
+            Result = "Per-workload descriptor size, validation, hashing and reconstruction measurements.",
             Results = results
         };
         var outputDirectory = Path.Combine(GetRepositoryRoot(), "TestResults", "issue-92");
@@ -89,7 +88,6 @@ public sealed class CaptureContractPerformanceTests
                 GC.KeepAlive(frame);
             })
         };
-        var storageStages = MeasureStorage(manifest, payload);
         return new
         {
             Workload = workload,
@@ -103,117 +101,7 @@ public sealed class CaptureContractPerformanceTests
             ChecksumSha256 = manifest.Descriptor.Artifact.ChecksumSha256,
             ZeroCopyVerified = zeroCopyVerified,
             Stages = stages,
-            StorageStages = storageStages
         };
-    }
-
-    private static StorageComparison MeasureStorage(ArtifactManifestV2 manifest, byte[] payload)
-    {
-        var outputRoot = Path.Combine(GetRepositoryRoot(), "TestResults", "issue-92", "storage");
-        var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-        var descriptor = manifest.Descriptor;
-        var frame = new CameraFrame(
-            descriptor.Timing.ExposureStartedUtc,
-            descriptor.Layout.Width,
-            descriptor.Layout.Height,
-            descriptor.Layout.PixelFormat,
-            payload,
-            new FrameMetadata(
-                descriptor.Controls.EffectiveExposure,
-                descriptor.Controls.EffectiveGain,
-                descriptor.Controls.EffectiveTemperatureC!.Value,
-                descriptor.Artifact.SourceId,
-                Offset: descriptor.Controls.EffectiveOffset),
-            descriptor.Layout.StrideBytes);
-
-        var baseline = MeasureStorageStage(
-                "canonical-v2-save-baseline",
-                Path.Combine(outputRoot, string.Concat("baseline-", Guid.NewGuid().ToString("N"))),
-                iteration =>
-                {
-                    var operationDescriptor = descriptor with
-                    {
-                        Capture = descriptor.Capture with { CaptureSequence = iteration + 1 },
-                        Artifact = descriptor.Artifact with { ArtifactId = Guid.NewGuid() }
-                    };
-                    return service.SaveAsync(
-                        Path.Combine(outputRoot, "baseline-work"),
-                        new FrameArtifact(operationDescriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame),
-                        operationDescriptor,
-                        CancellationToken.None);
-                },
-                payload.LongLength,
-                payload.LongLength);
-        var current = MeasureStorageStage(
-                "v2-save-verify-sidecar",
-                Path.Combine(outputRoot, string.Concat("v2-", Guid.NewGuid().ToString("N"))),
-                iteration =>
-                {
-                    var operationDescriptor = descriptor with
-                    {
-                        Capture = descriptor.Capture with { CaptureSequence = iteration + 1 },
-                        Artifact = descriptor.Artifact with { ArtifactId = Guid.NewGuid() }
-                    };
-                    return service.SaveAsync(
-                        Path.Combine(outputRoot, "v2-work"),
-                        new FrameArtifact(
-                            operationDescriptor.Artifact.ArtifactId,
-                            FrameArtifactRole.Raw,
-                            frame),
-                        operationDescriptor,
-                        CancellationToken.None);
-                },
-                payload.LongLength,
-                payload.LongLength);
-        return new StorageComparison(
-            baseline,
-            current,
-            (current.MedianMilliseconds - baseline.MedianMilliseconds) * 100.0 / baseline.MedianMilliseconds,
-            (current.P95Milliseconds - baseline.P95Milliseconds) * 100.0 / baseline.P95Milliseconds,
-            (current.OperationsPerSecond - baseline.OperationsPerSecond) * 100.0 / baseline.OperationsPerSecond);
-    }
-
-    private static StorageMeasurement MeasureStorageStage(
-        string stage,
-        string cleanupRoot,
-        Func<int, ValueTask<StoredFrameReference>> operation,
-        long payloadBytesWrittenPerOperation,
-        long payloadBytesReadPerOperation)
-    {
-        Directory.CreateDirectory(cleanupRoot);
-        try
-        {
-            for (var index = 0; index < WarmupOperations; index++)
-            {
-                operation(index).AsTask().GetAwaiter().GetResult();
-            }
-
-            var samples = new double[MeasuredOperations];
-            for (var index = 0; index < samples.Length; index++)
-            {
-                var started = Stopwatch.GetTimestamp();
-                operation(index + WarmupOperations).AsTask().GetAwaiter().GetResult();
-                samples[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-            }
-            Array.Sort(samples);
-            var totalMilliseconds = samples.Sum();
-            return new StorageMeasurement(
-                stage,
-                totalMilliseconds,
-                Percentile(samples, 0.50),
-                Percentile(samples, 0.95),
-                MeasuredOperations / TimeSpan.FromMilliseconds(totalMilliseconds).TotalSeconds,
-                payloadBytesWrittenPerOperation,
-                payloadBytesReadPerOperation);
-        }
-        finally
-        {
-            var workRoot = Path.GetDirectoryName(cleanupRoot)!;
-            if (Directory.Exists(workRoot))
-            {
-                Directory.Delete(workRoot, recursive: true);
-            }
-        }
     }
 
     private static object Measure(string stage, Action operation)
@@ -259,20 +147,4 @@ public sealed class CaptureContractPerformanceTests
         }
         throw new InvalidOperationException("Repository root could not be located.");
     }
-
-    private sealed record StorageComparison(
-        StorageMeasurement Baseline,
-        StorageMeasurement Current,
-        double MedianLatencyChangePercent,
-        double P95LatencyChangePercent,
-        double ThroughputChangePercent);
-
-    private sealed record StorageMeasurement(
-        string Stage,
-        double TotalMilliseconds,
-        double MedianMilliseconds,
-        double P95Milliseconds,
-        double OperationsPerSecond,
-        long PayloadBytesWrittenPerOperation,
-        long PayloadBytesReadPerOperation);
 }

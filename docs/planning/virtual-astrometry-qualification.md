@@ -52,7 +52,7 @@ This plan does not assert that an unmeasured profile is supported.
 | Package | Implementation owner | Start and integration gates | Retained boundary |
 | --- | --- | --- | --- |
 | Scope activation and acceptance map | [#1100](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1100) | Operator authorization; documentation review and merge before deferred implementation starts | No runtime acceptance claim |
-| V2: bounded HYG selection | [#1101](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1101) | #1100; approved existing immutable HYG 4.2 snapshot | #521 retains 4.4, schema, epoch/proper-motion, photometric semantics and package lifecycle |
+| V2: bounded HYG selection | [#1101](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1101) | #1100; approved immutable HYG snapshot | #521 defines HYG 4.4 schema, epoch/proper-motion, photometric semantics and package lifecycle |
 | V1: actual camera/readout baseline | [#1102](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1102) | #1101; delivered solver; final exposure-correct qualification waits for #522 | Initial stationary-renderer evidence is explicitly provisional |
 | V3: visibility and exposure motion | Existing [#522](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/522) | #1100; reuse approved existing catalog fields; coordinate bounded footprint contracts with #518 | Complete #522 acceptance, including SNR/visibility, not only trail rendering; no resolved-body work |
 | V4: measured stars and diagnostics | [#1103](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1103), scoped under #526 | #1102 and #522 expected signal/trail contract | #526 retains annotation rollout, diagnostic presentation and any broader host reconstruction requirements |

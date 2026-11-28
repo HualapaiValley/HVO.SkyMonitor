@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
@@ -84,8 +85,9 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(17, retained.Steps[0].Options!.Value.GetProperty("future").GetProperty("keep").GetInt32());
             Assert.AreEqual(curated == "null", retained.Steps[0].Options!.Value.TryGetProperty("curatedAnnotations", out var annotations));
             if (curated == "null") Assert.AreEqual(JsonValueKind.Null, annotations.ValueKind);
-            CollectionAssert.AreEqual(manifestBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
-            CollectionAssert.AreEqual(submission.Result.Frame!.PixelData.ToArray(), await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(manifestBytes, await ReadPhysicalSiloEvidenceAsync(provider, manifest, manifestBytes).ConfigureAwait(false));
+            CollectionAssert.AreEqual(submission.Result.Frame!.PixelData.ToArray(),
+                await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, manifest.Descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(1, catalog.QueryCount);
             Console.WriteLine($"string-solar={curated}; revision={draft.RevisionId}; scene-bytes={output.Bytes.Length}; SHA256={Convert.ToHexString(SHA256.HashData(output.Bytes))}");
         }
@@ -129,9 +131,10 @@ public sealed partial class ProcessingGraphOperationsTests
                 await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
                     await PhysicalHost(provider, config, catalog, new PhysicalBindingFailureIngress(ingress)).PublishAsync(submission, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             }
-            var paths = PhysicalRawPaths(provider, config, submission);
-            CollectionAssert.AreEqual(capture.ManifestBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
-            CollectionAssert.AreEqual(PhysicalQuerySubmission(0).Result.Frame!.PixelData.ToArray(), await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(capture.ManifestBytes,
+                await ReadPhysicalSiloEvidenceAsync(provider, capture.Manifest, capture.ManifestBytes).ConfigureAwait(false));
+            CollectionAssert.AreEqual(PhysicalQuerySubmission(0).Result.Frame!.PixelData.ToArray(),
+                await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, capture.Manifest.Descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
             var output = await ReadPhysicalSceneOutputAsync(provider, capture.Execution).ConfigureAwait(false);
             CollectionAssert.AreEqual(capture.Bytes, output.Bytes);
             Assert.AreEqual(1, catalog.QueryCount);
@@ -279,8 +282,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     LoopDuration = TimeSpan.FromSeconds(5)
                 }, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            var paths = PhysicalRawPaths(provider, config, PhysicalQuerySubmission(0));
-            CollectionAssert.AreEqual(capture.ManifestBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(capture.ManifestBytes,
+                await ReadPhysicalSiloEvidenceAsync(provider, capture.Manifest, capture.ManifestBytes).ConfigureAwait(false));
             var retained = await ReadPhysicalSceneOutputAsync(provider, capture.Execution).ConfigureAwait(false);
             CollectionAssert.AreEqual(capture.Bytes, retained.Bytes);
             catalog.DuringQuery = null;
@@ -649,7 +652,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(3, output.Scene.Selection.MaximumResults);
             Assert.IsFalse(output.Scene.Selection.IncludeConstellationEndpointStars);
             CollectionAssert.AreEqual(ProjectedSceneJson.Serialize(stage.Bind(output.Scene.Source, ProjectedSceneKind.VirtualRenderAuthoritative)), output.Bytes);
-            CollectionAssert.AreEqual(rawBytes, await File.ReadAllBytesAsync(PhysicalRawPaths(provider, config, submission).PayloadAbsolutePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(rawBytes, await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider,
+                manifest.Descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
         }
         finally { DeletePhysicalQueryRoot(root); }
     }
@@ -764,6 +768,11 @@ public sealed partial class ProcessingGraphOperationsTests
         => RawIngressFileStore.GetPaths(provider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot,
             RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, submission.Result.Frame!),
             RawCaptureDescriptorFactory.CreateStableIds(config, submission).ArtifactId);
+
+    private static ValueTask<byte[]?> ReadPhysicalSiloEvidenceAsync(
+        IServiceProvider provider, ArtifactManifestV2 manifest, byte[] expected)
+        => provider.GetRequiredService<SiloArtifactStorage>().ReadRawEvidenceAsync(manifest.Descriptor.Artifact.ArtifactId,
+            CaptureContractJson.ComputeManifestSha256(expected), allowStaged: false, CancellationToken.None);
 
     private static async Task<ProcessingGraphExecutionDetail> PhysicalExecutionAsync(ServiceProvider provider, CameraModuleConfig config, CaptureLoopSubmission submission)
     {

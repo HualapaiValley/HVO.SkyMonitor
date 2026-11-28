@@ -29,10 +29,18 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed partial class TransientWorkerRuntimeTests
 {
+    private static ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> PrepareDetectorSourcesAsync(
+        TransientDetectorRuntime runtime, IReadOnlyDictionary<int, CameraModuleConfig> configurations,
+        TransientDetectionOptions options, IReadOnlyDictionary<int, TransientLoadedFrame> frames,
+        CancellationToken cancellationToken)
+        => runtime.CreateSourcesAsync(new TransientDetectorSourcePreparation().Prepare(
+            configurations, frames, options.ExposureIntegratedStarMask), options, cancellationToken);
+
     [TestMethod]
     public async Task ExposureSweptStarMask_UsesCaptureClockAndIgnoresPoisonedRendererObjects()
     {
@@ -68,15 +76,31 @@ public sealed partial class TransientWorkerRuntimeTests
                 VirtualExposure = clock,
                 Objects = [new("poison", "poison", 3, 3, -12)]
             };
-            var configured = new Dictionary<int, CameraModuleConfig> { [0] = configuration };
-            var first = await runtime.CreateSourcesAsync(configured, options,
-                new Dictionary<int, TransientLoadedFrame> { [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene } } },
-                CancellationToken.None).ConfigureAwait(false);
-            var second = await runtime.CreateSourcesAsync(configured, options,
+            var preparation = new TransientDetectorSourcePreparation();
+            var firstInput = preparation.Prepare(new Dictionary<int, CameraModuleConfig> { [0] = configuration },
+                new Dictionary<int, TransientLoadedFrame> { [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene } } }, true);
+            var alternative = configuration with
+            {
+                Module = configuration.Module with
+                {
+                    Options = System.Text.Json.JsonSerializer.SerializeToElement(new { privateOracle = "alternate-satellite-identity-canary" })
+                }
+            };
+            var secondInput = preparation.Prepare(new Dictionary<int, CameraModuleConfig> { [0] = alternative },
                 new Dictionary<int, TransientLoadedFrame>
                 {
-                    [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene with { Objects = [new("other-truth", "other", 55, 30, 30)] } } }
-                }, CancellationToken.None).ConfigureAwait(false);
+                    [0] = frame with
+                    {
+                        Manifest = frame.Manifest with
+                        {
+                            Scene = firstScene with
+                            { Objects = [new("alternate-satellite-identity-canary", "alternate-oracle", 55, 30, 30)] }
+                        }
+                    }
+                }, true);
+            Assert.AreEqual(firstInput[0], secondInput[0], "Changing private names and positions must not change the measured inputs.");
+            var first = await runtime.CreateSourcesAsync(firstInput, options, CancellationToken.None).ConfigureAwait(false);
+            var second = await runtime.CreateSourcesAsync(secondInput, options, CancellationToken.None).ConfigureAwait(false);
             var star = first[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
             var changedTruth = second[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
             Assert.IsTrue(Linear16MaskOperations.IsExcluded(star.Mask, 31, 23));
@@ -126,7 +150,7 @@ public sealed partial class TransientWorkerRuntimeTests
     [TestMethod]
     public void ResolveObservatory_MigratedLegacyContextFailsClosed()
     {
-        var runtime = new TransientDetectorRuntime(new InMemoryCelestialCatalog([]));
+        var preparation = new TransientDetectorSourcePreparation();
         var descriptor = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
         var configuration = CreateConfiguration() with
@@ -137,7 +161,7 @@ public sealed partial class TransientWorkerRuntimeTests
         };
 
         var exception = Assert.ThrowsExactly<TransientWorkerExecutionException>(() =>
-            runtime.ResolveObservatory(descriptor, configuration));
+            preparation.ResolveObservatory(descriptor, configuration));
 
         Assert.AreEqual("transient-runtime.capture-location-missing", exception.Message);
     }
@@ -344,7 +368,6 @@ public sealed partial class TransientWorkerRuntimeTests
 
     [TestMethod]
     [DataRow(TransientOperatingMode.Edge, "finalized")]
-    [DataRow(TransientOperatingMode.Hybrid, "handoff_pending")]
     public async Task VirtualSkyEvent_ConvergesToModeSpecificDurableState(
         TransientOperatingMode mode,
         string expectedPhase)
@@ -358,13 +381,13 @@ public sealed partial class TransientWorkerRuntimeTests
                 ["CameraAgent:TransientDetection:Mode"] = mode.ToString(),
                 ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
                 ["CameraAgent:CaptureDistribution:UploadEnabled"] =
-                    (mode == TransientOperatingMode.Hybrid).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    (mode == TransientOperatingMode.Edge).ToString(System.Globalization.CultureInfo.InvariantCulture)
             };
             var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateOneFrameScenario(epoch));
@@ -441,7 +464,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var cameraConfiguration = CreateConfiguration();
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
@@ -556,9 +579,10 @@ public sealed partial class TransientWorkerRuntimeTests
                 pendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
             Assert.IsTrue(pendingCaptures.All(static capture =>
                 capture.AgentId == "transient-runtime-agent"));
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var operations = await provider.GetRequiredService<CameraAgentOperationsSummaryProvider>()
                 .GetAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(2L, operations.RawIngress.Value.PendingCount);
+            Assert.AreEqual(0L, operations.RawIngress.Value.PendingCount);
             Assert.AreEqual(2L, operations.CaptureLanes.Value.PendingCount);
             CollectionAssert.AreEqual(
                 new long[] { 6, 7 },
@@ -598,7 +622,7 @@ public sealed partial class TransientWorkerRuntimeTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-operator", Guid.NewGuid().ToString("N"));
         try
         {
-            using var provider = CreateProvider(root, mode: TransientOperatingMode.Hybrid);
+            using var provider = CreateProvider(root, mode: TransientOperatingMode.Edge);
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration();
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
@@ -710,7 +734,7 @@ public sealed partial class TransientWorkerRuntimeTests
                     target with { ExternalOwnershipEvidence = new("d331-0821084607", "not-a-sha", true) },
                     "malformed-ownership-key", "owner-id", "operator-approved-loss",
                     CancellationToken.None).AsTask()).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+            await Assert.ThrowsExactlyAsync<QuarantineOperationCollisionException>(() => runtime
                 .AbandonQuarantinedCaptureAsync(
                     target with { CaptureSequence = 99 }, "mismatch-key", "owner-id",
                     "operator-approved-loss", CancellationToken.None).AsTask()).ConfigureAwait(false);
@@ -727,7 +751,7 @@ public sealed partial class TransientWorkerRuntimeTests
             Assert.AreEqual(receipts[0].CompletedUtc, receipts[1].CompletedUtc);
             Assert.AreEqual("d331-0821084607", receipts[0].DeploymentRunId);
             Assert.AreEqual(new string('D', 64), receipts[0].InventorySha256);
-            await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+            await Assert.ThrowsExactlyAsync<QuarantineOperationCollisionException>(() => runtime
                 .AbandonQuarantinedCaptureAsync(
                     target with
                     {
@@ -782,7 +806,7 @@ public sealed partial class TransientWorkerRuntimeTests
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-malformed-audit", Guid.NewGuid().ToString("N"));
         try
         {
-            using var provider = CreateProvider(root, mode: TransientOperatingMode.Hybrid);
+            using var provider = CreateProvider(root, mode: TransientOperatingMode.Edge);
             var cameraConfiguration = CreateConfiguration();
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
             await StageVirtualFramesAsync(
@@ -849,7 +873,7 @@ public sealed partial class TransientWorkerRuntimeTests
                     .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
                     .Single(static lane => lane.Lane == "transient");
                 Assert.IsGreaterThanOrEqualTo(1L, backlog.QuarantineCount, mutation.Column);
-                await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+                await Assert.ThrowsExactlyAsync<QuarantineOperationCollisionException>(() => runtime
                     .AbandonQuarantinedCaptureAsync(
                         target, "malformed-audit-key", "owner-id", "operator-approved-loss",
                         CancellationToken.None).AsTask()).ConfigureAwait(false);
@@ -869,6 +893,62 @@ public sealed partial class TransientWorkerRuntimeTests
                     await restore.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
             }
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task RuntimeInitializationRequiresRawIngressAndCanRetryAfterBootstrap()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-bootstrap", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var runtime = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+
+            var missingIngress = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                runtime.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            StringAssert.Contains(missingIngress.Message, "must initialize before transient runtime state", StringComparison.Ordinal);
+            Assert.IsFalse(File.Exists(Path.Combine(root, "journal", "raw-ingress.db")));
+
+            await provider.GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var quarantine = await runtime.ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsEmpty(quarantine.Items);
+            Assert.IsNull(quarantine.NextCursor);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task RuntimeReadFrameDistinguishesExistingAndMissingRawCaptures()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-missing-frame", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var configuration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(configuration);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            await StageVirtualFramesAsync(provider, configuration, epoch, frameCount: 1).ConfigureAwait(false);
+            var runtime = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+            await runtime.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            var rowId = await ScalarAsync(connection, "SELECT raw_capture_row_id FROM raw_captures;").ConfigureAwait(false);
+
+            var frame = await runtime.ReadFrameAsync(rowId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(rowId, frame.RawCaptureRowId);
+            Assert.AreEqual(configuration.AgentId, frame.AgentId);
+
+            var missingFrame = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                runtime.ReadFrameAsync(rowId + 1, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.AreEqual("Transient runtime target no longer exists.", missingFrame.Message);
         }
         finally
         {
@@ -1580,17 +1660,13 @@ public sealed partial class TransientWorkerRuntimeTests
     [DataRow((int)TransientRuntimeFaultPoint.BeforeCausalExtractionCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterCausalExtractionCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterCandidateJournalCommit, TransientOperatingMode.Edge, "finalized")]
-    [DataRow((int)TransientRuntimeFaultPoint.AfterCandidateJournalCommit, TransientOperatingMode.Hybrid, "handoff_pending")]
     [DataRow((int)TransientRuntimeFaultPoint.BeforeObservationExtractionCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterObservationExtractionCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.BeforeAssessmentCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterAssessmentCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterFinalizationJournalCommit, TransientOperatingMode.Edge, "finalized")]
-    [DataRow((int)TransientRuntimeFaultPoint.AfterHandoffJournalCommit, TransientOperatingMode.Hybrid, "handoff_pending")]
     [DataRow((int)TransientRuntimeFaultPoint.BeforeRuntimeCompletionCommit, TransientOperatingMode.Edge, "finalized")]
-    [DataRow((int)TransientRuntimeFaultPoint.BeforeRuntimeCompletionCommit, TransientOperatingMode.Hybrid, "handoff_pending")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterRuntimeCompletionCommit, TransientOperatingMode.Edge, "finalized")]
-    [DataRow((int)TransientRuntimeFaultPoint.AfterRuntimeCompletionCommit, TransientOperatingMode.Hybrid, "handoff_pending")]
     [DataRow((int)TransientRuntimeFaultPoint.BeforeRetirementCommit, TransientOperatingMode.Edge, "finalized")]
     [DataRow((int)TransientRuntimeFaultPoint.AfterRetirementCommit, TransientOperatingMode.Edge, "finalized")]
     public async Task HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce(
@@ -1858,7 +1934,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
@@ -1908,54 +1984,6 @@ public sealed partial class TransientWorkerRuntimeTests
             Assert.IsNotNull(secondReceipt.Value);
             Assert.HasCount(2, secondReceipt.Value.Event.Observations);
             Assert.HasCount(2, secondReceipt.Value.Event.Assessments);
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
-    }
-
-    [TestMethod]
-    public async Task Hybrid_AdjacentEventFramesReserveDistinctSubmittedEventIdentities()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-hybrid-context", Guid.NewGuid().ToString("N"));
-        try
-        {
-            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CameraAgent:RawIngressRoot"] = root,
-                ["CameraAgent:TransientDetection:Mode"] = "Hybrid",
-                ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
-            }).Build();
-            var services = new ServiceCollection();
-            services.AddLogging();
-            services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
-            using var provider = services.BuildServiceProvider();
-            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
-            var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
-            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
-            await StageVirtualFramesAsync(provider, cameraConfiguration, epoch, 8).ConfigureAwait(false);
-            var worker = provider.GetRequiredService<TransientWorkerService>();
-            while (await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false))
-            {
-            }
-
-            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
-            await connection.OpenAsync().ConfigureAwait(false);
-            Assert.AreEqual(2L, await ScalarAsync(
-                connection, "SELECT COUNT(*) FROM transient_candidates WHERE phase = 'handoff_pending';").ConfigureAwait(false));
-            Assert.AreEqual(2L, await ScalarAsync(
-                connection, "SELECT COUNT(DISTINCT event_id) FROM transient_candidates;").ConfigureAwait(false));
-            Assert.AreEqual(2L, await ScalarAsync(
-                connection, "SELECT COUNT(DISTINCT submission_identity_sha256) FROM transient_candidates;").ConfigureAwait(false));
-            Assert.AreEqual(0L, await ScalarAsync(
-                connection, "SELECT COUNT(*) FROM transient_candidates WHERE quarantine_reason IS NOT NULL;").ConfigureAwait(false));
         }
         finally
         {
@@ -2358,7 +2386,7 @@ public sealed partial class TransientWorkerRuntimeTests
             ["CameraAgent:TransientDetection:ExposureIntegratedStarMask"] = exposureIntegratedStarMask.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] =
-                (mode == TransientOperatingMode.Hybrid).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                (mode == TransientOperatingMode.Edge).ToString(System.Globalization.CultureInfo.InvariantCulture)
         };
         if (maximumAdjacentStartIntervalSeconds.HasValue)
         {
@@ -2372,7 +2400,7 @@ public sealed partial class TransientWorkerRuntimeTests
             services.AddSingleton(timeProvider);
         }
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         if (faultInjector is not null)
         {
             services.AddSingleton(faultInjector);

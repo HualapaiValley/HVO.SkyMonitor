@@ -21,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// total-integration wording.
 /// </summary>
 [TestClass]
+[TestProperty("Area", "Ui")]
 public sealed class ObservingDayDailySummaryViewerTests
 {
     private static readonly int[] ExposureSeconds = [10, 20, 30, 40, 50];
@@ -67,7 +68,8 @@ public sealed class ObservingDayDailySummaryViewerTests
 
             var hostOptions = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
             var clock = new FixedTimeProvider(NightlyProductFixture.DayEndUtc.AddDays(1));
-            using var store = new SqliteNightlyProductStore(hostOptions, clock);
+            using var silo = new NightlySiloFixture(hostOptions.Value.RawIngressRoot);
+            using var store = silo.OpenStore(hostOptions, clock);
             var reader = new InMemoryNightlySourceReader();
             reader.Add(frames);
             using (var generator = new NightlyProductGenerator(

@@ -11,15 +11,13 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class UpgradeNotesTests
 {
-    private static readonly Guid InstanceId = Guid.Parse("4f7a2c51-8a1e-4c3b-9d2e-0b6f5a1c7e90");
-
     [TestMethod]
     public void Plan_ShowsEveryNoteAfterTheInstalledVersionUpToTheTargetOldestFirst()
     {
         var target = ReleaseManifestTests.Release(
             "1.2.0", ("1.2.0", "twelve"), ("1.0.0", "ten"), ("1.3.0", "thirteen"), ("1.1.0", "eleven"));
 
-        var plan = UpgradeNotes.Plan("1.0.0", target, InstanceId);
+        var plan = UpgradeNotes.Plan("1.0.0", target);
 
         Assert.AreEqual("1.0.0", plan.InstalledVersion);
         Assert.AreEqual("1.2.0", plan.TargetVersion);
@@ -29,7 +27,7 @@ public sealed class UpgradeNotesTests
     [TestMethod]
     public void Plan_CompleteReleaseFixture_ShowsTheNotesAfterTheInstalledRelease()
     {
-        var plan = UpgradeNotes.Plan("1.0.0", ReleaseManifest.Parse(ReleaseManifestTests.Fixture()), InstanceId);
+        var plan = UpgradeNotes.Plan("1.0.0", ReleaseManifest.Parse(ReleaseManifestTests.Fixture()));
 
         Assert.AreEqual("1.1.0 1.2.0", Versions(plan.Notes));
     }
@@ -40,7 +38,7 @@ public sealed class UpgradeNotesTests
     public void Plan_PreReleaseTarget_ShowsTheNotesOfTheReleaseItBelongsTo(string target)
     {
         var plan = UpgradeNotes.Plan(
-            "1.1.0", ReleaseManifestTests.Release(target, ("1.1.0", "eleven"), ("1.2.0", "twelve")), InstanceId);
+            "1.1.0", ReleaseManifestTests.Release(target, ("1.1.0", "eleven"), ("1.2.0", "twelve")));
 
         Assert.AreEqual("1.2.0", Versions(plan.Notes));
     }
@@ -48,7 +46,7 @@ public sealed class UpgradeNotesTests
     [TestMethod]
     public void Plan_FromAReleaseCandidateToItsRelease_ShowsThatReleasesNotes()
     {
-        var plan = UpgradeNotes.Plan("1.2.0-rc.1", ReleaseManifestTests.Release("1.2.0", ("1.2.0", "twelve")), InstanceId);
+        var plan = UpgradeNotes.Plan("1.2.0-rc.1", ReleaseManifestTests.Release("1.2.0", ("1.2.0", "twelve")));
 
         Assert.AreEqual(1, plan.Notes.Count);
     }
@@ -57,8 +55,7 @@ public sealed class UpgradeNotesTests
     public void Plan_UnrecordedInstalledVersion_ShowsEveryNoteUpToTheTarget()
     {
         var plan = UpgradeNotes.Plan(
-            null, ReleaseManifestTests.Release("1.1.0", ("1.0.0", "ten"), ("1.1.0", "eleven"), ("1.2.0", "twelve")),
-            InstanceId);
+            null, ReleaseManifestTests.Release("1.1.0", ("1.0.0", "ten"), ("1.1.0", "eleven"), ("1.2.0", "twelve")));
 
         Assert.IsNull(plan.InstalledVersion);
         Assert.AreEqual("1.0.0 1.1.0", Versions(plan.Notes));
@@ -69,7 +66,7 @@ public sealed class UpgradeNotesTests
     [DataRow("1.2.0+0123456", "1.2.0+abcdef0")]
     public void Plan_TargetThatIsTheInstalledRelease_IsNotRefusedAndShowsNothing(string installed, string target)
     {
-        var plan = UpgradeNotes.Plan(installed, ReleaseManifestTests.Release(target, ("1.2.0", "twelve")), InstanceId);
+        var plan = UpgradeNotes.Plan(installed, ReleaseManifestTests.Release(target, ("1.2.0", "twelve")));
 
         Assert.AreEqual(0, plan.Notes.Count);
     }
@@ -78,14 +75,14 @@ public sealed class UpgradeNotesTests
     [DataRow("1.2.0", "1.1.0")]
     [DataRow("1.2.0", "1.2.0-rc.1")]
     [DataRow("1.2.0-dev.10", "1.2.0-dev.9")]
-    public void Plan_TargetOlderThanTheInstalledVersion_IsRefusedAndPointsToRollback(string installed, string target)
+    public void Plan_TargetOlderThanTheInstalledVersion_IsRefusedWithRecoveryGuidance(string installed, string target)
     {
         var exception = Assert.ThrowsExactly<InstallerException>(
-            () => UpgradeNotes.Plan(installed, ReleaseManifestTests.Release(target), InstanceId));
+            () => UpgradeNotes.Plan(installed, ReleaseManifestTests.Release(target)));
 
         Assert.AreEqual(
-            $"{installed} is installed, which is newer than the upgrade target {target}; an upgrade never goes back. " +
-            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {InstanceId:D}'.",
+            $"{installed} is installed, which is newer than the upgrade target {target}. " +
+            "Use cameraagent rollback to select the retained previous image.",
             exception.Message);
     }
 

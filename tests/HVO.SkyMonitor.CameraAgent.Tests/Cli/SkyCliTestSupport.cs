@@ -431,15 +431,14 @@ internal static class Fake
 
     /// <summary>
     /// The operations summary as CameraAgent serves it (<c>CameraAgentOperationsSummary</c>), in its own words: a configuration
-    /// <c>validated</c>, raw ingress <c>Accepting</c>, the lanes, processing and delivery <c>Healthy</c>, the camera and the
-    /// heartbeat <c>Available</c>, and central integration on, so every section is read.
+    /// <c>validated</c>, raw ingress <c>Accepting</c>, lanes and processing <c>Healthy</c>, and the camera <c>Available</c>.
     /// </summary>
     public static object Summary(
         string capture = "Running",
         long rawPending = 0,
         string freshness = "fresh",
         string validation = "validated",
-        string delivery = "Healthy")
+        string transientWorker = "Healthy")
     {
         return new
         {
@@ -473,7 +472,6 @@ internal static class Fake
                 oldestPendingUtc = (string?)null
             }),
             captureProcessing = Section(Queue("Healthy", 0, 0)),
-            artifactOutbox = Section(Queue("Healthy", 2, 4096)),
             storage = Section(new[]
             {
                 new { alias = "raw", totalBytes = 500L * 1024 * 1024 * 1024, availableBytes = 120L * 1024 * 1024 * 1024, isUnderPressure = false, effectiveRetentionDays = 30, probeSucceeded = true }
@@ -486,61 +484,7 @@ internal static class Fake
                 lastRecoveredUtc = (string?)null,
                 timings = Array.Empty<object>()
             }),
-            heartbeat = Section(new
-            {
-                availability = "Available",
-                lastAcknowledgedUtc = "2026-10-18T19:29:50Z",
-                pendingCount = 0,
-                pendingBytes = 0,
-                leasedCount = 0,
-                retryCount = 0,
-                quarantineCount = 0,
-                overflowCount = 0,
-                blockedCount = 0,
-                oldestPendingUtc = (string?)null
-            }),
-            environmentalDelivery = Section(new
-            {
-                availability = delivery,
-                lastAcknowledgedUtc = "2026-10-18T19:29:30Z",
-                storedCount = 120,
-                storedBytes = 61440,
-                pendingCount = 0,
-                pendingBytes = 0,
-                leasedCount = 0,
-                retryCount = 0,
-                quarantineCount = 0,
-                terminalCount = 0,
-                overflowCount = 0,
-                oldestPendingUtc = (string?)null
-            }),
-            executionEvidenceExport = Section(new
-            {
-                availability = "Healthy",
-                reasonCode = "export.drained",
-                pendingCount = 0,
-                pendingBytes = 0,
-                retryCount = 0,
-                quarantineCount = 0,
-                abandonedCount = 0,
-                acknowledgedCount = 42,
-                totalAttempts = 42,
-                conflictCount = 0,
-                rejectCount = 0,
-                drainedCount = 42,
-                resyncRequestCount = 0,
-                sourcePrunedCount = 0,
-                projectionRejectedCount = 0,
-                storageBytes = 8192,
-                highestSequence = 42,
-                acknowledgedThroughSequence = 42,
-                inFlightRequests = 0,
-                storagePressure = false,
-                negotiatedSchemaVersion = "1",
-                lastAcknowledgementUtc = "2026-10-18T19:29:40Z",
-                oldestPendingUtc = (string?)null
-            }),
-            transientWorker = Section(new { availability = "Healthy", pendingFrames = 0, pendingCandidates = 0, maximumCandidates = 64 }),
+            transientWorker = Section(new { availability = transientWorker, pendingFrames = 0, pendingCandidates = 0, maximumCandidates = 64 }),
             captureTelemetry = Section(new
             {
                 sampleCount = 10,
@@ -554,8 +498,7 @@ internal static class Fake
                 averageLoopMilliseconds = 15900.0,
                 capturesPerMinute = 4.0,
                 dutyCycle = 0.94,
-                framesStored = 10,
-                immediateUploadCount = 0
+                framesStored = 10
             }),
             configuration = new
             {
@@ -568,7 +511,6 @@ internal static class Fake
                     validationStatus = validation,
                     agentId = "allsky01",
                     moduleType = "VirtualSky",
-                    centralIntegration = "Enabled",
                     transientDetection = "Edge"
                 }
             },
@@ -592,7 +534,7 @@ internal static class Fake
         schemaVersion = 1,
         application = new { name = "CameraAgent", version = "0.9.0-test", revision = new string('b', 40), informationalVersion = "0.9.0-test+" + new string('b', 40) },
         host = new { runtime = ".NET 10.0.13", runtimeIdentifier = "linux-arm64", processStartedUtc = started, uptimeSeconds = 600.0 },
-        catalog = new { catalogId = "hyg-v42-production", catalogVersion = "4.2", rowCount = 118218 },
+        catalog = new { catalogId = "hyg-v44-production", catalogVersion = "4.4", rowCount = 119613 },
         restart = new { supervised, requested },
         caller = new { credential = "ApiKey", apiKeyId = CliHarness.KeyId, access }
     };

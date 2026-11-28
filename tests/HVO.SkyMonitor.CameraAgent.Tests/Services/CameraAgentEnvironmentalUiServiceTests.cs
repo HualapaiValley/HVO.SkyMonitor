@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentEnvironmentalUiServiceTests
 {
     private const string Root = "/var/lib/hvo/test-ingress";
@@ -108,31 +109,8 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
     }
 
     [TestMethod]
-    [DataRow(CentralIntegrationMode.Enabled, true, true, true)]
-    [DataRow(CentralIntegrationMode.Enabled, true, true, false)]
-    [DataRow(CentralIntegrationMode.Disabled, true, false, true)]
-    [DataRow(CentralIntegrationMode.Enabled, false, false, true)]
-    public async Task GetStatusAsync_ProjectsScheduleRetentionAndDeliveryOnlyWhenExportIsEnabled(
-        CentralIntegrationMode centralMode, bool deliveryEnabled, bool exportEnabled, bool outboxRead)
+    public async Task GetStatusAsync_ProjectsSourcesScheduleAndRetention()
     {
-        var (principal, authorization) = ReadAuthorized();
-        var stateStore = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
-        stateStore.Setup(value => value.ReadSourceStatesAsync(Root, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
-        stateStore.Setup(value => value.ReadAttemptsAsync(Root, 50, It.IsAny<CancellationToken>()))
-            .ReturnsAsync([]);
-        var observationStore = new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict);
-        observationStore.Setup(value => value.GetLocalSnapshotAsync(Root, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new LocalEnvironmentalObservationSnapshot(3, 900, 0, Now.AddDays(-1), Now));
-        var delivery = new EnvironmentalObservationDeliveryState();
-        if (outboxRead)
-        {
-            delivery.Update(
-                new EnvironmentalObservationOutboxSnapshot(3, 900, 2, 600, 0, 1, 1, 0, 0, Now.AddMinutes(-7), Now),
-                EnvironmentalObservationDeliveryAvailability.Degraded,
-                "retrying",
-                Now.AddMinutes(-2));
-        }
         var source = new EnvironmentalSourceConfiguration
         {
             Id = "weather-1",
@@ -142,18 +120,24 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             PeriodSeconds = 60,
             EveryNthCapture = 4
         };
+        var (principal, authorization) = ReadAuthorized();
+        var stateStore = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
+        stateStore.Setup(value => value.ReadSourceStatesAsync(Root, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        stateStore.Setup(value => value.ReadAttemptsAsync(Root, 50, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        var observationStore = new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict);
+        observationStore.Setup(value => value.GetLocalSnapshotAsync(Root, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LocalEnvironmentalObservationSnapshot(3, 900, 0, Now.AddDays(-1), Now));
         var service = new CameraAgentEnvironmentalUiService(
             new FixedAuthenticationStateProvider(principal),
             authorization,
             stateStore.Object,
             observationStore.Object,
             null!,
-            delivery,
             Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = Root,
-                CentralIntegration = new CentralIntegrationOptions { Mode = centralMode },
-                EnvironmentalDelivery = new EnvironmentalObservationDeliveryOptions { Enabled = deliveryEnabled },
                 EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
                 {
                     Enabled = true,
@@ -176,25 +160,7 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             projected.Triggers.ToArray());
         Assert.AreEqual(60, projected.PeriodSeconds);
         Assert.AreEqual(4, projected.EveryNthCapture);
-        Assert.AreEqual(exportEnabled, status.Delivery.ExportEnabled);
-        if (exportEnabled && !outboxRead)
-        {
-            // Before the delivery worker first reads its outbox the counts are unknown, not zero.
-            Assert.AreEqual(new EnvironmentalUiDelivery(true, "Initializing", null, null, null, null, null), status.Delivery);
-        }
-        else if (exportEnabled)
-        {
-            Assert.AreEqual("Degraded", status.Delivery.Availability);
-            Assert.AreEqual(2, status.Delivery.PendingCount);
-            Assert.AreEqual(1, status.Delivery.RetryCount);
-            Assert.AreEqual(1, status.Delivery.QuarantineCount);
-            Assert.AreEqual(Now.AddMinutes(-7), status.Delivery.OldestPendingUtc);
-            Assert.AreEqual(Now.AddMinutes(-2), status.Delivery.LastAcknowledgedUtc);
-        }
-        else
-        {
-            Assert.AreEqual(new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null), status.Delivery);
-        }
+
     }
 
     [TestMethod]
@@ -267,8 +233,6 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
         bool enabled = true,
         IEnvironmentalAcquisitionStateStore? stateStore = null,
         ILocalEnvironmentalObservationStore? observationStore = null,
-        EnvironmentalObservationDeliveryState? deliveryState = null,
-        CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled,
         string root = Root,
         TimeProvider? timeProvider = null,
         CameraAgentHostOptions? hostOptions = null)
@@ -279,11 +243,9 @@ public sealed class CameraAgentEnvironmentalUiServiceTests
             stateStore ?? new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict).Object,
             observationStore ?? new Mock<ILocalEnvironmentalObservationStore>(MockBehavior.Strict).Object,
             null!,
-            deliveryState ?? new EnvironmentalObservationDeliveryState(),
             Options.Create(hostOptions ?? new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
-                CentralIntegration = new CentralIntegrationOptions { Mode = centralMode },
                 EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
                 {
                     Enabled = enabled,

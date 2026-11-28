@@ -21,8 +21,8 @@ internal sealed class TransientWorkerService(
     SqliteTransientRuntimeStore store,
     ITransientCandidateJournal candidateJournal,
     TransientDetectorRuntime detector,
+    TransientDetectorSourcePreparation detectorPreparation,
     TransientWorkerWakeup wakeup,
-    TransientCandidateDeliveryWakeup deliveryWakeup,
     TransientWorkerState state,
     TransientWorkerTelemetry telemetry,
     ITransientRuntimeFaultInjector faultInjector,
@@ -40,7 +40,7 @@ internal sealed class TransientWorkerService(
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The hosted worker records unhealthy state and must remain available for durable recovery after an iteration failure.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (_options.Mode is TransientOperatingMode.Off or TransientOperatingMode.Central)
+        if (_options.Mode == TransientOperatingMode.Off)
         {
             state.Set(TransientWorkerAvailability.Disabled, "mode-disabled", 0, 0);
             return;
@@ -120,9 +120,7 @@ internal sealed class TransientWorkerService(
                 return true;
             }
             failureStage = "input";
-            var sources = await detector.CreateSourcesAsync(
-                await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
-                _options, loaded, cancellationToken).ConfigureAwait(false);
+            var sources = await CreateDetectorSourcesAsync(loaded, cancellationToken).ConfigureAwait(false);
             failureStage = "background";
             var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
                 TransientTemporalBackgroundKind.CausalProvisional,
@@ -229,13 +227,6 @@ internal sealed class TransientWorkerService(
                     canonical.Candidates[index],
                     cancellationToken).ConfigureAwait(false);
                 faultInjector.Inject(TransientRuntimeFaultPoint.AfterCandidateJournalCommit);
-                if (_options.Mode == TransientOperatingMode.Hybrid)
-                {
-                    failureStage = "handoff";
-                    await PersistHybridSubmissionAsync(canonical.Candidates[index], cancellationToken).ConfigureAwait(false);
-                    faultInjector.Inject(TransientRuntimeFaultPoint.AfterHandoffJournalCommit);
-                    await store.MarkCandidateCompletedAsync(allocation.CandidateId, cancellationToken).ConfigureAwait(false);
-                }
             }
             await CompleteFrameAsync(
                 frame, "causal-candidate-persisted", causalSucceeded: true, cancellationToken).ConfigureAwait(false);
@@ -301,14 +292,6 @@ internal sealed class TransientWorkerService(
             {
                 return false;
             }
-            if (_options.Mode == TransientOperatingMode.Hybrid)
-            {
-                await PersistHybridSubmissionAsync(entry.Candidate, cancellationToken).ConfigureAwait(false);
-                faultInjector.Inject(TransientRuntimeFaultPoint.AfterHandoffJournalCommit);
-                await store.MarkCandidateCompletedAsync(allocation.CandidateId, cancellationToken).ConfigureAwait(false);
-                return true;
-            }
-
             var frame = await store.ReadFrameAsync(allocation.TargetRawCaptureRowId, cancellationToken).ConfigureAwait(false);
             var deadlineExpired = timeProvider.GetUtcNow() >= entry.TimeoutUtc;
             var causalWindowComplete = await store.IsCausalWindowCompleteAsync(
@@ -327,9 +310,7 @@ internal sealed class TransientWorkerService(
             var forcedState = deadlineExpired ? TransientEventState.NeedsReview : (TransientEventState?)null;
             if (causalWindowComplete && loaded.Count == 5)
             {
-                var sources = await detector.CreateSourcesAsync(
-                    await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
-                    _options, loaded, cancellationToken).ConfigureAwait(false);
+                var sources = await CreateDetectorSourcesAsync(loaded, cancellationToken).ConfigureAwait(false);
                 // Causal evidence freezes every source mask identity. A policy/configuration
                 // change must not turn an unfinished candidate into a different automatic verdict.
                 var causalMasksMatch = CausalMasksMatch(observationExtraction.Background, sources);
@@ -601,29 +582,6 @@ internal sealed class TransientWorkerService(
         return output;
     }
 
-    private async ValueTask PersistHybridSubmissionAsync(
-        TransientCandidateV1 candidate,
-        CancellationToken cancellationToken)
-    {
-        using var activity = TransientWorkerTelemetry.ActivitySource.StartActivity("transient.handoff");
-        var envelope = new TransientCandidateSubmissionEnvelopeV1(
-            TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion,
-            candidate.CandidateId,
-            candidate.EventId,
-            candidate,
-            candidate.Extraction.RecipeIdentitySha256,
-            candidate.Provenance.ProcessingProfileIdentity,
-            new string('0', 64));
-        envelope = envelope with
-        {
-            SubmissionIdentitySha256 = TransientCandidateDeliveryJson.ComputeSubmissionIdentitySha256(envelope)
-        };
-        await candidateJournal.PersistSubmissionAsync(
-            candidate.CandidateId, candidate.EventId, envelope, cancellationToken).ConfigureAwait(false);
-        deliveryWakeup.Signal();
-        activity?.SetStatus(ActivityStatusCode.Ok);
-    }
-
     private async ValueTask CompleteFrameAsync(
         TransientRuntimeFrame frame,
         string reason,
@@ -633,6 +591,14 @@ internal sealed class TransientWorkerService(
         await store.MarkCausalCompletionAsync(
             frame.RawCaptureRowId, reason, causalSucceeded, cancellationToken).ConfigureAwait(false);
         await store.RetireBeforeAsync(frame.AgentId, frame.CaptureSequence - 1, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> CreateDetectorSourcesAsync(
+        IReadOnlyDictionary<int, TransientLoadedFrame> frames, CancellationToken cancellationToken)
+    {
+        var configurations = await ResolveConfigurationsAsync(frames, cancellationToken).ConfigureAwait(false);
+        var inputs = detectorPreparation.Prepare(configurations, frames, _options.ExposureIntegratedStarMask);
+        return await detector.CreateSourcesAsync(inputs, _options, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<IReadOnlyDictionary<int, CameraModuleConfig>> ResolveConfigurationsAsync(

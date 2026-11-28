@@ -335,12 +335,12 @@ public sealed class ProcessingGraphCompilerTests
     {
         var graph = Graph(Node("gpu", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
             [Output(FrameArtifactRole.Preview, "gpu")],
-            capabilities: ["gpu"], hosts: [ProcessingGraphHosts.LogicHost]));
+            capabilities: ["gpu"], hosts: ["other-host"]));
 
         var unavailable = ProcessingGraphCompiler.Compile(graph, new(
             ProcessingGraphHosts.CameraAgent, []));
         var available = ProcessingGraphCompiler.Compile(graph, new(
-            ProcessingGraphHosts.LogicHost, ["gpu"]));
+            "other-host", ["gpu"]));
 
         Assert.IsFalse(unavailable.IsValid);
         CollectionAssert.AreEquivalent(

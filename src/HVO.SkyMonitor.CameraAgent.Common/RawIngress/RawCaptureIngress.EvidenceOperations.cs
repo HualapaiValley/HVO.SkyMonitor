@@ -46,7 +46,6 @@ internal sealed partial class RawCaptureIngress
                 if (action == RawEvidenceReleaseAction.Revalidate && !receipt.Duplicate)
                     _processingStore?.NotifyRawEvidenceRevalidated(target.CaptureId);
                 activity?.SetTag("duplicate", receipt.Duplicate);
-                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 RequireReconciliation();
                 var health = await _journal.ReadHealthTotalsAsync(CancellationToken.None).ConfigureAwait(false);
                 var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
@@ -54,6 +53,8 @@ internal sealed partial class RawCaptureIngress
                 _state.Set(health.FailureCount > 0 ? RawIngressAvailability.Unhealthy : RawIngressAvailability.Initializing,
                     health.FailureCount > 0 ? "reconciliation-findings" : "evidence-release-reinitializing",
                     held.Count, held.Bytes, health.QuarantineCount, health.QuarantineBytes, held.Oldest);
+                await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
+                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 return receipt;
             }
             finally

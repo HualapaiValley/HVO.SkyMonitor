@@ -36,7 +36,8 @@ public sealed record MeasuredAstrometryOptions(
     AstrometricSolverOptions? Solver = null,
     AstrometricDiagnosticsOptions? Diagnostics = null,
     AstrometricUncertaintyOptions? Uncertainty = null,
-    double MaximumExecutionMilliseconds = 20000);
+    double MaximumExecutionMilliseconds = 20000,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool UseScientificAssociations = false);
 
 /// <summary>Compact residual evidence; catalog/centroid rows remain in the separately retained measured product.</summary>
 public sealed record MeasuredAstrometryResidualSummaryV1(
@@ -72,6 +73,9 @@ public sealed record MeasuredAstrometrySolutionV1(
     [property: JsonRequired] string UncertaintyReasonCode)
 {
     public const string CurrentSchemaVersion = "measured-astrometry-solution-v1";
+    public const string ScientificSelectionVersion = "scientific-associations-v1";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AssociationSelectionVersion { get; init; }
     [JsonIgnore] public string SolutionIdentitySha256 => MeasuredAstrometryJson.Identity(this);
 }
 
@@ -163,6 +167,7 @@ public static class MeasuredAstrometryJson
     {
         ArgumentNullException.ThrowIfNull(value);
         if (value.SchemaVersion != MeasuredAstrometrySolutionV1.CurrentSchemaVersion || value.MeasuredArtifactId == Guid.Empty ||
+            value.AssociationSelectionVersion is not (null or MeasuredAstrometrySolutionV1.ScientificSelectionVersion) ||
             value.CatalogPackage is null || value.Residuals is null || string.IsNullOrWhiteSpace(value.UncertaintyReasonCode) ||
             value.UncertaintyReasonCode.Length > 128 || new[] { value.RecipeIdentitySha256, value.ContextIdentitySha256,
                 value.MeasuredIdentitySha256, value.MeasuredRecipeIdentitySha256, value.SceneIdentitySha256, value.ReadoutIdentitySha256 }.Any(id => !Hash(id)))
@@ -220,6 +225,7 @@ public static class MeasuredAstrometryJson
         var calibration = new AstrometricCalibration(context.Projection, context.CalibrationVersion, context.ReadoutIdentitySha256);
         var catalog = Catalog(context);
         return Same(value.ContextIdentitySha256, Identity(context)) && value.Assessment.Frame == context.Frame && value.Assessment.CalibrationIdentitySha256 == calibration.IdentitySha256 &&
+            value.AssociationSelectionVersion == (options.UseScientificAssociations ? MeasuredAstrometrySolutionV1.ScientificSelectionVersion : null) &&
             value.Assessment.CatalogIdentitySha256 == catalog.IdentitySha256 && value.Assessment.CatalogSelectionIdentitySha256 == catalog.SelectionIdentitySha256 &&
             value.Assessment.SettingsIdentitySha256 == options.Solver!.IdentitySha256 && value.CatalogPackage == context.CatalogPackage &&
             Same(value.ReadoutIdentitySha256, calibration.ReadoutIdentitySha256) && Same(value.SceneIdentitySha256, sceneIdentity) &&
@@ -263,7 +269,7 @@ public static class MeasuredAstrometryJson
         _ = ReconstructMapping(solution, calibration, measured);
         if (!MatchesContext(solution, context, options, solution.SceneIdentitySha256))
             throw new ArgumentException("Diagnostic context differs from the retained assessment.", nameof(context));
-        var qualified = MeasuredAstrometryRecipe.Qualified(measured);
+        var qualified = MeasuredAstrometryRecipe.Qualified(measured, options.UseScientificAssociations);
         return AstrometricResidualAnalyzer.Analyze(calibration, Catalog(context), options.Solver!,
             solution.Assessment, solution.Residuals.NativeAssociations, MeasuredAstrometryRecipe.Detections(qualified),
             covariances: MeasuredAstrometryRecipe.Covariances(qualified), options: options.Diagnostics,
@@ -272,10 +278,11 @@ public static class MeasuredAstrometryJson
 
     internal static bool MembershipMatchesMeasured(MeasuredAstrometrySolutionV1 solution, MeasuredStellarAssociationsV1 measured)
     {
-        var qualified = MeasuredAstrometryRecipe.Qualified(measured);
+        var qualified = MeasuredAstrometryRecipe.Qualified(measured, solution.AssociationSelectionVersion is not null);
         var r = solution.Residuals;
         if (qualified.Length > AstrometricCatalogData.MaximumEntries)
-            return !solution.Assessment.HasMeasuredMapping && r.QualifiedCount == 0 && r.ReasonCode == "measured-entry-bound";
+            return !solution.Assessment.HasMeasuredMapping && r.QualifiedCount == 0 &&
+                r.ReasonCode == MeasuredAstrometryAssessmentReasonCodes.MeasuredEntryBound;
         var retained = r.FittingDetectionIndexes.Concat(r.VerificationDetectionIndexes).Concat(r.OutlierDetectionIndexes).Order();
         var byIndex = qualified.ToDictionary(a => a.DetectionIndex);
         return qualified.Select(a => a.DetectionIndex).Order().SequenceEqual(retained) &&

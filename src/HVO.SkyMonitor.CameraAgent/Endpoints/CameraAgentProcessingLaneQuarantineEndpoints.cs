@@ -23,7 +23,7 @@ internal static class CameraAgentProcessingLaneQuarantineEndpoints
     private static async Task<IResult> ReadAsync(
         [FromQuery] int? pageSize, [FromQuery] string? cursor,
         [FromServices] IProcessingLaneQuarantineOperations operations,
-        [FromServices] OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
+        [FromServices] LocalOperationsTokenService tokens, CancellationToken cancellationToken)
     {
         var size = pageSize ?? 25;
         long? position = null;
@@ -69,7 +69,7 @@ internal static class CameraAgentProcessingLaneQuarantineEndpoints
     private static async Task<IResult> AcknowledgeAsync(
         HttpContext context, [FromBody] AcknowledgeRequest request,
         [FromServices] IProcessingLaneQuarantineOperations operations,
-        [FromServices] OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
+        [FromServices] LocalOperationsTokenService tokens, CancellationToken cancellationToken)
     {
         if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
         {

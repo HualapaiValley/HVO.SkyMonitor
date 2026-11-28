@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAcquisitionServiceTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
@@ -150,7 +151,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
                         kind, index, scheduleEpochUtc: startupEpoch, periodSeconds: 86_400)).ToArray()
                 }
             });
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             var factory = new EnvironmentalSourceFactory(
                 services,
                 [new EnvironmentalSourceRegistration(
@@ -269,7 +270,7 @@ public sealed class EnvironmentalAcquisitionServiceTests
     }
 
     private static async Task WaitForAttemptsAsync(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         string root,
         int count)
     {
@@ -384,13 +385,19 @@ public sealed class EnvironmentalAcquisitionServiceTests
         {
             Interlocked.Increment(ref _publishCount);
             return ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued, null));
+                EnvironmentalObservationPublishDisposition.Committed));
         }
     }
 
-    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
-        : IEnvironmentalObservationPublisher
+    private sealed class StorePublisher(SqliteEnvironmentalObservationStore store, string root)
+        : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
+        public bool SupportsHeldPollSettlement => true;
+
+        public async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+            EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+            => (await store.CommitHeldPollAsync(root, fact, poll, cancellationToken).ConfigureAwait(false)).HeldPollReceipt!;
+
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
             EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
@@ -398,9 +405,8 @@ public sealed class EnvironmentalAcquisitionServiceTests
             var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
             return new EnvironmentalObservationPublishResult(
                 result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
-                    ? EnvironmentalObservationPublishDisposition.Enqueued
-                    : EnvironmentalObservationPublishDisposition.Duplicate,
-                null);
+                    ? EnvironmentalObservationPublishDisposition.Committed
+                    : EnvironmentalObservationPublishDisposition.Duplicate);
         }
     }
 

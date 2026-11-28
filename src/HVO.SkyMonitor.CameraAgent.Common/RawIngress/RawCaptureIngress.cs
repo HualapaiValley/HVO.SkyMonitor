@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -17,7 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 internal sealed partial class RawCaptureIngress :
     IRawCaptureIngress,
     IRawEvidenceOperations,
-    IRawIngressRetentionHolds,
     IRawIngressRecoveryControl,
     IRawIngressPressureReporter,
     IRawIngressWakeupReporter,
@@ -60,6 +60,9 @@ internal sealed partial class RawCaptureIngress :
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
     private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
     private readonly SqliteCaptureProcessingStore? _processingStore;
+    private readonly SiloInstalledStorage? _silo;
+    private readonly SiloInstalledSettings? _siloSettings;
+    private readonly SiloArtifactStorage? _siloArtifacts;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -78,7 +81,12 @@ internal sealed partial class RawCaptureIngress :
         ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
         ProcessingGraphOperationsCoordinator? graphOperations = null,
         Capture.CaptureMaintenanceGate? maintenanceGate = null,
-        SqliteCaptureProcessingStore? processingStore = null)
+        CenteredExposureProductChanges? centeredProductChanges = null,
+        CenteredWindowWakeup? centeredWindowWakeup = null,
+        SqliteCaptureProcessingStore? processingStore = null,
+        SiloInstalledStorage? silo = null,
+        SiloInstalledSettings? siloSettings = null,
+        SiloArtifactStorage? siloArtifacts = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -95,6 +103,9 @@ internal sealed partial class RawCaptureIngress :
         _projectedSceneLifecycle = projectedSceneLifecycle;
         _graphOperations = graphOperations;
         _processingStore = processingStore;
+        _silo = silo;
+        _siloSettings = siloSettings;
+        _siloArtifacts = siloArtifacts;
         _maintenanceGate = maintenanceGate;
         if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
@@ -109,7 +120,10 @@ internal sealed partial class RawCaptureIngress :
             _options.CaptureDistribution,
             resolvedLaneFaultInjector,
             timeProvider.GetUtcNow,
-            _options.TransientDetection);
+            _options.TransientDetection, centeredProductChanges: centeredProductChanges,
+            centeredWindowWakeup: centeredWindowWakeup,
+            firstBootPause: _options.FirstBootPause.Identity,
+            usesSilo: silo is not null);
         _files = new RawIngressFileStore(
             root,
             faultInjector,
@@ -124,7 +138,9 @@ internal sealed partial class RawCaptureIngress :
             resolvedLaneFaultInjector,
             laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait),
             InvalidateEvidence,
-            processingStore is null ? null : processingStore.NotifyLiveAstrometryPublished);
+            centeredProductChanges,
+            processingStore is null ? null : processingStore.NotifyLiveAstrometryPublished,
+            siloArtifacts);
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -180,6 +196,7 @@ internal sealed partial class RawCaptureIngress :
                 // in this process runs again only if it left work for later or a failure invalidated it since.
                 var requests = Interlocked.Read(ref _reconciliationRequests);
                 var reconcileRaw = requests != Volatile.Read(ref _reconciledRequests);
+                var siloIntents = reconcileRaw ? await ReadSiloRawIntentsAsync(cancellationToken).ConfigureAwait(false) : null;
                 var reconciliation = reconcileRaw
                     ? await new RawIngressReconciler(
                         _options.RawIngressRoot,
@@ -187,9 +204,14 @@ internal sealed partial class RawCaptureIngress :
                         _telemetry.RecordFileFlush,
                         _telemetry.RecordDirectorySync,
                         _lanePolicy.Definitions,
-                        _faultInjector.OpenPayloadForVerification)
+                        _faultInjector.OpenPayloadForVerification,
+                        PrepareRecoveredCenteredAdmissionAsync, siloIntents, _siloSettings?.MaximumStagedFiles)
                          .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
                     : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
+                if (siloIntents is not null && reconciliation.MaintenanceDeferred == 0)
+                {
+                    foreach (var (artifactId, _) in siloIntents) ReleaseSiloRawIntent(artifactId);
+                }
                 var projectedSceneBacklog = 0;
                 var heldBy = HeldBy();
                 if (reconciliation.MaintenanceDeferred > 0)
@@ -197,7 +219,7 @@ internal sealed partial class RawCaptureIngress :
                     _logger.MaintenanceHeld("Raw-ingress evidence quarantine", heldBy);
                 }
                 var stagesHeld = false;
-                if (_projectedSceneStaging is not null)
+                if (_projectedSceneStaging is not null && _silo is null)
                 {
                     // Stage cleanup deletes unowned stages, so it runs only under the maintenance barrier, as the
                     // background reconciliation does.
@@ -243,16 +265,14 @@ internal sealed partial class RawCaptureIngress :
                 RevalidateCapacityAfterFailure();
                 var baseAvailability = health.FailureCount > 0
                     ? RawIngressAvailability.Unhealthy
-                    : health.QuarantineCount > 0 || reconciliation.IndexProjectionFailures > 0 || reconciliation.MaintenanceDeferred > 0
+                    : health.QuarantineCount > 0 || reconciliation.MaintenanceDeferred > 0
                         ? RawIngressAvailability.Degraded
                         : RawIngressAvailability.Accepting;
                 var baseReason = baseAvailability == RawIngressAvailability.Accepting
                     ? "accepting"
-                    : reconciliation.IndexProjectionFailures > 0
-                        ? "index-projection-failed"
-                        : reconciliation.MaintenanceDeferred > 0 && health.QuarantineCount == 0
-                            ? "reconciliation-held"
-                            : "reconciliation-findings";
+                    : reconciliation.MaintenanceDeferred > 0 && health.QuarantineCount == 0
+                        ? "reconciliation-held"
+                        : "reconciliation-findings";
                 _state.Set(
                     baseAvailability,
                     baseReason,
@@ -261,6 +281,7 @@ internal sealed partial class RawCaptureIngress :
                     health.QuarantineCount,
                     health.QuarantineBytes,
                     held.Oldest);
+                CheckSiloPressure(held.Count, held.Bytes, held.Count > 0 ? checked(held.LargestAdmissionBytes + 64) : 0);
                 _state.SetProjectedSceneBacklog(projectedSceneBacklog);
                 if (baseAvailability == RawIngressAvailability.Unhealthy)
                 {
@@ -280,17 +301,13 @@ internal sealed partial class RawCaptureIngress :
                 {
                     _logger.RawIngressQuarantined(reconciliation.Quarantined, reconciliation.QuarantineBytes);
                 }
-                if (reconciliation.IndexProjectionFailures > 0)
-                {
-                    _logger.RawIngressIndexProjectionFailed();
-                }
                 _logger.RawIngressInitialized(SqliteRawCaptureJournal.CurrentSchemaVersion, held.Count);
                 if (wasUnhealthy)
                 {
                     _logger.RawIngressRecovered();
                 }
-                // A held quarantine or an unrepaired index is found again by the next pass.
-                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0 && reconciliation.IndexProjectionFailures == 0)
+                // A held quarantine is found again by the next pass.
+                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0)
                     Volatile.Write(ref _reconciledRequests, requests);
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
@@ -349,8 +366,7 @@ internal sealed partial class RawCaptureIngress :
     public async ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(
         CancellationToken cancellationToken)
     {
-        var consumed = await _journal.ReadCompletedNodeCapturesAsync(
-            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ProjectedScene, cancellationToken).ConfigureAwait(false);
+        var consumed = await _journal.ReadCompletedCanonicalSceneCapturesAsync(cancellationToken).ConfigureAwait(false);
         var owned = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -386,13 +402,19 @@ internal sealed partial class RawCaptureIngress :
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
         var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
-        var published = File.Exists(paths.SidecarAbsolutePath);
-        var revisionId = frame.Metadata.Scene?.CaptureGraphRevisionId;
-        if (published)
+        var entry = _silo is null ? null :
+            await _journal.ReadSiloAdmissionByArtifactAsync(ids.ArtifactId, cancellationToken).ConfigureAwait(false);
+        var evidence = entry?.ManifestJson;
+        if (evidence is null)
         {
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false));
+            RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
+            if (File.Exists(paths.SidecarAbsolutePath))
+                evidence = await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false);
+        }
+        var revisionId = frame.Metadata.Scene?.CaptureGraphRevisionId;
+        if (evidence is not null)
+        {
+            var parsed = CaptureContractJson.ParseManifest(evidence);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
                 manifest.Descriptor.Capture.CaptureId != ids.CaptureId ||
                 manifest.Descriptor.Artifact.ArtifactId != ids.ArtifactId ||
@@ -405,7 +427,7 @@ internal sealed partial class RawCaptureIngress :
         }
         var revision = await _graphOperations.SelectLiveRevisionAsync(
             configuration, retainedCapture: false, cancellationToken, revisionId).ConfigureAwait(false);
-        return new(revision, published);
+        return new(revision, evidence is not null);
     }
 
     public ValueTask<RawCaptureReceipt?> AcceptAsync(
@@ -425,14 +447,20 @@ internal sealed partial class RawCaptureIngress :
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
         RawCaptureGraphBinding? binding,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CenteredExposureBindingV1? centered = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(submission);
+        if (configuration.CenteredExposure is not null && (centered is null || binding is null))
+            throw new InvalidOperationException("Centered raw admission requires a frozen graph and dispatched target.");
         if (submission.Result.Frame is not { } frame)
         {
             return null;
         }
+        if (centered is not null && frame.Metadata.Scene?.CaptureGraphRevisionId is { } renderedRevision &&
+            renderedRevision != binding?.Revision.State.RevisionId)
+            throw new RawIngressConflictException("The rendered scene does not match the reserved centered graph.");
         ArgumentException.ThrowIfNullOrWhiteSpace(configuration.AgentId);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var activity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.accept");
@@ -471,11 +499,34 @@ internal sealed partial class RawCaptureIngress :
             {
                 throw new InvalidDataException("Raw ingress requires reconciliation before accepting another capture.");
             }
+            using var siloSpace = existingCapture.Exists ? null : ReserveSiloCaptureSpace(frame.PixelData.Length);
             if (!existingCapture.Exists)
             {
+                EnsureSiloBinding();
                 EnsureCapacity(frame.PixelData.Length);
             }
+            var centeredRequest = centered is null ? null : await _journal.ReadCenteredRequestAsync(
+                centered.Source, stableIds.CaptureId, cancellationToken).ConfigureAwait(false);
+            if (centeredRequest is not null && centeredRequest != submission.Request.RequestedSetpoint)
+                throw new RawIngressConflictException("The centered retry differs from the dispatched settings request.");
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
+            if (_silo is not null && !existingCapture.Exists)
+            {
+                var previewIdentity = new RawCaptureIdentity(configuration.AgentId, long.MaxValue, stableIds.CaptureId, stableIds.ArtifactId);
+                var preview = RawCaptureDescriptorFactory.Create(configuration, submission, previewIdentity, payloadSha256,
+                    _timeProvider.GetUtcNow(), centered is null ? null : binding!.Revision.Pipeline);
+                var previewPaths = _files.GetPaths(preview.Timing.ExposureStartedUtc, stableIds.ArtifactId);
+                if (!File.Exists(previewPaths.SidecarAbsolutePath))
+                {
+                    var capacityManifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, preview,
+                        previewPaths.PayloadRelativePath, frame.Metadata.Scene)
+                    {
+                        CaptureGraphRevisionId = binding?.Revision.State.RevisionId,
+                        CenteredExposure = centered
+                    };
+                    await EnsureSiloCapacityAsync(frame.PixelData.Length, capacityManifest, cancellationToken).ConfigureAwait(false);
+                }
+            }
             _faultInjector.Inject(RawIngressFaultPoint.BeforeIdentityReservation);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -493,13 +544,19 @@ internal sealed partial class RawCaptureIngress :
                 identity.ArtifactId);
             ArtifactManifestV2 manifest;
             byte[] manifestJson;
-            if (File.Exists(paths.PayloadAbsolutePath) || File.Exists(paths.SidecarAbsolutePath))
+            if (_silo is not null && existingCapture.Exists ||
+                File.Exists(paths.PayloadAbsolutePath) || File.Exists(paths.SidecarAbsolutePath))
             {
-                manifest = await RawIngressFileStore.ReadAndValidateExistingAsync(
-                    paths,
-                    frame.PixelData,
-                    identity,
-                    CancellationToken.None).ConfigureAwait(false);
+                var pendingSilo = _silo is not null && existingCapture.Exists &&
+                    await _journal.HasPendingSiloAdmissionAsync(identity.CaptureId, CancellationToken.None).ConfigureAwait(false);
+                manifest = _silo is not null && existingCapture.Exists &&
+                    (!pendingSilo || !File.Exists(paths.PayloadAbsolutePath) || !File.Exists(paths.SidecarAbsolutePath))
+                    ? await ReadSiloRetryManifestAsync(identity.ArtifactId, payloadSha256, frame.PixelData.Length,
+                        pendingSilo, CancellationToken.None).ConfigureAwait(false)
+                    : await RawIngressFileStore.ReadAndValidateExistingAsync(paths, frame.PixelData, identity,
+                        CancellationToken.None).ConfigureAwait(false);
+                if (manifest.CenteredExposure != centered)
+                    throw new RawIngressConflictException("Existing immutable capture differs from the centered attempt binding.");
                 if (manifest.CaptureGraphRevisionId is not null && frame.Metadata.Scene is { } retryScene &&
                     (manifest.Scene is null || !string.Equals(
                         CaptureContractJson.ComputeCanonicalJsonSha256(retryScene),
@@ -516,10 +573,18 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    manifest.Descriptor.Timing.DurableIngressUtc);
+                    manifest.Descriptor.Timing.DurableIngressUtc, centered is null ? null : binding!.Revision.Pipeline);
                 if (manifest.Descriptor.CycleEvidence is null)
                 {
                     expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
+                }
+                if (manifest.Descriptor.CenteredAcquisition?.Module is { RequestedSetpoint: null } &&
+                    expectedDescriptor.CenteredAcquisition is { Module: { } reporting } acquisition)
+                {
+                    expectedDescriptor = expectedDescriptor with
+                    {
+                        CenteredAcquisition = acquisition with { Module = reporting with { RequestedSetpoint = null } }
+                    };
                 }
                 if (manifest.Descriptor.Location is null)
                 {
@@ -563,7 +628,7 @@ internal sealed partial class RawCaptureIngress :
             {
                 // Old immutable evidence is adopted above. Every newly published scene-bearing capture must
                 // have staged its canonical product before this boundary; a cache cannot recover after restart.
-                if (frame.Metadata.Scene is { RequiresProjectedScene: false })
+                if (centered is null && frame.Metadata.Scene is { RequiresProjectedScene: false })
                     throw new InvalidOperationException(
                         "Scene-bearing raw capture requires an enabled ProjectedScene node and durable scene staging.");
                 var previewDescriptor = RawCaptureDescriptorFactory.Create(
@@ -571,19 +636,23 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    _timeProvider.GetUtcNow());
+                    _timeProvider.GetUtcNow(), centered is null ? null : binding!.Revision.Pipeline);
                 var previewManifest = new ArtifactManifestV2(
                     ArtifactManifestV2.CurrentSchemaVersion,
                     previewDescriptor,
                     paths.PayloadRelativePath,
                     frame.Metadata.Scene)
-                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                {
+                    CaptureGraphRevisionId = binding?.Revision.State.RevisionId,
+                    CenteredExposure = centered
+                };
                 var validation = previewManifest.Validate();
                 if (!validation.IsValid)
                 {
                     throw new InvalidOperationException($"Raw ingress descriptor is invalid ({validation.ReasonCode}).");
                 }
                 _faultInjector.Inject(RawIngressFaultPoint.ValidationCompleted);
+                await RecordSiloRawIntentAsync(identity.ArtifactId, previewDescriptor.Timing.ExposureStartedUtc).ConfigureAwait(false);
                 using (var payloadActivity = RawIngressTelemetry.ActivitySource.StartActivity("payload.publish"))
                 {
                     await _files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
@@ -595,13 +664,16 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    _timeProvider.GetUtcNow());
+                    _timeProvider.GetUtcNow(), centered is null ? null : binding!.Revision.Pipeline);
                 manifest = new ArtifactManifestV2(
                     ArtifactManifestV2.CurrentSchemaVersion,
                     descriptor,
                     paths.PayloadRelativePath,
                     frame.Metadata.Scene)
-                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                {
+                    CaptureGraphRevisionId = binding?.Revision.State.RevisionId,
+                    CenteredExposure = centered
+                };
                 validation = manifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -631,7 +703,10 @@ internal sealed partial class RawCaptureIngress :
                 manifestJson,
                     committedDescriptor.Timing.ExposureStartedUtc,
                     committedDescriptor.Timing.DurableIngressUtc,
-                    EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
+                    EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest))
+            {
+                CenteredExposure = centered
+            };
             var committedTiming = submission.Result.AcquisitionTiming is null
                 ? null
                 : submission.Result.AcquisitionTiming with
@@ -641,6 +716,7 @@ internal sealed partial class RawCaptureIngress :
             var committedSubmission = submission with
             {
                 CycleEvidence = committedDescriptor.CycleEvidence,
+                CenteredAcquisition = committedDescriptor.CenteredAcquisition,
                 Result = submission.Result with { AcquisitionTiming = committedTiming }
             };
             ProcessingLiveExecutionSeed? liveExecution = null;
@@ -656,9 +732,14 @@ internal sealed partial class RawCaptureIngress :
                 liveExecution = prepared.Seed;
                 durableConfiguration = prepared.Configuration;
             }
-            var context = CaptureLaneEnvelopeSerializer.Serialize(
-                durableConfiguration,
-                committedSubmission);
+            // The centered sidecar is the durable source of the submission projection in both admission paths.
+            var context = centered is null
+                ? CaptureLaneEnvelopeSerializer.Serialize(durableConfiguration, committedSubmission)
+                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor, centeredRequest);
+            var predecessorContextSha256 = centered is not null &&
+                committedDescriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null
+                ? SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor).Sha256
+                : null;
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
@@ -669,6 +750,8 @@ internal sealed partial class RawCaptureIngress :
                     context.Sha256,
                     _lanePolicy.Definitions,
                     liveExecution,
+                    centeredRequest,
+                    predecessorContextSha256,
                     CancellationToken.None).ConfigureAwait(false);
                 if (outcome == RawIngressOutcome.Committed)
                 {
@@ -684,12 +767,14 @@ internal sealed partial class RawCaptureIngress :
                     }
                 }
                 _faultInjector.Inject(RawIngressFaultPoint.AfterJournalCommit);
+                ReleaseSiloRawIntent(identity.ArtifactId);
                 commitActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             }
             _logger.RawIngressSqliteSucceeded("commit");
             var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
             _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
-            var prior = _state.GetBaseSnapshot();
+            CheckSiloPressure(held.Count, held.Bytes,
+                outcome == RawIngressOutcome.Committed ? checked(entry.PayloadLength + entry.ManifestJson.LongLength + 64) : 0);
             var receipt = new RawCaptureReceipt(
                 outcome,
                 manifest with { Scene = null },
@@ -699,35 +784,6 @@ internal sealed partial class RawCaptureIngress :
                     committedDescriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw),
                 manifestSha256);
-            if (outcome == RawIngressOutcome.Committed || prior.Availability == RawIngressAvailability.Degraded)
-            {
-                try
-                {
-                    _faultInjector.Inject(RawIngressFaultPoint.BeforeIndexProjection);
-                    if (outcome == RawIngressOutcome.Committed)
-                    {
-                        await RawIngressFileStore.AppendCompatibilityIndexAsync(
-                            _options.RawIngressRoot,
-                            receipt,
-                            CancellationToken.None,
-                            _telemetry.RecordFileFlush).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await RawIngressFileStore.EnsureCompatibilityIndexAsync(
-                            _options.RawIngressRoot,
-                            manifestJson,
-                            CancellationToken.None,
-                            _telemetry.RecordFileFlush).ConfigureAwait(false);
-                    }
-                    _faultInjector.Inject(RawIngressFaultPoint.AfterIndexProjection);
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "index-projection-failed");
-                    _logger.RawIngressIndexProjectionFailed();
-                }
-            }
             _faultInjector.Inject(RawIngressFaultPoint.BeforeWakeUpNotification);
             var duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             _telemetry.RecordCommit(outcome, frame.PixelData.Length, duration);
@@ -852,8 +908,11 @@ internal sealed partial class RawCaptureIngress :
                 var descriptor = manifest.Descriptor;
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
+                var recoveredConfiguration = manifest.CenteredExposure is { } centered
+                    ? (await _journal.ReadCenteredRunAsync(centered, cancellationToken).ConfigureAwait(false)).Configuration
+                    : existingEnvelope?.Configuration ?? configuration;
                 var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
-                    (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
+                    recoveredConfiguration with { AgentId = descriptor.Capture.AgentId },
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,
                     descriptor.Timing.DurableIngressUtc,
@@ -874,11 +933,21 @@ internal sealed partial class RawCaptureIngress :
         }
     }
 
+    private static (byte[] Json, string Sha256) SerializeCenteredLaneEnvelope(
+        CameraModuleConfig configuration, ReconstructionDescriptor descriptor, CaptureSetpoint? requested = null)
+    {
+        var envelope = CreateRecoveredEnvelope(configuration, descriptor, requested);
+        return CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
+    }
+
     private static CaptureLaneEnvelope CreateRecoveredEnvelope(
         CameraModuleConfig configuration,
-        ReconstructionDescriptor descriptor)
+        ReconstructionDescriptor descriptor,
+        CaptureSetpoint? dispatchedRequest = null)
     {
-        var requested = new CaptureSetpoint(
+        var acquisition = descriptor.CenteredAcquisition;
+        var reporting = acquisition?.Module;
+        var requested = dispatchedRequest ?? reporting?.RequestedSetpoint ?? new CaptureSetpoint(
             descriptor.Controls.RequestedExposure,
             descriptor.Controls.RequestedGain,
             null,
@@ -888,12 +957,15 @@ internal sealed partial class RawCaptureIngress :
             descriptor.Controls.EffectiveGain,
             null,
             null);
+        var effectiveInterval = acquisition?.EffectiveInterval ?? configuration.Rig.Pipeline.CaptureInterval;
         var request = new CaptureRequest(
             descriptor.Timing.RequestedStartUtc,
-            configuration.Rig.Pipeline.CaptureInterval,
-            CaptureMode.Still,
+            reporting?.RequestedInterval ?? effectiveInterval,
+            reporting?.RequestMode ?? CaptureMode.Still,
             requested);
-        var result = new CaptureResult(null, effective, TimeSpan.Zero, CaptureMode.Still, false)
+        var result = new CaptureResult(null, reporting?.ReportedSetpoint ?? effective,
+            reporting?.ProcessingLatency ?? TimeSpan.Zero, reporting?.ResultMode ?? CaptureMode.Still,
+            reporting?.RequiresImmediateUpload ?? false)
         {
             AcquisitionTiming = new CaptureAcquisitionTiming(
                 descriptor.Timing.ExposureStartedUtc,
@@ -908,11 +980,13 @@ internal sealed partial class RawCaptureIngress :
             new CaptureLoopSubmission(
                 request,
                 result,
-                descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
-                configuration.Rig.Pipeline.CaptureInterval,
-                TimeSpan.Zero)
+                acquisition?.ModuleCallStartedUtc ??
+                    descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
+                effectiveInterval,
+                acquisition?.ModuleDuration ?? TimeSpan.Zero)
             {
-                CycleEvidence = descriptor.CycleEvidence
+                CycleEvidence = descriptor.CycleEvidence,
+                CenteredAcquisition = acquisition
             });
     }
 
@@ -933,34 +1007,21 @@ internal sealed partial class RawCaptureIngress :
         }
     }
 
-    public async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
-        string storageRoot,
-        CancellationToken cancellationToken)
+    internal async ValueTask<IReadOnlyList<Guid>> GetRetentionHoldsAsync(CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
-        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
-        {
-            return Array.Empty<RawIngressRetentionHold>();
-        }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
-        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsUnderLifecycleLockAsync(
-        string storageRoot,
+    internal async ValueTask<IReadOnlyList<Guid>> GetRetentionHoldsUnderLifecycleLockAsync(
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
-        if (!PathsEqual(storageRoot, _options.RawIngressRoot))
-        {
-            return Array.Empty<RawIngressRetentionHold>();
-        }
         if (!Volatile.Read(ref _journalValidated))
         {
             throw new InvalidOperationException(
                 "Raw ingress must be initialized before retention reads are made under the lifecycle lock.");
         }
-        return await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public void InvalidateEvidence()
@@ -985,11 +1046,12 @@ internal sealed partial class RawCaptureIngress :
         {
             return;
         }
-        var degraded = underPressure || baseline.QuarantineCount > 0 ||
-                       baseline.Reason is "index-projection-failed" or "reconciliation-held";
+        var stagingPressure = SiloPressureRelease is not null;
+        var degraded = underPressure || stagingPressure || baseline.QuarantineCount > 0 ||
+                       baseline.Reason == "reconciliation-held";
         _state.UpdateBaseStatus(
             degraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
-            underPressure ? "disk-pressure" : degraded ? baseline.Reason : "accepting");
+            underPressure ? "disk-pressure" : stagingPressure ? "silo-staging-pressure" : degraded ? baseline.Reason : "accepting");
     }
 
     public void ReportWakeup(bool queued) => _telemetry.RecordWakeup(queued);
@@ -1045,13 +1107,17 @@ internal sealed partial class RawCaptureIngress :
         CancellationToken cancellationToken)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
+        var (actualOutcome, siloEvidenceRestored) = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
         var reason = NormalizeLaneReason(result.Reason);
         // This outcome is what makes the raw pass verify the capture's payload in full. It commits after the handler
         // reported the evidence, so a pass that report started can have run before it.
         if (actualOutcome == CaptureLaneHandlerOutcome.TerminalFailure && reason == "evidence-unavailable")
             RequireReconciliation();
-        if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
+        if (siloEvidenceRestored && actualOutcome == CaptureLaneHandlerOutcome.RetryableFailure)
+        {
+            _logger.CaptureLaneSiloEvidenceRestored(lease.Lane);
+        }
+        else if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
         {
             _logger.CaptureLaneRetryScheduled(
                 lease.Lane,
@@ -1062,7 +1128,7 @@ internal sealed partial class RawCaptureIngress :
         {
             // Abandonment can repeat for every frame while a superseded plan stays active; the condition itself is
             // reported once through processing health, so the per-frame record stays at Debug.
-            _logger.CaptureLaneAbandoned(lease.Lane, reason);
+            _logger.CaptureLaneAbandoned(lease.Lane, siloEvidenceRestored ? "raw-evidence-revalidated" : reason);
         }
         else
         {
@@ -1072,8 +1138,8 @@ internal sealed partial class RawCaptureIngress :
             lease,
             actualOutcome,
             System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
         await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
-        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
         return actualOutcome;
     }
 
@@ -1099,9 +1165,6 @@ internal sealed partial class RawCaptureIngress :
         _ => "unexpected"
     };
 
-    private static bool PathsEqual(string left, string right)
-        => StorageRootIdentity.AreEqual(left, right);
-
     private FileStream AcquireProcessLock()
     {
         var path = Path.Combine(Path.GetFullPath(_options.RawIngressRoot), "journal", "raw-ingress.lock");
@@ -1122,6 +1185,7 @@ internal sealed partial class RawCaptureIngress :
 
     private void EnsureCapacity(long payloadLength)
     {
+        _state.RecordCapturePayloadBytes(payloadLength);
         StorageCapacity capacity;
         try
         {
@@ -1228,6 +1292,7 @@ internal sealed partial class RawCaptureIngress :
         }
         try
         {
+            _faultInjector.BeforeLaneStateRefresh();
             var prior = _laneState.Snapshot;
             _laneState.Update(await _laneStore.ReadBacklogsAsync(cancellationToken).ConfigureAwait(false));
             _laneState.ClearUnhealthy("lane-state-unavailable");

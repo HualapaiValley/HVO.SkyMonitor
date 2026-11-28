@@ -354,7 +354,7 @@ Success criteria and limits:
 - The fallback stage changes exactly one rule; classic protection and all required checks remain intact throughout the frozen window.
 - Cutover and rollback comparisons reproduce the full mutable policy in the BEFORE snapshots, including any-source hvo/reviewed-head and the exact queue parameters. Server metadata such as updated_at can change and is not a policy value.
 - No PR, status, workflow, device, runner or merge operation is performed by the drill commands. No live setting has been changed in this implementation thread.
-- Atlas delivered the gh-runner-05/06 build pair (8 vCPU each) and its exclusive hvo-skymonitor-build label. Capacity is ready. The live drill awaits Kepler's supervised window as KNOWN LIMIT / HELD.
+- Atlas delivered the initial `gh-runner-05`/`gh-runner-06` build pair (8 vCPU each) on 2026-11-12; Build and Unit selects `[self-hosted, linux, x64, hvo-skymonitor-build]` (see [runner capacity](ci-runner-capacity.md#build-and-unit-allocation) for the current runner inventory carrying that label). Capacity is ready. The live drill awaits Kepler's supervised window as KNOWN LIMIT / HELD.
 
 ## Committed offline restoration evidence
 

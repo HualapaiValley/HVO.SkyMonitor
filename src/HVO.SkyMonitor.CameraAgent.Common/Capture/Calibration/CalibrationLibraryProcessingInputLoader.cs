@@ -3,33 +3,29 @@ using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
 internal sealed record CalibrationLibraryProcessingInputs(
     IReadOnlyDictionary<string, ProcessingArtifact> References,
-    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs);
+    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs,
+    ReferenceCalibrationProfileV1 Profile);
 
-internal sealed class CalibrationLibraryProcessingInputLoader(
-    IOptions<CameraAgentHostOptions> options,
-    CameraAgentClearReferenceLoader referenceLoader)
+internal sealed class CalibrationLibraryProcessingInputLoader(SiloArtifactStorage silo)
 {
-    private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
-    private readonly CameraAgentClearReferenceLoader _referenceLoader = referenceLoader;
-
     internal async Task<CalibrationLibraryProcessingInputs> LoadAsync(
         CalibrationLibraryBundleSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         var bundle = snapshot.Bundle;
-        var profileJson = await File.ReadAllBytesAsync(
-            ResolveSafePath(bundle.ProfileRelativePath), cancellationToken).ConfigureAwait(false);
+        var profileJson = await silo.ReadMetadataAsync(CalibrationArtifactPublisher.BundleArtifactId(bundle),
+            CalibrationArtifactPublisher.SiloProfileRevision, CalibrationLibraryContractJson.MaximumBundleBytes,
+            bundle.ProfileIdentitySha256, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The selected calibration profile has no settled Silo evidence.");
         if (!string.Equals(
                 PayloadChecksum.ComputeSha256(profileJson),
                 bundle.ProfileIdentitySha256,
@@ -51,8 +47,10 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
         {
             var envelope = masters.SingleOrDefault(artifact => artifact.Kind == kind)
                 ?? throw new InvalidDataException("The selected calibration bundle is missing a master kind.");
-            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
-                ResolveSafePath(envelope.ManifestRelativePath), cancellationToken).ConfigureAwait(false));
+            var evidence = await silo.ReadMetadataAsync(envelope.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                CalibrationLibraryContractJson.MaximumBundleBytes, sha256: null, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The selected master has no settled Silo evidence.");
+            var parsed = CaptureContractJson.ParseManifest(evidence);
             var expectedRole = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
                 ? FrameArtifactRole.Combined
                 : FrameArtifactRole.Raw;
@@ -100,7 +98,7 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
             {
                 throw new InvalidDataException("The selected calibration master conflicts with its library envelope.");
             }
-            var reference = await _referenceLoader.LoadAsync(manifest, cancellationToken).ConfigureAwait(false);
+            var reference = await LoadSiloMasterAsync(silo, manifest.Descriptor, cancellationToken).ConfigureAwait(false);
             if (reference.ArtifactId != envelope.ArtifactId ||
                 !string.Equals(
                     PayloadChecksum.ComputeSha256(reference.Payload.Span),
@@ -142,7 +140,18 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
                 ? ProcessingInputSelector.Raw(kind)
                 : ProcessingInputSelector.Combined(kind),
             ArtifactId: references[kind].ArtifactId)));
-        return new CalibrationLibraryProcessingInputs(references, auxiliary);
+        return new CalibrationLibraryProcessingInputs(references, auxiliary, profile);
+    }
+
+    private static async ValueTask<ProcessingArtifact> LoadSiloMasterAsync(SiloArtifactStorage store,
+        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        var payload = await store.ReadMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+            descriptor.Layout.ByteLength, descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The selected calibration master has no settled Silo payload.");
+        if (!FrameReconstructor.TryReconstruct(descriptor, payload, out _).IsValid)
+            throw new InvalidDataException("The selected Silo calibration master is not reconstructable.");
+        return CameraAgentClearReferenceLoader.CreateArtifact(descriptor, payload);
     }
 
     private static bool RecipeMatches(RecipeIdentityDescriptor? expected, RecipeIdentityDescriptor actual)
@@ -240,22 +249,4 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
                 LevelCodeSpace = layout.LevelCodeSpace ?? FrameLevelCodeSpace.StoredContainer
             }
             : layout;
-
-    private string ResolveSafePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
-        {
-            throw new InvalidDataException("Calibration library paths must be storage-relative.");
-        }
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath));
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!path.StartsWith(
-                prefix,
-                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Calibration library paths cannot escape storage.");
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        return path;
-    }
 }

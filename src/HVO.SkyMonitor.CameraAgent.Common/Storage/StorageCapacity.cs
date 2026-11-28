@@ -134,7 +134,7 @@ internal static class StorageLifecycleLock
 /// </list>
 /// Sites that hold only the lifecycle lock: <c>SqliteCaptureLaneStore</c>, <c>CalibrationArtifactPublisher</c>,
 /// <c>SqliteCalibrationLibraryStore</c>, <c>SqliteTransientCandidateJournal</c>, <c>SqliteTransientRuntimeStore</c>,
-/// <c>RetentionBackgroundService</c>, and <c>ProcessingGraphOperationsCoordinator</c> activation, rollback, and
+/// <c>SiloRetentionWorker</c>, and <c>ProcessingGraphOperationsCoordinator</c> activation, rollback, and
 /// staging. Sites that hold only the configuration gate: <c>CaptureDistributionService</c> configured-basic refresh.
 /// The configuration gate must never be held while waiting for the lifecycle lock.
 /// Retention initializes raw ingress before acquiring the lifecycle lock and reads its holds under that lock without

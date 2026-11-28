@@ -5,6 +5,8 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>The existing physical predicted-scene query, at its exact registered step version.</summary>
 public static class ProjectedSceneOptionDescriptors
 {
+    public const string AssessMeasuredDeepSky = "assessMeasuredDeepSky";
+
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "projected-scene-options-v1",
         "ProjectedScene",
@@ -13,6 +15,8 @@ public static class ProjectedSceneOptionDescriptors
         "Select catalog stars for physical predicted-scene staging. VirtualSky uses its separate module settings for stars and its authoritative rendered scene. The deep-sky controls also apply to VirtualSky unless its module explicitly overrides them. Save, validate and explicitly activate a new graph revision to change subsequent physical captures; retained scenes stay unchanged.",
         [
             ProcessingOptionDescriptor.Toggle("deepSkyEnabled", "deepSkyEnabled", "Enable deep-sky annotations", "Use the independently selected OpenNGC catalog for expected positions.", false),
+            ProcessingOptionDescriptor.Toggle(AssessMeasuredDeepSky, AssessMeasuredDeepSky, "Assess measured deep sky on centered stacks",
+                "Analyze registered stack pixels using the OpenNGC snapshot frozen at admission. Expected annotations have their own setting.", false),
             ProcessingOptionDescriptor.Toggle("deepSkyNgc", "deepSkyNgc", "NGC designations", "Include NGC objects; overlapping selections draw one canonical object.", true),
             ProcessingOptionDescriptor.Toggle("deepSkyMessier", "deepSkyMessier", "Messier designations", "Include Messier objects, including objects without an NGC or IC identifier.", true),
             ProcessingOptionDescriptor.Toggle("deepSkyIc", "deepSkyIc", "IC designations", "Include IC objects.", true),

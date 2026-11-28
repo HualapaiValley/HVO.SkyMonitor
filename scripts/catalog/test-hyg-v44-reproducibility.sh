@@ -4,8 +4,8 @@ umask 022
 
 # Offline, production-input regression. Exercise the real builders and pinned
 # validators with both SQLite defaults; no expected hash is supplied by the test.
-if [[ $# -ne 2 ]]; then
-    printf 'Usage: %s HYG_CSV_GZ OPENNGC_CHECKOUT\n' "$0" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    printf 'Usage: %s HYG_CSV_GZ [OPENNGC_CHECKOUT]\n' "$0" >&2
     exit 2
 fi
 
@@ -19,7 +19,10 @@ hyg_print_sqlite_identity
 hyg_check_sqlite_version
 
 source_file="$(realpath "$1")"
-openngc_source="$(realpath "$2")"
+openngc_source=""
+if [[ $# -eq 2 ]]; then
+    openngc_source="$(realpath "$2")"
+fi
 HVO_REPRO_SQLITE="$(realpath "$(command -v sqlite3)")"
 export HVO_REPRO_SQLITE
 work="$(mktemp -d "${TMPDIR:-/tmp}/hvo-hyg44-repro-test.XXXXXX")"
@@ -54,9 +57,7 @@ for setting in OFF ON; do
         candidate="$work/$setting-$repeat"
         "$SCRIPT_DIR/build-hyg-v44.sh" --source "$source_file" "$candidate/hyg"
         stars="$candidate/hyg/$HYG44_PACKAGE_VERSION.bundle"
-        "$SCRIPT_DIR/build-hyg-v44-openngc.sh" --hyg-bundle "$stars" \
-            --openngc-source "$openngc_source" "$candidate/openngc"
-        composed="$candidate/openngc/$HYGNGC_PACKAGE_VERSION.bundle"
+
 
         # Compare every published payload (including manifests and notices), both
         # across clean repeats and across the two connection defaults.
@@ -64,12 +65,22 @@ for setting in OFF ON; do
             for file in "$HYG44_DATABASE_FILE" "$HYG_MANIFEST_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
                 cmp "$work/OFF-1/hyg/$HYG44_PACKAGE_VERSION.bundle/$file" "$stars/$file"
             done
-            for file in "$HYGNGC_DATABASE_FILE" "$HYG_MANIFEST_FILE" "$HYGNGC_LICENSE_FILE" "$HYGNGC_ATTRIBUTION_FILE"; do
-                cmp "$work/OFF-1/openngc/$HYGNGC_PACKAGE_VERSION.bundle/$file" "$composed/$file"
-            done
         fi
-        printf 'PASS secure_delete=%s repeat=%s HYG=%s OpenNGC=%s\n' "$setting" "$repeat" \
-            "$(hyg_sha256 "$stars/$HYG44_DATABASE_FILE")" "$(hyg_sha256 "$composed/$HYGNGC_DATABASE_FILE")"
+        printf 'PASS secure_delete=%s repeat=%s HYG=%s\n' "$setting" "$repeat" \
+            "$(hyg_sha256 "$stars/$HYG44_DATABASE_FILE")"
+
+        if [[ -n "$openngc_source" ]]; then
+            "$SCRIPT_DIR/build-hyg-v44-openngc.sh" --hyg-bundle "$stars" \
+                --openngc-source "$openngc_source" "$candidate/openngc"
+            composed="$candidate/openngc/$HYGNGC_PACKAGE_VERSION.bundle"
+            if [[ "$setting-$repeat" != OFF-1 ]]; then
+                for file in "$HYGNGC_DATABASE_FILE" "$HYG_MANIFEST_FILE" "$HYGNGC_LICENSE_FILE" "$HYGNGC_ATTRIBUTION_FILE"; do
+                    cmp "$work/OFF-1/openngc/$HYGNGC_PACKAGE_VERSION.bundle/$file" "$composed/$file"
+                done
+            fi
+            printf 'PASS secure_delete=%s repeat=%s composed=%s\n' "$setting" "$repeat" \
+                "$(hyg_sha256 "$composed/$HYGNGC_DATABASE_FILE")"
+        fi
     done
 done
-printf 'Four clean HYG/OpenNGC builds and all bundle payloads are byte-identical.\n'
+printf 'Four clean builds of each selected catalog and all bundle payloads are byte-identical.\n'

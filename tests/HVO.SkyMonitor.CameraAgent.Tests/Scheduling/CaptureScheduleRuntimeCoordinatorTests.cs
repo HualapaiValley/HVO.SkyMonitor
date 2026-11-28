@@ -1,19 +1,19 @@
 using System.Security.Claims;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Scheduling")]
 public sealed class CaptureScheduleRuntimeCoordinatorTests
 {
     [TestMethod]
@@ -47,7 +48,7 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             .ReturnsAsync(AuthorizationResult.Success());
         var statusService = new CameraAgentOperatorUiService(
             new FixedAuthenticationStateProvider(principal), authorization.Object,
-            null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!,
+            null!, null!, null!, null!, null!, null!, null!, null!, null!,
             accessor, fixture.Runtime, [], [], fixture.HostOptions, null!, fixture.TimeProvider,
             NullLogger<CameraAgentOperatorUiService>.Instance);
         var initial = await projection.ProjectAsync(null, CancellationToken.None).ConfigureAwait(false);
@@ -191,19 +192,46 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
     }
 
     [TestMethod]
-    public async Task Stage_WhenModulePreflightRejects_DoesNotChangeDurableState()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Stage_WhenModulePreflightRejects_DoesNotChangeDurableState(bool missingNamedPass)
     {
-        using var fixture = await RuntimeFixture.CreateAsync(new RejectingModuleValidator()).ConfigureAwait(false);
+        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        await using var moduleLifetime = module.ConfigureAwait(false);
+        var validator = new Mock<ICameraModuleConfigurationValidator>();
+        validator.Setup(value => value.Validate(It.IsAny<CameraModuleConfig>())).Callback<CameraModuleConfig>(configuration =>
+        {
+            if (missingNamedPass && configuration.ModuleType == "VirtualSky")
+                ((ICameraModuleConfigurationPreflight)module).ValidateConfiguration(configuration);
+            else if (!missingNamedPass)
+                new RejectingModuleValidator().Validate(configuration);
+        });
+        using var fixture = await RuntimeFixture.CreateAsync(validator.Object).ConfigureAwait(false);
         var initial = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        var proposed = fixture.Configuration;
+        if (missingNamedPass)
+        {
+            var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "package.json");
+            proposed = proposed with
+            {
+                Rig = proposed.Rig with { Sensor = proposed.Rig.Sensor with { ResponseMode = SensorResponseMode.Monochrome } },
+                Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    namedOrbitalPass = new { packagePath = missing, packageSha256 = new string('A', 64) }
+                }))
+            };
+        }
 
-        _ = await Assert.ThrowsAsync<CaptureProfileCompatibilityException>(() => fixture.Runtime.StageAsync(
+        var refusal = await Assert.ThrowsAsync<CaptureProfileCompatibilityException>(() => fixture.Runtime.StageAsync(
             LocalCaptureProfileDefinition.CreateV2(
-                fixture.Configuration, AlwaysOpenDefinition("invalid", gain: 2)),
+                proposed, AlwaysOpenDefinition("invalid", gain: 2)),
             "stage-invalid",
             initial.Version,
             "owner",
             null,
             CancellationToken.None)).ConfigureAwait(false);
+        if (missingNamedPass)
+            StringAssert.Contains(refusal.InnerException!.Message, "named orbital pass package", StringComparison.Ordinal);
 
         var current = await fixture.Store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(initial.Version, current.Version);
@@ -525,28 +553,6 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         Assert.AreEqual(expectedSha256, runtime.Revision.ProfileSha256);
         var operatorState = await fixture.Runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(expectedSha256, operatorState.ActiveRevision.ProfileSha256);
-
-        var accessor = new CameraAgentConfigurationAccessor();
-        accessor.SetConfiguration(runtime.Configuration);
-        var fleet = new FleetStatusCollector(
-            accessor,
-            new RawIngressState(fixture.TimeProvider),
-            new CaptureLaneState(fixture.TimeProvider, fixture.HostOptions),
-            new CaptureProcessingState(),
-            new ArtifactOutboxState(),
-            new StoragePressureState(),
-            new CaptureTelemetrySink(),
-            new FleetRuntimeState(fixture.TimeProvider),
-            fixture.TimeProvider,
-            fixture.Runtime);
-        var fleetReport = await fleet.CollectAsync(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            1,
-            fixture.TimeProvider.GetUtcNow().AddMinutes(-1),
-            new FleetStatusOutboxSnapshot(0, 0, 0, 0, 0, 0, 0, null, fixture.TimeProvider.GetUtcNow()),
-            CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(expectedSha256, fleetReport.Configuration.ActiveLocalProfileSha256);
 
         var grant = await fixture.Runtime.WaitForGrantAsync(CancellationToken.None).ConfigureAwait(false);
         using var admission = await fixture.Admission.EnterAsync(CancellationToken.None).ConfigureAwait(false);

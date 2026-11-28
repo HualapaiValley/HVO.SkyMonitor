@@ -98,10 +98,9 @@ public sealed record ApprovedCatalogSpecification(
 public static class ApprovedCatalogSpecifications
 {
     /// <summary>
-    /// The embedded registry version. Version 3 adds the independently selectable OpenNGC manifest-v4
-    /// specification; an image declaring <c>hvo-approved-catalogs-v3</c> reads all retained approved lineages.
+    /// The embedded registry version declared by current CameraAgent images.
     /// </summary>
-    public const int RegistryVersion = 3;
+    public const int RegistryVersion = 4;
 
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private static readonly Lazy<IReadOnlyDictionary<string, ApprovedCatalogSpecification>> Registry =
@@ -279,7 +278,7 @@ public static class ApprovedCatalogSpecifications
             composed ? ApprovedCatalogComposition.Read(value, database, standalone) : null);
         var supportedLayout = specification.ManifestVersion switch
         {
-            CatalogSnapshotResolver.MinimumSupportedManifestVersion => specification.SchemaVersion is "2" or "3",
+            CatalogSnapshotResolver.MinimumSupportedManifestVersion => specification.SchemaVersion == "3" && specification.PreprocessingVersion == "4",
             CatalogSnapshotResolver.ComposedManifestVersion => specification.SchemaVersion is "4" &&
                 specification.Composition?.Stars?.Database.RowCount == specification.Database.RowCount,
             CatalogSnapshotResolver.DeepSkyManifestVersion => specification.SchemaVersion == "5" &&

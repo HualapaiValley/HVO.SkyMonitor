@@ -1,6 +1,10 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
@@ -17,7 +21,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 /// </remarks>
 internal sealed partial class CalibrationFamilyActivationService(
     SqliteCalibrationFamilyStore store,
-    ILogger<CalibrationFamilyActivationService> logger)
+    ILogger<CalibrationFamilyActivationService> logger,
+    IOptions<CameraAgentHostOptions>? options = null, SiloArtifactStorage? silo = null)
 {
     private const int MaximumTokenLength = 128;
     private const int MaximumReasonLength = 512;
@@ -50,11 +55,39 @@ internal sealed partial class CalibrationFamilyActivationService(
             actor = request.Actor,
             reason = request.Reason
         });
-        var result = await store.ChangeActivationAsync(
+        ValueTask<CalibrationFamilyActivationResult> CommitAsync() => store.ChangeActivationAsync(
             SqliteCalibrationFamilyStore.ActivateCommand, request.IdempotencyKey, payload, target.AgentId, target.RigId,
-            identity, request.Actor, request.Reason, family => Fit(family, target), cancellationToken).ConfigureAwait(false);
+            identity, request.Actor, request.Reason, family => Fit(family, target), cancellationToken);
+        var result = silo is not null && options is not null
+            ? await ActivateWithSiloHoldsAsync(request, identity, CommitAsync, cancellationToken).ConfigureAwait(false)
+            : await CommitAsync().ConfigureAwait(false);
         Report(result, request.IdempotencyKey, target.AgentId, target.RigId);
         return result;
+    }
+
+    private async ValueTask<CalibrationFamilyActivationResult> ActivateWithSiloHoldsAsync(
+        CalibrationFamilyActivationRequest request, string identity, Func<ValueTask<CalibrationFamilyActivationResult>> commit,
+        CancellationToken cancellationToken)
+    {
+        var gate = RawIngressLifecycleLock.ForRoot(options!.Value.RawIngressRoot);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (await store.GetActivationAsync(request.IdempotencyKey, cancellationToken).ConfigureAwait(false) is null &&
+                await store.GetAsync(identity, cancellationToken).ConfigureAwait(false) is { } record && Fit(record.Family, request.Target) is null)
+            {
+                foreach (var master in record.Family.Members.SelectMany(static member => member.Masters).Distinct())
+                {
+                    if (!await silo!.VerifyRetainedLocalPayloadAsync(master.ArtifactId, master.PayloadSha256, cancellationToken).ConfigureAwait(false))
+                        return CalibrationFamilyActivationResult.Refused(CalibrationFamilyActivationReasonCodes.MasterUnavailable);
+                }
+            }
+            return await commit().ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async ValueTask<CalibrationFamilyActivationResult> DeactivateAsync(

@@ -17,8 +17,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class CaptureProcessingGraphTests
 {
+    private static readonly string[] LegacyPreviewAliases =
+    [
+        "Calibration", "CalibratedPreview", "RollingCombination", "CombinedPreview", "ImageQuality",
+        "CloudAssessment", "Annotation", "WeatherCloudOverlay", "Storage", "Telemetry"
+    ];
+
+    private static readonly string[] AutomaticAliases = ["Preview", "RollingCombination", "Annotation"];
+
     [TestMethod]
     [DataRow("missing")]
     [DataRow("disabled")]
@@ -31,7 +40,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
@@ -68,15 +77,15 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() }).Build());
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
         var config = CreateConfig(
             new("ProjectedScene", "scene", DependsOn: ["$raw"]),
             new("Storage", "storage", DependsOn: ["$raw", "scene"],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = Path.GetTempPath(), QueueForUpload = true }))) with
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { }))) with
         {
             Module = new CameraModuleDescriptor("VirtualSky")
         };
@@ -98,13 +107,13 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().Build());
         var registrations = services.ToList();
         var configurationIndex = registrations.FindIndex(static descriptor =>
             descriptor.ServiceType == typeof(CameraAgentConfigurationInitializer));
         Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
         foreach (var consumer in new[] { typeof(CaptureProcessingStateRefreshService),
-                     typeof(DerivedProductReconciliationService), typeof(ProjectedSceneStageReconciliationService) })
+                     typeof(ProjectedSceneStageReconciliationService) })
             Assert.IsGreaterThan(configurationIndex, registrations.FindIndex(descriptor =>
                 descriptor.ServiceType == typeof(IHostedService) && descriptor.ImplementationType == consumer));
     }
@@ -114,7 +123,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().Build());
         var hostedTypes = services
             .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
             .Select(static descriptor => descriptor.ImplementationType)
@@ -176,7 +185,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -808,7 +817,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -817,7 +826,7 @@ public sealed class CaptureProcessingGraphTests
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
         var registrations = provider.GetServices<CaptureProcessingStepRegistration>().ToArray();
-        CollectionAssert.Contains(factory.StableStepAliases.ToArray(), FileStorageCaptureProcessingStep.StableAlias);
+        CollectionAssert.Contains(factory.StableStepAliases.ToArray(), SiloCaptureProcessingStep.StableAlias);
         CollectionAssert.DoesNotContain(factory.StableStepAliases.ToArray(), "Upload");
         var baseline = CreateConfig();
         var config = CreateExplicitConfig(
@@ -832,13 +841,7 @@ public sealed class CaptureProcessingGraphTests
             new CaptureProcessingStepConfig(
                 "Storage",
                 "storage",
-                Options: JsonSerializer.SerializeToElement(new
-                {
-                    storageRoot = "/private/archive",
-                    endpoint = "https://secret-endpoint.example",
-                    callbackUrl = "https://secret-url.example",
-                    serviceUri = "https://secret-uri.example"
-                }),
+                Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                 DependsOn:
             [
                 "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud",
@@ -871,12 +874,17 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(
             FrameArtifactRole.AnnotatedPreview,
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
-        Assert.HasCount(10, preview.EffectiveNodes);
+        CollectionAssert.AreEquivalent(LegacyPreviewAliases, preview.EffectiveNodes.Select(static node => node.Alias).ToArray());
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        Assert.HasCount(26, registrations);
-        foreach (var alias in new[] { CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
-            AstrometryPredictionCaptureProcessingStep.Alias, MeasuredAstrometryCaptureProcessingStep.Alias,
-            SceneStylePresentation.StepAlias })
+        CollectionAssert.AreEquivalent(AutomaticAliases,
+            registrations.Where(static registration => registration.AutoInclude).Select(static registration => registration.Alias).ToArray());
+        foreach (var alias in new[]
+        {
+            CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
+            AstrometryPredictionCaptureProcessingStep.Alias, MeasuredAstrometryCaptureProcessingStep.Alias, SceneStylePresentation.StepAlias,
+            ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, ExposureMeasurementProducts.StepAlias,
+            ExposureAssociationProducts.StepAlias, ExposureAstrometryCaptureProcessingStep.CenteredAlias
+        })
         {
             Assert.IsFalse(registrations.Single(registration => registration.Alias == alias).AutoInclude);
             Assert.IsFalse(preview.EffectiveNodes.Any(node => node.Alias == alias));
@@ -886,14 +894,8 @@ public sealed class CaptureProcessingGraphTests
         Assert.IsFalse(preview.EffectiveNodes.Any(static node => node.Alias == FrameFactsPresentation.StepAlias));
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Storage").OutputRole);
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Telemetry").OutputRole);
-        Assert.AreEqual(
-            "[redacted]",
-            preview.EffectiveNodes.Single(static node => node.Alias == "Storage").Options!.Value
-                .GetProperty("storageRoot").GetString());
-        Assert.IsFalse(JsonSerializer.Serialize(preview).Contains("/private/archive", StringComparison.Ordinal));
-        Assert.IsFalse(JsonSerializer.Serialize(preview).Contains("secret-endpoint", StringComparison.Ordinal));
-        Assert.IsFalse(JsonSerializer.Serialize(preview).Contains("secret-url", StringComparison.Ordinal));
-        Assert.IsFalse(JsonSerializer.Serialize(preview).Contains("secret-uri", StringComparison.Ordinal));
+        Assert.IsTrue(preview.EffectiveNodes.Single(static node => node.Alias == "Storage").Options!.Value
+            .GetProperty("updateLatestFrame").GetBoolean());
         var legacyPreviewOptions = CaptureContractJson.SerializeToElement(new PreviewProcessingStepOptions());
         Assert.IsTrue(legacyPreviewOptions.GetProperty("enabled").GetBoolean());
         Assert.AreEqual("default", legacyPreviewOptions.GetProperty("outputVariant").GetString());
@@ -926,23 +928,12 @@ public sealed class CaptureProcessingGraphTests
             "Storage",
             "storage",
             DependsOn: ["$raw"],
-            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-            {
-                Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Raw, RetentionDays = 60 }]
-            }))));
-        var syntheticRawStepPolicy = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(
+            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+            { }))));
+        Assert.ThrowsExactly<JsonException>(() => factory.PreviewPlan(
             CreateExplicitConfig(new CaptureProcessingStepConfig(
-                "Storage",
-                "storage",
-                DependsOn: ["$raw"],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                {
-                    Policies = [new ArtifactStoragePolicyOptions { StepId = "$raw", Role = FrameArtifactRole.Raw }]
-                })))));
-        StringAssert.Contains(
-            syntheticRawStepPolicy.Message,
-            "does not select a declared producer dependency",
-            StringComparison.Ordinal);
+                "Storage", "storage", DependsOn: ["$raw"],
+                Options: JsonSerializer.SerializeToElement(new { policies = new[] { new { stepId = "$raw" } } })))));
 
         var wrongMetadata = CreateExplicitConfig(
             new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
@@ -983,7 +974,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
@@ -1013,7 +1004,7 @@ public sealed class CaptureProcessingGraphTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()

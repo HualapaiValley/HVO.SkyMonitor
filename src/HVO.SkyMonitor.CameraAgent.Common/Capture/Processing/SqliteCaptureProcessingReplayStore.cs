@@ -1,10 +1,9 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
@@ -26,8 +25,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.CommandText = """
             SELECT r.raw_capture_row_id, r.raw_artifact_id, r.payload_length,
                    r.descriptor_sha256, r.payload_sha256, r.manifest_sha256,
-                   r.manifest_json, r.payload_relative_path, r.sidecar_relative_path,
-                   c.context_json, c.context_sha256
+                   r.manifest_json, c.context_json, c.context_sha256
             FROM raw_captures r
             JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id
             WHERE r.capture_id = $capture AND r.state = 'committed'
@@ -48,10 +46,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         var payloadSha256 = reader.GetString(4);
         var manifestSha256 = reader.GetString(5);
         var manifestJson = await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false);
-        var payloadRelativePath = reader.GetString(7);
-        var sidecarRelativePath = reader.GetString(8);
-        var contextJson = await reader.GetFieldValueAsync<byte[]>(9, cancellationToken).ConfigureAwait(false);
-        var contextSha256 = reader.GetString(10);
+        var contextJson = await reader.GetFieldValueAsync<byte[]>(7, cancellationToken).ConfigureAwait(false);
+        var contextSha256 = reader.GetString(8);
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidDataException("The replay source capture identity is ambiguous.");
@@ -66,28 +62,13 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new InvalidDataException("The replay source manifest is invalid or altered.");
         }
         var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256);
-        var payloadPath = ResolveReplayPath(payloadRelativePath);
-        var sidecarPath = ResolveReplayPath(sidecarRelativePath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-        {
-            throw new FileNotFoundException("The replay source evidence is no longer retained.");
-        }
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-        if (payload.LongLength != payloadBytes ||
-            !string.Equals(Convert.ToHexString(SHA256.HashData(payload)), payloadSha256, StringComparison.Ordinal))
+        if (manifest.Descriptor.Layout.ByteLength != payloadBytes ||
+            !string.Equals(manifest.Descriptor.Artifact.ChecksumSha256, payloadSha256, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException("The replay source payload is invalid or altered.");
         }
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-        if (!sidecar.AsSpan().SequenceEqual(manifestJson))
-        {
-            throw new InvalidDataException("The replay source sidecar differs from committed evidence.");
-        }
-        var stored = new StoredFrameReference(
-            payloadRelativePath,
-            payloadPath,
-            manifest.Descriptor.Timing.ExposureStartedUtc,
-            FrameArtifactRole.Raw);
+        if (!await ReplaySilo.VerifyRawPairIfPublishedAsync(manifest.Descriptor, manifestJson, cancellationToken).ConfigureAwait(false))
+            throw new FileNotFoundException("The replay source has no settled Silo publication.");
         return new ProcessingReplaySource(
             rawRowId,
             payloadBytes,
@@ -98,8 +79,11 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 Result = envelope.Submission.Result with { Frame = null, Artifacts = null }
             },
-            new RawCaptureReceipt(RawIngressOutcome.Existing, manifest, stored, manifestSha256));
+            new RawCaptureReceipt(RawIngressOutcome.Existing, manifest, manifestSha256));
     }
+
+    private SiloArtifactStorage ReplaySilo =>
+        _silo ?? throw new InvalidOperationException("Archived replay requires Silo storage.");
 
     internal async ValueTask<ProcessingReplaySubmissionResult> InsertReplayAsync(
         ProcessingReplaySubmission submission,
@@ -139,8 +123,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         // Do not revalidate an acknowledged command, but refuse a new one before input preparation or pins.
         ensureCompatible?.Invoke();
         var preparedInputs = await PrepareReplayInputsAsync(source, revision, cancellationToken).ConfigureAwait(false);
-        var storageGate = StorageLifecycleLock.ForRoot(_root);
-        await StorageLifecycleLock.WaitAsync(storageGate, "replay", _logger, cancellationToken).ConfigureAwait(false);
+        // Retention takes this gate while it rechecks holds and records an exact-version delete fence.
+        // Recheck readability and commit the replay pins under the same gate.
+        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -320,7 +306,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             foreach (var frozen in preparedInputs.PinnedRawInputs)
             {
-                await EnsureFrozenRawFilesExistAsync(connection, transaction, frozen, cancellationToken)
+                await EnsureFrozenRawMembersExistAsync(connection, transaction, frozen, cancellationToken)
                     .ConfigureAwait(false);
                 using var pin = connection.CreateCommand();
                 pin.Transaction = transaction;
@@ -399,7 +385,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         finally
         {
-            storageGate.Release();
+            lifecycle.Release();
         }
     }
 
@@ -488,15 +474,20 @@ internal sealed partial class SqliteCaptureProcessingStore
                 auxiliaryOutputNodes.Add(node.NodeId);
             }
             var astrometry = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
-                string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias, StringComparison.OrdinalIgnoreCase)) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId);
-            if (astrometry || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+            var regionalVisibility = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
+                string.Equals(step.Type, RegionalStellarVisibilityProducts.StepAlias, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(step.Id) ? RegionalStellarVisibilityProducts.StepAlias : step.Id.Trim()) == node.NodeId);
+            if (astrometry || regionalVisibility || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
                 string.Equals(step.Type, CaptureSatelliteTracksProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId))
             {
-                using var satellite = connection.CreateCommand();
-                satellite.Transaction = transaction;
-                satellite.CommandText = """
+                // Step 30b's original output carries its environmental association in the retained recipe.
+                using var auxiliary = connection.CreateCommand();
+                auxiliary.Transaction = transaction;
+                auxiliary.CommandText = """
                     SELECT output.output_identity_sha256, output.payload_relative_path, output.product_schema_version
                     FROM processing_outputs output
                     WHERE output.capture_id = $capture AND output.node_id = $node AND output.availability_state = 'Available'
@@ -504,23 +495,29 @@ internal sealed partial class SqliteCaptureProcessingStore
                       AND EXISTS (SELECT 1 FROM processing_execution_outputs association
                           JOIN processing_executions execution ON execution.execution_id = association.execution_id
                           WHERE association.output_identity_sha256 = output.output_identity_sha256
-                            AND execution.execution_class = 'Live' AND execution.capture_id = output.capture_id)
+                            AND association.node_id = output.node_id
+                            AND execution.execution_class = 'Live' AND execution.capture_id = output.capture_id
+                            AND execution.primary_artifact_id = $raw)
                     ORDER BY output.output_identity_sha256 LIMIT 4;
                     """;
-                satellite.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
-                satellite.Parameters.AddWithValue("$node", node.NodeId);
-                var inputSchema = astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
-                satellite.Parameters.AddWithValue("$input", inputSchema);
-                satellite.Parameters.AddWithValue("$result", astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
+                auxiliary.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+                auxiliary.Parameters.AddWithValue("$raw", source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
+                auxiliary.Parameters.AddWithValue("$node", node.NodeId);
+                var inputSchema = regionalVisibility ? RegionalStellarVisibilityProducts.SchemaVersion :
+                    astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
+                auxiliary.Parameters.AddWithValue("$input", inputSchema);
+                auxiliary.Parameters.AddWithValue("$result", regionalVisibility ? DBNull.Value :
+                    astrometry ? MeasuredAstrometrySolutionV1.CurrentSchemaVersion : CaptureOrbitalPredictionJson.SchemaVersion);
                 var pinned = new List<ProcessingFrozenOutputInput>();
                 var schemas = new HashSet<string>(StringComparer.Ordinal);
-                using var reader = await satellite.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                using var reader = await auxiliary.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original satellite products are ambiguous.");
+                    if (!schemas.Add(reader.GetString(2))) throw new InvalidDataException("The original analyzer products are ambiguous.");
                     pinned.Add(new(reader.GetString(0), 0, reader.GetString(1)));
                 }
-                if (!schemas.Contains(inputSchema) || astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
+                if (!regionalVisibility && (!schemas.Contains(inputSchema) ||
+                    astrometry && !schemas.Contains(MeasuredAstrometrySolutionV1.CurrentSchemaVersion)))
                     throw new InvalidDataException("The original bounded analyzer evidence is not retained.");
                 outputInputsByNode[node.NodeId] = pinned;
                 auxiliaryOutputNodes.Add(node.NodeId);
@@ -532,10 +529,17 @@ internal sealed partial class SqliteCaptureProcessingStore
         foreach (var frozenOutput in outputInputsByNode.Values.SelectMany(static inputs => inputs).DistinctBy(
                      static input => input.OutputIdentitySha256, StringComparer.Ordinal))
         {
-            var payloadPath = ResolveReplayPath(frozenOutput.PayloadRelativePath);
-            if (!File.Exists(payloadPath))
-                throw new FileNotFoundException("A frozen derived replay input is no longer retained.", payloadPath);
-            frozenOutputBytes[frozenOutput.OutputIdentitySha256] = new FileInfo(payloadPath).Length;
+            var id = ProcessingIdentity.CreateArtifactId(frozenOutput.OutputIdentitySha256);
+            var output = await ReadOutputByArtifactIdAsync(id, cancellationToken).ConfigureAwait(false);
+            if (output is not { AvailabilityState: "Available" } || output.OutputIdentitySha256 != frozenOutput.OutputIdentitySha256)
+                throw new FileNotFoundException("A frozen derived replay input is no longer retained.");
+            var length = output.Descriptor?.Layout.ByteLength ?? output.ProductManifest!.ByteLength;
+            if (!await ReplaySilo.VerifyMemberAsync(id, output.OutputIdentitySha256, length, output.Artifact.ChecksumSha256,
+                    cancellationToken).ConfigureAwait(false) ||
+                !await ReplaySilo.VerifyMemberAsync(id, SiloArtifactStorage.ProductEvidenceRevision, output.EvidenceJson.LongLength,
+                    SiloHash.Sha256(output.EvidenceJson), cancellationToken).ConfigureAwait(false))
+                throw new FileNotFoundException("A frozen derived replay input has no settled Silo publication.");
+            frozenOutputBytes[frozenOutput.OutputIdentitySha256] = length;
         }
         return new(rawInputsByNode, outputInputsByNode, pinnedRawInputs.Values.ToArray(), frozenOutputBytes,
             auxiliaryOutputNodes, frozenPlanJson);
@@ -559,10 +563,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         => pipeline.Steps.Any(step =>
             step.Enabled is not false &&
             (string.Equals(step.Type, ProjectedSceneStepAlias, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(step.Type, ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, StringComparison.OrdinalIgnoreCase) ||
              pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
              step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)) &&
             string.Equals(
-                string.IsNullOrWhiteSpace(step.Id) ? ProjectedSceneStepAlias : step.Id.Trim(),
+                string.IsNullOrWhiteSpace(step.Id)
+                    ? string.Equals(step.Type, ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, StringComparison.OrdinalIgnoreCase)
+                        ? ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias : ProjectedSceneStepAlias
+                    : step.Id.Trim(),
                 nodeId,
                 StringComparison.Ordinal));
 
@@ -604,7 +612,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                   FROM processing_execution_outputs association
                   JOIN processing_executions execution ON execution.execution_id = association.execution_id
                   WHERE association.output_identity_sha256 = output.output_identity_sha256
+                    AND association.node_id = output.node_id
                     AND execution.capture_id = output.capture_id
+                    AND execution.primary_artifact_id = $raw
                     AND execution.execution_class = 'Live')
             ORDER BY output.output_identity_sha256;
             """;
@@ -693,14 +703,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         string nodeId,
         IReadOnlyList<ProcessingFrozenOutputInput> inputs,
         CancellationToken cancellationToken,
-        bool validateRetainedFiles = true,
+        bool validateRetainedMembers = true,
         int ordinalOffset = 0)
     {
         for (var ordinal = 0; ordinal < inputs.Count; ordinal++)
         {
-            if (validateRetainedFiles)
+            if (validateRetainedMembers)
             {
-                await EnsureFrozenOutputFilesExistAsync(
+                await EnsureFrozenOutputMembersExistAsync(
                     connection, transaction, inputs[ordinal].OutputIdentitySha256, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -729,7 +739,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         await RecordFrozenOutputInputCountAsync(connection, transaction, executionId, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask EnsureFrozenRawFilesExistAsync(
+    private async ValueTask EnsureFrozenRawMembersExistAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         ProcessingFrozenRawInput input,
@@ -738,7 +748,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT payload_relative_path, sidecar_relative_path, payload_length
+            SELECT 1
             FROM raw_captures
             WHERE raw_capture_row_id = $raw AND raw_artifact_id = $artifact
               AND descriptor_sha256 = $descriptor AND payload_sha256 = $payload
@@ -751,14 +761,11 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw new ProcessingGraphStoreConflictException("A frozen replay input changed before it could be pinned.");
-        var payloadPath = ResolveReplayPath(reader.GetString(0));
-        var sidecarPath = ResolveReplayPath(reader.GetString(1));
-        var payloadLength = reader.GetInt64(2);
-        if (!File.Exists(payloadPath) || new FileInfo(payloadPath).Length != payloadLength || !File.Exists(sidecarPath))
-            throw new ProcessingGraphStoreConflictException("A frozen replay input is no longer retained.");
+        if (!await ReplaySilo.HasRawEvidenceAsync(input.Descriptor, cancellationToken).ConfigureAwait(false))
+            throw new ProcessingGraphStoreConflictException("A frozen replay input has no settled Silo publication.");
     }
 
-    private async ValueTask EnsureFrozenOutputFilesExistAsync(
+    private async ValueTask EnsureFrozenOutputMembersExistAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         string outputIdentitySha256,
@@ -767,7 +774,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT payload_relative_path, sidecar_relative_path
+            SELECT artifact_id
             FROM processing_outputs
             WHERE output_identity_sha256 = $output AND availability_state = 'Available';
             """;
@@ -775,12 +782,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
-        var payloadPath = ResolveReplayPath(reader.GetString(0));
-        var sidecarPath = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false)
-            ? null
-            : ResolveReplayPath(reader.GetString(1));
-        if (!File.Exists(payloadPath) || sidecarPath is not null && !File.Exists(sidecarPath))
-            throw new ProcessingGraphStoreConflictException("A frozen processing window output is no longer retained.");
+        var id = Guid.ParseExact(reader.GetString(0), "N");
+        if (!await ReplaySilo.HasMemberAsync(id, outputIdentitySha256, cancellationToken).ConfigureAwait(false) ||
+            !await ReplaySilo.HasMemberAsync(id, SiloArtifactStorage.ProductEvidenceRevision, cancellationToken).ConfigureAwait(false))
+            throw new ProcessingGraphStoreConflictException("A frozen processing window output has no settled Silo publication.");
     }
 
     private sealed record PreparedReplayInputs(
@@ -798,7 +803,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             source.RawCapture.Manifest.Descriptor,
             source.DescriptorSha256,
             source.PayloadSha256,
-            source.RawCapture.StoredFrame.RelativePath);
+            source.RawCapture.Manifest.RelativeArtifactPath);
 
     internal async ValueTask<IReadOnlyList<ProcessingFrozenRawInput>> ReadFrozenExecutionRawInputsAsync(
         Guid executionId,
@@ -1048,7 +1053,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         sourceCommand.Transaction = transaction;
         sourceCommand.CommandText = """
             SELECT execution.configuration_json, r.manifest_json, r.manifest_sha256,
-                   r.payload_relative_path, c.context_json, c.context_sha256
+                   c.context_json, c.context_sha256
             FROM processing_executions execution
             JOIN raw_captures r ON r.capture_id = execution.capture_id
                               AND r.raw_artifact_id = execution.primary_artifact_id
@@ -1062,9 +1067,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         var configurationJson = await sourceReader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
         var manifestJson = await sourceReader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false);
         var manifestSha = sourceReader.GetString(2);
-        var payloadRelativePath = sourceReader.GetString(3);
-        var contextJson = await sourceReader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
-        var contextSha = sourceReader.GetString(5);
+        var contextJson = await sourceReader.GetFieldValueAsync<byte[]>(3, cancellationToken).ConfigureAwait(false);
+        var contextSha = sourceReader.GetString(4);
         var configuration = JsonSerializer.Deserialize<CameraModuleConfig>(configurationJson, ExecutionSerializerOptions)
             ?? throw new InvalidDataException("The replay configuration is invalid.");
         var parsed = CaptureContractJson.ParseManifest(manifestJson);
@@ -1074,11 +1078,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         var receipt = new RawCaptureReceipt(
             RawIngressOutcome.Existing,
             manifest,
-            new StoredFrameReference(
-                payloadRelativePath,
-                ResolveReplayPath(payloadRelativePath),
-                manifest.Descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw),
             manifestSha);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new(
@@ -1405,36 +1404,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         ProcessingFrozenRawInput input,
         CancellationToken cancellationToken)
     {
-        var path = ResolveReplayPath(input.PayloadRelativePath);
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length != input.Descriptor.Layout.ByteLength)
-        {
-            throw new ProcessingGraphStoreConflictException(
-                "An archived raw processing window payload is no longer retained.");
-        }
-        using var payload = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var checksum = Convert.ToHexString(await SHA256.HashDataAsync(payload, cancellationToken).ConfigureAwait(false));
-        if (!string.Equals(checksum, input.PayloadSha256, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("An archived raw processing window payload is invalid or altered.");
-        }
-    }
-
-    private string ResolveReplayPath(string relativePath)
-    {
-        if (!IsCanonicalRelativePath(relativePath))
-            throw new InvalidDataException("The replay source path is not canonical.");
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            throw new InvalidDataException("The replay source path escapes the storage root.");
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        return path;
+        if (!await ReplaySilo.VerifyMemberAsync(input.Descriptor.Artifact.ArtifactId, input.DescriptorSha256,
+                input.Descriptor.Layout.ByteLength, input.PayloadSha256, cancellationToken).ConfigureAwait(false))
+            throw new ProcessingGraphStoreConflictException("An archived raw input has no settled Silo publication.");
     }
 }

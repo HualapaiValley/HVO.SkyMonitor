@@ -18,8 +18,8 @@ the `orbital-elements` health entry and the metrics remain available.
 
 None are needed, and none are accepted. CelesTrak GP is a public HTTPS source.
 
-- The request carries only the fixed User-Agent, `Accept: application/json` and
-  `Accept-Encoding: gzip`. It never sends a cookie, an `Authorization` header or a
+- The request carries only the fixed User-Agent, `Accept: text/csv, text/plain; q=0.9`
+  and `Accept-Encoding: gzip`. It never sends a cookie, an `Authorization` header or a
   conditional header.
 - The named HttpClient disables cookies, pre-authentication and handler credentials.
   It refuses to start with any default request header configured.
@@ -44,7 +44,9 @@ an operator command can bypass it.
 - **Single flight.** At most one attempt is in flight.
 - **Halt on any non-200 HTTP response.** A status from 100 to 599 other than 200 records
   a provider-wide halt with its status and time. Nothing is requested again until an
-  operator resumes, and resuming does not move the floor.
+  operator resumes. After a 5xx response, the next attempt also waits at least
+  15 minutes from the recorded response, even after resume or restart. The later
+  of that backoff and the two-hour floor applies.
 - **Halt when no valid HTTP status is recorded.** Two cases also record a provider-wide
   halt, with no valid HTTP status recorded:
   - a status line outside 100–599 (`orbital.invalid-http-status`);
@@ -72,15 +74,17 @@ an operator command can bypass it.
   cache or distributor is future topology; #528 provides none.
 - **No redistribution.** Raw and quarantined provider bytes stay on this CameraAgent's
   host, under the store root. #528 never sends the feed or its quarantine evidence to
-  LogicHost or any other service. Local `cameraagent backup` archives do contain them,
+  any other service. Local `cameraagent backup` archives do contain them,
   because the store, `raw/` and `quarantine/` included, lies inside the instance a
   backup copies. Keep those archives owner-only, and do not redistribute them or share
   them with third parties. See [Backup And Restore](#backup-and-restore).
 
 Request facts:
 
-- URI: `https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=JSON`.
+- URI: `https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=CSV`.
 - Dataset key: `celestrak:gp:active`.
+- Profile: `celestrak-gp-csv-v1`. The client accepts `text/csv` and `text/plain`
+  with no charset or with UTF-8. A validated CSV header identifies the OMM columns.
 - User-Agent: `HVO.SkyMonitor.CameraAgent/<version>`, with build metadata removed.
 - Bounds: a client deadline of at most 30 s, at most 32 MiB on the wire and 32 MiB
   decoded. The request asks for gzip, and a response must be either gzip or
@@ -363,7 +367,7 @@ detail. The detail never contains a path, header value or secret.
 | Succeeded | `Activated` / `UnchangedPayload` | `orbital.activated`, `orbital.unchanged-payload` |
 | Failed | `ProviderHalted` | `orbital.provider-http-<status>`; `orbital.invalid-http-status` (status line outside 100–599, halted with no valid HTTP status recorded) |
 | Failed | `TransportFailed` | `orbital.request-timeout`, `orbital.http-client-timeout`, `orbital.transport-*` |
-| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`) and parser or normalizer reasons (`orbital.json-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
+| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`) and parser or normalizer reasons (`orbital.csv-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
 | Failed | `StorageFailed` | `orbital.storage-no-space`, `-database`, `-permission`, `-containment`, `-integrity`, `-io` |
 | Failed | none (not admitted) | a storage fault code or `orbital.storage-integrity` at admission, `orbital.internal-error` |
 
@@ -620,10 +624,12 @@ redact them before sharing them outside the site.
 <RawIngressRoot>/.orbital-elements/
   orbital-elements.db      schema 1, STRICT tables, WAL; the ledger and provider state
   orbital-elements.lock    exclusive root lock (a second owner gets orbital.storage-locked)
-  raw/<RawSha256>.json            decoded provider response bytes
+  raw/<RawSha256>.csv            decoded CSV provider response bytes
+  raw/<RawSha256>.json           retained legacy JSON provider response bytes
   payloads/<PayloadSha256>.json   normalized orbital-elements-v1 payload
   manifests/<ManifestSha256>.json snapshot manifest
-  quarantine/<RawSha256>.json     rejected raw bodies kept as evidence
+  quarantine/<RawSha256>.raw      rejected response bodies kept as evidence
+  quarantine/<RawSha256>.json     retained legacy quarantine bodies
   staging/                        publication intents during a write
 ```
 
@@ -642,7 +648,10 @@ Triggers abort deletes from every table except `orbital_snapshot_references`. Th
 also abort any decrease of a provider-state counter.
 
 Files are content-addressed, so a payload or raw body shared by several manifests is
-stored once. In the synthetic active-group evidence (16,754 records), one changed
+stored once. Live CSV bytes are stored at `raw/<sha256>.csv`. Legacy
+`celestrak-gp-json-v1` snapshots keep their `raw/<sha256>.json` bytes, normalized
+payload, and manifest and remain readable by their original identity.
+In the original #528 synthetic JSON active-group evidence (16,754 records), one changed
 snapshot used about 28.6 MB: a 21.4 MB payload, 7.1 MB raw and a 1.7 KB manifest. The
 raw size matches the 7.06 MB measured for the real feed in the #527 decision.
 
@@ -665,16 +674,28 @@ at most 32 MiB each.
 
 1. Read its `reason`, the precise parser, normalizer or response code, and its
    `rawSha256`.
-2. If a raw SHA is present, `quarantine/<rawSha256>.json` holds the decoded response
-   bytes exactly as received.
+2. If the body was retained, `quarantine/<rawSha256>.raw` holds the exact decoded
+   response bytes. Legacy `quarantine/<rawSha256>.json` files from earlier releases
+   are migrated to `.raw` automatically on startup through the ledger-aware move.
 3. Inspect a copy. Do not edit, rename or delete files in the store.
 4. Keep the copy local, because the provider terms forbid redistribution.
 
+**Legacy malformed JSON quarantine upgrade note (`v0.9.1-rc.2`).** An earlier release
+that quarantined a malformed `orbital.json-syntax` body wrote it to
+`quarantine/<rawSha256>.json`. While that `.json` file remains on disk, installation
+manifest verification (`VerifyInstallationAsync` / full retained-integrity scrub)
+rejects it even under a healthy CSV feed. Restarting on the upgraded CameraAgent
+migrates retained `quarantine/<rawSha256>.json` files to `.raw` safely and idempotently
+during startup reconciliation while preserving retention, containment and permissions.
+If an ambiguous entry (such as a pre-existing mismatched `.raw` file or link) prevents
+automatic migration, follow [Integrity Failure And Store Replacement](#integrity-failure-and-store-replacement)
+instead of editing or renaming files inside a running store.
+
 Response-level rejections have no raw body. A status line outside 100–599 is a halt,
 not a quarantine. The newest `MaximumQuarantinedPayloads` bodies are kept and older
-ones are pruned automatically. The quarantine state clears at the next successful
-activation. If the cause is a provider format change, it needs a parser change under
-the contract; no configuration setting accepts it.
+ones are pruned automatically for both extensions. The quarantine state clears at
+the next successful activation. If the cause is a provider format change, it needs a
+parser change under the contract; no configuration setting accepts it.
 
 ## Crash Recovery
 
@@ -690,7 +711,9 @@ On every start, before the automation runner starts, the store:
     is already in force. An existing halt is never replaced;
 - settles staging intents and deletes partially written staging files;
 - removes publisher temporaries;
-- prunes quarantine bodies that no retained attempt names;
+- prunes quarantine bodies that no retained attempt names and migrates retained legacy
+  `quarantine/<rawSha256>.json` files to `quarantine/<rawSha256>.raw` through the
+  ledger-aware move;
 - leaves anything ambiguous where it is and logs it. That covers a directory or link
   where a file is expected, and a name that is not a SHA-256.
 
@@ -788,7 +811,7 @@ a request that the provider policy forbids.
 Use this to remove orbital data from a CameraAgent, for example when you retire
 acquisition or decommission the device. Everything #528 stores, provider bytes
 included, lives under the store root `<RawIngressRoot>/.orbital-elements/`. Raw and
-quarantined provider bytes are never sent to LogicHost or any other service, so there
+quarantined provider bytes are never sent to any other service, so there
 is no central copy to remove. Local `cameraagent backup` archives are the exception:
 every archive taken while the store existed contains it, `raw/` and `quarantine/`
 included (see [Backup And Restore](#backup-and-restore)). If your purpose requires the
@@ -824,7 +847,7 @@ An archive of the store, like a `cameraagent backup` archive, holds `raw/` and
 licence for the feed:
 
 - Keep the archive on owner-controlled storage.
-- Do not publish it, attach it to an issue or support ticket, upload it to LogicHost or
+- Do not publish it, attach it to an issue or support ticket, upload it to another service or
   another site, or include it in a release or installer.
 - Share checksums, manifest identities and counts instead of bytes.
 
@@ -857,12 +880,9 @@ the instance root back exactly as it was archived, so the orbital store comes ba
 of the backup, with its floor, halt and attempt history. A halt, floor or attempt
 recorded after the backup is lost, and nothing carries it forward. An archive taken
 before the store existed restores no store at all, so the instance starts with an
-empty one, with no floor and no halt. This is unlike an installer upgrade or rollback:
-their snapshots, and the automatic recovery of a failed candidate, never touch
-`.orbital-elements/` (see [Rollback](#rollback)). A restore of an older backup does
-rewind it, so the replacement checks apply: at least two hours since the last attempt,
-and any halt resolved. Before you restore an archive older than the latest halt or
-attempt:
+empty one, with no floor and no halt. Upgrade checkpoints and pending-upgrade
+recovery leave `.orbital-elements/` in place (see [Rollback](#rollback)). Before
+you restore an archive older than the latest halt or attempt:
 
 1. While the instance still runs, record the status fields listed in step 1 of
    [Removing Orbital Data](#removing-orbital-data).
@@ -880,16 +900,10 @@ attempt:
 ## Rollback
 
 **Installer snapshots never touch the orbital store.** A migrating upgrade's database
-snapshot, the automatic recovery of a failed candidate, and
-`hvo-sky-install cameraagent rollback` restore only the stores in the installer's
-snapshot set. The orbital store is declared in the image's state contract
-(`orbitalElements`, writes 1, reads 1 to 1) but deliberately left out of that set
-(`docs/hvo-install-contract.md` section 6). The floor, halt and history recorded
-before a rollback therefore survive it, and the release rolled back to cannot request
-inside the floor or after a refusal. `cameraagent restore` of an older backup is
-different: it does rewind the store (see [Backup And Restore](#backup-and-restore)),
-so the replacement checks apply before refresh is enabled again: at least two hours
-since the last attempt, and any halt resolved.
+snapshot covers the installer's snapshot set. The image declares `orbitalElements`
+with writes 1 and reads 1 to 1. Pending-upgrade recovery preserves the orbital
+store's floor, halt and request history. For an explicit restore, follow the
+provider-state steps under [Backup And Restore](#backup-and-restore).
 
 `OrbitalElementsRefresh` is a value appended to the closed `LocalAutomationTaskKind`
 enumeration. It is stored by name in `<RawIngressRoot>/.automation/local-automations.db`.
@@ -901,25 +915,11 @@ A CameraAgent build from before #528 cannot parse that name, and it fails closed
   recent runs across all definitions, so the automations view fails too.
 - The runner's sweep fails, which stops every local automation, not only orbital
   refresh.
-- Removing the definition before rolling back is not enough, because the retained
-  revisions and runs still embed the task kind.
+- Retained revisions and runs still embed the task kind after definition removal.
 
-Supported paths:
-
-1. **Upgrade forward (preferred).** Fix the problem in a newer build, which reads all
-   of the existing state.
-2. **Documented archive and disposition** (when a rollback cannot be avoided):
-   1. Stop the CameraAgent.
-   2. Archive `<RawIngressRoot>/.automation/`, including the `-wal`/`-shm` sidecars,
-      to owner-controlled storage.
-   3. Record its checksum and the disposition in the deployment ledger.
-   4. Move the directory aside.
-   5. Start the older build. It recreates an empty automation store, so local
-      automation definitions are absent until you restore or recreate them.
-   6. Leave `.orbital-elements/` in place. An older build never opens it, so the floor,
-      halt and history survive for the roll-forward.
-   7. On roll-forward, choose explicitly between the archived automation store and the
-      one created during the rollback. Never merge them by editing.
+After upgrade commit, preserve the automation journal and orbital store. Use a
+forward repair that reads the existing state or follow the explicit backup and
+restore procedure. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
 
 Never delete history, edit rows or lower counters in either store. The triggers
 refuse most of these changes, and working around them would break the idempotency,

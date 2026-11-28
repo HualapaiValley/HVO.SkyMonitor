@@ -404,12 +404,8 @@ public sealed partial class ProcessingGraphOperationsTests
                         Options = JsonSerializer.SerializeToElement(new { independentPrediction = true })
                     },
                     new CaptureProcessingStepConfig("Storage", "archive",
-                        Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                        {
-                            StorageRoot = Path.Combine(root, "archive"),
-                            QueueForUpload = false,
-                            UpdateLatestFrame = false
-                        }), DependsOn: ["projected-scene"])
+                        Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                        { UpdateLatestFrame = false }), DependsOn: ["projected-scene"])
                 ]
             }
         };

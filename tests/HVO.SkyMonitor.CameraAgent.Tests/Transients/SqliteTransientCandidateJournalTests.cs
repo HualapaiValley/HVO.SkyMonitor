@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 public sealed class SqliteTransientCandidateJournalTests
 {
@@ -57,6 +58,50 @@ public sealed class SqliteTransientCandidateJournalTests
         CollectionAssert.AreEqual(expectedNames, names);
         command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('transient_worker_frames') WHERE name = 'causal_succeeded';";
         Assert.AreEqual(1L, await command.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_RequiresRawIngressSchemaWithoutCreatingAnEmptyDatabase()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        var databasePath = Path.Combine(fixture.Root, "journal", "raw-ingress.db");
+        var savedPath = databasePath + ".saved";
+        SqliteConnection.ClearAllPools();
+        File.Move(databasePath, savedPath);
+
+        var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            store.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+        StringAssert.Contains(error.Message, "must initialize before transient runtime state", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(databasePath));
+
+        File.Move(savedPath, databasePath);
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_ReadFrameRejectsMissingRawCapture()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            store.ReadFrameAsync(1, CancellationToken.None).AsTask()).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(101)]
+    public async Task RuntimeStore_ReadQuarantinePageRejectsOutOfRangeSize(int pageSize)
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+
+        var error = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+            store.ReadQuarantinePageAsync(pageSize, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
+        Assert.AreEqual(nameof(pageSize), error.ParamName);
     }
 
     [TestMethod]
@@ -321,11 +366,9 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
-    [DataRow(TransientOperatingMode.Edge)]
-    [DataRow(TransientOperatingMode.Hybrid)]
-    public async Task RuntimeStore_RestartReconcilesCompletedDeliveryCommit(TransientOperatingMode mode)
+    public async Task RuntimeStore_RestartReconcilesCompletedLocalFinalization()
     {
-        using var fixture = await Fixture.CreateAsync(mode: mode).ConfigureAwait(false);
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
         var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
         var reservation = Fixture.CreateReservation(source);
         await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
@@ -334,22 +377,9 @@ public sealed class SqliteTransientCandidateJournalTests
             reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual("Provisional", await fixture.ScalarStringAsync(
             "SELECT candidate_state FROM transient_candidates;").ConfigureAwait(false));
-        if (mode == TransientOperatingMode.Edge)
-        {
-            await fixture.Journal.PersistFinalizationAsync(
-                reservation.CandidateId,
-                reservation.EventId,
-                CreateFinalization(reservation, TransientEventState.NeedsReview),
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        else
-        {
-            await fixture.Journal.PersistSubmissionAsync(
-                reservation.CandidateId,
-                reservation.EventId,
-                CreateSubmission(reservation, candidate),
-                CancellationToken.None).ConfigureAwait(false);
-        }
+        await fixture.Journal.PersistFinalizationAsync(
+            reservation.CandidateId, reservation.EventId,
+            CreateFinalization(reservation, TransientEventState.NeedsReview), CancellationToken.None).ConfigureAwait(false);
         var rawCaptureRowId = await fixture.ScalarLongAsync(
             $"SELECT raw_capture_row_id FROM raw_captures WHERE raw_artifact_id = '{source.Locator.Artifact.ArtifactId:N}';")
             .ConfigureAwait(false);
@@ -536,7 +566,6 @@ public sealed class SqliteTransientCandidateJournalTests
 
     [TestMethod]
     [DataRow(TransientOperatingMode.Off)]
-    [DataRow(TransientOperatingMode.Central)]
     public async Task DisabledEdgeModes_RejectReservationAndRegisterNoLane(TransientOperatingMode mode)
     {
         using var fixture = await Fixture.CreateAsync(mode: mode).ConfigureAwait(false);
@@ -677,309 +706,6 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
-    [DataRow(TransientCandidateSubmissionDisposition.Accepted)]
-    [DataRow(TransientCandidateSubmissionDisposition.Retired)]
-    public async Task Hybrid_ReleasesHoldOnlyAfterMatchingDurableAcknowledgement(
-        TransientCandidateSubmissionDisposition disposition)
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var finalization = CreateFinalization(reservation, TransientEventState.NeedsReview);
-        var finalized = await fixture.Journal.PersistFinalizationAsync(
-            reservation.CandidateId, reservation.EventId, finalization, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsFalse(finalized.SourceHoldReleased);
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-
-        var submission = CreateSubmission(reservation, candidate);
-        var pending = await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, pending.Phase);
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            disposition == TransientCandidateSubmissionDisposition.Retired
-                ? TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion
-                : TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            disposition);
-
-        var acknowledged = await fixture.Journal.AcknowledgeAsync(
-            reservation.CandidateId,
-            reservation.EventId,
-            acknowledgement,
-            CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, acknowledged.Phase);
-        Assert.IsTrue(acknowledged.SourceHoldReleased);
-        Assert.AreEqual(acknowledgement, acknowledged.Acknowledgement);
-        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task Hybrid_DeliveryPageUsesStableCursorAndRejectionQuarantineRetainsHoldAndPressure()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var first = Fixture.CreateReservation(source);
-        var second = Fixture.CreateReservation(source);
-        var notReady = Fixture.CreateReservation(source);
-        foreach (var reservation in new[] { first, second, notReady })
-        {
-            await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-            var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-            await fixture.Journal.PersistCandidateAsync(
-                reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-            if (reservation != notReady)
-            {
-                await fixture.Journal.PersistSubmissionAsync(
-                    reservation.CandidateId,
-                    reservation.EventId,
-                    CreateSubmission(reservation, candidate),
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-        }
-
-        var firstPage = await fixture.Journal.ReadPendingDeliveryPageAsync(
-            after: null, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
-        var secondPage = await fixture.Journal.ReadPendingDeliveryPageAsync(
-            firstPage.NextCursor, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
-        var end = await fixture.Journal.ReadPendingDeliveryPageAsync(
-            secondPage.NextCursor, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
-
-        Assert.HasCount(1, firstPage.Entries);
-        Assert.HasCount(1, secondPage.Entries);
-        Assert.AreNotEqual(firstPage.Entries[0].CandidateId, secondPage.Entries[0].CandidateId);
-        Assert.IsEmpty(end.Entries);
-        Assert.IsTrue(new[] { first.CandidateId, second.CandidateId }.Contains(firstPage.Entries[0].CandidateId));
-        Assert.IsTrue(new[] { first.CandidateId, second.CandidateId }.Contains(secondPage.Entries[0].CandidateId));
-        var pendingAggregate = await fixture.Journal.ReadDeliveryAggregateAsync(CancellationToken.None)
-            .ConfigureAwait(false);
-        Assert.AreEqual(2L, pendingAggregate.PendingCount);
-        Assert.AreEqual(0L, pendingAggregate.QuarantinedCount);
-        Assert.IsNotNull(pendingAggregate.OldestPendingUtc);
-
-        var selected = firstPage.Entries[0];
-        var reason = new string('R', 160);
-        var quarantined = await fixture.Journal.QuarantineDeliveryAsync(
-            selected.CandidateId, selected.EventId, reason, CancellationToken.None).ConfigureAwait(false);
-        var retried = await fixture.Journal.QuarantineDeliveryAsync(
-            selected.CandidateId, selected.EventId, reason, CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(TransientCandidateWorkflowPhase.Quarantined, quarantined.Phase);
-        Assert.AreEqual(new string('R', 128), quarantined.QuarantineReason);
-        Assert.AreEqual(quarantined.CandidateId, retried.CandidateId);
-        Assert.AreEqual(quarantined.QuarantineReason, retried.QuarantineReason);
-        Assert.IsFalse(quarantined.SourceHoldReleased);
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        Assert.AreEqual(2L, await fixture.ScalarLongAsync(
-            "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'transient';").ConfigureAwait(false));
-        var quarantinedAggregate = await fixture.Journal.ReadDeliveryAggregateAsync(CancellationToken.None)
-            .ConfigureAwait(false);
-        Assert.AreEqual(1L, quarantinedAggregate.PendingCount);
-        Assert.AreEqual(1L, quarantinedAggregate.QuarantinedCount);
-        await Assert.ThrowsExactlyAsync<TransientCandidateIdentityConflictException>(async () =>
-            await fixture.Journal.QuarantineDeliveryAsync(
-                selected.CandidateId, selected.EventId, "different", CancellationToken.None).ConfigureAwait(false))
-            .ConfigureAwait(false);
-    }
-
-    [TestMethod]
-    public async Task Hybrid_FinalizationAfterAcknowledgementDoesNotRearmHoldOrRegressDelivery()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-        await fixture.Journal.AcknowledgeAsync(
-            reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false);
-
-        var finalized = await fixture.Journal.PersistFinalizationAsync(
-            reservation.CandidateId,
-            reservation.EventId,
-            CreateFinalization(reservation, TransientEventState.NeedsReview),
-            CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, finalized.Phase);
-        Assert.IsTrue(finalized.SourceHoldReleased);
-        Assert.IsNotNull(finalized.FinalizationReceipt);
-        Assert.IsNotNull(finalized.Acknowledgement);
-        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task Hybrid_FinalizationWhileHandoffPendingPreservesDeliveryAndHold()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-
-        var finalized = await fixture.Journal.PersistFinalizationAsync(
-            reservation.CandidateId,
-            reservation.EventId,
-            CreateFinalization(reservation, TransientEventState.NeedsReview),
-            CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, finalized.Phase);
-        Assert.IsFalse(finalized.SourceHoldReleased);
-        Assert.IsNotNull(finalized.FinalizationReceipt);
-        Assert.IsNotNull(finalized.Submission);
-        Assert.IsNull(finalized.Acknowledgement);
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task Hybrid_SubmissionMismatchAcknowledgementIsDurablyQuarantinedAndKeepsHold()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var conflicting = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            new string('F', 64),
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-
-        await Assert.ThrowsExactlyAsync<TransientCandidateIdentityConflictException>(async () =>
-            await fixture.Journal.AcknowledgeAsync(
-                reservation.CandidateId, reservation.EventId, conflicting, CancellationToken.None).ConfigureAwait(false))
-            .ConfigureAwait(false);
-
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        Assert.AreEqual(
-            "quarantined",
-            await fixture.ScalarStringAsync("SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidate_conflicts;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task Hybrid_SameIdentityAcknowledgementRetryConvergesOnFirstStoredAcknowledgement()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-        var first = await fixture.Journal.AcknowledgeAsync(
-            reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false);
-
-        var retried = await fixture.Journal.AcknowledgeAsync(
-            reservation.CandidateId,
-            reservation.EventId,
-            acknowledgement with
-            {
-                ReceivedAtUtc = acknowledgement.ReceivedAtUtc.AddSeconds(1),
-                Disposition = TransientCandidateSubmissionDisposition.Duplicate
-            },
-            CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(first.Acknowledgement, retried.Acknowledgement);
-        Assert.AreEqual(acknowledgement, retried.Acknowledgement);
-        Assert.AreEqual("acknowledged", await fixture.ScalarStringAsync("SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidate_conflicts;").ConfigureAwait(false));
-        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task Hybrid_OwnershipMismatchAcknowledgementIsDurablyQuarantinedAndKeepsHold()
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var wrongEventId = Guid.NewGuid();
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            wrongEventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-
-        await Assert.ThrowsExactlyAsync<TransientCandidateIdentityConflictException>(async () =>
-            await fixture.Journal.AcknowledgeAsync(
-                reservation.CandidateId, wrongEventId, acknowledgement, CancellationToken.None).ConfigureAwait(false))
-            .ConfigureAwait(false);
-
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        Assert.AreEqual(
-            "quarantined",
-            await fixture.ScalarStringAsync("SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidate_conflicts;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task DeliveryContracts_RoundTripCanonicalIdentityAndRejectMutation()
-    {
-        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        var submission = CreateSubmission(
-            reservation, CreateCandidate(reservation, TransientCandidateState.Provisional));
-
-        var payload = TransientCandidateDeliveryJson.Serialize(submission);
-        var parsed = TransientCandidateDeliveryJson.ParseSubmission(payload);
-        var mutated = submission with { RequestedProcessingProfileIdentity = "different-profile" };
-
-        Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
-        Assert.AreEqual(submission.SubmissionIdentitySha256, parsed.Value!.SubmissionIdentitySha256);
-        Assert.IsFalse(TransientCandidateDeliveryJson.Validate(mutated).IsValid);
-    }
-
-    [TestMethod]
     public async Task ActiveState_RefusesModeOrPolicyTransition()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
@@ -989,8 +715,6 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             await fixture.ReinitializeAsync(TransientOperatingMode.Off, required: false).ConfigureAwait(false)).ConfigureAwait(false);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
-            await fixture.ReinitializeAsync(TransientOperatingMode.Hybrid, required: false).ConfigureAwait(false)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: true).ConfigureAwait(false)).ConfigureAwait(false);
     }
@@ -1153,20 +877,11 @@ public sealed class SqliteTransientCandidateJournalTests
     [DataRow((int)TransientCandidateFaultPoint.AfterCandidateCommit)]
     [DataRow((int)TransientCandidateFaultPoint.BeforeFinalizationCommit)]
     [DataRow((int)TransientCandidateFaultPoint.AfterFinalizationCommit)]
-    [DataRow((int)TransientCandidateFaultPoint.BeforeSubmissionCommit)]
-    [DataRow((int)TransientCandidateFaultPoint.AfterSubmissionCommit)]
-    [DataRow((int)TransientCandidateFaultPoint.BeforeAcknowledgementCommit)]
-    [DataRow((int)TransientCandidateFaultPoint.AfterAcknowledgementCommit)]
     public async Task DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce(
         int faultPoint)
     {
         var point = (TransientCandidateFaultPoint)faultPoint;
-        var hybrid = point is TransientCandidateFaultPoint.BeforeSubmissionCommit or
-            TransientCandidateFaultPoint.AfterSubmissionCommit or
-            TransientCandidateFaultPoint.BeforeAcknowledgementCommit or
-            TransientCandidateFaultPoint.AfterAcknowledgementCommit;
-        using var fixture = await Fixture.CreateAsync(
-            mode: hybrid ? TransientOperatingMode.Hybrid : TransientOperatingMode.Edge).ConfigureAwait(false);
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
         if (point is TransientCandidateFaultPoint.BeforeStageCommit or TransientCandidateFaultPoint.AfterStageCommit)
         {
             var context = await fixture.CreateLaneContextAsync(1, 100).ConfigureAwait(false);
@@ -1301,77 +1016,6 @@ public sealed class SqliteTransientCandidateJournalTests
             return;
         }
 
-        var submission = CreateSubmission(reservation, candidate);
-        if (point is TransientCandidateFaultPoint.BeforeSubmissionCommit or
-            TransientCandidateFaultPoint.AfterSubmissionCommit)
-        {
-            using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
-            {
-                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
-                    await interrupted.Journal.PersistSubmissionAsync(
-                        reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false))
-                    .ConfigureAwait(false);
-            }
-            var committed = point == TransientCandidateFaultPoint.AfterSubmissionCommit;
-            Assert.AreEqual(committed ? "handoff_pending" : "candidate_persisted", await fixture.ScalarStringAsync(
-                "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-            Assert.AreEqual(committed ? 1L : 0L, await fixture.ScalarLongAsync(
-                "SELECT COUNT(*) FROM transient_candidates WHERE submission_payload IS NOT NULL AND submission_identity_sha256 IS NOT NULL;")
-                .ConfigureAwait(false));
-            Assert.AreEqual(0L, await fixture.ScalarLongAsync(
-                "SELECT source_hold_released FROM transient_candidates;").ConfigureAwait(false));
-            using var reconstructed = fixture.ReconstructJournal();
-            var recovered = await reconstructed.Journal.PersistSubmissionAsync(
-                reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, recovered.Phase);
-            Assert.IsFalse(recovered.SourceHoldReleased);
-            await Phase14ScenarioEvidence.RecordAsync(
-                committed ? "transient-candidate-submission-after-commit" : "transient-candidate-submission-before-commit",
-                $"fault-point-{point}",
-                point.ToString(),
-                ["submission-fault-observed", "retry-converged-handoff-pending", "source-hold-retained"])
-                .ConfigureAwait(false);
-            return;
-        }
-
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-        using (var interrupted = fixture.ReconstructJournal(new ThrowingFaultInjector(point)))
-        {
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
-                await interrupted.Journal.AcknowledgeAsync(
-                    reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false))
-                .ConfigureAwait(false);
-        }
-        var acknowledgementCommitted = point == TransientCandidateFaultPoint.AfterAcknowledgementCommit;
-        Assert.AreEqual(acknowledgementCommitted ? "acknowledged" : "handoff_pending", await fixture.ScalarStringAsync(
-            "SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-        Assert.AreEqual(acknowledgementCommitted ? 1L : 0L, await fixture.ScalarLongAsync(
-            "SELECT COUNT(*) FROM transient_candidates WHERE acknowledgement_payload IS NOT NULL AND acknowledgement_payload_sha256 IS NOT NULL;")
-            .ConfigureAwait(false));
-        Assert.AreEqual(acknowledgementCommitted ? 1L : 0L, await fixture.ScalarLongAsync(
-            "SELECT source_hold_released FROM transient_candidates;").ConfigureAwait(false));
-        using var reconstructedAcknowledgement = fixture.ReconstructJournal();
-        var acknowledged = await reconstructedAcknowledgement.Journal.AcknowledgeAsync(
-            reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, acknowledged.Phase);
-        Assert.IsTrue(acknowledged.SourceHoldReleased);
-        Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        await Phase14ScenarioEvidence.RecordAsync(
-            acknowledgementCommitted
-                ? "transient-candidate-acknowledgement-after-commit"
-                : "transient-candidate-acknowledgement-before-commit",
-            $"fault-point-{point}",
-            point.ToString(),
-            ["acknowledgement-fault-observed", "retry-converged-acknowledged", "source-hold-released"])
-            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1419,100 +1063,6 @@ public sealed class SqliteTransientCandidateJournalTests
                 CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
         Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-        Assert.AreEqual(
-            "quarantined",
-            await fixture.ScalarStringAsync("SELECT phase FROM transient_candidates;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    [DataRow("reservation")]
-    [DataRow("candidate")]
-    [DataRow("finalization")]
-    [DataRow("submission")]
-    [DataRow("acknowledgement")]
-    public async Task Read_QuarantinesEveryPersistedCanonicalIdentityMismatch(string target)
-    {
-        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        var reservation = Fixture.CreateReservation(source);
-        await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
-        var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
-        await fixture.Journal.PersistCandidateAsync(
-            reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
-        var submission = CreateSubmission(reservation, candidate);
-        await fixture.Journal.PersistSubmissionAsync(
-            reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
-        var finalization = CreateFinalization(reservation, TransientEventState.NeedsReview);
-        await fixture.Journal.PersistFinalizationAsync(
-            reservation.CandidateId, reservation.EventId, finalization, CancellationToken.None).ConfigureAwait(false);
-        var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            submission.SubmissionIdentitySha256,
-            DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
-        await fixture.Journal.AcknowledgeAsync(
-            reservation.CandidateId, reservation.EventId, acknowledgement, CancellationToken.None).ConfigureAwait(false);
-
-        switch (target)
-        {
-            case "reservation":
-                await fixture.ExecuteAsync(
-                    "UPDATE transient_candidate_sources SET timing_version = 'mutated-v2';").ConfigureAwait(false);
-                break;
-            case "candidate":
-                await fixture.SetCandidateBlobAsync(
-                    "candidate_payload",
-                    TransientContractJson.Serialize(candidate with
-                    {
-                        CreatedUtc = candidate.CreatedUtc.AddSeconds(1)
-                    })).ConfigureAwait(false);
-                break;
-            case "finalization":
-                var changedReceipt = finalization with
-                {
-                    Event = finalization.Event with { EventVersionId = Guid.NewGuid() },
-                    ReceiptIdentitySha256 = new string('0', 64)
-                };
-                changedReceipt = changedReceipt with
-                {
-                    ReceiptIdentitySha256 = TransientCandidateDeliveryJson.ComputeFinalizationIdentitySha256(changedReceipt)
-                };
-                await fixture.SetCandidateBlobAsync(
-                    "finalization_payload",
-                    TransientCandidateDeliveryJson.Serialize(changedReceipt)).ConfigureAwait(false);
-                break;
-            case "submission":
-                var changedSubmission = submission with
-                {
-                    RequestedProcessingProfileIdentity = "mutated-profile-v2",
-                    SubmissionIdentitySha256 = new string('0', 64)
-                };
-                changedSubmission = changedSubmission with
-                {
-                    SubmissionIdentitySha256 = TransientCandidateDeliveryJson.ComputeSubmissionIdentitySha256(changedSubmission)
-                };
-                await fixture.SetCandidateBlobAsync(
-                    "submission_payload",
-                    TransientCandidateDeliveryJson.Serialize(changedSubmission)).ConfigureAwait(false);
-                break;
-            case "acknowledgement":
-                await fixture.SetCandidateBlobAsync(
-                    "acknowledgement_payload",
-                    TransientCandidateDeliveryJson.Serialize(acknowledgement with
-                    {
-                        ReceivedAtUtc = acknowledgement.ReceivedAtUtc.AddSeconds(1)
-                    })).ConfigureAwait(false);
-                break;
-            default:
-                Assert.Fail($"Unsupported mutation target '{target}'.");
-                break;
-        }
-
-        await Assert.ThrowsExactlyAsync<TransientCandidateIdentityConflictException>(async () =>
-            await fixture.CreateJournal().ReadAsync(
-                reservation.CandidateId, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         Assert.AreEqual(
             "quarantined",
             await fixture.ScalarStringAsync("SELECT phase FROM transient_candidates;").ConfigureAwait(false));
@@ -1746,24 +1296,6 @@ public sealed class SqliteTransientCandidateJournalTests
         };
     }
 
-    private static TransientCandidateSubmissionEnvelopeV1 CreateSubmission(
-        TransientCandidateReservation reservation,
-        TransientCandidateV1 candidate)
-    {
-        var submission = new TransientCandidateSubmissionEnvelopeV1(
-            TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion,
-            reservation.CandidateId,
-            reservation.EventId,
-            candidate,
-            new string('E', 64),
-            "profile-v1",
-            new string('0', 64));
-        return submission with
-        {
-            SubmissionIdentitySha256 = TransientCandidateDeliveryJson.ComputeSubmissionIdentitySha256(submission)
-        };
-    }
-
     private static async Task FinalizeAsync(
         SqliteTransientCandidateJournal journal,
         TransientCandidateReservation reservation)
@@ -1880,8 +1412,7 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal SqliteTransientCandidateJournal CreateJournal(ITransientCandidateFaultInjector? faultInjector = null)
-            => new SqliteTransientCandidateJournal(
-                Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
+            => new(Options.Create(_options), new FixedTimeProvider(Now), SiloInfrastructureFixture.ProductStorage(Root), faultInjector);
 
         internal ReconstructedJournalScope ReconstructJournal(ITransientCandidateFaultInjector? faultInjector = null)
         {
@@ -1889,6 +1420,7 @@ public sealed class SqliteTransientCandidateJournalTests
             var services = new ServiceCollection();
             services.AddSingleton<IOptions<CameraAgentHostOptions>>(Options.Create(_options));
             services.AddSingleton<TimeProvider>(new FixedTimeProvider(Now));
+            services.AddSingleton(SiloInfrastructureFixture.ProductStorage(Root));
             if (faultInjector is not null)
             {
                 services.AddSingleton(faultInjector);
@@ -1906,10 +1438,10 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal SqliteTransientRuntimeStore CreateRuntimeStore(ITransientRuntimeFaultInjector? faultInjector = null)
-            => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, faultInjector);
+            => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, SiloInfrastructureFixture.ProductStorage(Root), faultInjector);
 
         internal SqliteTransientRuntimeStore CreateRuntimeStoreAt(DateTimeOffset utcNow)
-            => new(Options.Create(_options), new FixedTimeProvider(utcNow), _telemetry);
+            => new(Options.Create(_options), new FixedTimeProvider(utcNow), _telemetry, SiloInfrastructureFixture.ProductStorage(Root));
 
         internal async Task ReinitializeAsync(TransientOperatingMode mode, bool required)
         {
@@ -1966,20 +1498,33 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal string ResolvePayload(TransientSourceEvidenceReferenceV1 source)
-            => Path.Combine(Root, "frames", source.Locator.Artifact.ArtifactId == Guid.Empty
-                ? string.Empty
-                : FindPayloadName(source.Locator.Artifact.ArtifactId));
+            => RawIngressFileStore.GetPaths(Root, Now, source.Locator.Artifact.ArtifactId).PayloadAbsolutePath;
 
-        private string FindPayloadName(Guid artifactId)
+        private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)
         {
-            using var connection = new SqliteConnection($"Data Source={Path.Combine(Root, "journal", "raw-ingress.db")}");
-            connection.Open();
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT payload_relative_path FROM raw_captures WHERE raw_artifact_id = $artifact;";
-            command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
-            var relative = Convert.ToString(
-                command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture)!;
-            return Path.GetFileName(relative);
+            var frame = new CameraFrame(
+                timestamp,
+                payload.Length,
+                1,
+                CameraPixelFormat.Mono8,
+                payload,
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"),
+                payload.Length);
+            return new CaptureLoopSubmission(
+                new CaptureRequest(
+                    timestamp,
+                    TimeSpan.FromSeconds(1),
+                    CaptureMode.Still,
+                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
+                new CaptureResult(
+                    frame,
+                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
+                    TimeSpan.Zero,
+                    CaptureMode.Still,
+                    false),
+                timestamp,
+                TimeSpan.FromSeconds(1),
+                TimeSpan.Zero);
         }
 
         internal async Task<TransientSourceEvidenceReferenceV1> AddRawSourceAsync(int sequence, long payloadLength)
@@ -1994,8 +1539,9 @@ public sealed class SqliteTransientCandidateJournalTests
             var identity = new RawCaptureIdentity("agent", sequence, captureId, artifactId);
             var descriptor = RawCaptureDescriptorFactory.Create(
                 configuration, submission, identity, payloadSha256, Now);
-            var payloadRelativePath = $"frames/{sequence}.bin";
-            var sidecarRelativePath = $"frames/{sequence}.json";
+            var paths = RawIngressFileStore.GetPaths(Root, observed, artifactId);
+            var payloadRelativePath = paths.PayloadRelativePath;
+            var sidecarRelativePath = paths.SidecarRelativePath;
             var manifest = new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion,
                 descriptor,
@@ -2003,9 +1549,9 @@ public sealed class SqliteTransientCandidateJournalTests
                 null);
             var manifestJson = CaptureContractJson.Serialize(manifest);
             var manifestSha256 = CaptureContractJson.ComputeManifestSha256(manifestJson);
-            Directory.CreateDirectory(Path.Combine(Root, "frames"));
-            await File.WriteAllBytesAsync(Path.Combine(Root, payloadRelativePath), payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.Combine(Root, sidecarRelativePath), manifestJson).ConfigureAwait(false);
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, payload).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestJson).ConfigureAwait(false);
             using var connection = await OpenAsync().ConfigureAwait(false);
             using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
             using (var assignment = connection.CreateCommand())
@@ -2139,33 +1685,6 @@ public sealed class SqliteTransientCandidateJournalTests
                     ProfileVersion: "rig-v1"),
                 CapturePipelineConfig.Empty,
                 AgentId: "agent");
-
-        private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)
-        {
-            var frame = new CameraFrame(
-                timestamp,
-                payload.Length,
-                1,
-                CameraPixelFormat.Mono8,
-                payload,
-                new FrameMetadata(TimeSpan.FromSeconds(1), 1, double.NaN, "Test"),
-                payload.Length);
-            return new CaptureLoopSubmission(
-                new CaptureRequest(
-                    timestamp,
-                    TimeSpan.FromSeconds(1),
-                    CaptureMode.Still,
-                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null)),
-                new CaptureResult(
-                    frame,
-                    new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
-                    TimeSpan.Zero,
-                    CaptureMode.Still,
-                    false),
-                timestamp,
-                TimeSpan.FromSeconds(1),
-                TimeSpan.Zero);
-        }
 
         internal static TransientCandidateReservation CreateReservation(
             params TransientSourceEvidenceReferenceV1[] sources)

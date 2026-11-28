@@ -117,6 +117,58 @@ public sealed class SceneStylePresentationEvidenceTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public async Task PresentationLayerProducersAndSceneStyleConsumeDeepSkyStyleWhileRetainingScientificQualifications()
+    {
+        var scene = await SceneAsync().ConfigureAwait(false);
+        var customColor = new PresentationColor(64, 192, 255);
+        var customDeepSky = new PresentationDeepSkyStyleV1(
+            MaximumLabels: 1,
+            MaximumLabelCharacters: 12,
+            LabelScale: 2,
+            LabelCatalogObjects: false,
+            MinimumGlyphRadius: 11,
+            Color: customColor,
+            DrawOutlines: false,
+            LineThickness: 4,
+            LabelFace: PresentationFontFaceV3.PlexRegular);
+
+        var v13DeepSky = customDeepSky with { LabelFace = PresentationFontFaceV3.MonoBold };
+        foreach (var (groups, expectedFace) in new[]
+        {
+            (PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Annotation, expectedPositionDiagnostics: true, deepSkyStyle: v13DeepSky), PresentationFontFaceV3.MonoBold),
+            (SceneStylePresentation.Create(scene, new(Annotation), deepSkyStyle: customDeepSky), PresentationFontFaceV3.PlexRegular)
+        })
+        {
+            var deepSkySegments = groups.StarAnnotations.Segments.Where(static segment => segment.Stroke is { DashPixels: > 0 }).ToArray();
+            Assert.IsNotEmpty(deepSkySegments, "Deep-sky primitives must stay dashed.");
+            Assert.IsTrue(deepSkySegments.All(segment => segment.Color == customColor && segment.Thickness == 4),
+                "Inline deep-sky geometry must apply the configured color and thickness.");
+
+            var caption = groups.StarAnnotations.TextBlocks.Single(static block =>
+                block.Lines.Contains(PresentationDeepSkyLayerProducer.Legend, StringComparer.Ordinal));
+            Assert.AreEqual(customColor, caption.Color);
+
+            var deepSkyLabels = groups.StarAnnotations.TextBlocks.Where(static block =>
+                block.Lines.Contains("M31", StringComparer.Ordinal)).ToArray();
+            Assert.HasCount(1, deepSkyLabels);
+            Assert.AreEqual(expectedFace, deepSkyLabels[0].Appearance!.Body.Face);
+            Assert.AreEqual(customColor, deepSkyLabels[0].Color);
+        }
+
+        // Disabling deep-sky labels (MaximumLabels = 0) suppresses object labels while preserving the scientific caption.
+        var noLabels = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, Annotation,
+            expectedPositionDiagnostics: true, deepSkyStyle: v13DeepSky with { MaximumLabels = 0 });
+        Assert.IsTrue(noLabels.StarAnnotations.TextBlocks.SelectMany(static block => block.Lines)
+            .Contains(PresentationDeepSkyLayerProducer.Legend, StringComparer.Ordinal));
+        Assert.IsFalse(noLabels.StarAnnotations.TextBlocks.SelectMany(static block => block.Lines)
+            .Contains("M31", StringComparer.Ordinal));
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => PresentationLayerProducers.FromProjectedSceneGroupsV2(
+            scene, Annotation, deepSkyStyle: new PresentationDeepSkyStyleV1(MaximumLabels: 25)));
+    }
+
+    [TestMethod]
     [TestCategory("Manual")]
     public async Task SceneStyleFocusedBeforeAfterCpuAllocationWorkingSetAndLatencyEvidence()
     {

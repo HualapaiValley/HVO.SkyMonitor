@@ -58,9 +58,12 @@ physically inaccurate but well-formed clock/site is correct.
 
 ## Exact measurement conversion and bounds
 
-The recipe requires the current measured-association producer descriptor and
-algorithm vocabulary. Qualified rows are `LabelEligible`, positive-flux,
-unsaturated, untrailed associations. Each becomes exactly
+The recipe requires a supported measured-association producer descriptor and
+algorithm vocabulary. CameraAgent uses the versioned `scientific-associations-v1`
+selection for new fits. It uses positive-flux, unsaturated, untrailed analytical
+associations independently of their annotation label eligibility. Standalone
+Processing callers select it with `useScientificAssociations`. Older retained
+requests keep their original `LabelEligible` selection and recipe identity. Each qualified row becomes exactly
 `AstrometricDetection(DetectionIndex, PixelPoint(MeasuredX, MeasuredY), Flux)`;
 there is no coordinate transform, remeasurement, prediction-to-centroid copy or
 renumbering. The existing solver discovers its own correspondences. An accepted
@@ -143,3 +146,27 @@ proper-motion, auto-activation, UI or hardware qualification is introduced.
 
 See [reference validation](../validation/issue-1642-measured-astrometry.md) for the
 software envelope, exact commands, output hashes and resource comparison.
+
+## Camera & rig optical alignment
+
+Open **Camera & rig → Optical alignment**. From the archive, select three to
+eight training capture IDs and one to four distinct held-out capture IDs. Choose
+sky exposures with different sky angles and documented readout geometry from
+the current rig. The captures must share the site, verified catalog selection
+and solver settings. The operator-requested fit uses one background slot and
+the native session fitter. Enable radial distortion explicitly when the capture
+set supports fitting that parameter.
+
+Compare the current and proposed parameters, coverage, residuals, and standard
+errors. The capture list shows separate training and held-out outcomes. A fit
+records the clock facts supplied with the captures. Point uncertainty is withheld
+in the calculators because fitting and pose covariance do not supply point error.
+
+Accepting an eligible virtual proposal saves an immutable named-rig draft with
+the fit, capture, catalog, site, clock and software identities. The named-rig
+preview and stage controls apply schedule checks before a separate restart
+activates the revision. To roll back, preview and stage the earlier revision and
+restart. A geometry change makes an incompatible horizon profile unusable until
+it is revised. Physical profiles can compare proposals. Their acceptance and
+installed-rig activation remain gated by an authority that qualifies the exact
+rig revision and fit under [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107).

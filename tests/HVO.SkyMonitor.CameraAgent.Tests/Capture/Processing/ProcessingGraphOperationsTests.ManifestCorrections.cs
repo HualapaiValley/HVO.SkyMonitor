@@ -56,6 +56,7 @@ public sealed partial class ProcessingGraphOperationsTests
             byte[] originalPayload;
             byte[] frozenPlan;
             byte[] frozenGraph;
+            long activeSchema;
             using (var provider = CreateProvider(root))
             {
                 id = await CompleteManifestPreviewAsync(provider).ConfigureAwait(false);
@@ -69,10 +70,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     var output = detail.Nodes.Single().Outputs.Single();
                     var target = await store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                     Assert.IsNotNull(target);
-                    var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                        target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                    await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                    await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId,
+                        target.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
                 }
             }
             SqliteConnection.ClearAllPools();
@@ -80,20 +79,22 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var read = connection.CreateCommand();
-                read.CommandText = "SELECT frozen_plan_json, (SELECT definition_json FROM processing_graph_revisions WHERE revision_id = graph_revision_id) FROM processing_executions WHERE execution_id = $id;";
+                read.CommandText = "SELECT frozen_plan_json, (SELECT definition_json FROM processing_graph_revisions WHERE revision_id = graph_revision_id), (SELECT version FROM capture_processing_schema) FROM processing_executions WHERE execution_id = $id;";
                 read.Parameters.AddWithValue("$id", id.ToString("N"));
                 using (var reader = await read.ExecuteReaderAsync().ConfigureAwait(false))
                 {
                     Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                     frozenPlan = (byte[])reader[0];
                     frozenGraph = (byte[])reader[1];
+                    activeSchema = reader.GetInt64(2);
+                    Assert.AreEqual(12L, activeSchema);
                 }
                 using var legacy = connection.CreateCommand();
                 legacy.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE ledger_kind='Outputs' AND node_id<>'';";
                 await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
                 using var legacyReader = await read.ExecuteReaderAsync().ConfigureAwait(false);
                 Assert.IsTrue(await legacyReader.ReadAsync().ConfigureAwait(false));
-                frozenPlan = (byte[])legacyReader[0];
+                CollectionAssert.AreEqual(frozenPlan, (byte[])legacyReader[0]);
             }
             using (var restarted = CreateProvider(root))
             {
@@ -120,7 +121,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                 CollectionAssert.AreEqual(frozenPlan, (byte[])reader[0]);
                 CollectionAssert.AreEqual(frozenGraph, (byte[])reader[1]);
-                Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, reader.GetInt64(2));
+                Assert.AreEqual(activeSchema, reader.GetInt64(2));
             }
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
@@ -170,10 +171,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(reference.PayloadSha256, auxiliary.GetProperty("payloadSha256").GetString());
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var target = (await store.ReadOutputByArtifactIdAsync(reference.ArtifactId, CancellationToken.None).ConfigureAwait(false))!;
-            var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-            await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-            await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId,
+                target.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, currentId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
         }
         finally { Directory.Delete(root, recursive: true); }

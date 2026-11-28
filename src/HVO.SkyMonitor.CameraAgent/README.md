@@ -28,14 +28,14 @@ Authenticated installer status is available at
 `/api/internal/owner-bootstrap/status`. See
 `docs/identity/operations-runbook.md` for states, health, logs, and exclusions.
 
-Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting while remaining independent of LogicHost.
+Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting.
 
 ## Highlights
 
 - **Modern UI**: Main layout, reconnect modal, scoped CSS/JS, and shared components using the local `hvo-dark` theme.
 - **Identity**: Local-only ASP.NET Core Identity with cookie auth and profile/email/password management pages. Local email delivery is not implemented.
 - **Frame APIs**: Versioned `/api/v1.0/frames` endpoints that stream the most recent exposure from the simulated capture pipeline.
-- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, authenticated Prometheus scraping, and anonymous health checks.
+- **Diagnostics**: Structured JSON logging, custom correlation-id middleware, ProblemDetails enrichment, OpenTelemetry metrics/traces, Scalar UI, authenticated Prometheus scraping, and anonymous health checks. See the [production profiling runbook](../../docs/runbooks/cameraagent-production-profiling.md) for standalone Linux triage.
 - **SQLite Storage**: Identity tables managed through EF Core migrations stored under `Data/Migrations`.
 
 ## Run It
@@ -73,7 +73,7 @@ The app applies pending migrations automatically on startup.
 
 - `LocalIdentity` configures the seeded owner email, user name, and temporary password and the optional `DatabasePath`. Use CameraAgent User Secrets for the password in a direct run and `CAMERA_AGENT_ADMIN_PASSWORD` for Compose.
 - Data-protection keys persist under `DataProtection-Keys/` (or the path you mount in Docker) so browser sessions survive restarts.
-- Device identity and encrypted central credentials persist under `DeviceProvisioning:StateDirectory`; restore them with the matching Data Protection keys.
+- Local device identity and operator notification state persist under `DeviceProvisioning:StateDirectory`.
 
 ## Theme Usage
 

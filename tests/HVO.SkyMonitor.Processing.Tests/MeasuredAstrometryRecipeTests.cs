@@ -89,6 +89,48 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
+    public async Task ScientificAssociationsKeepTheSameFitWhenAllOverlayLabelsAreWithheld()
+    {
+        var fixture = await Fixture.Value.ConfigureAwait(false);
+        var executor = new ProcessingRecipeExecutor();
+        var strict = await executor.ExecuteAsync(MeasuredStellarAssociationFixtures.Request(fixture.Raw, fixture.Scene,
+            """{"labelPolicy":{"minimumSignalToNoise":1000000,"allowSaturated":true,"allowTrailed":true}}""")).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, strict.Status, strict.ReasonCode);
+        var product = strict.Products.Single();
+        var measured = MeasuredStellarAssociationJson.Parse(product.Payload).Associations!;
+        Assert.IsTrue(measured.Associations.All(row => !row.LabelEligible));
+        var relabeled = fixture.WithAssociations(measured);
+        var artifact = relabeled.Measured with
+        {
+            ArtifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
+            RecipeIdentitySha256 = product.Recipe.IdentitySha256,
+            RecipeDescriptor = product.Recipe.Descriptor
+        };
+        var context = relabeled.Context with
+        {
+            MeasuredArtifactId = artifact.ArtifactId,
+            MeasuredRecipeIdentitySha256 = artifact.RecipeIdentitySha256
+        };
+        var options = MeasuredAstrometryFixture.Options with { UseScientificAssociations = true };
+        var ordinary = Solution(await executor.ExecuteAsync(fixture.Request(options: options)).ConfigureAwait(false));
+        // The commanded integration and the capture's nonzero observed interval are separate facts.
+        var request = fixture.Request(context, raw: fixture.Raw with { Integration = TimeSpan.FromMilliseconds(980) },
+            measured: artifact, options: options);
+        var outcome = await executor.ExecuteAsync(request).ConfigureAwait(false);
+        var solution = Solution(outcome);
+        Assert.IsTrue(solution.Assessment.HasMeasuredMapping, solution.Assessment.Reason);
+        Assert.AreEqual(ordinary.Assessment.IdentitySha256, solution.Assessment.IdentitySha256);
+        Assert.AreNotEqual(ordinary.SolutionIdentitySha256, solution.SolutionIdentitySha256);
+        Assert.AreEqual(MeasuredAstrometrySolutionV1.ScientificSelectionVersion, solution.AssociationSelectionVersion);
+        Assert.AreEqual(solution.SolutionIdentitySha256, RetainedAstrometryProducts.Verify(request, outcome.Products.Single()).SolutionIdentitySha256);
+        Assert.IsNotNull(MeasuredAstrometryJson.ReconstructMapping(solution, fixture.Calibration, measured));
+
+        var legacy = Solution(await executor.ExecuteAsync(fixture.Request(context, measured: artifact)).ConfigureAwait(false));
+        Assert.IsFalse(legacy.Assessment.HasMeasuredMapping);
+        Assert.IsNull(legacy.AssociationSelectionVersion);
+    }
+
+    [TestMethod]
     public async Task RetainedDiagnosticsReproduceFitEvidenceAndTypedGeometryWithoutChangingSolution()
     {
         var f = await Fixture.Value.ConfigureAwait(false);
@@ -289,7 +331,11 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
-    public async Task CallerCancellationAndWorkBudgetsAreBoundedAndNeverReturnMapping()
+    [Timeout(60_000)]
+    public async Task CallerCancellationAndWorkBudgetRejectionNeverReturnMapping() =>
+        _ = await VerifyCallerCancellationAndWorkBudgetRejectionAsync().ConfigureAwait(false);
+
+    internal static async Task<(TimeSpan Cancellation, TimeSpan Rejection)> VerifyCallerCancellationAndWorkBudgetRejectionAsync()
     {
         var f = await Fixture.Value.ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await new ProcessingRecipeExecutor().ExecuteAsync(
@@ -299,15 +345,17 @@ public sealed class MeasuredAstrometryRecipeTests
         var cancellationTimer = Stopwatch.StartNew();
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await new ProcessingRecipeExecutor().ExecuteAsync(
             f.Request(), cancel.Token).ConfigureAwait(false)).ConfigureAwait(false);
-        Assert.IsLessThan(3000, cancellationTimer.Elapsed.TotalMilliseconds);
+        var cancellationElapsed = cancellationTimer.Elapsed;
         var timer = Stopwatch.StartNew();
         var value = Solution(await new ProcessingRecipeExecutor().ExecuteAsync(f.Request(options: MeasuredAstrometryFixture.Options with
         { Solver = MeasuredAstrometryFixture.Options.Solver! with { ColdBudgetMilliseconds = .000001 } })).ConfigureAwait(false));
+        var rejectionElapsed = timer.Elapsed;
         Assert.AreEqual(AstrometricAssessmentStatus.BudgetExceeded, value.Assessment.Status);
-        Assert.IsLessThan(3000, timer.Elapsed.TotalMilliseconds); Assert.IsNull(value.Assessment.Parameters);
+        Assert.IsNull(value.Assessment.Parameters);
         value = Solution(await new ProcessingRecipeExecutor().ExecuteAsync(f.Request(options: MeasuredAstrometryFixture.Options with
         { MaximumExecutionMilliseconds = .000001 })).ConfigureAwait(false));
         Assert.AreEqual(AstrometricAssessmentStatus.BudgetExceeded, value.Assessment.Status); Assert.IsNull(value.Assessment.Parameters);
+        return (cancellationElapsed, rejectionElapsed);
     }
 
     [TestMethod]

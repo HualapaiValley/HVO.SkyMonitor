@@ -1,9 +1,33 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
+
+/// <summary>Named reasons retained in capture satellite status evidence.</summary>
+public enum CaptureSatelliteReason
+{
+    NamedPassPredictionLineageUnavailable,
+    NamedPassPredictionTimingUnavailable,
+    NamedPassPredictionTimingMismatch,
+    NamedPassPredictionInputsMismatch,
+    TimeAvailabilityUnknown,
+    TimeNotOriginallyAvailable,
+    ReadoutGeometryUnavailable,
+    CaptureLocationUnavailable,
+    PinnedSnapshotUnavailable,
+    PinnedTimeInputsUnavailable,
+    TimeCoverageUnavailable,
+    ExposureWindowBudget,
+    CaptureReadoutProfileMismatch,
+    SnapshotNotOriginallyAvailable,
+    SelectionCandidateBudget,
+    PinnedRecordSelectionMismatch,
+    SnapshotRetiredBeforePin,
+    NoExposureSegments
+}
 
 /// <summary>Immutable local evidence with an exact snapshot reference or embedded records, and actual model time bytes.</summary>
 public sealed record CaptureSatelliteInputV1(string SchemaVersion, ReconstructionDescriptor Descriptor,
@@ -13,6 +37,10 @@ public sealed record CaptureSatelliteInputV1(string SchemaVersion, Reconstructio
 {
     public JsonElement? TimeProvenance { get; init; }
     public JsonElement? RequestOptions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HideObjectLabels { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualExposureProvenance? VirtualShutter { get; init; }
 }
 
 /// <summary>Query availability is independent of whether any exposure segment falls in the image.</summary>
@@ -24,6 +52,8 @@ public sealed record CaptureSatelliteStatusV1(string SchemaVersion, string Input
 /// <summary>Shared reconstruction/publication composition; no host, storage, scheduler or current pointers.</summary>
 public static class CaptureSatelliteProducts
 {
+    public const string TimeInputsUnavailablePrefix = "TimeInputsUnavailable:";
+    public const string PresentationWithheldPrefix = "PresentationWithheld:";
     public const string InputSchema = "hvo-capture-satellite-evidence-v1";
     public const string StatusSchema = "hvo-capture-satellite-status-v1";
     public const string SourceSchema = "hvo-predicted-satellite-source-v1";
@@ -100,6 +130,8 @@ public static class CaptureSatelliteProducts
             input.TimeSource is "Bundled" or "Managed" or "Override" &&
             input.UnavailableReason is null or { Length: > 0 and <= 128 }, "satellite-evidence-binding");
         input.Observer?.Validate();
+        Require(input.VirtualShutter is null || input.VirtualShutter.MatchesObservedShutter(input.Descriptor),
+            "satellite-virtual-shutter-binding");
         Require((input.SnapshotRecords is null || input.SnapshotManifest is not null) &&
             input.SnapshotRecords is null or { Length: <= MaximumSnapshotBytes } &&
             input.EarthOrientation is null or { Length: <= 8 * 1024 * 1024 } &&
@@ -112,6 +144,7 @@ public static class CaptureSatelliteProducts
         var plan = CaptureOrbitalPredictionJson.Deserialize<CaptureOrbitalPredictionPlanV1>(input.Plan.Value.Span);
         Require(input.Plan.Value.Span.SequenceEqual(OrbitalContract.SerializeCanonical(plan)) &&
             input.UnavailableReason is null && plan.DescriptorSha256 == CaptureContractJson.ComputeDescriptorSha256(input.Descriptor) &&
+            plan.VirtualShutter == input.VirtualShutter &&
             plan.Observer == input.Observer && plan.Availability.TimeDataAvailableUtc == input.TimeAvailableUtc &&
             plan.Geometry.Projection == RigProjectionContextFactory.Create(input.Rig) &&
             (input.Rig.HorizonObstruction is null ? plan.ObstructionRig is null :
@@ -128,23 +161,32 @@ public static class CaptureSatelliteProducts
     }
 
     /// <summary>Executes only the supplied pinned inputs. Hosts preserve the first completed bytes before publication.</summary>
-    public static async ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
+    public static ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
         string outputVariant, CancellationToken cancellationToken, TimeProvider? clock = null,
-        OrbitalSnapshotReadResult? exactSnapshot = null)
+        OrbitalSnapshotReadResult? exactSnapshot = null) =>
+        PredictAsync(input, raw, outputVariant,
+            static (recipe, request, token) => new ProcessingRecipeExecutor([recipe]).ExecuteAsync(request, token),
+            cancellationToken, clock, exactSnapshot);
+
+    internal static async ValueTask<ProcessingProduct?> PredictAsync(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
+        string outputVariant,
+        Func<IProcessingRecipe, ProcessingExecutionRequest, CancellationToken, ValueTask<ProcessingOutcome>> execute,
+        CancellationToken cancellationToken, TimeProvider? clock = null, OrbitalSnapshotReadResult? exactSnapshot = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(raw);
         Validate(input);
         if (input.Plan is null) return null;
         var recipe = new CaptureOrbitalPredictionRecipe(Restore(input, exactSnapshot), RestoreTime(input), clock);
-        var outcome = await new ProcessingRecipeExecutor([recipe]).ExecuteAsync(new(
-            CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
-            ProcessingInputSelector.Raw(raw.Variant), [raw], outputVariant, InputArtifactId: raw.ArtifactId),
-            cancellationToken).ConfigureAwait(false);
+        var outcome = await execute(recipe, CreatePredictionRequest(raw, outputVariant), cancellationToken).ConfigureAwait(false);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
             throw new InvalidDataException($"Capture satellite recipe rejected its raw evidence ({outcome.ReasonCode}).");
         return outcome.Products.Single();
     }
+
+    internal static ProcessingExecutionRequest CreatePredictionRequest(ProcessingArtifact raw, string outputVariant) =>
+        new(CaptureOrbitalPredictionRecipe.Name, JsonSerializer.SerializeToElement(new { }),
+            ProcessingInputSelector.Raw(raw.Variant), [raw], outputVariant, InputArtifactId: raw.ArtifactId);
 
     /// <summary>Rebuilds typed products from retained result bytes, including a separate truthful query status.</summary>
     public static IReadOnlyList<ProcessingProduct> Create(CaptureSatelliteInputV1 input, ProcessingArtifact raw,
@@ -192,12 +234,13 @@ public static class CaptureSatelliteProducts
                     prediction.Tracks.Where((_, index) => prediction.Obstruction is null ||
                         (prediction.Obstruction[index].Eligibility.All(static value => value == HorizonObstructionEligibility.Clear) &&
                          prediction.Obstruction[index].ClearSegments.All(static clear => clear))).ToArray(),
-                    displayNames: null, queryIncomplete: prediction.Status == OrbitalExecutionStatus.Partial);
+                    displayNames: null, queryIncomplete: prediction.Status == OrbitalExecutionStatus.Partial,
+                    hideObjectLabels: input.HideObjectLabels);
                 status = status with { Renderable = true };
             }
             catch (ArgumentException)
             {
-                status = status with { Reason = "PresentationWithheld:" + status.Reason };
+                status = status with { Reason = PresentationWithheldPrefix + status.Reason };
             }
         }
         var statusProduct = Metadata("capture-satellite-status", variant + "-status", StatusSchema, StatusMediaType,
@@ -239,8 +282,11 @@ public static class CaptureSatelliteProducts
         var manifest = ReadSnapshotManifest(input);
         return new(StatusSchema, identity, output?.Status.ToString() ?? "Unavailable",
             input.UnavailableReason ?? (output!.Input.SnapshotUnavailableReason?.ToString() ??
-                (output.Tracks.Count == 0 && output.Status == OrbitalExecutionStatus.Complete ? "NoExposureSegments" : output.Reason.ToString())),
-            output?.Tracks.Count ?? 0, "ConfiguredRig", new(input.Descriptor.Timing.ExposureStartedUtc, input.Descriptor.Timing.ExposureEndedUtc),
+                (output.Tracks.Count == 0 && output.Status == OrbitalExecutionStatus.Complete
+                    ? nameof(CaptureSatelliteReason.NoExposureSegments) : output.Reason.ToString())),
+            output?.Tracks.Count ?? 0, "ConfiguredRig", input.VirtualShutter is { } shutter
+                ? new(shutter.ScenarioStartUtc, shutter.ScenarioEndUtc)
+                : new(input.Descriptor.Timing.ExposureStartedUtc, input.Descriptor.Timing.ExposureEndedUtc),
             output?.Input.PopulationCoverage ?? manifest?.Coverage ?? new("explicit-requested-object-identities", OrbitalPopulationCompleteness.Unknown,
                 ["Prediction inputs unavailable; population coverage unknown."]),
             (output?.Input.SnapshotManifest ?? manifest)?.Sources.Max(static s => (DateTimeOffset?)s.RetrievedUtc),

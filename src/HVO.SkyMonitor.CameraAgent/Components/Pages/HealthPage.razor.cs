@@ -54,32 +54,6 @@ public sealed partial class HealthPage : SiteTimeComponent, IDisposable
             ? $"{Number(lanes.PendingCount)} pending"
             : "No backlog";
 
-    private string CentralState
-    {
-        get
-        {
-            if (_health is { CentralIntegrationEnabled: false })
-            {
-                return "Not used";
-            }
-            return _view is null ? "Unknown" : OperationsPage.SplitWords(_view.Summary.Heartbeat.Value.Availability);
-        }
-    }
-
-    private string CentralDetail
-    {
-        get
-        {
-            if (_health is { CentralIntegrationEnabled: false })
-            {
-                return "Standalone agent";
-            }
-            return _view?.Summary.Heartbeat.Value.LastAcknowledgedUtc is { } acknowledged
-                ? $"Heartbeat acknowledged {FormatAge(acknowledged)} ago"
-                : "No heartbeat acknowledged yet";
-        }
-    }
-
     private string ProcessingLatency
     {
         get

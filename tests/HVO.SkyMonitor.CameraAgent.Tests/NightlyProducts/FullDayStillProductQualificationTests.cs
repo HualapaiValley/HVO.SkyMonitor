@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// <summary>Bounded actual VirtualSky → raw ingress → durable fixed preview → still producer qualification.</summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Bounded manual qualification.")]
 public sealed class FullDayStillProductQualificationTests
@@ -46,8 +47,8 @@ public sealed class FullDayStillProductQualificationTests
         var root = Required("HVO_ISSUE993_FULL_DAY_ROOT");
         Assert.IsFalse(Directory.Exists(root), "Use a fresh evidence root; retained captures and products are immutable.");
         Directory.CreateDirectory(root);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE993_CATALOG_ROOT"), "hyg-v42-production")
-        { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" });
+        var snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE993_CATALOG_ROOT"), "hyg-v44-production")
+        { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" });
         var site = DeploymentLocationSnapshot.Create("issue-993-qualified-site", 1, "test", null,
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, Latitude, Longitude, 0, "America/Phoenix");
         var calendar = ObservingDayCalendar.ForDeployment(site);
@@ -135,7 +136,8 @@ public sealed class FullDayStillProductQualificationTests
             MaximumSegmentsPerRun = 128
         };
         var host = NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options);
-        using var store = new SqliteNightlyProductStore(host, clock);
+        using var silo = new NightlySiloFixture(host.Value.RawIngressRoot);
+        using var store = silo.OpenStore(host, clock);
         using var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(configuration), reader,
             store, Ephemeris, static () => null, clock);
         var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(calendar));
@@ -288,7 +290,9 @@ public sealed class FullDayStillProductQualificationTests
         using var provider = Provider(Path.Combine(root, "runtime"), clock);
         var reader = provider.GetRequiredService<INightlyProductSourceReader>();
         var source = (await reader.RestoreAsync([candidate], CancellationToken.None)).Single();
-        using var store = new SqliteNightlyProductStore(NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options), clock);
+        var host = NightlyProductFixture.HostOptions(Path.Combine(root, "runtime"), options);
+        using var silo = new NightlySiloFixture(host.Value.RawIngressRoot);
+        using var store = silo.OpenStore(host, clock);
         var final = await store.GetAsync(productId, CancellationToken.None);
         Assert.IsNotNull(final);
         var packed = await store.ReadStoredProductAsync(productId, CancellationToken.None);
@@ -359,11 +363,10 @@ public sealed class FullDayStillProductQualificationTests
     private static ServiceProvider Provider(string root, TimeProvider clock)
     {
         var services = new ServiceCollection(); services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddSingleton<IDeploymentLocationProtector, DataProtectionDeploymentLocationProtector>();
         services.AddSingleton(clock);

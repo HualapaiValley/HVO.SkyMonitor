@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class OrbitalSnapshotPanelTests
 {
     [TestMethod]
@@ -37,6 +38,20 @@ public sealed class OrbitalSnapshotPanelTests
 
     private static readonly DateTimeOffset Now = TestOrbitalUiService.Now;
     private static readonly string ShortManifest = "sha256:" + new string('a', 8) + "…" + new string('a', 8);
+
+    [TestMethod]
+    [DataRow("USSF public GP via CelesTrak")]
+    [DataRow("USSF/Space-Track public GP via CelesTrak")]
+    public void RetainedCelesTrakManifestDisplaysBothSourceCredits(string legacyLineage)
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var manifest = TestOrbitalUiService.Manifest();
+        var source = manifest.Sources.Single() with { Provider = "celestrak", UnderlyingLineage = legacyLineage };
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(manifest: manifest with { Sources = [source] }));
+        var panel = context.Render<OrbitalSnapshotPanel>();
+        Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak", panel.WaitForElement("#orbital-provider").TextContent);
+    }
 
     [TestMethod]
     public void SuccessfulActivation_ShowsFreshCountsHashesEpochsAndLinks()

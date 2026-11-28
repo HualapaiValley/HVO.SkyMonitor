@@ -17,7 +17,9 @@ internal static class CommandLine
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
         "--product-root", "--catalog-bundle", "--release", "--image-source", "--image-ref", "--image-archive",
         "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
-        "--elevation", "--time-zone", "--replay-profile", "--illumination-mode", "--cpus", "--memory"
+        "--elevation", "--time-zone", "--replay-profile", "--illumination-mode", "--cpus", "--memory", "--storage-layout",
+        "--silo-image-archive", "--silo-archive-endpoint", "--silo-archive-bucket", "--silo-archive-ca-file",
+        "--silo-archive-credential-file"
     ];
 
     internal static readonly string[] InstallFlags =
@@ -40,7 +42,6 @@ internal static class CommandLine
     /// <summary>The flag every command with a read-only plan accepts; <c>--dry-run</c> is its older name.</summary>
     internal const string PlanOption = "--plan";
 
-    private const string DeprecatedMigrationOption = "--migration-backward-compatible";
 
     private static readonly string[] OwnerRecoveryValueOptions = ["--instance-id", "--product-root", "--password-file"];
 
@@ -72,15 +73,6 @@ internal static class CommandLine
     /// </summary>
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
-        new(["preflight"], null, "Validate split-host inventory and probe targets without remote mutation.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root"], ["--json"],
-            "Writes the existing schema-1 preflight manifest and evidence. Rejected inputs preserve prior evidence; accepted failed reruns record failure."),
-        new(["partial-prepare-cleanup"], null, "Inspect or recover an interrupted split-host prepare without creating containers.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--dry-run", "--json"],
-            "Requires the retained passed preflight and failed prepare. Specify --dry-run or --confirm RUN-ID; interrupted cleanup resumes with the same inputs."),
-        new(["existing-down"], null, "Stop a retained existing-services split-host run after an authenticated drain.",
-            ["--inventory", "--mode", "--run-id", "--state-root", "--evidence-root", "--confirm"], ["--preserve-state", "--delete-state", "--json"],
-            "Requires passed preflight, prepare and up. Existing services and runtime data are preserved; --delete-state is refused. Interrupted teardown resumes with the same inputs."),
         new(["status"], null, "Show the installed instances, or the one --instance-id names.", InstanceValueOptions, ["--json"]),
         new(["cameraagent", "install"], null,
             "Install a CameraAgent instance, or change an installed one's container limits.",
@@ -97,16 +89,23 @@ internal static class CommandLine
         new(["cameraagent", "preflight"], null,
             "Check, changing nothing, that an instance's state can run its image or --image-ref.",
             StatePreflightValueOptions, StatePreflightFlags),
+        new(["cameraagent", "first-resume"], null,
+            "Resume a new Silo-layout instance's capture once, only while its installer first-boot pause is still the latest command.",
+            ["--instance-id", "--product-root"], ["--json"],
+            "Verifies the Silo store, binding and listeners first. A later operator pause refuses it and leaves resume to that operator."),
+        new(["cameraagent", "silo-verify"], null,
+            "Check, changing nothing, a Silo-layout instance's store, binding, listeners, data root, headroom, archive and first-boot pause.",
+            ["--instance-id", "--product-root"], ["--json"]),
         new(["cameraagent", "reset-state"], null,
             "Delete an uninstalled instance's local runtime state, keeping its configuration.",
             StateResetValueOptions, StateResetFlags),
         new(["cameraagent", "upgrade"], null,
             "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
-            [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
-            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
+            [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256"],
+            ["--plan", "--dry-run", "--resume", "--json", "--no-download", "--allow-quarantined-readiness"],
             PlanScratchNote),
         new(["cameraagent", "rollback"], null,
-            "Return an instance to the image it ran before its last upgrade.",
+            "Run the retained previous CameraAgent image on the same state contract.",
             InstanceValueOptions, [.. OperationFlags, "--allow-quarantined-readiness"],
             PlanScratchNote),
         Lifecycle("Start an uninstalled instance again from the state it kept.", "cameraagent", "reinstall"),
@@ -147,14 +146,6 @@ internal static class CommandLine
     private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
     {
         ["--once"] = (null, "Perform one authenticated lifecycle poll, including any admitted operation, then exit."),
-        ["--inventory"] = ("<file>", "The immutable split-host inventory (schema 8; partial-prepare also accepts retained schema 7)."),
-        ["--preserve-state"] = (null, "Stop applications while preserving existing services and runtime data."),
-        ["--delete-state"] = (null, "Request deletion; existing-services runs refuse this policy before mutation."),
-        ["--mode"] = ("<isolated|persistent>", "The retained deployment mode."),
-        ["--run-id"] = ("<id>", "The retained run ID."),
-        ["--state-root"] = ("<path>", "The retained owner-only state directory."),
-        ["--evidence-root"] = ("<path>", "The retained owner-only evidence directory."),
-        ["--confirm"] = ("<run-id>", "Confirm the requested run ID; cleanup remains limited to resources authorized by that operation."),
         [AnswersOption] = ("<file>", "Read the install from a JSON answers file with \"schemaVersion\": 1."),
         ["--config"] = ("<file>", "Deprecated: read the whole install from a JSON file. Use --answers."),
         ["--instance-id"] = ("<uuid>", "The instance's ID."),
@@ -177,13 +168,18 @@ internal static class CommandLine
         ["--longitude"] = ("<degrees>", "The camera's longitude (default 0)."),
         ["--elevation"] = ("<metres>", "The camera's elevation (default 0)."),
         ["--time-zone"] = ("<zone>", "The camera's IANA time zone (default UTC)."),
-        ["--replay-profile"] = ("<profile>", "Where archived replay runs: in-process (default) or local-runner."),
+        ["--replay-profile"] = ("in-process", "CameraAgent runs archived replay in process."),
+        ["--storage-layout"] = ("silo", "A new instance uses Silo storage."),
+        ["--silo-image-archive"] = ("<path>", "With silo: a docker save archive of the pinned Silo image, verified before it is loaded."),
+        ["--silo-archive-endpoint"] = ("<url>", "With silo: the optional archive Silo's https:// endpoint, verified read-only."),
+        ["--silo-archive-bucket"] = ("<name>", "The archive bucket, which must be versioned."),
+        ["--silo-archive-ca-file"] = ("<path>", "A PEM certificate authority the archive endpoint must chain to."),
+        ["--silo-archive-credential-file"] = ("<path>", "An owner-only file with the archive access key ID and secret on two lines."),
         ["--illumination-mode"] = ("<mode>", "VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight."),
         ["--cpus"] = ("<count>", "The container's CPU limit."),
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
         ["--confirm-removed-operation-id"] = ("<uuid>", "With --resume: confirm this interrupted purge's tree was removed elsewhere."),
-        ["--operation-id"] = ("<uuid>", "With --resume --restore-only: the interrupted upgrade's operation ID."),
         [PlanOption] = (null, "Show what the command would change, and change nothing."),
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
@@ -193,8 +189,6 @@ internal static class CommandLine
         ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
         ["--no-download"] = (null, "Pull nothing: the image must already be on this host or in an offline archive."),
-        ["--restore-only"] = (null, "With --resume --operation-id: restore what an interrupted upgrade left, without upgrading."),
-        [DeprecatedMigrationOption] = (null, "Deprecated, and has no effect.")
     };
 
     /// <summary>
@@ -323,7 +317,7 @@ internal static class CommandLine
             .AppendLine()
             .AppendLine("Options:");
         AppendRows(usage, [
-            .. command.ValueOptions.Concat(command.Flags).Select(option => (command.Name == "partial-prepare-cleanup" && option == "--dry-run" ? ((string? Value, string Description))(null, "Inspect recovery candidates and write private evidence without changing a target.") : OptionHelp[option]) switch
+            .. command.ValueOptions.Concat(command.Flags).Select(option => OptionHelp[option] switch
             {
                 (null, var description) => (option, description),
                 var (value, description) => ($"{option} {value}", description)
@@ -412,9 +406,6 @@ internal static class CommandLine
             // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
             throw InstallerException.Refused(exception.Message, exception);
         }
-        if (args.Length > 0 && args[0] == "preflight") return PreflightRequest.Parse(args);
-        if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
-        if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args is ["cameraagent", "lifecycle-worker", ..])
             return LifecycleWorkerRequest.Parse(args, production, allowTestProductRoot);
@@ -435,6 +426,22 @@ internal static class CommandLine
         {
             return ParseStatePreflight(args, allowTestProductRoot, production);
         }
+        if (args.Length >= 2 && args[0] == "cameraagent" && args[1] is "first-resume" or "silo-verify")
+        {
+            var (values, flags) = ParseOptions(args, 2, ["--json"]);
+            RejectUnknown(values, ["--instance-id", "--product-root"]);
+            var silo = new SiloCommandRequest(
+                args[1] == "first-resume" ? SiloCommandKind.FirstResume : SiloCommandKind.Verify,
+                ParseGuid(Get(values, "--instance-id"), "--instance-id"),
+                Get(values, "--product-root") ?? production,
+                flags.Contains("--json"))
+            {
+                AllowTestProductRoot = allowTestProductRoot,
+                ProductionProductRoot = production
+            };
+            silo.Validate();
+            return silo;
+        }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "reset-state")
         {
             return ParseStateReset(args, allowTestProductRoot, production);
@@ -443,8 +450,7 @@ internal static class CommandLine
         {
             return ParseHost(args, context, production);
         }
-        var lifecycle = ParseLifecycle(args, allowTestProductRoot, production);
-        return lifecycle.MigrationBackwardCompatible ? lifecycle with { ParseWarnings = [MigrationAssertionDeprecation] } : lifecycle;
+        return ParseLifecycle(args, allowTestProductRoot, production);
     }
 
     /// <summary>
@@ -454,15 +460,6 @@ internal static class CommandLine
     internal static readonly InstallationWarning ConfigDeprecation = new(
         "option-deprecated",
         "--config is deprecated: use --answers FILE, which reads the same members with \"schemaVersion\": 1 and without dryRun, resume and json.");
-
-    /// <summary>
-    /// <c>--migration-backward-compatible</c> has had no effect since the swap-based upgrade (#1340): the upgrade
-    /// decides from the candidate's declared state contract. It stays accepted, and part of the journaled request
-    /// identity, so an interrupted upgrade begun with it still resumes.
-    /// </summary>
-    internal static readonly InstallationWarning MigrationAssertionDeprecation = new(
-        "option-deprecated",
-        "--migration-backward-compatible is deprecated and has no effect: the upgrade decides from the candidate's declared state contract and snapshots the small databases when it declares a migration. Leave it out; it is still accepted so an interrupted upgrade begun with it resumes.");
 
     public static InstallRequest Parse(string[] args)
         => Parse(args, TestProductRootAdmittedByEnvironment());
@@ -575,6 +572,12 @@ internal static class CommandLine
                 ElevationMeters = ParseDouble(Get(values, "--elevation"), 0, "--elevation"),
                 TimeZoneId = Get(values, "--time-zone") ?? "UTC",
                 ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile")),
+                StorageLayout = ParseStorageLayout(Get(values, "--storage-layout")),
+                SiloImageArchive = Get(values, "--silo-image-archive"),
+                SiloArchiveEndpoint = Get(values, "--silo-archive-endpoint"),
+                SiloArchiveBucket = Get(values, "--silo-archive-bucket"),
+                SiloArchiveCaFile = Get(values, "--silo-archive-ca-file"),
+                SiloArchiveCredentialFile = Get(values, "--silo-archive-credential-file"),
                 IlluminationMode = Get(values, "--illumination-mode"),
                 Cpus = ParseCpus(Get(values, "--cpus")),
                 Memory = Get(values, "--memory")
@@ -700,6 +703,14 @@ internal static class CommandLine
             _ => throw new InstallUsageException("--image-source must be archive or registry.")
         };
 
+    internal static CameraAgentStorageLayout ParseStorageLayout(string? value)
+        => value switch
+        {
+            null or "silo" => CameraAgentStorageLayout.Silo,
+            "filesystem" => CameraAgentStorageLayout.Filesystem,
+            _ => throw new InstallUsageException("--storage-layout must be filesystem or silo.")
+        };
+
     internal static CameraAgentReplayProfile ParseReplayProfile(string? value)
         => value switch
         {
@@ -787,15 +798,12 @@ internal static class CommandLine
         {
             AllowTestProductRoot = allowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
-            RestoreOnly = flags.Contains("--restore-only"),
-            RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
             Release = Get(values, "--release"),
             ImageSource = ParseImageSource(Get(values, "--image-source")),
             NoDownload = flags.Contains("--no-download"),
-            MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             ConfirmRemovedOperationId = ParseGuid(
                 Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),

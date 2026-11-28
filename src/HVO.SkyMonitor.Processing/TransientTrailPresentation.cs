@@ -34,7 +34,10 @@ public static class TransientTrailPresentation
                 algorithms.All(value => value.Name switch
                 {
                     "fixed-display-transfer" => value.Version == FixedDisplayTransfer.AlgorithmVersion,
-                    "linear-rggb-reconstruction" => value.Version == LinearBayerReconstruction.AlgorithmVersion,
+                    "linear-rggb-reconstruction" => value.Version is LinearBayerReconstruction.AlgorithmVersion
+                        or $"{LinearBayerReconstruction.AlgorithmVersion}-grbg"
+                        or $"{LinearBayerReconstruction.AlgorithmVersion}-gbrg"
+                        or $"{LinearBayerReconstruction.AlgorithmVersion}-bggr",
                     _ => false
                 }),
             BuiltInProcessingRecipes.EncodedPreview => role == FrameArtifactRole.Preview &&
@@ -42,7 +45,10 @@ public static class TransientTrailPresentation
                 algorithms.Count > 0 && algorithms.All(value => value.Name switch
                 {
                     "display-stretch" => value.Version == Mono16DisplayStretch.AlgorithmVersion,
-                    "rggb-demosaic" => value.Version == BayerRggb16Demosaicer.AlgorithmVersion,
+                    "rggb-demosaic" => value.Version is BayerRggb16Demosaicer.AlgorithmVersion
+                        or BayerRggb16Demosaicer.GrbgAlgorithmVersion
+                        or BayerRggb16Demosaicer.GbrgAlgorithmVersion
+                        or BayerRggb16Demosaicer.BggrAlgorithmVersion,
                     "row-packing" => value.Version == "packed-copy-v1",
                     _ => false
                 }),

@@ -18,7 +18,13 @@ jq --exit-status '
   (.retiredSourcePaths | sort) == ([
     "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
     "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
-    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs",
+    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs"
   ] | sort)
 ' "$policy" > /dev/null || {
   printf 'Malformed retired-source coverage policy: %s\n' "$policy" >&2
@@ -72,7 +78,7 @@ for baseline in "${baselines[@]}"; do
 done
 
 for retired in "${retired_source_paths[@]}"; do
-  jq --exit-status --arg path "$retired" '.files[$path] != null' scripts/coverage/baseline.json > /dev/null || {
+  jq --exit-status --slurp --arg path "$retired" 'any(.[]; .files[$path] != null)' "${baselines[@]}" > /dev/null || {
     printf 'Pinned retired source %s has no canonical coverage floor.\n' "$retired" >&2
     exit 1
   }
@@ -120,7 +126,6 @@ component_of() {
   case "$1" in
     tools/* | HVO.SkyMonitor.Deployment.*) printf 'delivery\n' ;;
     HVO.SkyMonitor.CameraAgent*) printf 'cameraagent\n' ;;
-    HVO.SkyMonitor.LogicHost*) printf 'logichost\n' ;;
     *) printf 'shared\n' ;;
   esac
 }
@@ -172,6 +177,24 @@ fi
 comparison_dir="$(mktemp -d)"
 trap 'rm -rf "$comparison_dir"' EXIT
 
+# Issue #2178 deletes these component-only sources. A reintroduced source
+# takes its existing floor, and a moved source keeps its floor at the new path.
+removed_cameraagent_floors=(
+  'HVO.SkyMonitor.CameraAgent.Common/Fleet/SqliteFleetStatusOutbox.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactOutboxDrainService.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/ArtifactUploadClient.cs'
+  'HVO.SkyMonitor.CameraAgent.Common/Upload/SqliteArtifactOutbox.cs'
+)
+removed_floors_json="$(
+  for path in "${removed_cameraagent_floors[@]}"; do
+    if [[ ! -e "src/$path" && ! -L "src/$path" ]]; then
+      printf '%s\n' "$path"
+    fi
+  done | jq -Rnc '[inputs]'
+)"
+environmental_outbox='HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationOutbox.cs'
+environmental_store='HVO.SkyMonitor.CameraAgent.Common/Environmental/SqliteEnvironmentalObservationStore.cs'
+
 for baseline in "${baselines[@]}"; do
   if ! git cat-file -e "origin/$base_ref:$baseline" 2>/dev/null; then
     printf 'New coverage baseline introduced by this pull request: %s\n' "$baseline"
@@ -179,17 +202,49 @@ for baseline in "${baselines[@]}"; do
   fi
 
   git show "origin/$base_ref:$baseline" > "$comparison_dir/base.json"
-  jq --exit-status --slurpfile base "$comparison_dir/base.json" '
+  component_retirements='[]'
+  renamed_environmental=''
+  if [[ "$baseline" == scripts/coverage/baseline.cameraagent.json ]]; then
+    component_retirements="$removed_floors_json"
+    if [[ ! -e "src/$environmental_outbox" && ! -L "src/$environmental_outbox" ]]; then
+      renamed_environmental="$environmental_store"
+    fi
+  fi
+  jq --exit-status --slurpfile base "$comparison_dir/base.json" \
+    --argjson retired "$component_retirements" \
+    --arg oldEnvironmental "$environmental_outbox" --arg renamedEnvironmental "$renamed_environmental" '
     . as $candidate |
     $candidate.aggregate.line >= $base[0].aggregate.line and
     $candidate.aggregate.branch >= $base[0].aggregate.branch and
     $candidate.aggregate.tolerancePercentagePoints <= $base[0].aggregate.tolerancePercentagePoints and
     all($base[0].files | to_entries[];
-      $candidate.files[.key] != null and
-      $candidate.files[.key].line >= .value.line and
-      $candidate.files[.key].branch >= .value.branch)
+      .key as $path |
+      if ($retired | index($path)) != null then
+        true
+      else
+        (if $path == $oldEnvironmental and $renamedEnvironmental != "" then
+           $renamedEnvironmental
+         else
+           $path
+         end) as $candidatePath |
+        $candidate.files[$candidatePath] != null and
+        $candidate.files[$candidatePath].line >= .value.line and
+        $candidate.files[$candidatePath].branch >= .value.branch
+      end)
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline %s is weaker than origin/%s.\n' "$baseline" "$base_ref" >&2
+    exit 1
+  }
+  jq --exit-status --slurpfile base "$comparison_dir/base.json" '
+    . as $candidate |
+    all($base[0].files | to_entries[] |
+      select(.key | startswith("HVO.SkyMonitor.Storage.FileSystem/"));
+      (.key | sub("^HVO[.]SkyMonitor[.]Storage[.]FileSystem/"; "HVO.SkyMonitor.LocalFiles/")) as $moved |
+      $candidate.files[$moved] != null and
+      $candidate.files[$moved].line >= .value.line and
+      $candidate.files[$moved].branch >= .value.branch)
+  ' "$baseline" > /dev/null || {
+    printf 'Coverage baseline %s weakened the floor of a moved local file primitive.\n' "$baseline" >&2
     exit 1
   }
   printf 'Coverage baseline %s is at or above origin/%s.\n' "$baseline" "$base_ref"

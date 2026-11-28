@@ -2,11 +2,10 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-/// <summary>Graph revisions cannot override the profile that also owns retention and outbox draining.</summary>
+/// <summary>Graph revisions cannot override the profile that owns publication selection.</summary>
 public static class CaptureStoragePolicy
 {
     public const string RejectionMessage = "Enabled Storage settings must match the active capture profile. Pause acquisition and finish in-flight processing before changing the local capture profile, then reconcile, validate and activate the graph before resuming. Raw captures are retained while incompatible standard processing is skipped.";
@@ -52,13 +51,12 @@ public static class CaptureStoragePolicy
     {
         ArgumentNullException.ThrowIfNull(exception);
         var fields = (exception.ValidationResult?.MemberNames ?? [])
-            .Where(static field => field is "StorageNode" or "StorageRoot" or "RetentionDays" or
-                "UpdateLatestFrame" or "QueueForUpload" or "Policies").Distinct(StringComparer.Ordinal).ToArray();
+            .Where(static field => field is "StorageNode" or "UpdateLatestFrame" or "PublishArchive").Distinct(StringComparer.Ordinal).ToArray();
         return RejectionMessage + (fields.Length > 0 ? " Differing fields: " + string.Join(", ", fields) + "." : string.Empty);
     }
 
     private static bool IsEnabledStorage(CaptureProcessingStepConfig step)
-        => step.Enabled != false && step.Type.Equals(FileStorageCaptureProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase);
+        => step.Enabled != false && step.Type.Equals(SiloCaptureProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase);
 
     private static string NodeId(CaptureProcessingStepConfig step)
         => string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
@@ -67,26 +65,9 @@ public static class CaptureStoragePolicy
     {
         // Bind with the same defaults, casing and enum/numeric rules as the runtime. Do not rewrite source JSON.
         var options = step.Options is { } source
-            ? JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(source.GetRawText(), SerializerOptions)
+            ? JsonSerializer.Deserialize<SiloCaptureProcessingStepOptions>(source.GetRawText(), SerializerOptions)
             : null;
-        options ??= new FileStorageCaptureProcessingStepOptions();
-        return JsonSerializer.SerializeToElement(new
-        {
-            StorageRoot = StorageRootIdentity.Key(options.StorageRoot),
-            options.RetentionDays,
-            options.UpdateLatestFrame,
-            options.QueueForUpload,
-            // Equal-specificity overlapping selectors use the first match at runtime, so order is significant.
-            Policies = (options.Policies ?? []).Select(static policy => new
-            {
-                StepId = policy.StepId?.ToUpperInvariant(),
-                policy.Role,
-                policy.Variant,
-                policy.RecipeName,
-                policy.QueueForUpload,
-                policy.RetentionDays
-            }).ToArray()
-        });
+        options ??= new SiloCaptureProcessingStepOptions();
+        return JsonSerializer.SerializeToElement(options);
     }
-
 }

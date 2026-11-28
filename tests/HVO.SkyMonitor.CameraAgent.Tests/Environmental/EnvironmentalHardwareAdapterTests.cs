@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalHardwareAdapterTests
 {
     internal static readonly DateTimeOffset Epoch = new(2026, 11, 8, 6, 0, 0, TimeSpan.Zero);
@@ -224,7 +225,7 @@ public sealed class EnvironmentalHardwareAdapterTests
         public ValueTask<EnvironmentalObservationPublishResult> PublishAsync(EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)
         {
             Facts.Add(fact);
-            return ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Enqueued, null));
+            return ValueTask.FromResult(new EnvironmentalObservationPublishResult(EnvironmentalObservationPublishDisposition.Committed));
         }
     }
     private sealed class ScriptedDevice : IEnvironmentalDevice

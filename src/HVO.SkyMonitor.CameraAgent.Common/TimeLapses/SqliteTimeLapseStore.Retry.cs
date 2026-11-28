@@ -1,4 +1,5 @@
 using System.Globalization;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 
@@ -6,6 +7,25 @@ internal sealed partial class SqliteTimeLapseStore
 {
     /// <summary>Explicit, audited retry of the retained inputs. It never changes a published result or acquires new images.</summary>
     public async ValueTask<bool> RetryAsync(Guid jobId, long expectedRevision, Guid requestId, string actor,
+        string reason, CancellationToken cancellationToken)
+    {
+        if (silo is null)
+            return await RetryCoreAsync(jobId, expectedRevision, requestId, actor, reason, cancellationToken).ConfigureAwait(false);
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var gate = RawIngressLifecycleLock.ForRoot(options.Value.RawIngressRoot);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await RetryCoreAsync(jobId, expectedRevision, requestId, actor, reason, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async ValueTask<bool> RetryCoreAsync(Guid jobId, long expectedRevision, Guid requestId, string actor,
         string reason, CancellationToken cancellationToken)
     {
         if (jobId == Guid.Empty || requestId == Guid.Empty || expectedRevision <= 0 ||

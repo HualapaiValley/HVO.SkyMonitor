@@ -384,6 +384,20 @@ internal sealed record ProcessingFrozenRawInput(
 
 public interface IProcessingGraphOperations
 {
+    /// <summary>Freezes the local policy for a new draft before preview or persistence.</summary>
+    static CameraModuleConfig PrepareAuthoredDraft(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return configuration.CenteredExposure is null ? configuration : configuration with
+        {
+            Pipeline = ExposureMeasurementGraphPlan.FreezeSyntheticReferenceCodeDomain(configuration.Pipeline)
+        };
+    }
+
+    /// <summary>Expands the registered stages of a fresh effective configured profile for preview.</summary>
+    /// <remarks>Saved and replayed graphs already carry their exact plan and do not enter this path.</remarks>
+    CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration) => configuration;
+
     ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
@@ -518,6 +532,24 @@ public sealed class ReferenceAstrometryCatalogConflictException : InvalidOperati
     }
 
     public ReferenceAstrometryCatalogConflictException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>The legacy reference astrometry preset is incompatible with the active centered profile.</summary>
+public sealed class ReferenceAstrometryPresetModeConflictException : InvalidOperationException
+{
+    public const string SafeMessage = "The reference astrometry preset requires a legacy capture profile. Use a centered measured astrometry graph with the active profile.";
+
+    public ReferenceAstrometryPresetModeConflictException() : base(SafeMessage)
+    {
+    }
+
+    public ReferenceAstrometryPresetModeConflictException(string message) : base(message)
+    {
+    }
+
+    public ReferenceAstrometryPresetModeConflictException(string message, Exception innerException) : base(message, innerException)
     {
     }
 }

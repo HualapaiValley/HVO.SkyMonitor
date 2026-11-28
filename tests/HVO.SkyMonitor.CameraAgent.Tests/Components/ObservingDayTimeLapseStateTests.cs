@@ -16,6 +16,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
+[TestProperty("Area", "Ui")]
 public sealed class ObservingDayTimeLapseStateTests
 {
     [TestMethod]
@@ -72,7 +73,8 @@ public sealed class ObservingDayTimeLapseStateTests
                 TimeLapseSample = new() { Enabled = true, FilePath = samplePath, MediaType = "video/mp4", Width = 1280, Height = 720 }
             });
             var clock = new FixedTimeProvider(NightlyProductFixture.DayEndUtc.AddDays(1));
-            using var nightly = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var nightly = silo.OpenStore(options, clock);
             using var videos = new SqliteTimeLapseStore(options, clock);
             Guid? summaryId = null;
             if (hasSummary)

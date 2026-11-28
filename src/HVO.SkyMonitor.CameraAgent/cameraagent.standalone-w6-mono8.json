@@ -12,12 +12,12 @@
       "bortleClass": 3,
       "shotNoiseEnabled": false,
       "readNoiseStandardDeviation": 0.0,
-      "catalogName": "HYG 4.2",
-      "catalogVersion": "4.2",
+      "catalogName": "HYG 4.4",
+      "catalogVersion": "4.4",
       "catalogSourceUrl": "https://codeberg.org/astronexus/hyg",
       "catalogLicense": "CC BY-SA 4.0",
-      "catalogChecksumSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
-      "catalogSchemaVersion": "2"
+      "catalogChecksumSha256": "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321",
+      "catalogSchemaVersion": "3"
     }
   },
   "rig": {
@@ -143,11 +143,7 @@
         "order": 30,
         "dependsOn": ["$raw", "preview", "annotation", "ProjectedScene"],
         "options": {
-          "storageRoot": "/var/lib/hvo/data/agent",
-          "retentionDays": 1,
-          "updateLatestFrame": true,
-          "queueForUpload": false,
-          "policies": []
+          "updateLatestFrame": true
         }
       },
       {

@@ -1,12 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 public sealed class Issue247TransientCandidateReservationIndependentReviewTests
 {
@@ -196,102 +195,6 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
             .ConfigureAwait(false), field);
         Assert.AreEqual(1L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM transient_candidate_conflicts;").ConfigureAwait(false), field);
-    }
-
-    [TestMethod]
-    public async Task ReserveAsync_ProductionRetentionWaitsForValidationThenObservesCommittedHold()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            Assert.Inconclusive("This test requires Linux FIFO semantics.");
-        }
-        using var fixture = await SqliteTransientCandidateJournalTests.Fixture.CreateAsync().ConfigureAwait(false);
-        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
-        source = await MoveToExpiredDirectoryAsync(fixture.Root, source).ConfigureAwait(false);
-        await StageSourceAsync(fixture.Root, source).ConfigureAwait(false);
-        var reservation = SqliteTransientCandidateJournalTests.Fixture.CreateReservation(source);
-        var payloadPath = Resolve(fixture.Root, await ScalarStringAsync(
-            fixture.Root, "SELECT payload_relative_path FROM raw_captures;").ConfigureAwait(false));
-        var sidecarPath = Resolve(fixture.Root, await ScalarStringAsync(
-            fixture.Root, "SELECT sidecar_relative_path FROM raw_captures;").ConfigureAwait(false));
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
-        File.Delete(sidecarPath);
-        await CreateFifoAsync(sidecarPath).ConfigureAwait(false);
-
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var fifoConnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseFifo = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var fifoWriter = Task.Run(async () =>
-        {
-            using var stream = new FileStream(
-                sidecarPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, 4096, FileOptions.Asynchronous);
-            fifoConnected.TrySetResult();
-            await releaseFifo.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
-            await stream.WriteAsync(sidecar, cancellation.Token).ConfigureAwait(false);
-        }, cancellation.Token);
-        var reservationTask = fixture.Journal.ReserveAsync(reservation, cancellation.Token).AsTask();
-        Task? retentionTask = null;
-        try
-        {
-            await fifoConnected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            var capacityEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var retentionOffered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var service = CreateRetentionService(fixture.Root, capacityEntered);
-            retentionTask = Task.Run(async () =>
-            {
-                retentionOffered.TrySetResult();
-                await service.ApplyRetentionAsync(CreateConfig(), cancellation.Token).ConfigureAwait(false);
-            }, cancellation.Token);
-            await retentionOffered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-
-            var writerOffered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var unrelatedWriter = Task.Run(async () =>
-            {
-                writerOffered.TrySetResult();
-                return await ExecuteAsync(fixture.Root,
-                    "UPDATE capture_control_state SET state = 'pause_requested', version = version + 1 WHERE state_key = 1;")
-                    .ConfigureAwait(false);
-            }, cancellation.Token);
-            await writerOffered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            Assert.AreEqual(1, await unrelatedWriter.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false));
-            Assert.IsFalse(capacityEntered.Task.IsCompleted,
-                "Production retention must remain before its capacity/read/delete path while validation owns the lifecycle lock.");
-            Assert.IsTrue(File.Exists(payloadPath));
-            Assert.IsTrue(File.Exists(sidecarPath));
-
-            releaseFifo.TrySetResult();
-            var result = await reservationTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            Assert.AreEqual(TransientCandidateReservationDisposition.Created, result.Disposition);
-            await capacityEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            await retentionTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-
-            Assert.IsTrue(File.Exists(payloadPath));
-            Assert.IsTrue(File.Exists(sidecarPath));
-            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
-                $"SELECT COUNT(*) FROM transient_event_identities WHERE event_id = '{reservation.EventId:N}';")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
-                $"SELECT COUNT(*) FROM transient_candidates WHERE candidate_id = '{reservation.CandidateId:N}';")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
-                $"SELECT COUNT(*) FROM transient_candidate_sources WHERE candidate_id = '{reservation.CandidateId:N}';")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
-                "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
-            Assert.AreEqual("candidate_persisted", await fixture.ScalarStringAsync(
-                "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
-            Assert.AreEqual(0, (await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false)).PressureLevel);
-            Assert.AreEqual("pause_requested", await fixture.ScalarStringAsync(
-                "SELECT state FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
-            Assert.AreEqual(1L, await fixture.ScalarLongAsync(
-                "SELECT version FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
-        }
-        finally
-        {
-            releaseFifo.TrySetResult();
-            cancellation.CancelAfter(TimeSpan.FromSeconds(2));
-            await DrainAsync(fifoWriter, reservationTask, retentionTask).ConfigureAwait(false);
-        }
     }
 
     private static async Task ApplyIdentityRaceAsync(
@@ -492,19 +395,6 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
             """,
             ("$artifact", source.Locator.Artifact.ArtifactId.ToString("N")));
 
-    private static RetentionBackgroundService CreateRetentionService(
-        string root,
-        TaskCompletionSource capacityEntered)
-        => new(
-            new StubConfigurationAccessor(),
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
-            new FixedTimeProvider(new DateTimeOffset(2035, 1, 1, 12, 0, 0, TimeSpan.Zero)),
-            new SqliteArtifactOutbox(),
-            new SignalingCapacityProvider(capacityEntered),
-            new StoragePressureState(),
-            NullLogger<RetentionBackgroundService>.Instance,
-            new JournalRawIngressHolds(root));
-
     private static CameraModuleConfig CreateConfig()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -634,38 +524,4 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
         }
     }
 
-    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => now;
-    }
-
-    private sealed class SignalingCapacityProvider(TaskCompletionSource entered) : IStorageCapacityProvider
-    {
-        public StorageCapacity GetCapacity(string storageRoot)
-        {
-            entered.TrySetResult();
-            return new StorageCapacity(1_000, 500);
-        }
-    }
-
-    private sealed class JournalRawIngressHolds(string root) : IRawIngressRetentionHolds
-    {
-        private readonly SqliteRawCaptureJournal _journal = new(
-            Path.Combine(root, "journal", "raw-ingress.db"), 1);
-
-        public async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
-            string storageRoot,
-            CancellationToken cancellationToken)
-            => await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private sealed class StubConfigurationAccessor : ICameraAgentConfigurationAccessor
-    {
-        public bool IsConfigured => false;
-
-        public void SetConfiguration(CameraModuleConfig config) => throw new NotSupportedException();
-
-        public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken)
-            => ValueTask.FromException<CameraModuleConfig>(new NotSupportedException());
-    }
 }

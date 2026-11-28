@@ -220,12 +220,11 @@ endpoint now. Any current HTTP reply, including an error response, means reachab
 and keeps ordinary settlement gating. Only an explicit connection failure or a
 bounded no-response timeout admits the offline exception. Starting/missing health,
 probe execution errors and Docker inspection errors do not authorize recovery.
-The control-journal exception applies to `uninstall`, `restore`, `reinstall`, and
-`rollback`; it does not change their other prerequisites. Reinstall requires a
-preserved uninstalled instance, restore requires an eligible target and verified
-backup, and rollback still requires its original-image and authenticated
-pre-mutation checks. For an original host that cannot provide those checks, use
-preserve-by-default uninstall, restore if needed, then reinstall.
+For an offline instance, use preserve-by-default uninstall, restore if supported
+and needed, then reinstall. Reinstall requires a preserved uninstalled instance.
+Restore requires an eligible target and a verified archive. On an installed
+instance, `cameraagent rollback` can start a retained earlier build that shares
+the baseline state contract. [CameraAgent lifecycle](deployment-installer.md#cameraagent-lifecycle)
 
 A retained nonterminal control projection can refuse recovery's final resume with
 409 even after the recovered image and paused boundary have committed. In that
@@ -254,12 +253,13 @@ case leave both journals intact and complete these steps:
    resume authority does not transfer. Capture remains paused until the recovery
    command resumes it. Terminal-but-unpublished receipts use the worker's existing
    publication path, which does not need the deployment lock.
-3. Rerun the **same** reinstall or rollback command with `--resume`. Its committed
-   retry verifies the recovered instance, resumes through the normal native
-   authority and completes the deployment journal without another image start.
-   For a precommit failure, correct the reported underlying failure first, then
-   use the same command with `--resume`; its existing phase checks determine
-   which deployment steps must be retried. A worker started while the manifest
+3. Rerun the same reinstall command with `--resume`, or use `rollback --resume`
+   for an already committed legacy rollback. The committed retry verifies the
+   recovered instance, resumes through the native authority, and completes the
+   journal without another image start. For a precommit reinstall failure, correct
+   the reported failure before resuming. For an interrupted legacy rollback
+   before commit, retain both journals and escalate for transaction-aware recovery.
+   A worker started while the manifest
    says Uninstalled refreshes the retained identity under deployment authority;
    after reinstall completes it accepts new runtime-control requests without a
    restart. Changes to its runtime account or listener still require a restart.
@@ -278,9 +278,7 @@ docker stop hvo-skymonitor-<instance-guid-without-hyphens>
 Stopping the container prevents capture; it does not clear either journal.
 The offline gate can then admit the reinstall retry. Once the replacement
 process returns, run the worker as above and retry `--resume` if the retained
-projection still refuses the final resume. Do not use this workaround to skip
-rollback's original-image/authenticated preconditions; if those cannot be met,
-use the preserve-by-default uninstall/restore/reinstall route described above.
+projection still refuses the final resume.
 
 A rollback interrupted between publishing its candidate manifest and installation
 result can retain mismatched image records. When these match the same retained
@@ -290,12 +288,9 @@ fence. This is an interrupted publication, not arbitrary identity corruption;
 the reachable-agent retry gate can also refuse the pending receipt. An
 already-running worker can still settle retained receipts across this matching
 transaction after its initialized, different replacement process is durably
-Paused; new runtime work stays refused until rollback resume completes.
-If an already-running worker settles and publishes the retained receipt, rerun
-the same rollback command with `--resume`. If worker startup instead refuses with
-`lifecycle.rollback-partial-commit`, retain both journals and escalate for
-transaction-aware recovery. Do not edit records to force correlation. Unrelated
-identity mismatches keep their strict refusal.
+Paused. New runtime work stays fenced. Keep both journals and escalate for
+transaction-aware recovery, even if the worker settled a retained receipt.
+Unrelated identity mismatches still cause refusal.
 
 Worker startup takes `deployment.lock` for a consistent identity read. If an
 installer holds it, startup fails promptly as busy; retry starting the worker

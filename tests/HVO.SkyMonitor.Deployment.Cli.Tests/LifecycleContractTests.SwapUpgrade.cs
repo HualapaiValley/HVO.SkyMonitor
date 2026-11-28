@@ -46,7 +46,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_UnchangedStateContract_SwapsWithoutCopyingOrSnapshottingAnything()
+    public async Task UpgradeAsync_SameStateContract_CheckpointsStoresWithoutCopyingBulkState()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
@@ -56,25 +56,25 @@ public sealed partial class LifecycleContractTests
         var bulk = SeedBulk(fixture.Paths);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(0, fixture.Runner.BackupCount);
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        Assert.IsFalse(journal.StateSnapshotRequired);
-        Assert.IsNull(journal.StateSnapshot);
-        Assert.IsFalse(Directory.Exists(SnapshotsRoot(fixture, journal.OperationId)));
+        Assert.IsTrue(journal.StateSnapshotRequired);
+        Assert.IsNotNull(journal.StateSnapshot);
+        Assert.IsTrue(Directory.Exists(SnapshotsRoot(fixture, journal.OperationId)));
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
-        Assert.IsNull(manifest.PreviousStateSnapshot);
+        Assert.IsNotNull(manifest.PreviousStateSnapshot);
         AssertBulkUntouched(bulk);
         AssertNothingBulkCopied(fixture, bulk);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_DeclaredMigration_SnapshotsOnlyTheSmallDatabasesBeforeTheCandidateStarts()
+    public async Task UpgradeAsync_CheckpointsOnlySmallDatabasesBeforeTheCandidateStarts()
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -90,10 +90,9 @@ public sealed partial class LifecycleContractTests
         };
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
-        // No --migration-backward-compatible assertion is needed: the snapshot is the restore path.
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(0, fixture.Runner.BackupCount);
         // The snapshot was durable and recorded before the candidate's Compose up, and the record that the candidate
@@ -120,7 +119,7 @@ public sealed partial class LifecycleContractTests
         // The snapshot is the pre-upgrade state, not what the candidate migrated.
         CollectionAssert.AreEqual(before, ReadStoreFacts(SnapshotFile(root, "01-raw-ingress.db")));
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
-        Assert.AreEqual(snapshot, manifest.PreviousStateSnapshot);
+        Assert.IsNotNull(manifest.PreviousStateSnapshot);
         Assert.AreEqual(CandidateImageId, manifest.Image.ImageId);
         AssertBulkUntouched(bulk);
         AssertNothingBulkCopied(fixture, bulk);
@@ -157,7 +156,7 @@ public sealed partial class LifecycleContractTests
         };
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
         Assert.IsTrue(restartedOriginal);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
@@ -170,7 +169,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task UpgradeAsync_FailedMigratingCandidate_RestoresTheSnapshotBeforeThePreviousImageStartsAndWarns(bool json)
+    public async Task UpgradeAsync_FailedCandidate_RestoresTheSnapshotBeforeThePreviousImageStartsAndWarns(bool json)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -193,7 +192,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter(CultureInfo.InvariantCulture);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { Json = json }, fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture) with { Json = json }, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
@@ -229,122 +228,6 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_AfterAMigratingUpgrade_RestoresItsSnapshotWithAWarningAndCanRollForwardAgain()
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        var beforeUpgrade = ReadStoreFacts(fixture.Paths);
-        var bulk = SeedBulk(fixture.Paths);
-        fixture.Runner.OnComposeUp = image =>
-        {
-            if (image == CandidateImageId) MigrateAsCandidate(fixture.Paths);
-        };
-        var lifecycle = new FakeLifecycleClient();
-        var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", upgraded.Outcome);
-        var upgradeSnapshot = (await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None))
-            .PreviousStateSnapshot;
-        Assert.IsNotNull(upgradeSnapshot);
-        // The upgraded release records more captures before the operator rolls back.
-        AddRawRows(fixture.Paths, 7);
-        var beforeRollback = ReadStoreFacts(fixture.Paths);
-        var pausesBeforeRollback = lifecycle.PauseCount;
-        using var error = new ObservingWriter<int>(() => lifecycle.PauseCount);
-        fixture.Runner.OnComposeUp = null;
-
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-
-        Assert.AreEqual("completed", rolledBack.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        // The warning came before the pause, so before anything about the instance changed.
-        Assert.AreEqual(pausesBeforeRollback, error.StateAtFirstWrite);
-        StringAssert.Contains(error.ToString(), upgradeSnapshot.SnapshotId.ToString("D"), StringComparison.Ordinal);
-        StringAssert.Contains(error.ToString(), "Every database change made after that point is lost", StringComparison.Ordinal);
-        // The stores are as they were before the upgrade: the later captures are gone, as the warning said.
-        CollectionAssert.AreEqual(beforeUpgrade, ReadStoreFacts(fixture.Paths));
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        Assert.AreEqual(upgradeSnapshot, journal.RetainedStateSnapshot);
-        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
-        Assert.AreEqual(CandidateImageId, manifest.PreviousImage!.ImageId);
-        // The rollback kept the stores it replaced, so going forward again puts the upgraded release's state back.
-        Assert.AreEqual(journal.StateSnapshot, manifest.PreviousStateSnapshot);
-        AssertBulkUntouched(bulk);
-
-        var forward = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null);
-
-        Assert.AreEqual("completed", forward.Outcome);
-        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        CollectionAssert.AreEqual(beforeRollback, ReadStoreFacts(fixture.Paths));
-        AssertBulkUntouched(bulk);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_TamperedRetainedSnapshot_IsRefusedBeforeAnythingChanges()
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        var lifecycle = new FakeLifecycleClient();
-        Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
-        var snapshot = (await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None))
-            .PreviousStateSnapshot!;
-        var tampered = SnapshotFile(CameraAgentStateSnapshot.SnapshotRoot(fixture.Paths, snapshot.OperationId, snapshot.SnapshotId), "01-raw-ingress.db");
-        await using (var stream = new FileStream(tampered, FileMode.Open, FileAccess.Write))
-        {
-            stream.Seek(-1, SeekOrigin.End);
-            stream.WriteByte(0x5a);
-        }
-        var pauses = lifecycle.PauseCount;
-        var stores = ReadStoreFacts(fixture.Paths);
-
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
-
-        StringAssert.Contains(exception.Message, "differs from its manifest", StringComparison.Ordinal);
-        Assert.AreEqual(pauses, lifecycle.PauseCount);
-        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        CollectionAssert.AreEqual(stores, ReadStoreFacts(fixture.Paths));
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, journal.FailureCode);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RestoreOnly_RefusesASnapshotItCannotAuthenticateBeforeAnythingChanges()
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
-        var request = await fixture.PrepareRestoreAsync();
-        var operation = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
-        {
-            StateSnapshotRequired = true,
-            StateSnapshot = new LifecycleStateSnapshot(Guid.NewGuid(), operation.OperationId, new string('a', 64), DateTimeOffset.UtcNow)
-        }, CancellationToken.None);
-        var lifecycle = new FakeLifecycleClient();
-
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None));
-
-        // Restore-only recovers onto a recorded snapshot only after authenticating it; one it cannot authenticate stops
-        // it before it stops, restores or resumes anything.
-        StringAssert.Contains(exception.Message, "snapshot is missing its manifest", StringComparison.Ordinal);
-        Assert.AreEqual(0, lifecycle.RecoveryResumeCalls);
-        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_ResumeAfterTheOriginalWasRestored_NeverRestoresOverItsNewCaptures()
     {
         // The automatic restore put the stores back and restarted the original, but the capture resume was not
@@ -360,7 +243,7 @@ public sealed partial class LifecycleContractTests
         var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle, _ => owner,
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle, _ => owner,
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
         var retained = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.IsTrue(retained.MutationStarted);
@@ -382,7 +265,7 @@ public sealed partial class LifecycleContractTests
         };
 
         var resumed = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
 
         Assert.AreEqual("completed", resumed.Outcome);
@@ -413,7 +296,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
         }
         finally
@@ -454,7 +337,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         }
         finally
@@ -471,7 +354,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
                 error: TextWriter.Null)).Outcome);
         }
@@ -500,7 +383,6 @@ public sealed partial class LifecycleContractTests
     {
         var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
         // One boundary label differs, so the candidate declares a migration without changing what the preflight reads.
-        fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
         return fixture;
@@ -555,7 +437,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             var result = await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
                 error: TextWriter.Null);
             if (result.Outcome != "completed") violations.Add($"{image.Step}: resume ended {result.Outcome}");

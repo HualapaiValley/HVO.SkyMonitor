@@ -8,10 +8,10 @@ public sealed class ProjectedSceneImageTransformTests
 {
     private static readonly string[] ExpectedRotationIdentities =
     [
-        "D1735FC65641BCE5C9DC5086A6B148183EDFC68E78A3DD1766153C47304594AE",
-        "0D6547ECFD9EEEAB1F95E27ADF498D246F91D47A4375B727F3B67303E870DCAD",
-        "D775AFF1CE6CCCD50EC7EF52C16387F8D2431BD18FC105FBC9F9CB75A93BCAF9",
-        "F774703C5DEFD086883ACC87A9EAC7A07DC4B2A44A4E79C58168F98F2223C1B0"
+        "BACEC0C603AD4D19FE47C958166C866F1DEE4B113D9FDB97AB02F166D4214C80",
+        "D111043185BF94B081835B007CD61BF20819E4C1B652D416CD6E996261F272DB",
+        "B1AC0CFD9C7F5CA91FD45E2883FFCB4EC5CE30E34FD71BACFF75D5CF268A2F88",
+        "9BD1518D38C468D0BCF8195486F059582CD29FE5A6FE75DEA8E425F6C645B2A3"
     ];
     private static readonly int[] ExpectedPartIndices = [0, 1];
     [TestMethod]
@@ -109,7 +109,7 @@ public sealed class ProjectedSceneImageTransformTests
             identities.Add(scene.SceneIdentitySha256);
         }
 
-        CollectionAssert.AreEqual(ExpectedRotationIdentities, identities);
+        CollectionAssert.AreEqual(ExpectedRotationIdentities, identities, string.Join(", ", identities));
     }
 
     [TestMethod]

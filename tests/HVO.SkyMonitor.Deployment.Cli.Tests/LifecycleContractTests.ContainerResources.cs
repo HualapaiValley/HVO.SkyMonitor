@@ -60,7 +60,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAndRollback_OperatorLimits_SurviveWithTheExactComposeModel()
+    public async Task UpgradeAndRollback_PreserveTheExactOperatorLimits()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         var pinned = new ContainerResourceLimits(3.5m, 6 * LimitGibibyte, 256, true, true);
@@ -76,16 +76,14 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(pinnedCompose, await File.ReadAllTextAsync(composePath));
         Assert.AreEqual(pinnedModel, upgraded.ComposeModelSha256);
 
-        await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback),
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
-
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", result.Outcome);
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, rolledBack.Image.ImageId);
+        Assert.AreEqual(fixture.Manifest.Image, rolledBack.Image);
         Assert.AreEqual(pinned, rolledBack.Resources);
         Assert.AreEqual(pinnedCompose, await File.ReadAllTextAsync(composePath));
-        Assert.AreEqual(pinnedModel, rolledBack.ComposeModelSha256);
     }
 
     [TestMethod]
@@ -165,7 +163,6 @@ public sealed partial class LifecycleContractTests
             {
                 ImageReference = candidateReference,
                 NoDownload = true,
-                MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);

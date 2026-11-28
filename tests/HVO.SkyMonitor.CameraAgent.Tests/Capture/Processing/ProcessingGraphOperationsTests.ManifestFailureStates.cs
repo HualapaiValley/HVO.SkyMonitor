@@ -20,17 +20,14 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("api", 65)]
     [DataRow("ui", 65)]
     [DataRow("replay", 65)]
-    [DataRow("export", 65)]
     [DataRow("detail", 1024)]
     [DataRow("api", 1024)]
     [DataRow("ui", 1024)]
     [DataRow("replay", 1024)]
-    [DataRow("export", 1024)]
     [DataRow("detail", 16384)]
     [DataRow("api", 16384)]
     [DataRow("ui", 16384)]
     [DataRow("replay", 16384)]
-    [DataRow("export", 16384)]
     public async Task DeepOptionalManifestCountsPreserveConsumersAcrossRestart(string consumer, int depth)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-manifest-depth");
@@ -114,7 +111,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(0, node.CommittedOutputCount);
             await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
             var facts = new Dictionary<string, string>();
-            foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+            foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                 facts.Add(consumer, await ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: false).ConfigureAwait(false));
             await provider.DisposeAsync().ConfigureAwait(false);
             using var restarted = CreateProvider(root);
@@ -229,10 +226,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.HasCount(1, retained.Nodes.Single().Outputs);
                 Assert.HasCount(2, retained.Nodes.Single().Attempts);
                 await RunManifestTestAssertions.ResponseAsync(operations, context.ExecutionId).ConfigureAwait(false);
-                var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", output.OutputIdentitySha256,
-                    output.PayloadRelativePath, output.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, output.ArtifactId,
+                    output.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(operations, context.ExecutionId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
             }
             finally { graph.DisposeSteps(); }

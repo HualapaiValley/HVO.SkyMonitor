@@ -7,17 +7,36 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
 public sealed partial class ProcessingNodeOptionsEditor : ComponentBase
 {
+    // Exclude "enabled" across both v2 (NodeEnabled) and retained legacy v1 (options.enabled) graphs
+    // so resetting node configuration options never silently re-enables a disabled pipeline step.
+    private static readonly HashSet<string> NodeEnabledKeys = new(StringComparer.Ordinal) { "enabled" };
+
     [Parameter, EditorRequired] public string IdPrefix { get; set; } = string.Empty;
     [Parameter, EditorRequired] public ProcessingNodeOptionsForm Form { get; set; } = default!;
     [Parameter] public EventCallback Changed { get; set; }
     [Parameter] public bool? NodeEnabled { get; set; }
     [Parameter] public EventCallback<bool> NodeEnabledChanged { get; set; }
+    [Parameter] public bool ShowResetToDefaults { get; set; }
+    [Parameter] public string? DeepSkyAnchorId { get; set; }
+
+    private bool CanResetToDefaults
+        => Form.HasNonDefaultValuesExcluding(NodeEnabledKeys);
+
+    // Preserves the node's enabled/disabled state across both v2 (NodeEnabled) and retained legacy v1 (options.enabled) graphs.
+    private async Task ResetAllToDefaultsAsync()
+    {
+        Form.ResetAllToDefaultsExcluding(NodeEnabledKeys);
+        await Changed.InvokeAsync().ConfigureAwait(false);
+    }
 
     private async Task ToggleChangedAsync(string key, bool value)
     {
         if (key == "enabled" && NodeEnabled.HasValue)
         {
-            await NodeEnabledChanged.InvokeAsync(value).ConfigureAwait(false);
+            if (NodeEnabled.Value != value)
+            {
+                await NodeEnabledChanged.InvokeAsync(value).ConfigureAwait(false);
+            }
             await Changed.InvokeAsync().ConfigureAwait(false);
         }
         else

@@ -320,6 +320,12 @@ public sealed record LocalAutomationDefinitionState(
     public LocalAutomationOccurrence? NextOccurrence { get; init; }
 
     public string? WindowUnavailableReasonCode { get; init; }
+
+    /// <summary>The current registry's rejection of the retained settings, independent of recorded enablement.</summary>
+    public LocalAutomationRegistryRejection? RegistryRejection { get; init; }
+
+    /// <summary>Whether the current registered task accepts an explicit run-now.</summary>
+    public bool SupportsRunNow { get; init; }
 }
 
 /// <summary>One entry of the next-run calendar over the enabled wall-clock definitions.</summary>
@@ -337,6 +343,12 @@ public sealed record LocalAutomationCalendarEntry(
 public sealed record LocalAutomationScriptInvocation(
     string Target, string RegistrationId, int TimeoutSeconds, long ScratchBytes, long OutputBytes, int ArgumentCount);
 
+/// <summary>A registered producer target with its operator-facing name and pinned parameters.</summary>
+public sealed record LocalAutomationProducerPreset(
+    string Target, string Name, IReadOnlyList<LocalAutomationPresetParameter> Parameters);
+
+public sealed record LocalAutomationPresetParameter(string Name, string Value);
+
 /// <summary>One registered task kind, the triggers it accepts, and the targets it can name.</summary>
 public sealed record LocalAutomationTaskDescriptor(
     LocalAutomationTaskKind TaskKind,
@@ -348,6 +360,8 @@ public sealed record LocalAutomationTaskDescriptor(
 {
     /// <summary>Only the source-window presets that this installed adapter actually accepts.</summary>
     public IReadOnlyList<LocalAutomationSourceWindowKind> SupportedSourceWindows { get; init; } = [];
+
+    public IReadOnlyList<LocalAutomationProducerPreset> ProducerPresets { get; init; } = [];
 
     public IReadOnlyList<LocalAutomationScriptInvocation> ScriptInvocations { get; init; } = [];
 }
@@ -364,6 +378,9 @@ public sealed record LocalAutomationOperatorState(
 {
     /// <summary>Bounded queued and running occurrences, including those older than the recent history page.</summary>
     public IReadOnlyList<LocalAutomationRun> ActiveRuns { get; init; } = [];
+
+    /// <summary>Recent source-window attempts eligible for retry at the time of this read.</summary>
+    public IReadOnlyList<string> RetryableSourceWindowRunKeys { get; init; } = [];
 
     /// <summary>Exact journal totals, independent of the bounded recent-run projection.</summary>
     public int? RunningRunCount { get; init; }

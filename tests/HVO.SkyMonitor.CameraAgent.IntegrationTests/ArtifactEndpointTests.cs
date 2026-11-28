@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -226,6 +229,148 @@ public sealed class ArtifactEndpointTests
         Assert.IsFalse(failure.Contains("relative_path", StringComparison.OrdinalIgnoreCase));
     }
 
+    [TestMethod]
+    public async Task ScientificExportsUseReadAuthorizationExactBindingAndVerifiedDownloadAsync()
+    {
+        var failures = new ConcurrentQueue<(long Count, string? Format, string? Reason, int? Status)>();
+        using var meter = new Meter(CameraAgentOperatorTelemetry.InstrumentationName);
+        using var telemetry = new CameraAgentOperatorTelemetry(meter);
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, observer) =>
+            {
+                if (ReferenceEquals(meter, instrument.Meter) && instrument.Name == "camera_agent.scientific_export.failures")
+                    observer.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, tags, _) => failures.Enqueue((count,
+            GetTagValue(tags, "format") as string, GetTagValue(tags, "reason") as string, GetTagValue(tags, "status") as int?)));
+        listener.Start();
+        var service = new StubArtifactService { MediaType = "application/x-skymonitor-mono16" };
+        var utc = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var profile = new ProfileIdentityDescriptor("test", "1", new string('A', 64));
+        service.Descriptor = new ReconstructionDescriptor(
+            new("agent", "rig", 42, service.CaptureId),
+            new(utc, utc, utc.AddSeconds(1), utc.AddSeconds(2), utc.AddSeconds(3)),
+            new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 5, 5, null, null, null, null),
+            new(profile, profile, profile, profile, profile),
+            new(2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 16, 16,
+                FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, null, null, service.Content.Length),
+            new(service.ArtifactId, FrameArtifactRole.Raw, "Test instrument", "native", utc.AddSeconds(3), [],
+                RecipeIdentityDescriptor.Create("raw", "1.0.0", "test-v1", JsonSerializer.SerializeToElement(new { })),
+                service.MediaType, PayloadChecksum.ComputeSha256(service.Content)));
+        using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
+        {
+            services.RemoveAll<ICameraAgentArtifactService>();
+            services.AddSingleton<ICameraAgentArtifactService>(service);
+            services.RemoveAll<CameraAgentOperatorTelemetry>();
+            services.AddSingleton(telemetry);
+        });
+        var (ownerId, nonOwnerId) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
+        var uri = ExportUri(service.CaptureId, service.ArtifactId, "fits");
+        using var anonymous = factory.CreateClient();
+        using var anonymousResponse = await anonymous.GetAsync(uri).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        using var nonOwner = factory.CreateClient();
+        nonOwner.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+        using var forbidden = await nonOwner.GetAsync(uri).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, forbidden.StatusCode);
+
+        using var owner = factory.CreateClient();
+        owner.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        foreach (var (format, mediaType, signature) in new[]
+        {
+            ("fits", "image/fits", "SIMPLE  "),
+            ("fits.fz", "application/fits", "SIMPLE  "),
+            ("xisf", "application/xisf", "XISF0100")
+        })
+        {
+            var download = ExportUri(service.CaptureId, service.ArtifactId, format);
+            using var response = await owner.GetAsync(download).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            var sha = PayloadChecksum.ComputeSha256(bytes);
+            Assert.AreEqual(signature, Encoding.ASCII.GetString(bytes, 0, 8));
+            Assert.AreEqual(bytes.LongLength, response.Content.Headers.ContentLength);
+            Assert.AreEqual(sha, response.Headers.GetValues("X-Artifact-SHA256").Single());
+            Assert.AreEqual(new EntityTagHeaderValue("\"" + sha + "\""), response.Headers.ETag);
+            Assert.AreEqual(mediaType, response.Content.Headers.ContentType?.MediaType);
+            Assert.AreEqual("attachment", response.Content.Headers.ContentDisposition?.DispositionType);
+            Assert.AreEqual($"capture-42-{service.ArtifactId:N}.{format}",
+                response.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+            Assert.IsTrue(response.Headers.CacheControl?.NoStore);
+            Assert.AreEqual("Cookie", response.Headers.Vary.Single());
+            Assert.AreEqual("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+
+            using var head = new HttpRequestMessage(HttpMethod.Head, download);
+            using var header = await owner.SendAsync(head).ConfigureAwait(false);
+            Assert.AreEqual(response.Content.Headers.ContentLength, header.Content.Headers.ContentLength);
+            Assert.AreEqual(response.Headers.ETag, header.Headers.ETag);
+            Assert.AreEqual("Cookie", header.Headers.Vary.Single());
+            Assert.IsEmpty(await header.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+            using var range = new HttpRequestMessage(HttpMethod.Get, download);
+            range.Headers.Range = new RangeHeaderValue(0, 7);
+            range.Headers.IfRange = new RangeConditionHeaderValue(response.Headers.ETag!);
+            using var part = await owner.SendAsync(range).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.PartialContent, part.StatusCode);
+            CollectionAssert.AreEqual(bytes[..8], await part.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+            using var conditional = new HttpRequestMessage(HttpMethod.Get, download);
+            conditional.Headers.IfNoneMatch.Add(response.Headers.ETag!);
+            using var unchanged = await owner.SendAsync(conditional).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.NotModified, unchanged.StatusCode);
+
+            using var invalidRange = new HttpRequestMessage(HttpMethod.Get, download);
+            invalidRange.Headers.Range = new RangeHeaderValue(bytes.LongLength, null);
+            using var unsatisfiable = await owner.SendAsync(invalidRange).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.RequestedRangeNotSatisfiable, unsatisfiable.StatusCode);
+            Assert.AreEqual($"bytes */{bytes.LongLength}", unsatisfiable.Content.Headers.ContentRange?.ToString());
+            Assert.Contains((1L, format, "scientific-export.range-unsatisfiable", 416), failures);
+        }
+
+        await AssertProblemAsync(ExportUri(Guid.NewGuid(), service.ArtifactId, "fits"),
+            HttpStatusCode.NotFound, "scientific-export.source-not-found").ConfigureAwait(false);
+        await AssertProblemAsync(ExportUri(service.CaptureId, StubArtifactService.MissingId, "fits"),
+            HttpStatusCode.NotFound, "scientific-export.source-not-found").ConfigureAwait(false);
+        await AssertProblemAsync(ExportUri(service.CaptureId, StubArtifactService.CorruptId, "xisf"),
+            HttpStatusCode.Conflict, "scientific-export.corrupt-source").ConfigureAwait(false);
+        await AssertProblemAsync(ExportUri(service.CaptureId, service.ArtifactId, "png"),
+            HttpStatusCode.BadRequest, "scientific-export.unknown-format").ConfigureAwait(false);
+        Assert.Contains((1L, "unknown", "scientific-export.unknown-format", 400), failures);
+        service.Content[4] ^= 1;
+        using var changedHead = new HttpRequestMessage(HttpMethod.Head, ExportUri(service.CaptureId, service.ArtifactId, "xisf"));
+        using var changedHeadResponse = await owner.SendAsync(changedHead).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Conflict, changedHeadResponse.StatusCode);
+        Assert.IsFalse(changedHeadResponse.Headers.Contains("X-Artifact-SHA256"));
+        await AssertProblemAsync(uri, HttpStatusCode.Conflict, "scientific-export.corrupt-source").ConfigureAwait(false);
+        Assert.Contains((1L, "fits", "scientific-export.corrupt-source", 409), failures);
+        service.Descriptor = null;
+        await AssertProblemAsync(uri, HttpStatusCode.UnsupportedMediaType, "scientific-export.unsupported-source").ConfigureAwait(false);
+
+        async Task AssertProblemAsync(Uri request, HttpStatusCode status, string reason)
+        {
+            using var response = await owner.GetAsync(request).ConfigureAwait(false);
+            Assert.AreEqual(status, response.StatusCode);
+            Assert.AreEqual("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+            Assert.AreEqual("Cookie", response.Headers.Vary.Single());
+            Assert.IsFalse(response.Headers.Contains("X-Artifact-SHA256"));
+            using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            Assert.AreEqual(reason, problem.RootElement.GetProperty("reasonCode").GetString());
+
+            using var head = new HttpRequestMessage(HttpMethod.Head, request);
+            using var headResponse = await owner.SendAsync(head).ConfigureAwait(false);
+            Assert.AreEqual(status, headResponse.StatusCode);
+            Assert.IsNull(headResponse.Content.Headers.ContentType);
+            Assert.IsEmpty(await headResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.AreEqual("Cookie", headResponse.Headers.Vary.Single());
+        }
+    }
+
+    private static Uri ExportUri(Guid captureId, Guid artifactId, string format) =>
+        new($"/api/v1/operations/gallery/{captureId:D}/artifacts/{artifactId:D}/export/{format}", UriKind.Relative);
+
     private static async Task<(string OwnerId, string NonOwnerId)> GetUsersAsync(IServiceProvider services)
     {
         using var scope = services.CreateScope();
@@ -270,6 +415,10 @@ public sealed class ArtifactEndpointTests
 
         internal byte[] Content { get; } = [1, 2, 3, 4, 5, 6, 7, 8];
 
+        internal Guid CaptureId { get; } = Guid.Parse("20000000-0000-0000-0000-000000000001");
+
+        internal ReconstructionDescriptor? Descriptor { get; set; }
+
         internal byte[] Preview { get; } = [0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9];
 
         internal string ETag => $"\"{PayloadChecksum.ComputeSha256(Content)}\"";
@@ -296,13 +445,13 @@ public sealed class ArtifactEndpointTests
             var content = new CameraAgentArtifactContentStream(
                 new MemoryStream(Content, writable: false),
                 ArtifactId,
-                Guid.Parse("20000000-0000-0000-0000-000000000001"),
-                FrameArtifactRole.Preview,
+                CaptureId,
+                Descriptor?.Artifact.Role ?? FrameArtifactRole.Preview,
                 MediaType,
                 Content.LongLength,
                 PayloadChecksum.ComputeSha256(Content),
                 $"{ArtifactId:D}.bin",
-                null);
+                Descriptor);
             return new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.Found, content);
         }
 

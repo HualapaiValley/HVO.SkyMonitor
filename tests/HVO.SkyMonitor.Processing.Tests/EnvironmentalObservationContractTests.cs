@@ -786,48 +786,6 @@ public sealed class EnvironmentalObservationContractTests
         Assert.AreEqual(new string('A', 64), parsed.Fact!.Lineage.Single().SourceIdentitySha256);
     }
 
-    [TestMethod]
-    public void DeliveryEnvelopeAndAcknowledgementUseStrictBoundedIdentity()
-    {
-        var observation = CreateObservation();
-        var envelope = new EnvironmentalObservationDeliveryEnvelope(
-            EnvironmentalObservationDeliveryEnvelope.CurrentSchemaVersion,
-            "device-1",
-            "secret",
-            observation);
-        var acknowledgement = new EnvironmentalObservationAcknowledgement(
-            EnvironmentalObservationAcknowledgement.CurrentSchemaVersion,
-            observation.ObservationId,
-            EnvironmentalObservationJson.ComputeSourceIdentitySha256(observation),
-            EnvironmentalObservationJson.ComputeContentSha256(observation),
-            Epoch.AddMinutes(1),
-            EnvironmentalObservationDeliveryDisposition.Accepted);
-
-        var parsedEnvelope = EnvironmentalObservationDeliveryJson.ParseEnvelope(
-            EnvironmentalObservationDeliveryJson.Serialize(envelope));
-        var parsedAcknowledgement = EnvironmentalObservationDeliveryJson.ParseAcknowledgement(
-            EnvironmentalObservationDeliveryJson.Serialize(acknowledgement));
-
-        Assert.IsTrue(parsedEnvelope.Validation.IsValid);
-        Assert.AreEqual(envelope.DeviceId, parsedEnvelope.Value!.DeviceId);
-        CollectionAssert.AreEqual(
-            EnvironmentalObservationJson.Serialize(envelope.Observation),
-            EnvironmentalObservationJson.Serialize(parsedEnvelope.Value.Observation));
-        Assert.IsTrue(parsedAcknowledgement.Validation.IsValid);
-        Assert.IsTrue(EnvironmentalObservationDeliveryJson.Matches(parsedAcknowledgement.Value!, observation));
-        Assert.IsFalse(EnvironmentalObservationDeliveryJson.Matches(
-            acknowledgement with { ObservationId = Guid.NewGuid() },
-            observation));
-        var duplicateOuterMember = Encoding.UTF8.GetBytes(
-            Encoding.UTF8.GetString(EnvironmentalObservationDeliveryJson.Serialize(envelope)).Insert(1, "\"deviceId\":\"other\","));
-        Assert.AreEqual(
-            EnvironmentalObservationReasonCodes.InvalidJson,
-            EnvironmentalObservationDeliveryJson.ParseEnvelope(duplicateOuterMember).Validation.ReasonCode);
-        Assert.AreEqual(
-            EnvironmentalObservationReasonCodes.InvalidJson,
-            EnvironmentalObservationDeliveryJson.ParseAcknowledgement(Encoding.UTF8.GetBytes("{\"unknown\":true}")).Validation.ReasonCode);
-    }
-
     private static EnvironmentalObservationV1 CreateObservation(
         EnvironmentalObservationValue? value = null)
     {

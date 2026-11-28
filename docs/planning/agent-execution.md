@@ -55,9 +55,9 @@ migration changes without taking over repository-wide task dispatch.
 ### SkyMonitor Recovery Ordering Gate
 
 Owner clarification in [#1606](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1606#issuecomment-6370275612):
-when selecting affected work, check the applicable bounded keep/change outcome
-from #1607 (CameraAgent) or #1608 (LogicHost). It must be recorded before work
-commits to an overlapping persistent-state layout, recovery protocol or
+when selecting affected work, check the bounded CameraAgent keep/change outcome
+from #1607. Record it before work commits to an overlapping persistent-state
+layout, recovery protocol or
 substantial forward upgrade path. Require each affected story to cite that
 decision and its supported forward inputs. An evidence-backed keep-current
 result clears the gate; neither a new backend/framework nor an implementation
@@ -68,13 +68,13 @@ The owner-requested [#1615 recurring-cost reassessment](../validation/upgrade-re
 adds the current disposition: simplify the pending-upgrade protocol on existing
 primitives first, retain a controlled snapshot alternative if integrated
 complexity/pause evidence reverses that choice. Overlapping stories cite this
-comparison alongside #1606 and their #1607/#1608 inputs. Its recorded outcome
+comparison alongside #1606 and their #1607 inputs. Its recorded outcome
 clears the reassessment ordering gate; it does not waive implementation
 acceptance or adopt the proposed test-policy reductions.
 
-The affected overlaps include CameraAgent #1059/#1060/#1300 and LogicHost
-#1244/#1245/#589/#591. Scope dependencies to those overlaps. Unrelated features,
-clean-install preparation, release verification and strict existing-behavior
+The affected overlaps include CameraAgent #1059/#1060/#1300. Scope dependencies
+to those overlaps. Unrelated features, clean-install preparation, release
+verification and strict existing-behavior
 #893 CLI parity stay independent; this is not a portfolio-wide scheduling hold.
 
 Larger DB/file/schema conversions may be explicitly **forward-only**. Do not
@@ -84,7 +84,7 @@ inputs, validation, interruption/resume and operator recovery/data-loss
 expectations before conversion. Preserve ordinary protected upgrade checkpoint
 recovery: restoring a paired pre-upgrade point does not reverse a migration.
 This exception neither removes protection universally nor permits silent
-destructive conversion. The [install contract](../hvo-install-contract.md#skymonitor-qualification-and-adoption)
+destructive conversion. The [install contract](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/7719263037a631fad37b4edcbf6aaffb3d7aa2a5/docs/hvo-install-contract.md#skymonitor-qualification-and-adoption)
 and [implementation map](skymonitor-upgrade-recovery.md#ordering-and-forward-only-conversions)
 own the detailed boundary; existing required gates remain in force.
 
@@ -126,7 +126,7 @@ stacked PR series.
 
 - Implement the smallest coherent issue slice that satisfies its acceptance
   gate.
-- Keep CameraAgent and LogicHost independent.
+- Keep CameraAgent and its replay runner independently deployable.
 - Keep AgentCore transport-neutral.
 - Put pure astronomy, imaging, and recipe behavior in their shared owners.
 - Keep Common limited to reusable web/security/identity/API/observability
@@ -211,7 +211,7 @@ checkout is never modified.
   the issues explicitly define a stacked PR sequence.
 - Assign each expensive test, benchmark, or evidence run one owner. Other agents
   consume its recorded result instead of launching the same run.
-- Avoid running multiple Testcontainers or full-resolution performance suites
+- Avoid running multiple Docker-backed suites or full-resolution performance suites
   concurrently against shared Docker resources unless their isolation and
   capacity have been verified.
 
@@ -361,16 +361,12 @@ Select tests according to the changed boundary:
 
 - Unit tests for pure contracts, algorithms, validation, state transitions, and
   deterministic fixtures.
-- SQL Server integration tests for EF migrations, uniqueness, row versions,
-  leases, windows, and transactional behavior.
 - SQLite integration tests for WAL journal atomicity, recovery, locking, and
   indexes.
-- MinIO integration tests for streaming, checksum, range, orphan, and
-  compensation behavior.
 - CameraAgent integration tests for configured acquisition, ingress, lanes,
   local processing, storage, and outbox.
-- Two-host tests for real outbox drain, authentication, ingest, central workers,
-  retrieval, and fault recovery.
+- Standalone installer and Silo qualification for affected deployment,
+  lifecycle, and storage-layout behavior.
 - bUnit and browser tests for durable read models, authorization, and audited
   operations.
 - EF migration tests from an empty database through the canonical initial
@@ -430,18 +426,19 @@ dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
 ./scripts/test:pr-review-tools
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter "TestCategory=Unit" \
+  --filter 'TestCategory=Unit&TestCategory!=Performance' \
   --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release \
-  --filter "TestCategory=Integration" \
+  --filter 'TestCategory=Integration' \
   --settings tests/coverage.runsettings \
   --collect:"XPlat Code Coverage"
 ```
 
 The positive Unit filter must pass with an invalid Docker endpoint. Integration
-is a separate required gate and requires Docker for the Testcontainers
-assemblies. This complete block is the tier C/M local candidate gate, not the
+is a separate required gate. The CI runbook lists the
+[active test selections](../runbooks/ci-pipeline.md#active-test-selection).
+This complete block is the tier C/M local candidate gate, not the
 default inner loop. Tier A/B uses its recorded focused/affected local evidence
 and relies on the target branch's protected CI before merge. Follow the correction
 rules in section 4 after review feedback.
@@ -510,11 +507,33 @@ Kepler draft -> draft checks pass on exact head -> required formal CLEAN reviews
 
 Queue eligibility belongs to the CURRENT PR HEAD SHA. Being behind the target
 tip or its age alone does not require synchronization, re-testing, new review,
-or block submission/resubmission. Roy's stricter latest-base submission policy
-remains deferred. Real merge/product conflicts still require resolution,
-affected local evidence, and the required reviews on the changed candidate.
+or block submission/resubmission. Sync a `development/v1` PR with
+`git merge --no-ff origin/development/v1` only to resolve a real merge or product
+conflict. Validate and review the resulting head. The merge queue tests the
+combined tree.
 Draft pushes do not advance protected CI. Kepler operates the queue and any
 explicit fallback using the lifecycle skill; coding threads never finalize.
+
+### Rolling Low batches
+
+During branch and draft review, fix inexpensive Low findings when practical.
+After Ready, build or test breaks, High or Medium correctness findings, and
+missed acceptance criteria require correction. Kepler records post-Ready Low
+findings, including style, documentation polish, and other improvements, in
+rolling batch issues labeled `follow-up` and `low-batch`.
+
+- Group findings by category and area. Example titles are
+  `Low batch: docs/typos (CameraAgent)`, `Low batch: tests hygiene`,
+  `Low batch: logging/naming`, and `Low batch: UI text/fonts`.
+- Append one `- [ ]` item per finding to a matching open batch. Record the
+  source PR link and `file:line` in that item and link the batch from the
+  source PR. Open a new batch only when there is no matching open batch or
+  the matching batch already has seven items.
+- Pick up a batch at about six or seven items, or about a week after its first
+  item. Keep the scope within the LOW review tier. Deliver it on one
+  branch in one PR that closes the batch issue, with the required LOW-tier
+  review. Group single typo, font, and wording fixes to share a validation
+  and merge cycle.
 
 ## 10. Non-Green Recovery
 

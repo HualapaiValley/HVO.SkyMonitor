@@ -324,7 +324,7 @@ public sealed class StellarExposureRenderPlan
     }
 
     private static LinearSceneRenderOptions Normalize(LinearSceneRenderOptions options)
-        => options with { Seed = 0, StellarExposure = null };
+        => options with { Seed = 0, StellarExposure = null, DeepSkySources = null };
     private static double[] DisplayWeights(LinearSceneRenderOptions options)
         => options is Rgb24CompatibilityRenderOptions rgb
             ? [rgb.ChannelResponse.Red * rgb.WhiteBalance.Red, rgb.ChannelResponse.Green * rgb.WhiteBalance.Green,

@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Focus")]
 public sealed class VirtualMotorizedFocuserTests
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
@@ -165,25 +166,58 @@ public sealed class VirtualMotorizedFocuserTests
     {
         var motor = Create();
         var first = motor.MoveAsync(150, CancellationToken.None);
+        motor.AdvanceBy(Interval);
+        var moving = motor.State;
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync().ConfigureAwait(false);
-        await Assert.ThrowsAsync<OperationCanceledException>(() => motor.MoveAsync(0, cancellation.Token)).ConfigureAwait(false);
-        await Assert.ThrowsAsync<OperationCanceledException>(() => motor.AbortAsync(cancellation.Token)).ConfigureAwait(false);
-        Assert.AreEqual(150, motor.State.TargetPosition);
+
+        var rejectedMove = motor.MoveAsync(0, cancellation.Token);
+        var rejectedAbort = motor.AbortAsync(cancellation.Token);
+        Assert.IsTrue(rejectedMove.IsCanceled);
+        Assert.IsTrue(rejectedAbort.IsCanceled);
+        var moveError = await Assert.ThrowsAsync<OperationCanceledException>(() => rejectedMove).ConfigureAwait(false);
+        var abortError = await Assert.ThrowsAsync<OperationCanceledException>(() => rejectedAbort).ConfigureAwait(false);
+        Assert.AreEqual(cancellation.Token, moveError.CancellationToken);
+        Assert.AreEqual(cancellation.Token, abortError.CancellationToken);
+        Assert.AreEqual(moving, motor.State);
+        Assert.IsFalse(first.IsCompleted);
+
         motor.AdvanceBy(TimeSpan.MaxValue);
-        Assert.AreEqual(MotorizedFocuserMoveOutcome.Completed, (await Finished(first).ConfigureAwait(false)).Outcome);
+        var result = await Finished(first).ConfigureAwait(false);
+        Assert.AreEqual(MotorizedFocuserMoveOutcome.Completed, result.Outcome);
+        Assert.AreEqual(150, result.State.Position);
     }
 
     [TestMethod]
     public async Task CancellationOfEndedMove_CannotStopItsSuccessor()
     {
-        var motor = Create();
+        var timeout = TimeSpan.FromSeconds(5);
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCallback = new ManualResetEventSlim();
+        var motor = new VirtualMotorizedFocuser(new(MaximumPosition: 200, InitialPosition: 100), () =>
+        {
+            callbackStarted.SetResult();
+            Assert.IsTrue(releaseCallback.Wait(timeout), "The stale cancellation callback was not released.");
+        });
         using var oldCancellation = new CancellationTokenSource();
         var first = motor.MoveAsync(150, oldCancellation.Token);
-        await motor.AbortAsync(CancellationToken.None).ConfigureAwait(false);
-        var second = motor.MoveAsync(200, CancellationToken.None);
-        await oldCancellation.CancelAsync().ConfigureAwait(false);
-        Assert.AreEqual(200, motor.State.TargetPosition);
+        var cancel = oldCancellation.CancelAsync();
+        Task<MotorizedFocuserMoveResult> second;
+        try
+        {
+            // Hold the actual callback in flight so completion cannot unregister it before it runs.
+            await callbackStarted.Task.WaitAsync(timeout).ConfigureAwait(false);
+            await motor.AbortAsync(CancellationToken.None).ConfigureAwait(false);
+            second = motor.MoveAsync(200, CancellationToken.None);
+            Assert.AreEqual(200, motor.State.TargetPosition);
+        }
+        finally
+        {
+            releaseCallback.Set();
+            await cancel.WaitAsync(timeout).ConfigureAwait(false);
+        }
+
+        Assert.AreEqual(200, motor.State.TargetPosition, "The stale cancellation callback must leave the successor active.");
         motor.AdvanceBy(TimeSpan.MaxValue);
         Assert.AreEqual(MotorizedFocuserMoveOutcome.Aborted, (await Finished(first).ConfigureAwait(false)).Outcome);
         Assert.AreEqual(MotorizedFocuserMoveOutcome.Completed, (await Finished(second).ConfigureAwait(false)).Outcome);

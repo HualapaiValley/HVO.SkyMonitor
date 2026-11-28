@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Telemetry")]
 public sealed class CaptureTelemetrySinkTests
 {
     [TestMethod]
@@ -46,7 +47,6 @@ public sealed class CaptureTelemetrySinkTests
             gain,
             null,
             CaptureMode.Still,
-            RequiresImmediateUpload: false,
             frameStored,
             TimeSpan.FromMilliseconds(10),
             TimeSpan.FromMilliseconds(20),

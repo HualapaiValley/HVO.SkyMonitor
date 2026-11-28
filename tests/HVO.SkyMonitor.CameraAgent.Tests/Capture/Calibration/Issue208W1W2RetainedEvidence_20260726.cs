@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -24,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal",
     Justification = "MSTest requires public test classes.")]
@@ -187,7 +189,9 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
             corruptedModule = CreateVirtualSkyModule();
             await cleanModule.InitializeAsync(configurations.Clean, CancellationToken.None).ConfigureAwait(false);
             await corruptedModule.InitializeAsync(configurations.Corrupted, CancellationToken.None).ConfigureAwait(false);
-            var inputLoader = CreateLibraryInputLoader(root);
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, published.Bundle).ConfigureAwait(false);
+            var inputLoader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var hostedStart = ResourceSnapshot.Capture();
             var lights = new List<Asi676LightEvidence>(lightCount);
             RestartEvidence? restart = null;
@@ -477,7 +481,6 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "virtual-asi676mc.full.json"),
             AgentId = "issue-208-asi676",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         var loaded = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
@@ -550,13 +553,6 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
                 CaptureMode.Still,
                 new CaptureSetpoint(LightExposure, Gain, null, null)),
             CancellationToken.None);
-
-    private static CalibrationLibraryProcessingInputLoader CreateLibraryInputLoader(string root)
-    {
-        var options = CreateOptions(root);
-        return new CalibrationLibraryProcessingInputLoader(
-            options, new CameraAgentClearReferenceLoader(options));
-    }
 
     private static void AssertAsi676Layout(FrameLayoutDescriptor layout)
     {
@@ -769,13 +765,9 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
                 Assert.AreEqual(pair.Value, hashesAfterRestart[pair.Key], pair.Key);
             }
 
-            var options = Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                RawIngressSqliteBusyTimeoutSeconds = 1
-            });
-            var loader = new CalibrationLibraryProcessingInputLoader(
-                options, new CameraAgentClearReferenceLoader(options));
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, restoredBundles.Single().Bundle).ConfigureAwait(false);
+            var loader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var libraryInputs = await loader.LoadAsync(restoredBundles.Single(), CancellationToken.None)
                 .ConfigureAwait(false);
             var correctionFixture = CreateCorrectionFixture(
@@ -1351,13 +1343,13 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
             var telemetry = new CaptureControlTelemetry();
             var admission = new CaptureAdmissionCoordinator(ingress, options, timeProvider, telemetry);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
+            var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var accessor = new CameraAgentConfigurationAccessor();
             accessor.SetConfiguration(configuration);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
                 store,
-                new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
+                CalibrationSiloFixture.Publisher(options, NullCalibrationPublicationFaultInjector.Instance),
                 admission,
                 accessor,
                 timeProvider);
@@ -1367,7 +1359,8 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
         internal static async Task<SqliteCalibrationLibraryStore> CreateStoreAsync(string root)
         {
             var store = new SqliteCalibrationLibraryStore(
-                new InitializingIngress(root), CreateOptions(root), new FixedTimeProvider(FixtureUtc));
+                new InitializingIngress(root), CreateOptions(root), new FixedTimeProvider(FixtureUtc))
+            { Silo = CalibrationSiloFixture.Storage(CreateOptions(root).Value.RawIngressRoot) };
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             return store;
         }

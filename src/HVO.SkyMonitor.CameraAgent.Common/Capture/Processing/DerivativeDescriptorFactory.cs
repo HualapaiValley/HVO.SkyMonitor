@@ -50,6 +50,7 @@ internal static class DerivativeDescriptorFactory
                 product.ChecksumSha256))
         {
             CycleEvidence = raw.CycleEvidence,
+            CenteredAcquisition = raw.CenteredAcquisition,
             Location = raw.Location
         };
     }

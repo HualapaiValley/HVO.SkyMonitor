@@ -4,8 +4,8 @@
 #   scripts/release:prerelease-gate      admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the
 #                                        rest, telling a missing tag from a failed read;
 #   scripts/release:prerelease-check     refuses a release or draft that already has the tag, a draft that is gone or
-#                                        no longer the draft its tag calls for (a pre-release's, a release candidate's
-#                                        or a final release's), and an image with no attestation on record;
+#                                        no longer the draft its tag calls for (an integration pre-release, beta,
+#                                        release candidate or final release), and an image with no attestation on record;
 #   scripts/lib/github-api.sh            every GitHub read those scripts and the publish script make: only a 200 that gh
 #                                        completed, with one JSON document of the expected shape, is an answer, and
 #                                        only GitHub's own 404 means absent; a failure, an answer cut short, an empty,
@@ -182,7 +182,7 @@ GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prer
     fail "the gate's outputs are wrong: $(cat "$test_root/gate.out")"
 
 gate_case shape
-for tag in v1.2.0 v1.2.0-rc.1 1.2.0-dev.3 v1.2.0-dev.03 v1.2.0-dev.3+build v1.2-dev.3; do
+for tag in v1.2.0 v1.2.0-rc.1 v1.2.0-beta.1 1.2.0-dev.3 v1.2.0-dev.03 v1.2.0-dev.3+build v1.2-dev.3; do
     expect_gate_refusal "the tag $tag" "is not an integration pre-release tag, vX.Y.Z-dev.N." "$tag"
 done
 expect_gate_refusal "a short commit" "is not a 40-character commit ID." v1.2.0-dev.3 0123456
@@ -435,11 +435,12 @@ check_case unreleased
 expect_check "a tag no release or draft has" unreleased v1.2.0-dev.4
 expect_check_refusal "a tag a draft already has" "A release or draft for v1.2.0-dev.3 already exists" unreleased v1.2.0-dev.3
 expect_check_refusal "a tag a published release already has" "A release or draft for v1.2.0-dev.2 already exists" unreleased v1.2.0-dev.2
-# The release workflow checks its final and release candidate tags the same way (#1310).
+# The release workflow checks its tags the same way (#1310).
 expect_check "a final release's tag no release or draft has" unreleased v1.2.0
 expect_check "a release candidate's tag no release or draft has" unreleased v1.2.0-rc.1
-for tag in v1.2 v1.2.0-rc.0 v1.2.0-beta.1 1.2.0 v1.2.0+build; do
-    expect_check_refusal "the tag $tag" "$tag is not a release tag: vX.Y.Z, vX.Y.Z-rc.N or vX.Y.Z-dev.N." unreleased "$tag"
+expect_check "a beta's tag no release or draft has" unreleased v1.2.0-beta.12
+for tag in v1.2 v1.2.0-rc.0 v1.2.0-beta.0 v1.2.0-beta.01 v1.2.0-beta v1.2.0-beta-1 1.2.0 v1.2.0+build; do
+    expect_check_refusal "the tag $tag" "$tag is not a release tag: vX.Y.Z, vX.Y.Z-beta.N, vX.Y.Z-rc.N or vX.Y.Z-dev.N." unreleased "$tag"
 done
 check_case unreleased-page-2
 script_answers "${repo}_releases" "200:$(releases_page 100)" \
@@ -469,11 +470,15 @@ expect_check_refusal "a draft that is not a pre-release" "is not a draft pre-rel
 printf '[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true},{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]\n' \
     >"$FAKE_GH/${repo}_releases.json"
 expect_check_refusal "two drafts with the tag" "2 releases have the tag v1.2.0-dev.3" draft v1.2.0-dev.3
-# A final release's draft is not a pre-release, and a release candidate's is (#1310).
-printf '[{"tag_name":"v1.2.0","draft":true,"prerelease":false},{"tag_name":"v1.2.0-rc.1","draft":true,"prerelease":true}]\n' \
+# Betas and release candidates must be draft pre-releases. Final releases must be draft final releases (#1310).
+printf '[{"tag_name":"v1.2.0","draft":true,"prerelease":false},{"tag_name":"v1.2.0-rc.1","draft":true,"prerelease":true},{"tag_name":"v1.2.0-beta.1","draft":true,"prerelease":true}]\n' \
     >"$FAKE_GH/${repo}_releases.json"
 expect_check "a draft final release" draft v1.2.0
 expect_check "a draft release candidate" draft v1.2.0-rc.1
+expect_check "a draft beta" draft v1.2.0-beta.1
+expect_check_refusal "a beta tag a draft already has" "A release or draft for v1.2.0-beta.1 already exists" unreleased v1.2.0-beta.1
+printf '[{"tag_name":"v1.2.0-beta.1","draft":true,"prerelease":false}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "a beta draft marked final" "is not a draft pre-release (draft=true prerelease=false)" draft v1.2.0-beta.1
 printf '[{"tag_name":"v1.2.0","draft":true,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
 expect_check_refusal "a final release's draft marked a pre-release" \
     "The release for v1.2.0 is not a draft final release (draft=true prerelease=true)" draft v1.2.0
@@ -907,14 +912,14 @@ environment_case malformed
 script_answers "$environment_key" '200:{"name":"production-release"}'
 expect_environment_refusal "an environment answered without its rules" "cannot read the environment production-release (200, but not the expected answer)"
 
-# The release gate: an annotated vX.Y.Z or vX.Y.Z-rc.N tag naming the product version, on main, with a final release's
+# The release gate: an annotated final, beta or rc tag naming the product version, on main, with a final release's
 # notes, not yet released, and publishing held for approval.
 final_gate_case() {
     export FAKE_GH="$test_root/gh-final-gate-$1"
     rm -rf "$FAKE_GH"
     mkdir -p "$FAKE_GH"
     local tag
-    for tag in v2.5.0 v2.5.0-rc.1 v2.6.0 v2.5.0-dev.1; do
+    for tag in v2.5.0 v2.5.0-rc.1 v2.5.0-beta.1 v2.5.0-beta.12 v2.6.0 v2.5.0-dev.1; do
         printf '{"object":{"type":"tag","sha":"%s"}}\n' "$tag_object" >"$FAKE_GH/${repo}_git_ref_tags_$tag.json"
     done
     printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
@@ -942,12 +947,16 @@ run_final_gate v2.5.0 || { cat "$test_root/final-gate.err" >&2; fail "the releas
 [[ "$(cat "$test_root/final-gate.out")" == $'version=2.5.0\ntag=v2.5.0\ncommit='"$commit"$'\ncreated=2026-11-02T18:00:00Z\nprerelease=false' ]] ||
     fail "the release gate's outputs are wrong: $(cat "$test_root/final-gate.out")"
 grep -Fq "requires a reviewer: RoySalisbury." "$test_root/final-gate.err" || fail "the release gate did not report the environment's reviewer."
-final_gate_case release-candidate
-rm "$final_repo/docs/upgrade-notes/2.5.0.md"
-run_final_gate v2.5.0-rc.1 || { cat "$test_root/final-gate.err" >&2; fail "the release gate refused v2.5.0-rc.1 without notes."; }
-grep -Fxq "prerelease=true" "$test_root/final-gate.out" || fail "the release gate did not mark v2.5.0-rc.1 a pre-release."
+for tag in v2.5.0-rc.1 v2.5.0-beta.1 v2.5.0-beta.12; do
+    final_gate_case "$tag"
+    rm "$final_repo/docs/upgrade-notes/2.5.0.md"
+    run_final_gate "$tag" || { cat "$test_root/final-gate.err" >&2; fail "the release gate refused $tag without notes."; }
+    [[ "$(cat "$test_root/final-gate.out")" == $'version='"${tag#v}"$'\ntag='"$tag"$'\ncommit='"$commit"$'\ncreated=2026-11-02T18:00:00Z\nprerelease=true' ]] ||
+        fail "the release gate's outputs for $tag are wrong: $(cat "$test_root/final-gate.out")"
+done
 final_gate_case other-version
 expect_final_gate_refusal "a tag for another version" "the tag 'v2.6.0' is for 2.6.0, but Directory.Build.props holds 2.5.0" v2.6.0
+expect_final_gate_refusal "a beta tag for another version" "the tag 'v2.6.0-beta.1' is for 2.6.0, but Directory.Build.props holds 2.5.0" v2.6.0-beta.1
 for tag in v2.5.0-dev.1 v2.5 v2.5.0-rc.0 2.5.0 v2.5.0+build; do
     expect_final_gate_refusal "the tag $tag" "the tag '$tag' is not a release tag" "$tag"
 done
@@ -955,6 +964,8 @@ expect_final_gate_refusal "a short commit" "is not a 40-character commit ID." v2
 final_gate_case lightweight
 printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_ref_tags_v2.5.0.json"
 expect_final_gate_refusal "a lightweight tag" "v2.5.0 is a lightweight tag"
+cp "$FAKE_GH/${repo}_git_ref_tags_v2.5.0.json" "$FAKE_GH/${repo}_git_ref_tags_v2.5.0-beta.1.json"
+expect_final_gate_refusal "a lightweight beta tag" "v2.5.0-beta.1 is a lightweight tag" v2.5.0-beta.1
 final_gate_case retargeted
 printf '{"object":{"type":"commit","sha":"%s"}}\n' "$other" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
 expect_final_gate_refusal "a tag naming another commit" "v2.5.0 names $other, not the commit $commit"
@@ -968,6 +979,7 @@ for status in diverged ahead; do
     final_gate_case "$status"
     printf '{"status":"%s"}\n' "$status" >"$FAKE_GH/${repo}_compare_main...$commit.json"
     expect_final_gate_refusal "a commit $status from main" "is not on main (compared with it, it is $status)"
+    expect_final_gate_refusal "a beta commit $status from main" "is not on main (compared with it, it is $status)" v2.5.0-beta.1
 done
 final_gate_case no-changelog
 sed -i 's/^## \[2\.5\.0\] - 2026-11-02$/## [Unreleased 2.5.0]/' "$final_repo/CHANGELOG.md"
@@ -984,6 +996,7 @@ expect_final_gate_refusal "a releases list GitHub failed to read" "cannot read t
 final_gate_case unprotected
 printf '{"name":"production-release","protection_rules":[]}\n' >"$FAKE_GH/$environment_key.json"
 expect_final_gate_refusal "an environment that requires no reviewer" "The environment production-release requires no reviewer"
+expect_final_gate_refusal "a beta in an environment that requires no reviewer" "The environment production-release requires no reviewer" v2.5.0-beta.1
 final_gate_case no-environment
 rm "$FAKE_GH/$environment_key.json"
 expect_final_gate_refusal "a missing environment" "The environment production-release does not exist"
@@ -1039,15 +1052,17 @@ expect_final_published "a fix to an older version than 2.10.0" false "--draft=fa
 final_publish_case newer-draft "[{\"tag_name\":\"v3.0.0\",\"draft\":true,\"prerelease\":false},{\"tag_name\":\"v3.1.0\",\"draft\":false,\"prerelease\":true},{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$draft_final]" \
     "$(latest_is v2.4.0)" "$(latest_is v2.5.0)"
 expect_final_published "a release older only than a draft and a pre-release" true "--draft=false --prerelease=false --latest=true"
-final_publish_case candidate "[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v2.5.0-rc.1\",\"draft\":true,\"prerelease\":true}]" \
-    "$(latest_is v2.4.0)" "$(latest_is v2.4.0)"
-expect_final_published "a release candidate" false "--draft=false --prerelease=true --latest=false" v2.5.0-rc.1
+for tag in v2.5.0-rc.1 v2.5.0-beta.1; do
+    final_publish_case "$tag" "[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"$tag\",\"draft\":true,\"prerelease\":true}]" \
+        "$(latest_is v2.4.0)" "$(latest_is v2.4.0)"
+    expect_final_published "$tag" false "--draft=false --prerelease=true --latest=false" "$tag"
+    final_publish_case "unmarked-$tag" "[{\"tag_name\":\"$tag\",\"draft\":true,\"prerelease\":false}]"
+    expect_final_publish_refusal "$tag's draft marked final" "not draft=true prerelease=true" unedited "$tag"
+done
 final_publish_case already-published "[$published_final]"
 expect_final_publish_refusal "a release already published" "The release for v2.5.0 is not the draft it should be (draft=false prerelease=false" unedited
 final_publish_case marked-prerelease '[{"tag_name":"v2.5.0","draft":true,"prerelease":true}]'
 expect_final_publish_refusal "a final release's draft marked a pre-release" "is not the draft it should be (draft=true prerelease=true, not draft=true prerelease=false)" unedited
-final_publish_case unmarked-candidate '[{"tag_name":"v2.5.0-rc.1","draft":true,"prerelease":false}]'
-expect_final_publish_refusal "a release candidate's draft not marked a pre-release" "not draft=true prerelease=true" unedited v2.5.0-rc.1
 final_publish_case gone '[{"tag_name":"v2.4.0","draft":false,"prerelease":false}]'
 expect_final_publish_refusal "a draft that is gone" "No release or draft has v2.5.0; the tested draft is gone." unedited
 final_publish_case two "[$draft_final,$draft_final]"
@@ -1120,8 +1135,10 @@ grep -Fxq "copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests 
     "$FAKE_SKOPEO_LOG" || fail "the latest tag was not copied from the release's digest with every platform."
 grep -Fq "skymonitor-cameraagent:latest is $index_digest, the image of v2.5.0" "$test_root/tag-latest.out" ||
     fail "the latest tag did not report where it moved."
-latest_case candidate "[{\"tag_name\":\"v2.5.0-rc.1\",\"draft\":false,\"prerelease\":true}]" v2.4.0
-expect_latest_kept "a release candidate" "v2.5.0-rc.1 is a release candidate: the image latest tag stays where it is." v2.5.0-rc.1
+for tag in v2.5.0-rc.1 v2.5.0-beta.1; do
+    latest_case "$tag" "[{\"tag_name\":\"$tag\",\"draft\":false,\"prerelease\":true}]" v2.4.0
+    expect_latest_kept "$tag" "$tag is a pre-release. The image latest tag stays where it is." "$tag"
+done
 latest_case older-line "[{\"tag_name\":\"v2.10.0\",\"draft\":false,\"prerelease\":false},$published_final]" v2.10.0
 expect_latest_kept "a fix to an older version" "v2.5.0 is not the newest final release (2.10.0 is): the image latest tag stays where it is."
 latest_case draft "[$draft_final]"
@@ -1168,7 +1185,7 @@ expect_assets_refusal() {
     grep -Fq -- "$message" "$test_root/assets.err" || { cat "$test_root/assets.err" >&2; fail "the asset script refused $* without saying: $message"; }
 }
 # A second data family must not bypass the separate HYG 4.4 adoption hold.
-grep -Fq 'build-hyg-v42.sh --fetch' "$repo_root/scripts/release:assets" || fail "the default release star catalog must remain HYG 4.2 until approved"
+grep -Fq 'build-hyg-v44.sh --fetch' "$repo_root/scripts/release:assets" || fail "the default release star catalog must be HYG 4.4"
 expect_assets_refusal "must be a release version" --version 1.2.0+build --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "must be a release version" --version v1.2.0 --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "already exists" --version 1.2.0-dev.3 --output "$test_root" --image-oci "$test_root/out.tar"
@@ -1185,10 +1202,11 @@ prefix="$("$repo_root/scripts/release:version")"
     fail "release:version printed $prefix, which is not Directory.Build.props's VersionPrefix."
 other_version="$((${prefix%%.*} + 1)).0.0"
 [[ "$("$repo_root/scripts/release:version" --dev)" == "$prefix-dev" ]] || fail "release:version --dev is not $prefix-dev."
-[[ "$("$repo_root/scripts/release:version" --tag "v$prefix")" == "$prefix" ]] || fail "release:version --tag v$prefix is not $prefix."
-[[ "$("$repo_root/scripts/release:version" --tag "v$prefix-rc.2")" == "$prefix-rc.2" ]] ||
-    fail "release:version --tag v$prefix-rc.2 is not $prefix-rc.2."
-for version in "$prefix" "$prefix-rc.1" "$prefix-dev.3"; do
+for version in "$prefix" "$prefix-rc.2" "$prefix-beta.1" "$prefix-beta.12"; do
+    [[ "$("$repo_root/scripts/release:version" --tag "v$version")" == "$version" ]] ||
+        fail "release:version --tag v$version did not return $version."
+done
+for version in "$prefix" "$prefix-rc.1" "$prefix-dev.3" "$prefix-beta.1" "$prefix-beta.12"; do
     "$repo_root/scripts/release:version" --check "$version" || fail "release:version refused $version."
 done
 expect_version_refusal() {
@@ -1201,13 +1219,19 @@ expect_version_refusal() {
 }
 expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --check "$other_version"
 expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --check "$other_version-dev.1"
+expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --check "$other_version-beta.1"
 expect_version_refusal "is not a release version" --check "$prefix+build"
 expect_version_refusal "is not a release version" --check "v$prefix"
 expect_version_refusal "is not a release version" --check "$prefix-"
+expect_version_refusal "is not a release version" --check "$prefix-beta.01"
 expect_version_refusal "is not a release tag" --tag "v$prefix-dev.1"
 expect_version_refusal "is not a release tag" --tag "$prefix"
 expect_version_refusal "is not a release tag" --tag "v$prefix-rc.0"
+for tag in "v$prefix-beta.0" "v$prefix-beta.01" "v$prefix-beta" "v$prefix-beta-1" "v0$prefix-beta.1" "v$prefix-beta.1+build"; do
+    expect_version_refusal "is not a release tag" --tag "$tag"
+done
 expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --tag "v$other_version"
+expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --tag "v$other_version-beta.1"
 expect_assets_refusal "is for $other_version, but Directory.Build.props holds $prefix" --version "$other_version-dev.1" \
     --output "$test_root/out" --image-oci "$test_root/out.tar" --allow-dirty
 # A final release's files carry its notes (#1310): the asset script refuses a final version without them, before it
@@ -1419,11 +1443,20 @@ def require(condition, message):
 on = re.search(r"^on:\n(.*?)(?=^\S)", release, re.M | re.S).group(1)
 require(on.strip().splitlines()[0].strip() == "push:" and "workflow_dispatch" not in on and "pull_request" not in on,
         "release.yml runs on anything but a tag push")
-require(re.findall(r"^      - '(.*)'$", on, re.M) == ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"],
-        "release.yml runs on tags other than vX.Y.Z and vX.Y.Z-rc.N")
+tag_patterns = ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"]
+require(re.findall(r"^      - '(.*)'$", on, re.M) == tag_patterns,
+        "release.yml must trigger on final, rc and beta tags")
 require(re.search(r"^on:\n(?:.*\n)*?  workflow_call:\n", ci, re.M) is not None, "ci.yml cannot be called")
 jobs = re.findall(r"^  ([\w-]+):\n", release.split("\njobs:\n", 1)[1], re.M)
 require(jobs == ["gate", "ci", "build-amd64", "build-arm64", "build", "draft", "install-test", "publish", "latest"], f"release.yml's jobs are {jobs}")
+gate = job("gate")
+require("./scripts/release:gate " in gate and "prerelease: ${{ steps.gate.outputs.prerelease }}" in gate,
+        "the gate must validate the tag and expose its prerelease classification")
+draft = job("draft")
+require("PRERELEASE: ${{ needs.gate.outputs.prerelease }}" in draft and "and .prerelease == $prerelease" in draft and
+        '[[ "$PRERELEASE" != true ]] || prerelease=(--prerelease)' in draft and
+        '--verify-tag --draft "${prerelease[@]}" --latest=false' in draft,
+        "release.yml must check the manifest's prerelease flag and draft the release without moving latest")
 require("uses: ./.github/workflows/ci.yml" in job("ci"), "the ci job does not call ci.yml")
 for arch in ("amd64", "arm64"):
     require("needs: [gate, ci]" in job(f"build-{arch}"), "the image build does not wait for CI")

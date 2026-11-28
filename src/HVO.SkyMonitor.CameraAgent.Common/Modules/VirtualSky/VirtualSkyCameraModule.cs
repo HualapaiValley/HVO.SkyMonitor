@@ -31,6 +31,7 @@ public sealed class VirtualSkyCameraModule(
     IVirtualSkyGraphSelection? graphSelection = null) :
     ICameraModule,
     ICameraSetpointController,
+    ICameraBoundExposureCapture,
     ICameraModuleConfigurationPreflight,
     ICameraFocusPreviewCapture,
     ICameraSimulatedSkyRegime
@@ -52,6 +53,7 @@ public sealed class VirtualSkyCameraModule(
     private OpenNgcDeepSkyOptions? _deepSkyAnnotations;
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
+    private VirtualSkyNamedPass? _namedPass;
     private ResolvedSensorReadout? _resolvedReadout;
     private readonly object _virtualCalibrationCacheLock = new();
     private readonly object _fixedSequenceLock = new();
@@ -75,6 +77,14 @@ public sealed class VirtualSkyCameraModule(
             ? CaptureSolarRegime.Night
             : null;
 
+    async Task ICameraBoundExposureCapture.InitializeBoundAsync(
+        CameraModuleConfig configuration, Func<string, CancellationToken, ValueTask> fenceAttachment,
+        CancellationToken cancellationToken)
+    {
+        await fenceAttachment("virtual-sky-v1", cancellationToken).ConfigureAwait(false);
+        await InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
+    }
+
     public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -83,14 +93,13 @@ public sealed class VirtualSkyCameraModule(
         {
             _preparedVirtualCalibration = null;
         }
-        _options = config.ModuleOptions?.Deserialize<VirtualSkyCameraModuleOptions>(SerializerOptions) ?? new();
-
-        _options.Validate();
-        ValidateRig(config.Rig, _options);
-        _resolvedReadout = config.Rig.Readout is null
-            ? null
-            : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
-        ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
+        var (options, readout) = ValidateConfiguration(config);
+        var preparedPass = options.NamedOrbitalPass is { } namedPass
+            ? VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, cancellationToken)
+            : null;
+        _options = options;
+        _resolvedReadout = readout;
+        _namedPass = preparedPass;
         _config = config;
         _curatedAnnotations = ResolveCuratedAnnotations();
         _deepSkyAnnotations = _options.DeepSky ?? ResolveDeepSkyAnnotations();
@@ -102,12 +111,6 @@ public sealed class VirtualSkyCameraModule(
             _ = _curatedAnnotations.ToSelection();
         }
         _stageProjectedScene = config.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
-        var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
-        var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
-        if (_options.SyntheticCalibration is { } syntheticCalibration)
-        {
-            syntheticCalibration.Validate(outputWidth, outputHeight);
-        }
         if (_options.CloudScenario is { } configuredCloud)
         {
             _options.CloudScenario = configuredCloud with
@@ -118,23 +121,33 @@ public sealed class VirtualSkyCameraModule(
         _cloudField = _options.CloudScenario is null ? null : new VirtualCloudField(_options.CloudScenario);
         if (_options.TransientScenario is { } configuredTransient)
         {
-            configuredTransient.ValidateSensorBounds(config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels);
             _options.TransientScenario = configuredTransient with
             {
                 ScenarioId = configuredTransient.ComputeCanonicalScenarioId()
             };
         }
-        _transientScenario = _options.TransientScenario is null
-            ? null
-            : new VirtualTransientScenario(_options.TransientScenario);
-        ValidatePixelFormat(config, _options);
+        var transientDefinition = _namedPass?.Definition ?? _options.TransientScenario;
+        _transientScenario = transientDefinition is null ? null : new VirtualTransientScenario(transientDefinition);
         _captureSequence = 0;
         _fixedSequenceElapsedTicks = 0;
         return Task.CompletedTask;
     }
 
     void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig config)
-        => _ = ValidateConfiguration(config);
+    {
+        var (options, readout) = ValidateConfiguration(config);
+        if (options.NamedOrbitalPass is { } namedPass)
+        {
+            try
+            {
+                _ = VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, CancellationToken.None);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException("The configured named orbital pass package could not be validated.", exception);
+            }
+        }
+    }
 
     private static void ValidatePixelFormat(CameraModuleConfig config, VirtualSkyCameraModuleOptions options)
     {
@@ -167,8 +180,28 @@ public sealed class VirtualSkyCameraModule(
         return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
+    private ExposureAttemptKey? _lastBoundAttempt;
+
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
-        => CaptureCoreAsync(request, null, cancellationToken);
+        => _config?.CenteredExposure is null
+            ? CaptureCoreAsync(request, null, cancellationToken)
+            : throw new InvalidOperationException("Centered exposure requires a reserved acquisition attempt.");
+
+    public bool EnforcesBoundStartLimit => true;
+
+    public Task<CaptureResult> CaptureBoundAsync(
+        ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        ArgumentNullException.ThrowIfNull(request);
+        if (_config?.CenteredExposure is not { } centered || request.RequestedSetpoint is null ||
+            attempt.Camera != new CameraKey(_config.AgentId!, centered.CameraId) ||
+            _lastBoundAttempt is { } prior && prior.RunId == attempt.RunId && prior.Ordinal >= attempt.Ordinal)
+            throw new InvalidOperationException("Centered exposure requires a fresh attempt and explicit settings.");
+
+        _lastBoundAttempt = attempt;
+        return CaptureCoreAsync(request, null, cancellationToken);
+    }
 
     private VirtualSimulatedFocusOptions SimulatedFocusOptions => _options.SimulatedFocus ?? DefaultSimulatedFocus;
 
@@ -230,8 +263,10 @@ public sealed class VirtualSkyCameraModule(
             ? _options.PsfRadiusPixels
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
-        var captureGraph = preview is null && graphSelection is not null
-            ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
+        var captureGraph = request.BoundGraph is { } boundGraph && request.BoundGraphRevisionId is { } boundRevision
+            ? new VirtualSkyGraphSelection(boundRevision, boundGraph)
+            : preview is null && graphSelection is not null
+                ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
         var captureDeepSky = _options.DeepSky ?? (captureGraph is null ? _deepSkyAnnotations : ResolveDeepSkyAnnotations(captureGraph.Pipeline));
         var captureCurated = captureGraph is null ? _curatedAnnotations : ResolveCuratedAnnotations(captureGraph.Pipeline);
         var stageProjectedScene = captureGraph is null ? _stageProjectedScene : captureGraph.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
@@ -253,9 +288,11 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentOutOfRangeException(nameof(request), "Virtual exposure must be between zero and one day.");
         // The operational acquisition clock is independent of the requested/fixed scene clocks below.
         // Wait before rendering or staging so an interrupted exposure owns no incomplete frame or artifact.
+        cancellationToken.ThrowIfCancellationRequested();
         var exposureStartedUtc = preview is null
             ? timeProvider.GetUtcNow().ToUniversalTime()
             : request.RequestedStartUtc;
+        request.RequireOpenBoundStart(exposureStartedUtc);
         var exposureEndedUtc = preview is null ? exposureStartedUtc + setpoint.Exposure : exposureStartedUtc;
         if (preview is null)
         {
@@ -287,7 +324,8 @@ public sealed class VirtualSkyCameraModule(
             _options.CatalogSchemaVersion);
         var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? configuredMetadata;
         long? fixedSequence = null;
-        var timelineUtc = request.RequestedStartUtc;
+        var namedPass = preview is null ? _namedPass : null;
+        var timelineUtc = namedPass is null ? request.RequestedStartUtc : exposureStartedUtc;
         if (_options.FixedSequenceStartUtc is { } fixedSequenceStartUtc)
         {
             lock (_fixedSequenceLock)
@@ -303,18 +341,24 @@ public sealed class VirtualSkyCameraModule(
         }
         var virtualExposure = VirtualExposureProvenance.Create(request.RequestedStartUtc, timelineUtc,
             _options.FixedSceneUtc ?? timelineUtc, setpoint.Exposure,
-            (_options.FixedSceneUtc.HasValue, _options.FixedSequenceStartUtc.HasValue) switch
+            (namedPass is not null, _options.FixedSceneUtc.HasValue, _options.FixedSequenceStartUtc.HasValue) switch
             {
-                (false, false) => VirtualExposureTimeMapping.RequestUtc,
-                (true, false) => VirtualExposureTimeMapping.FixedCelestialUtc,
-                (false, true) => VirtualExposureTimeMapping.FixedScenarioUtc,
-                (true, true) => VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc
+                (true, false, _) => VirtualExposureTimeMapping.ShutterUtc,
+                (true, true, _) => VirtualExposureTimeMapping.FixedCelestialAndShutterUtc,
+                (false, false, false) => VirtualExposureTimeMapping.RequestUtc,
+                (false, true, false) => VirtualExposureTimeMapping.FixedCelestialUtc,
+                (false, false, true) => VirtualExposureTimeMapping.FixedScenarioUtc,
+                (false, true, true) => VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc
             });
         var sceneUtc = virtualExposure.CelestialMidpointUtc;
         // Deployment validity binds the operational capture, not a shifted celestial clock.
-        var observatory = config.ResolveObservatory(request.RequestedStartUtc);
+        var observatory = config.ResolveObservatory(namedPass is null ? request.RequestedStartUtc : exposureStartedUtc);
+        if (namedPass is not null && VirtualSkyNamedPass.ToObserver(observatory) != namedPass.Observer)
+            throw new InvalidOperationException("The named orbital pass observer no longer matches the capture site.");
         var cloud = _cloudField is null ? null : new VirtualCloudRenderContext(_cloudField, timelineUtc, setpoint.Exposure);
-        var transient = _transientScenario is null ? null : new VirtualTransientRenderContext(_transientScenario, timelineUtc, setpoint.Exposure);
+        var transient = _transientScenario is null || preview is not null && _namedPass is not null
+            ? null
+            : new VirtualTransientRenderContext(_transientScenario, timelineUtc, setpoint.Exposure);
         LinearSceneRenderOptions initialRenderOptions = sensor.PixelFormat switch
         {
             CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, 0, renderProjection, cloud, transient),
@@ -407,6 +451,71 @@ public sealed class VirtualSkyCameraModule(
         var stellarPlan = StellarExposureRenderPlan.Prepare(stellarGeometry, initialRenderOptions, stellarSettings, cancellationToken);
         var predictionMilliseconds = Stopwatch.GetElapsedTime(predictionStarted).TotalMilliseconds;
         var predictionProcessCpuMilliseconds = (ReadProcessCpu() - predictionCpuStarted).TotalMilliseconds;
+        DeepSkyRenderPlan? deepSkyPlan = null;
+        IDeepSkyCatalog? activeRenderDeepSkyCatalog = null;
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCachingCatalog = null;
+        DeepSkyObject[]? dsoCandidates = null;
+        var dsoQueryMatchCount = 0;
+        var deepSkyCandidateSelectMilliseconds = 0d;
+        var deepSkyPrepareMilliseconds = 0d;
+        var deepSkyPrepareProcessCpuMilliseconds = 0d;
+        if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRender)
+        {
+            var dsoCpuStarted = ReadProcessCpu();
+            var dsoStarted = Stopwatch.GetTimestamp();
+            activeRenderDeepSkyCatalog = (catalog as IDeepSkyCatalogSource)?.DeepSky;
+            if (activeRenderDeepSkyCatalog is null && deepSkyRender.SyntheticScenario is not { AdditionalObjects.Count: > 0 })
+            {
+                throw new InvalidOperationException(
+                    "Extended deep-sky rendering requires an installed deep-sky catalog or declared synthetic scenario.");
+            }
+            var captureDeepSkyCatalog = activeRenderDeepSkyCatalog;
+            if (activeRenderDeepSkyCatalog is not null &&
+                activeRenderDeepSkyCatalog is not DeepSkyCatalog &&
+                string.IsNullOrWhiteSpace(activeRenderDeepSkyCatalog.Semantics.SnapshotIdentity?.DatabaseSha256))
+            {
+                outlineCachingCatalog = new PerCaptureOutlineCachingDeepSkyCatalog(activeRenderDeepSkyCatalog);
+                captureDeepSkyCatalog = outlineCachingCatalog;
+            }
+            if (SelectDeepSkyRenderCandidates(captureDeepSkyCatalog, deepSkyRender, sceneRequest) is { } selectedCandidates)
+            {
+                dsoCandidates = selectedCandidates.Candidates;
+                dsoQueryMatchCount = selectedCandidates.QueryMatchCount;
+            }
+            deepSkyCandidateSelectMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
+            var dsoSettings = new DeepSkyRenderSettings(
+                MinimumSignalToNoise: deepSkyRender.MinimumSignalToNoise,
+                MaximumCandidates: deepSkyRender.MaximumCandidates,
+                MaximumRenderedSources: deepSkyRender.MaximumRenderedSources,
+                SamplesPerProjectedPixel: deepSkyRender.SamplesPerProjectedPixel,
+                PsfSigmaPixels: initialRenderOptions.PsfSigmaPixels,
+                PsfRadiusPixels: initialRenderOptions.PsfRadiusPixels,
+                HorizonPolicy: sceneRequest.HorizonPolicy,
+                Refraction: sceneRequest.Refraction,
+                PreferCatalogOutlines: deepSkyRender.PreferCatalogOutlines,
+                PreferredOutlineLevel: deepSkyRender.PreferredOutlineLevel,
+                AllowSurfaceBrightnessB25Fallback: deepSkyRender.AllowSurfaceBrightnessB25Fallback,
+                CelestialDiffuseBackgroundElectronsPerSecond: deepSkyRender.CelestialDiffuseBackgroundElectronsPerSecond,
+                DigitalBinX: useNativeReadout ? _resolvedReadout!.Geometry.BinX : 1,
+                DigitalBinY: useNativeReadout ? _resolvedReadout!.Geometry.BinY : 1,
+                DigitalAverage: !useNativeReadout || _resolvedReadout!.Profile.BinningAlgorithm != FrameBinningAlgorithm.DigitalSumV1,
+                SyntheticScenario: deepSkyRender.SyntheticScenario,
+                ExposureStartUtc: virtualExposure.CelestialStartUtc,
+                MaximumTemporalSamples: _options.MaximumStellarSamples,
+                MaximumTemporalStepPixels: Math.Min(_options.MaximumStellarStepPixels,
+                    TemporalPointSpreadRaster.MaximumTemporalStepPixels(psfSigmaPixels, psfRadiusPixels)),
+                MinimumTemporalSamples: _cloudField?.Definition.TemporalSampleCount ?? 1);
+            deepSkyPlan = DeepSkyRenderPlan.Prepare(
+                sceneRequest,
+                captureDeepSkyCatalog,
+                dsoCandidates,
+                stellarPlan.Sources.Select(static source => source.Source.Source),
+                initialRenderOptions with { StellarExposure = stellarPlan },
+                dsoSettings,
+                cancellationToken);
+            deepSkyPrepareMilliseconds = Stopwatch.GetElapsedTime(dsoStarted).TotalMilliseconds;
+            deepSkyPrepareProcessCpuMilliseconds = (ReadProcessCpu() - dsoCpuStarted).TotalMilliseconds;
+        }
         var referenceCpuStarted = ReadProcessCpu();
         var referenceStarted = Stopwatch.GetTimestamp();
         var renderScene = (await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
@@ -457,6 +566,36 @@ public sealed class VirtualSkyCameraModule(
                 "\n",
                 CaptureContractJson.ComputeCanonicalJsonSha256(config.Rig.Readout)))));
         }
+        CatalogSnapshotIdentity? resolvedRenderDeepSkyCatalogIdentity = null;
+        if (_options.RenderDeepSkySources is { Enabled: true } deepSkyRenderIdentity)
+        {
+            resolvedRenderDeepSkyCatalogIdentity = ResolveRenderDeepSkyCatalogIdentity(
+                activeRenderDeepSkyCatalog,
+                outlineCachingCatalog,
+                dsoCandidates,
+                dsoQueryMatchCount,
+                deepSkyRenderIdentity.PreferCatalogOutlines,
+                deepSkyRenderIdentity.SyntheticScenario);
+            var renderCatalogIdentity = activeRenderDeepSkyCatalog is null
+                ? "none"
+                : CaptureContractJson.ComputeCanonicalJsonSha256(
+                    activeRenderDeepSkyCatalog.Semantics with
+                    {
+                        SnapshotIdentity = resolvedRenderDeepSkyCatalogIdentity is { } snapshot
+                            ? snapshot with { DatabaseSha256 = snapshot.DatabaseSha256.ToUpperInvariant() }
+                            : null
+                    });
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
+                sceneId,
+                "\ndeep-sky-render-v1\n",
+                DeepSkyRenderPlan.AlgorithmVersion,
+                "\n",
+                DeepSkySimulationParameters.CurrentSchemaVersion,
+                "\n",
+                CaptureContractJson.ComputeCanonicalJsonSha256(deepSkyRenderIdentity),
+                "\n",
+                renderCatalogIdentity))));
+        }
         // The full identity binds both logical clocks. Controlled fixed-field realizations use
         // a separate celestial identity so advancing transient time does not redraw quiet noise.
         var stellarNoiseIdentity = sceneId;
@@ -474,6 +613,9 @@ public sealed class VirtualSkyCameraModule(
             sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sceneId + "\ngraph\n" + captureGraph.RevisionId)));
         sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
+        if (namedPass is not null)
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
+                namedPass.ParametersSha256))));
         if (preview is not null)
         {
             // A preview never shares an identity with a capture of the same instant, and binds the focus model.
@@ -494,12 +636,13 @@ public sealed class VirtualSkyCameraModule(
         var finalRenderOptions = initialRenderOptions with
         {
             StellarExposure = stellarPlan,
-            Seed = sensor.PixelFormat switch
+            DeepSkySources = deepSkyPlan,
+            Seed = unchecked((namedPass?.Definition.Seed ?? 0) + (sensor.PixelFormat switch
             {
                 CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, captureSequence, renderProjection, cloud, transient).Seed,
                 CameraPixelFormat.BayerRggb16 => CreateBayerOptions(setpoint, captureSequence, renderProjection, cloud, transient).Seed,
                 _ => initialRenderOptions.Seed
-            }
+            }))
         };
         var renderCpuStarted = ReadProcessCpu();
         var renderStarted = Stopwatch.GetTimestamp();
@@ -565,8 +708,8 @@ public sealed class VirtualSkyCameraModule(
         }
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
-            _options.TransientScenario, timelineUtc, setpoint.Exposure);
-        var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
+            transient is null ? null : namedPass?.Definition ?? _options.TransientScenario,
+            timelineUtc, setpoint.Exposure, namedPass);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -605,9 +748,9 @@ public sealed class VirtualSkyCameraModule(
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
             ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
-            CatalogId: catalogIdentity.CatalogId,
-            CatalogPackageVersion: catalogIdentity.PackageVersion,
-            DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity,
+            CatalogId: renderScene.ComputationProvenance.CatalogId,
+            CatalogPackageVersion: renderScene.ComputationProvenance.CatalogPackageVersion,
+            DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity ?? resolvedRenderDeepSkyCatalogIdentity,
             CaptureGraphRevisionId: captureGraph?.RevisionId);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -690,6 +833,38 @@ public sealed class VirtualSkyCameraModule(
             extra["solarDiskEphemeris"] = SolarDiskEphemeris.AlgorithmVersion;
             extra["solarDiskAlgorithm"] = SolarDiskRenderPlan.AlgorithmVersion;
             extra["solarDiskAppearance"] = JsonSerializer.Serialize(diskPlan.Disks);
+        }
+        if (deepSkyPlan is not null)
+        {
+            var deliveredDiagnostics = render.DeepSkyDiagnostics ?? deepSkyPlan.Diagnostics;
+            var deliveredStatistics = render.DeepSkyStatistics ?? deepSkyPlan.Statistics;
+            var serializeStarted = Stopwatch.GetTimestamp();
+            var serializedDiagnostics = JsonSerializer.Serialize(deliveredDiagnostics, SerializerOptions);
+            var deepSkyDiagnosticsSerializeMilliseconds = Stopwatch.GetElapsedTime(serializeStarted).TotalMilliseconds;
+
+            extra["deepSkyRenderAlgorithm"] = DeepSkyRenderPlan.AlgorithmVersion;
+            extra["deepSkyProfileSchemaVersion"] = DeepSkySimulationParameters.CurrentSchemaVersion;
+            extra["deepSkyDiagnosticIdentityVersion"] = DeepSkyRenderPlan.DiagnosticIdentityVersion;
+            extra["deepSkyDiagnosticsSha256"] = deliveredStatistics.DiagnosticsSha256;
+            if (!string.Equals(deliveredStatistics.DiagnosticsSha256, deepSkyPlan.Statistics.DiagnosticsSha256, StringComparison.Ordinal))
+            {
+                extra["deepSkyNativeDiagnosticsSha256"] = deepSkyPlan.Statistics.DiagnosticsSha256;
+            }
+            extra["deepSkyCandidateCount"] = deliveredStatistics.CandidateCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyEligibleCount"] = deliveredStatistics.EligibleCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAdmittedCount"] = deliveredStatistics.AdmittedCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyAnnotationOnlyCount"] = deliveredStatistics.AnnotationOnlyCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyUnresolvedPsfCount"] = deliveredStatistics.UnresolvedPsfCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDarkAttenuationCount"] = deliveredStatistics.DarkAttenuationCount.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkySampledPoints"] = deliveredStatistics.TotalSampledPoints.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyRasterizedPixels"] = deliveredStatistics.TotalRasterizedPixels.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyKernelCellVisits"] = deliveredStatistics.TotalKernelCellVisits.ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyCandidateSelectMilliseconds"] = deepSkyCandidateSelectMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyPrepareMilliseconds"] = deepSkyPrepareMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyPrepareProcessCpuMilliseconds"] = deepSkyPrepareProcessCpuMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnosticsSerializeMilliseconds"] = deepSkyDiagnosticsSerializeMilliseconds.ToString("R", CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnosticsBytes"] = Encoding.UTF8.GetByteCount(serializedDiagnostics).ToString(CultureInfo.InvariantCulture);
+            extra["deepSkyDiagnostics"] = serializedDiagnostics;
         }
         if (cloudProvenance is not null)
         {
@@ -883,19 +1058,7 @@ public sealed class VirtualSkyCameraModule(
         options.TransientScenario?.ValidateSensorBounds(
             config.Rig.Sensor.WidthPixels,
             config.Rig.Sensor.HeightPixels);
-        var pixelFormat = config.Rig.Sensor.PixelFormat;
-        if (options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
-            options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
-            options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
-            pixelFormat == CameraPixelFormat.BayerRggb16 &&
-            !options.Asi178Sensor.Enabled && !options.Asi676Enabled && options.SyntheticCalibration is null &&
-            config.Rig.Sensor.SimulationResponse is null ||
-            options.SyntheticCalibration is not null &&
-            (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
-                options.Asi174Sensor.Enabled || options.Asi178Sensor.Enabled || options.Asi676Enabled))
-        {
-            throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
-        }
+        ValidatePixelFormat(config, options);
         return (options, readout);
     }
 
@@ -1063,11 +1226,7 @@ public sealed class VirtualSkyCameraModule(
             Seed = unchecked(_options.Seed + (int)(captureSequence * 104729)),
             Cloud = cloud,
             Transient = transient,
-            ChannelResponse = _config.Rig.Sensor.SimulationResponse?.ColorResponse is { } configuredColor
-                ? new RgbChannelSettings(configuredColor.Red, configuredColor.Green, configuredColor.Blue)
-                : _options.SyntheticCalibration is not null || _options.Asi676Enabled
-                    ? new RgbChannelSettings(1, 1, 1)
-                    : new RgbChannelSettings(0.94, 1, 0.8),
+            ChannelResponse = ResolveBayerChannelResponse(_config.Rig.Sensor, _options),
             SensorResponse = _config.Rig.Sensor.SimulationResponse is { } configuredResponse
                 ? ConfiguredSensorResponseResolver.Resolve(configuredResponse, setpoint.Gain)
                 : _options.Asi178Sensor.Enabled
@@ -1089,6 +1248,13 @@ public sealed class VirtualSkyCameraModule(
                     : FrameStoredCodeTransform.RightAlignedV1),
             ContainerDepthBits = _resolvedReadout?.Layout.ContainerDepthBits ?? 16
         };
+
+    internal static RgbChannelSettings ResolveBayerChannelResponse(SensorProfile sensor, VirtualSkyCameraModuleOptions options)
+        => sensor.SimulationResponse?.ColorResponse is { } configuredColor
+            ? new(configuredColor.Red, configuredColor.Green, configuredColor.Blue)
+            : options.SyntheticCalibration is not null || options.Asi676Enabled
+                ? new(1, 1, 1)
+                : new(0.94, 1, 0.8);
 
     private FrameLayoutDescriptor CreateFrameLayout(
         SensorProfile sensor,
@@ -1476,7 +1642,10 @@ public sealed class VirtualSkyCameraModule(
             {
                 nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations),
                 nameof(VirtualSkyCameraModuleOptions.DeepSky),
-                nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection)
+                nameof(VirtualSkyCameraModuleOptions.RenderDeepSkySources),
+                nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection),
+                // Bind package content to the named capture identity without using the file path to seed sensor noise.
+                nameof(VirtualSkyCameraModuleOptions.NamedOrbitalPass)
             })
             {
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
@@ -1518,14 +1687,15 @@ public sealed class VirtualSkyCameraModule(
     private static TransientScenarioProvenance? CreateTransientProvenance(
         VirtualTransientScenarioDefinition? definition,
         DateTimeOffset integrationStartUtc,
-        TimeSpan exposure)
+        TimeSpan exposure,
+        VirtualSkyNamedPass? namedPass)
     {
         if (definition is null)
         {
             return null;
         }
 
-        var parameters = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
+        var parameters = namedPass?.Parameters ?? CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
         return new TransientScenarioProvenance(
             definition.SchemaVersion,
             definition.ScenarioId,
@@ -1533,7 +1703,7 @@ public sealed class VirtualSkyCameraModule(
             definition.Recurrence is null
                 ? VirtualTransientScenarioDefinition.CurrentAlgorithmVersion
                 : $"{VirtualTransientScenarioDefinition.CurrentAlgorithmVersion}+{VirtualTransientRecurrenceDefinition.CurrentAlgorithmVersion}",
-            CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
+            namedPass?.ParametersSha256 ?? CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
             definition.Seed,
             definition.EpochUtc,
             integrationStartUtc,
@@ -1542,6 +1712,176 @@ public sealed class VirtualSkyCameraModule(
             definition.SkyTracks.Count,
             definition.SensorTracks.Count,
             parameters);
+    }
+
+    internal const int MaximumDeepSkyCatalogQueryResults = 16_384;
+
+    private static CatalogSnapshotIdentity? ResolveRenderDeepSkyCatalogIdentity(
+        IDeepSkyCatalog? catalog,
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
+        DeepSkyObject[]? selectedCandidates,
+        int queryMatchCount,
+        bool preferCatalogOutlines,
+        DeepSkySyntheticScenario? syntheticScenario)
+    {
+        if (catalog is null)
+        {
+            return null;
+        }
+        if (catalog.Semantics.SnapshotIdentity is { } snapshot &&
+            !string.IsNullOrWhiteSpace(snapshot.DatabaseSha256))
+        {
+            return snapshot;
+        }
+
+        var semantics = catalog.Semantics;
+        // For immutable in-memory DeepSkyCatalog instances, use its lazily-cached full content hash (covering
+        // semantics, objects, aliases including cross-references, tombstones, and outlines) in O(1) per capture.
+        if (catalog is DeepSkyCatalog concreteCatalog)
+        {
+            return new CatalogSnapshotIdentity(
+                CatalogId: $"{semantics.SourceName}:content",
+                PackageVersion: semantics.SourceVersion,
+                SchemaVersion: "in-memory-content-v1",
+                PreprocessingVersion: "canonical-v2",
+                DatabaseSha256: concreteCatalog.ContentSha256);
+        }
+
+        // For custom snapshotless IDeepSkyCatalog implementations, bind semantics, summary counts, and ONLY the
+        // unified final effective selected candidates and their cached outlines so per-frame work stays strictly
+        // bounded by MaximumCandidates without enumerating or querying outlines for displaced or unselected rows.
+        var selectionSha256 = ComputeBoundedSelectionContentSha256(
+            catalog, outlineCache, selectedCandidates, queryMatchCount, preferCatalogOutlines, syntheticScenario);
+        return new CatalogSnapshotIdentity(
+            CatalogId: $"{semantics.SourceName}:selection",
+            PackageVersion: semantics.SourceVersion,
+            SchemaVersion: "selection-content-v1",
+            PreprocessingVersion: "canonical-json-v1",
+            DatabaseSha256: selectionSha256);
+    }
+
+    private static string ComputeBoundedSelectionContentSha256(
+        IDeepSkyCatalog catalog,
+        PerCaptureOutlineCachingDeepSkyCatalog? outlineCache,
+        DeepSkyObject[]? selectedCandidates,
+        int queryMatchCount,
+        bool preferCatalogOutlines,
+        DeepSkySyntheticScenario? syntheticScenario)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData("deep-sky-selection-content-v1\n"u8);
+        var canonicalSemantics = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(catalog.Semantics));
+        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalSemantics));
+        hash.AppendData("\n"u8);
+        hash.AppendData(Encoding.UTF8.GetBytes(string.Create(
+            CultureInfo.InvariantCulture,
+            $"counts:{catalog.Objects.Count}:{catalog.AliasCount}:{catalog.Tombstones.Count}:{queryMatchCount}\n")));
+
+        if (selectedCandidates is { Length: > 0 })
+        {
+            HashSet<string>? syntheticOutlineIds = null;
+            if (preferCatalogOutlines && syntheticScenario?.AdditionalOutlines is { Count: > 0 } syntheticOutlines)
+            {
+                syntheticOutlineIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var outline in syntheticOutlines)
+                {
+                    syntheticOutlineIds.Add(outline.ObjectId);
+                }
+            }
+
+            var sorted = new DeepSkyObject[selectedCandidates.Length];
+            Array.Copy(selectedCandidates, sorted, selectedCandidates.Length);
+            Array.Sort(sorted, static (left, right) => StringComparer.Ordinal.Compare(left.Id, right.Id));
+            foreach (var item in sorted)
+            {
+                var canonicalObj = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(item));
+                hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalObj));
+                hash.AppendData("\n"u8);
+                if (preferCatalogOutlines && (syntheticOutlineIds is null || !syntheticOutlineIds.Contains(item.Id)))
+                {
+                    var outlines = outlineCache is not null
+                        ? outlineCache.GetOutlines(item.Id)
+                        : catalog.GetOutlines(item.Id);
+                    if (outlines.Count > 0)
+                    {
+                        foreach (var outline in outlines.OrderBy(static o => o.Level))
+                        {
+                            var canonicalOutline = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(outline));
+                            hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(canonicalOutline));
+                            hash.AppendData("\n"u8);
+                        }
+                    }
+                }
+            }
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static (DeepSkyObject[] Candidates, int QueryMatchCount)? SelectDeepSkyRenderCandidates(
+        IDeepSkyCatalog? catalog,
+        VirtualSkyDeepSkyRenderOptions options,
+        VisibleSceneRequest sceneRequest)
+    {
+        if (catalog is null)
+        {
+            return options.SyntheticScenario?.AdditionalObjects is { Count: > 0 }
+                ? (DeepSkyRenderPlan.SelectCandidates(null, options.SyntheticScenario, options.MaximumCandidates), 0)
+                : null;
+        }
+        var projection = sceneRequest.Projection;
+        var boresightHorizontal = new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees);
+        var boresightJ2000 = EquatorialPrecession.PrecessToJ2000(
+            CoordinateTransforms.HorizontalToEquatorial(
+                boresightHorizontal,
+                sceneRequest.Utc,
+                sceneRequest.Observer.LatitudeDegrees,
+                sceneRequest.Observer.LongitudeDegrees),
+            sceneRequest.Utc);
+        var searchRadiusDegrees = Math.Min(180d, ProjectionSamplingBounds.OpticalRadiusDegrees(projection) + 15d);
+        var cap = new J2000SphericalCap(
+            boresightJ2000.RightAscensionHours,
+            boresightJ2000.DeclinationDegrees,
+            searchRadiusDegrees);
+
+        var queryLimit = Math.Max(options.MaximumCandidates, MaximumDeepSkyCatalogQueryResults);
+        var baseQuery = options.Query is { } query
+            ? query.ToQuery(queryLimit) with { Region = cap }
+            : new DeepSkyQuery(queryLimit, Region: cap);
+        var queryResult = catalog.Query(baseQuery);
+        var effectiveCandidates = DeepSkyRenderPlan.SelectCandidates(
+            queryResult.Objects,
+            options.SyntheticScenario,
+            options.MaximumCandidates);
+        return (effectiveCandidates, queryResult.MatchCount);
+    }
+
+    /// <summary>
+    /// Scoped to a single capture for snapshotless custom <see cref="IDeepSkyCatalog"/> instances so
+    /// <see cref="DeepSkyRenderPlan.Prepare"/> and capture identity hashing share the exact bounded outline lookups.
+    /// </summary>
+    private sealed class PerCaptureOutlineCachingDeepSkyCatalog(IDeepSkyCatalog inner) : IDeepSkyCatalog
+    {
+        private readonly Dictionary<string, IReadOnlyList<DeepSkyOutline>> _outlineCache = new(StringComparer.Ordinal);
+
+        public DeepSkySemantics Semantics => inner.Semantics;
+        public IReadOnlyList<DeepSkyObject> Objects => inner.Objects;
+        public int AliasCount => inner.AliasCount;
+        public IReadOnlyList<DeepSkyTombstone> Tombstones => inner.Tombstones;
+        public bool TryGetObject(string objectId, out DeepSkyObject value) => inner.TryGetObject(objectId, out value);
+        public IReadOnlyList<DeepSkyAlias> FindByAlias(string designation) => inner.FindByAlias(designation);
+        public bool TryGetTombstone(string id, out DeepSkyTombstone tombstone) => inner.TryGetTombstone(id, out tombstone);
+        public DeepSkyQueryResult Query(DeepSkyQuery query) => inner.Query(query);
+
+        public IReadOnlyList<DeepSkyOutline> GetOutlines(string objectId)
+        {
+            if (!_outlineCache.TryGetValue(objectId, out var outlines))
+            {
+                outlines = inner.GetOutlines(objectId);
+                _outlineCache[objectId] = outlines;
+            }
+            return outlines;
+        }
     }
 
     private static SolarSystemBody[] ParseSolarSystemBodies(IEnumerable<string> names)
@@ -1631,15 +1971,17 @@ public sealed class VirtualSkyCameraModuleOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualTransientScenarioDefinition? TransientScenario { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualSkyNamedPassOptions? NamedOrbitalPass { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SyntheticCalibrationModelV1? SyntheticCalibration { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualCalibrationLightOptions? VirtualCalibration { get; init; }
     public string CatalogName { get; init; } = "HYG";
-    public string CatalogVersion { get; init; } = "4.2-test-fixture";
+    public string CatalogVersion { get; init; } = "4.4-fixture.1";
     public Uri CatalogSourceUrl { get; init; } = new("https://astronexus.com/projects/hyg");
     public string CatalogLicense { get; init; } = "CC BY-SA 4.0";
-    public string CatalogChecksumSha256 { get; init; } = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
-    public string CatalogSchemaVersion { get; init; } = "2";
+    public string CatalogChecksumSha256 { get; init; } = "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682";
+    public string CatalogSchemaVersion { get; init; } = "3";
     public string RigProfileVersion { get; init; } = "virtual-asi174-v1";
     public IReadOnlyList<string> ConstellationIds { get; init; } = Array.Empty<string>();
     public bool IncludeConstellationEndpointStars { get; init; }
@@ -1647,6 +1989,9 @@ public sealed class VirtualSkyCameraModuleOptions
     public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public OpenNgcDeepSkyOptions? DeepSky { get; init; }
+    /// <summary>Opt-in parametric extended deep-sky raw pixel rendering; omitted preserves existing identities and pixels.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualSkyDeepSkyRenderOptions? RenderDeepSkySources { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
     /// <summary>Manual-focus preview model; unset uses the declared defaults and never affects ordinary captures.</summary>
@@ -1658,6 +2003,7 @@ public sealed class VirtualSkyCameraModuleOptions
         SimulatedFocus?.Validate(PsfSigmaPixels);
         if (DeepSky is not null) _ = DeepSky.ToSelection();
         if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
+        RenderDeepSkySources?.Validate();
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();
         if (!Enum.IsDefined(IlluminationMode) || !Enum.IsDefined(StellarCandidateSelection) ||
@@ -1772,6 +2118,39 @@ public sealed class Asi178McSensorOptions
 
     /// <summary>Provisional RAW16 pedestal pending controlled bias characterization.</summary>
     public double BlackLevelContainerAdu { get; init; } = 64;
+}
+
+/// <summary>Opt-in configuration for deterministic parametric extended deep-sky raw pixel rendering in VirtualSky.</summary>
+public sealed record VirtualSkyDeepSkyRenderOptions(
+    bool Enabled = false,
+    double MinimumSignalToNoise = 3.0,
+    int MaximumCandidates = 128,
+    int MaximumRenderedSources = 64,
+    int SamplesPerProjectedPixel = 2,
+    bool PreferCatalogOutlines = true,
+    int PreferredOutlineLevel = DeepSkyOutline.WidestLevel,
+    bool AllowSurfaceBrightnessB25Fallback = false,
+    double CelestialDiffuseBackgroundElectronsPerSecond = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OpenNgcDeepSkyOptions? Query = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DeepSkySyntheticScenario? SyntheticScenario = null)
+{
+    public void Validate()
+    {
+        new DeepSkyRenderSettings(
+            MinimumSignalToNoise: MinimumSignalToNoise,
+            MaximumCandidates: MaximumCandidates,
+            MaximumRenderedSources: MaximumRenderedSources,
+            SamplesPerProjectedPixel: SamplesPerProjectedPixel,
+            PreferCatalogOutlines: PreferCatalogOutlines,
+            PreferredOutlineLevel: PreferredOutlineLevel,
+            AllowSurfaceBrightnessB25Fallback: AllowSurfaceBrightnessB25Fallback,
+            CelestialDiffuseBackgroundElectronsPerSecond: CelestialDiffuseBackgroundElectronsPerSecond,
+            SyntheticScenario: SyntheticScenario).Validate();
+        if (Query is not null)
+        {
+            _ = Query.ToQuery(MaximumCandidates);
+        }
+    }
 }
 
 /// <summary>Configures the provisional shared ASI676MM/MC 12-bit response in a RAW16 container.</summary>

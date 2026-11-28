@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -25,6 +27,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed partial class CaptureSatelliteIntegrationTests
 {
@@ -45,20 +48,27 @@ public sealed partial class CaptureSatelliteIntegrationTests
             {
                 config = Configuration(root, f);
                 receipt = await CaptureAsync(provider, config, f).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
                 var output = await ProcessAsync(provider, config).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, output.Outcome, output.Reason);
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
                 var node = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(node);
+                Assert.IsNotNull(node.Inputs);
+                var selectedInput = Assert.ContainsSingle(node.Inputs.Where(static input => input.Selected));
+                Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ArtifactId, selectedInput.ArtifactId);
+                Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.Variant, selectedInput.Variant);
                 Assert.HasCount(3, node.Outputs);
                 var layerNode = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "satellite-layer", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(layerNode);
                 Assert.HasCount(2, layerNode.Outputs);
                 checksums = node.Outputs.ToDictionary(static p => p.Artifact.Variant, static p => p.Artifact.ChecksumSha256);
-                var evidence = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                var input = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
+                var evidence = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    provider, input.ArtifactId, CancellationToken.None).ConfigureAwait(false));
                 var prediction = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath)).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, prediction.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false);
                 var independentRaw = f.Raw with
                 {
                     ArtifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId,
@@ -68,6 +78,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     Variant = receipt.Manifest.Descriptor.Artifact.Variant,
                     MediaType = receipt.Manifest.Descriptor.Artifact.MediaType,
                     CreatedUtc = receipt.Manifest.Descriptor.Artifact.CreatedUtc,
+                    Integration = receipt.Manifest.Descriptor.Controls.EffectiveExposure,
                     Layout = receipt.Manifest.Descriptor.Layout,
                     ObservationStartedUtc = receipt.Manifest.Descriptor.Timing.ExposureStartedUtc,
                     ObservationEndedUtc = receipt.Manifest.Descriptor.Timing.ExposureEndedUtc
@@ -91,7 +102,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.IsNotNull(node);
                 foreach (var product in node.Outputs)
                     Assert.AreEqual(checksums[product.Artifact.Variant], ProcessingIdentity.ComputePayloadSha256(
-                        await File.ReadAllBytesAsync(Path.Combine(root, product.PayloadRelativePath)).ConfigureAwait(false)));
+                        await SiloInfrastructureFixture.ReadArtifactBytesAsync(restarted, product.ArtifactId, CancellationToken.None).ConfigureAwait(false)));
                 var presentation = await restarted.GetRequiredService<ICameraAgentLayeredPresentationService>()
                     .GetAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, presentation.Status, presentation.Reason);
@@ -100,6 +111,8 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.AreEqual(OrbitalTrackPresentation.LayerKind, layer.Kind);
                 Assert.IsFalse(layer.EnabledByDefault);
                 Assert.IsTrue(layer.Satellite!.Renderable);
+                await AssertCenteredSatelliteProjectionAsync(restarted, receipt.Manifest.Descriptor, config.Rig,
+                    layer.Satellite.Status).ConfigureAwait(false);
                 await AssertAuthenticatedReadAsync(restarted, presentation.Presentation).ConfigureAwait(false);
                 StringAssert.Contains(Encoding.UTF8.GetString(presentation.Presentation.Svg.Span), "hvo-layer-0", StringComparison.Ordinal);
                 var materializer = restarted.GetRequiredService<ICameraAgentPresentationMaterializer>();
@@ -119,6 +132,60 @@ public sealed partial class CaptureSatelliteIntegrationTests
             }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    private static async Task AssertCenteredSatelliteProjectionAsync(ServiceProvider provider, ReconstructionDescriptor raw,
+        CameraRigConfig rig, string predictionStatus)
+    {
+        var token = CancellationToken.None;
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var output = Assert.ContainsSingle((await store.ReadNodeAsync(raw.Capture.CaptureId, "satellite-layer", token)
+            .ConfigureAwait(false))!.Outputs.Where(product => product.Artifact.Variant == "capture-satellites-v1-layer"));
+        var exposure = new ExposureKey(new(raw.Capture.AgentId, "retained-satellite"), Guid.NewGuid(), raw.Capture.CaptureId);
+        var stream = new CenteredViewStream(exposure.Camera, exposure.RunId, "retained-satellite-proof");
+        var execution = Guid.NewGuid();
+        var input = new ExposureInputV1(exposure, raw,
+            new(raw.Layout, rig.Orientation, raw.Profiles.Rig.Sha256, rig.Optics.CalibrationVersion, null));
+        var fallback = new LinearExposureLookup(input, LinearExposureDisposition.Unavailable, 1, null, null, "linear.no-configured-step");
+        var preview = await provider.GetRequiredService<ICenteredViewProducer>().PublishSingleAsync(stream, execution,
+            raw.Capture.CaptureSequence, fallback, new(MaximumDimension: 300, Crop: new(10, 10, 620, 620)), token)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(preview);
+
+        var slot = new ExposureProductSlot(execution, output.Artifact.SourceId, output.ProductSchemaVersion!, output.Artifact.Variant);
+        var reference = new ExposureProductRef(exposure, slot, output.ArtifactId, output.OutputIdentitySha256,
+            output.Artifact.ChecksumSha256, output.ContentIdentitySha256);
+        var lookup = new ExposureProductLookup(exposure, slot, ExposureProductAvailability.Available, 2, reference, null);
+        var publisher = provider.GetRequiredService<ICenteredViewLayerProducer>();
+        var view = await publisher.PublishAsync(preview.Base.BaseId, CenteredViewLayerScope.Contributor,
+            lookup, new("predicted-satellites", 400, false), raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
+        Assert.IsNotNull(view);
+        var layer = Assert.ContainsSingle(view.Revision.Layers);
+        Assert.AreEqual(predictionStatus == "Partial" ? CenteredViewReadiness.Partial : CenteredViewReadiness.Ready, layer.Readiness);
+        Assert.AreEqual(exposure.CaptureId, layer.Key.SourceCaptureId);
+        Assert.AreEqual(reference.ArtifactId, layer.Evidence!.ArtifactId);
+        Assert.IsNotNull(layer.Drawable);
+        Assert.IsFalse(layer.Drawable.EnabledByDefault);
+        await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
+
+        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+        var source = await persistence.ReadCenteredViewParentAsync(exposure.CaptureId, output.ArtifactId, token).ConfigureAwait(false);
+        var original = PresentationLayerPayloadJson.Parse(source.Payload).Payload;
+        Assert.IsNotNull(original);
+        Assert.IsNotEmpty(original.Segments);
+        var endpoint = provider.GetRequiredService<ICenteredViewPresentationReader>();
+        var served = await endpoint.ReadAsync(view.Base.BaseId, view.Revision.RevisionId, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, served.Status, served.Reason);
+        var svg = XDocument.Parse(Encoding.UTF8.GetString(served.Presentation!.Svg.Span));
+        var lines = svg.Descendants().Where(element => element.Name.LocalName == "line").ToArray();
+        Assert.IsNotEmpty(lines);
+        var first = original.Segments[0];
+        Assert.AreEqual((first.From.X - 10) * 300 / 620, Coordinate("x1"), .001);
+        Assert.AreEqual((first.From.Y - 10) * 300 / 620, Coordinate("y1"), .001);
+        Assert.AreEqual((first.To.X - 10) * 300 / 620, Coordinate("x2"), .001);
+        Assert.AreEqual((first.To.Y - 10) * 300 / 620, Coordinate("y2"), .001);
+
+        double Coordinate(string name) => double.Parse(lines[0].Attribute(name)!.Value, CultureInfo.InvariantCulture);
     }
 
     [TestMethod]
@@ -187,10 +254,12 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     "satellite", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(node);
                 if (frozen is not null)
-                    CollectionAssert.AreEqual(frozen, await File.ReadAllBytesAsync(Path.Combine(root,
-                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).PayloadRelativePath)).ConfigureAwait(false));
-                CollectionAssert.AreEqual(frozenInput, await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                    CollectionAssert.AreEqual(frozen, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).ArtifactId,
+                        CancellationToken.None).ConfigureAwait(false));
+                CollectionAssert.AreEqual(frozenInput, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).ArtifactId,
+                    CancellationToken.None).ConfigureAwait(false));
             }
         }
         finally { Directory.Delete(root, true); }
@@ -209,12 +278,10 @@ public sealed partial class CaptureSatelliteIntegrationTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton<TimeProvider>(clock);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddSingleton<ICameraAgentOrbitalTimeSource>(new TimeSource(f, unavailable));
         services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(
@@ -229,22 +296,28 @@ public sealed partial class CaptureSatelliteIntegrationTests
         return provider;
     }
 
-    internal static CameraModuleConfig Configuration(string root, CaptureSatelliteFixture f, OrbitalQueryBounds? bounds = null) => f.Configuration with
-    {
-        Pipeline = new([
+    internal static CameraModuleConfig Configuration(string root, CaptureSatelliteFixture f, OrbitalQueryBounds? bounds = null,
+        bool hideObjectLabels = false) => f.Configuration with
+        {
+            Pipeline = new([
             new(CaptureSatelliteTracksProcessingStep.Alias, "satellite", DependsOn: ["$raw"],
                 Options: JsonSerializer.SerializeToElement(new CaptureSatelliteTracksOptions
-                { CatalogNumbers = ["25544"], Bounds = bounds ?? f.Input.Plan.Bounds, OverrideTimeDataAvailableUtc = f.Input.Plan.Availability.TimeDataAvailableUtc }),
+                {
+                    CatalogNumbers = ["25544"],
+                    Bounds = bounds ?? f.Input.Plan.Bounds,
+                    OverrideTimeDataAvailableUtc = f.Input.Plan.Availability.TimeDataAvailableUtc,
+                    HideObjectLabels = hideObjectLabels
+                }),
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Preview", "preview", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new(CaptureSatelliteLayerProcessingStep.Alias, "satellite-layer", DependsOn: ["satellite"],
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("SatelliteFixtureManifest", "manifest", DependsOn: ["preview", "satellite", "satellite-layer"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Storage", "storage", DependsOn: ["$raw", "preview", "satellite", "satellite-layer", "manifest"],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
         ])
-    };
+        };
 
     internal static async Task<RawCaptureReceipt> CaptureAsync(ServiceProvider provider, CameraModuleConfig config, CaptureSatelliteFixture f,
         int sequenceOffset = 0, CaptureLoopSubmission? submission = null)

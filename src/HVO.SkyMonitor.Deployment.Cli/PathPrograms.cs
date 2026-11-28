@@ -58,7 +58,8 @@ internal static partial class PathPrograms
     }
 
     private static async Task<PathProgramSet?> DesiredAsync(
-        InstallationPaths paths, string productionRoot, string? releaseFolder, string imageId, CancellationToken cancellationToken)
+        InstallationPaths paths, string productionRoot, string? releaseFolder, string imageId, CancellationToken cancellationToken,
+        VerifiedRelease? admittedRelease = null)
     {
         var locations = Locations.For(paths, productionRoot);
         if (releaseFolder is null)
@@ -71,8 +72,9 @@ internal static partial class PathPrograms
                     EnsureTrustedDestination(program.Target, DestinationRoot(paths, productionRoot));
             return retained;
         }
-        var release = await ReleaseAcquirer.ReadAsync(releaseFolder, cancellationToken).ConfigureAwait(false);
-        await VerifyReleaseAsync(releaseFolder, release, cancellationToken).ConfigureAwait(false);
+        var release = admittedRelease ?? await ReleaseAcquirer.ReadAsync(releaseFolder, cancellationToken).ConfigureAwait(false);
+        if (admittedRelease is null)
+            await VerifyReleaseAsync(releaseFolder, release, cancellationToken).ConfigureAwait(false);
         var current = await ReadSetAsync(CurrentRecord(paths), locations, cancellationToken).ConfigureAwait(false);
         var client = current?.Programs.FirstOrDefault(static program => program.Name == "hvo-sky")?.Target
                      ?? Path.Combine(SelectClientFolder(locations, Writable), "hvo-sky");
@@ -88,9 +90,11 @@ internal static partial class PathPrograms
     }
 
     internal static async Task SettleAsync(
-        InstallationPaths paths, string productionRoot, string? releaseFolder, string imageId, CancellationToken cancellationToken)
+        InstallationPaths paths, string productionRoot, string? releaseFolder, string imageId, CancellationToken cancellationToken,
+        VerifiedRelease? admittedRelease = null)
     {
-        var desired = await DesiredAsync(paths, productionRoot, releaseFolder, imageId, cancellationToken).ConfigureAwait(false);
+        var desired = await DesiredAsync(paths, productionRoot, releaseFolder, imageId, cancellationToken, admittedRelease)
+            .ConfigureAwait(false);
         if (desired is null)
         {
             // A legacy image has no matching release client. Keep the durable maintenance installer, but do not leave
@@ -146,13 +150,13 @@ internal static partial class PathPrograms
 
     internal static async Task<IReadOnlyList<DeploymentPlanItem>> PlanAsync(
         InstallationPaths paths, string productionRoot, string? releaseFolder, string imageId,
-        LifecycleOperationKind? operation, CancellationToken cancellationToken)
+        LifecycleOperationKind? operation, CancellationToken cancellationToken, VerifiedRelease? admittedRelease = null)
     {
         var locations = Locations.For(paths, productionRoot);
         var removing = operation is LifecycleOperationKind.Uninstall or LifecycleOperationKind.Purge;
         var desired = removing
             ? await ReadSetAsync(CurrentRecord(paths), locations, cancellationToken).ConfigureAwait(false)
-            : await DesiredAsync(paths, productionRoot, releaseFolder, imageId, cancellationToken).ConfigureAwait(false);
+            : await DesiredAsync(paths, productionRoot, releaseFolder, imageId, cancellationToken, admittedRelease).ConfigureAwait(false);
         if (desired is null && operation == LifecycleOperationKind.Rollback)
         {
             desired = await ReadSetAsync(CurrentRecord(paths), locations, cancellationToken).ConfigureAwait(false);
@@ -232,7 +236,8 @@ internal static partial class PathPrograms
             if (root == paths.InstanceRoot || !Guid.TryParseExact(Path.GetFileName(root), "D", out var id)) continue;
             var other = InstallationPaths.Create(paths.ProductRoot, id, ProductionCatalog.DefaultCatalogId);
             if (!File.Exists(other.ManifestPath)) continue;
-            var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(other.ManifestPath, cancellationToken).ConfigureAwait(false);
+            var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(other.ManifestPath, cancellationToken, allowSiloLayout: true)
+                .ConfigureAwait(false);
             if (!includeUninstalled && manifest.LifecycleCondition != InstanceLifecycleCondition.Installed) continue;
             var record = await ReadSetAsync(CurrentRecord(other), locations: null, cancellationToken).ConfigureAwait(false);
             if (record?.Programs.Any(program => program.Target == target) == true) return true;

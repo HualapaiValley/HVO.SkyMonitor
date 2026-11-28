@@ -12,13 +12,12 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 /// <summary>
-/// Explicit offline baseline/after evidence for issue #521: the same process-fresh workload is run once against each
-/// installed approved catalog lineage, so HYG 4.2 (baseline) and HYG 4.4 (after) are measured on identical startup
-/// validation, bounded and full-catalog queries, and a full-frame virtual-sky render drawn from the whole catalog.
-/// Never substituted with a fixture catalog.
+/// Measures process-fresh startup, bounded and full-catalog queries, and full-frame
+/// virtual-sky rendering with an approved production catalog.
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class CatalogLineageResourceQualificationTests
 {

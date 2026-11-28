@@ -89,7 +89,7 @@
                                         <div class="evidence-row">
                                             <div class="evidence-row__name"><strong>@name</strong><small>@(artifact.Variant ?? "Default variant") / @(artifact.Recipe?.Name ?? "Acquisition")</small></div>
                                             <span>@OperationsPage.FormatBytes(artifact.ByteLength)</span>
-                                            <span>@(artifactState is null ? "State unavailable" : $"{artifactState.RetentionState} / {artifactState.DeliveryAvailability}")</span>
+                                            <span>@(artifactState is null ? "State unavailable" : artifactState.RetentionState)</span>
                                             <div class="evidence-row__actions">
                                                 @if (IsProjectedArtifact(artifact.ArtifactId)) { <a href="@GalleryPage.PreviewUrl(artifact.ArtifactId)" target="_blank" rel="noopener" aria-label="Open @name preview">Preview</a> }
                                                 @{ var menuOpen = _openDownloadMenu == artifact.ArtifactId; var menuId = $"download-menu-{artifact.ArtifactId:N}"; }
@@ -101,7 +101,8 @@
                                                             <li>
                                                                 @if (option.Url is { } url)
                                                                 {
-                                                                    <a href="@url" download data-format="@option.Format" @onclick="CloseDownloadMenu"><strong>@option.Label</strong><small>@option.Description</small></a>
+                                                                    var descriptionId = $"{menuId}-{option.Format}-description";
+                                                                    <a href="@url" download data-format="@option.Format" aria-label="Download @option.Label" aria-describedby="@descriptionId" @onclick="CloseDownloadMenu"><strong>@option.Label</strong><small id="@descriptionId">@option.Description</small></a>
                                                                 }
                                                                 else
                                                                 {
@@ -122,7 +123,6 @@
                                                 <div><dt>Created</dt><dd>@(artifact.CreatedUtc is null ? "Unspecified" : SiteTime.Format(artifact.CreatedUtc.Value))</dd></div>
                                                 <div><dt>Source ID</dt><dd>@(artifact.SourceId ?? "Unspecified")</dd></div>
                                                 <div><dt>Processing node</dt><dd>@(artifact.ProcessingNodeId ?? "Acquisition")</dd></div>
-                                                <div><dt>Delivery statuses</dt><dd>@(artifactState is null || artifactState.DeliveryStatuses.Count == 0 ? "Unavailable" : string.Join(", ", artifactState.DeliveryStatuses.Select(static delivery => $"{delivery.StorageAlias}: {delivery.Status}")))</dd></div>
                                                 <div><dt>Source artifact IDs</dt><dd>@if (artifact.SourceArtifactIds.Count == 0) { <span>Origin artifact</span> } else { @foreach (var source in artifact.SourceArtifactIds) { <code>@source</code> } }</dd></div>
                                                 @if (artifact.Recipe is { } recipe)
                                                 {
@@ -190,7 +190,7 @@
                     </div>
 
                     <div id="evidence-panel-@EvidenceTab.Replay" class="evidence-panel replay-entry" role="tabpanel" aria-labelledby="evidence-tab-@EvidenceTab.Replay" hidden="@(_evidenceTab != EvidenceTab.Replay)">
-                        <p>Re-run this retained capture with a chosen pipeline revision. Replay never repeats acquisition, never replaces the current view, and never uploads or publishes automatically.</p>
+                        <p>Re-run this retained capture with a chosen pipeline revision. Replay never repeats acquisition, never replaces the current view, and never publishes automatically.</p>
                         <p class="replay-entry__action"><a class="btn btn-outline-light" href="@ReplayUrl">Replay this capture</a></p>
                     </div>
                 </section>

@@ -4,8 +4,8 @@
 # The installed catalog tree carries two levels that both exist, are both readable directories, and both look
 # plausible to someone reading either contract on its own:
 #
-#   .../catalogs/hyg-v42-production                 <- the root; holds "current" beside "versions/"
-#   .../catalogs/hyg-v42-production/versions/...    <- one version directory
+#   .../catalogs/hyg-v44-production                 <- the root; holds "current" beside "versions/"
+#   .../catalogs/hyg-v44-production/versions/...    <- one version directory
 #
 # The campaigns mount the root, because the container resolves a "current" pointer that lives in it. The
 # Deployment CLI installer bundle variable takes the version directory and refuses "current" outright. Passing

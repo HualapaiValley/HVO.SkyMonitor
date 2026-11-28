@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CaptureHostContextTests
 {
     [TestMethod]
@@ -286,7 +287,7 @@ public sealed class CaptureHostContextTests
                 new string('B', 64), "rig", "catalog", "1", new string('C', 64), "projection",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey)), 4);
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog")), 4);
         var submission = new CaptureLoopSubmission(
             new CaptureRequest(frame.TimestampUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
@@ -316,7 +317,7 @@ public sealed class CaptureHostContextTests
                 new string('E', 64), "rig", "catalog", "1", new string('F', 64), "projection",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey)), 4);
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog")), 4);
         var submission = new CaptureLoopSubmission(
             new CaptureRequest(frame.TimestampUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
@@ -343,7 +344,7 @@ public sealed class CaptureHostContextTests
                 new string('2', 64), "rig", "catalog", "1", new string('3', 64), "projection",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey)), 4);
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog")), 4);
         var submission = new CaptureLoopSubmission(
             new CaptureRequest(frame.TimestampUtc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),

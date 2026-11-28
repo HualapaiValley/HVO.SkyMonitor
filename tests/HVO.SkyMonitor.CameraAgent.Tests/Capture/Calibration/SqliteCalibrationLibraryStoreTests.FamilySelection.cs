@@ -218,10 +218,11 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             var light = fixture.Lights[HighGain];
             var flat = fixture.Bundles[HighGain].Artifacts.Single(static artifact =>
                 artifact.Role == CalibrationLibraryArtifactRoles.Master && artifact.Kind == CalibrationReferenceKinds.Flat);
-            var path = Path.Combine(root, string.Concat(
-                flat.ManifestRelativePath.AsSpan(0, flat.ManifestRelativePath.Length - ".json".Length), ".bin")
-                .Replace('/', Path.DirectorySeparatorChar));
-            var original = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+            var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, flat.ArtifactId).ConfigureAwait(false);
+            var revision = CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor);
+            var objects = CalibrationSiloFixture.Objects(root);
+            var locator = await CalibrationSiloFixture.FindMemberAsync(root, flat.ArtifactId, revision).ConfigureAwait(false);
+            var original = objects.Read(locator.Key, locator.VersionId);
             Assert.AreEqual(flat.PayloadSha256, Convert.ToHexString(SHA256.HashData(original)), ignoreCase: true);
             Assert.IsTrue((await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
 
@@ -230,7 +231,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             byte[][] corruptions = [flipped, [.. original, 0], original[..^1]];
             foreach (var corruption in corruptions)
             {
-                await File.WriteAllBytesAsync(path, corruption).ConfigureAwait(false);
+                await CalibrationSiloFixture.OverrideMemberAsync(root, flat.ArtifactId, revision, corruption).ConfigureAwait(false);
 
                 var corrupt = await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false);
 
@@ -239,19 +240,20 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             }
 
             // A pruned payload is missing; one that cannot be read is unreadable (#1475).
-            File.Delete(path);
+            objects.ReadContentOverride = null;
+            objects.MissOnRead = key => key == locator.Key;
             var missing = await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(missing.IsSelected);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMissing, missing.ReasonCode);
-            Directory.CreateDirectory(path);
+            objects.MissOnRead = null;
+            objects.ReadUnavailable = key => key == locator.Key;
             var unreadable = await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(unreadable.IsSelected);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterUnreadable, unreadable.ReasonCode);
             Assert.IsTrue((await store.SelectFamilyMastersAsync(
                 family, fixture.Lights[LowGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
 
-            Directory.Delete(path);
-            await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
+            objects.ReadUnavailable = null;
             Assert.IsTrue((await store.SelectFamilyMastersAsync(family, light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
         }
         finally
@@ -310,7 +312,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         using var admission = new CaptureAdmissionCoordinator(
             new InitializedIngress(), options, clock, telemetry);
         await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, clock);
+        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, clock) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
         _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var accessor = new CameraAgentConfigurationAccessor();
         var configuration = CreateVirtualConfiguration();
@@ -318,7 +320,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
         accessor.SetConfiguration(configuration);
         using var coordinator = new VirtualCalibrationAcquisitionCoordinator(
             store,
-            new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance),
+            CalibrationSiloFixture.Publisher(options, NullCalibrationPublicationFaultInjector.Instance),
             admission,
             accessor,
             clock);
@@ -360,10 +362,8 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             var bundle = (await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false))
                 .Single(snapshot => snapshot.Bundle.Applicability.MinimumGain == gain).Bundle;
             var source = bundle.Artifacts.First(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source);
-            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(Path.Combine(
-                root, source.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar))).ConfigureAwait(false));
-            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
-            var descriptor = parsed.Document!.Manifest!.Descriptor;
+            var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, source.ArtifactId).ConfigureAwait(false);
+            var descriptor = manifest.Descriptor;
             var started = effectiveFrom.AddHours(1);
             var ended = started.Add(job.Plan.ApplicableLightExposure);
             bundles.Add(gain, bundle);

@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Imaging.Tests;
@@ -384,6 +386,267 @@ public sealed class StellarSourceMeasurerTests
         cancellation.Cancel();
         Assert.ThrowsExactly<OperationCanceledException>(() => StellarSourceMeasurer.Measure(pixels, Valid(pixels.Length), [], 32, 32,
             cancellationToken: cancellation.Token));
+    }
+
+    [TestMethod]
+    public void LegacyV2ReplayOmitsOccupancyAndPreservesDistinctV2AlgorithmIdentity()
+    {
+        const int size = 128;
+        var pixels = Field(size, size);
+        AddGaussian(pixels, size, 64.5, 64.5, 1.2, 1.2, 2000);
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var r = double.Hypot(x + 0.5 - 64.5, y + 0.5 - 64.5);
+                if (r is >= 14.0 and <= 30.0)
+                    pixels[y * size + x] += 1800.0;
+            }
+        }
+        var valid = Valid(pixels.Length);
+        var current = StellarSourceMeasurer.Measure(pixels, valid, [], size, size);
+        var legacy = StellarSourceMeasurer.MeasureLegacyV2(pixels, valid, [], size, size);
+
+        Assert.AreEqual(StellarSourceMeasurer.AlgorithmVersion, current.AlgorithmVersion);
+        Assert.AreEqual("linear-stellar-local-v3", current.AlgorithmVersion);
+        Assert.AreEqual(StellarSourceMeasurer.V2AlgorithmVersion, legacy.AlgorithmVersion);
+        Assert.AreEqual("linear-stellar-local-v2", legacy.AlgorithmVersion);
+        Assert.AreNotEqual(current.SettingsIdentitySha256, legacy.SettingsIdentitySha256);
+        Assert.AreEqual(StellarSourceMeasurer.SettingsIdentity(new(), StellarSourceMeasurer.V2AlgorithmVersion),
+            legacy.SettingsIdentitySha256);
+        CollectionAssert.AreEqual(current.Detections.ToArray(), legacy.Detections.ToArray());
+        var currentRing = current.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        var legacyRing = legacy.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        Assert.IsNotNull(currentRing.Occupancy);
+        Assert.IsNotNull(currentRing.Occupancy.Subgrid, "61x61 ring coarse 2x2 cells should refine to a 1x1 subgrid.");
+        Assert.IsTrue(currentRing.Occupancy.IsValid(currentRing.Footprint!.Value, currentRing.Peak, currentRing.SampleCount));
+        Assert.IsNull(legacyRing.Occupancy);
+        Assert.AreEqual(currentRing.Footprint, legacyRing.Footprint);
+        Assert.AreEqual(currentRing.Peak, legacyRing.Peak);
+        Assert.AreEqual(currentRing.SampleCount, legacyRing.SampleCount);
+    }
+
+    [TestMethod]
+    public void TwoLevelOccupancyRefinesMegapixelDiagonalStreakAndEnforcesIntegrity()
+    {
+        var fp = new StellarFootprintBounds(100, 100, 1899, 1899);
+        // 1,800-px diagonal streak y == x +/- 2 inside a 1800x1800 box; coarse cells are 40x40, subgrid refines to <= 4x4.
+        var occupancy = StellarFootprintOccupancy.Create(fp, static (x, y) => Math.Abs(x - y) <= 2);
+        Assert.IsGreaterThanOrEqualTo(30, occupancy.CellWidth);
+        Assert.IsNotNull(occupancy.Subgrid);
+        Assert.IsLessThanOrEqualTo(4, occupancy.Subgrid.CellWidth);
+        Assert.IsLessThanOrEqualTo(4, occupancy.Subgrid.CellHeight);
+
+        var onStreak = new PixelPoint(1000.5, 1000.5);
+        var nearby = new PixelPoint(1000.5 + 18.0 * Math.Sqrt(0.5), 1000.5 - 18.0 * Math.Sqrt(0.5));
+        Assert.AreEqual(0.0, occupancy.DistanceSquaredToOccupied(fp, onStreak, 1.0));
+        Assert.IsTrue(double.IsPositiveInfinity(occupancy.DistanceSquaredToOccupied(fp, nearby, 10.0)),
+            "Subgrid must keep a point 18 px off the diagonal streak well outside a 10 px search radius.");
+        Assert.IsTrue(occupancy.IsValid(fp, onStreak, sampleCount: 9000));
+
+        // Integrity rejections (M7):
+        var smallFp = new StellarFootprintBounds(10, 10, 13, 13);
+        var twoCells = StellarFootprintOccupancy.Create(smallFp, static (x, y) => (x == 10 && y == 10) || (x == 13 && y == 13));
+        Assert.IsTrue(twoCells.IsValid(smallFp, new PixelPoint(10.5, 10.5), sampleCount: 2));
+        Assert.IsFalse(twoCells.IsValid(smallFp, new PixelPoint(10.5, 10.5), sampleCount: 1),
+            "1 segmented sample cannot occupy 2 distinct cells.");
+        Assert.IsFalse(twoCells.IsValid(smallFp, new PixelPoint(11.5, 11.5), sampleCount: 2),
+            "Recorded peak outside the occupied mask must be rejected.");
+        Assert.IsFalse(twoCells.IsValid(smallFp, new PixelPoint(10.5, 10.5), sampleCount: 3),
+            "3 samples cannot fit inside 2 occupied 1x1 cells.");
+
+        // Subgrid integrity rejections:
+        Assert.IsFalse(occupancy.IsValid(fp, nearby, sampleCount: 9000),
+            "Recorded peak in an unoccupied sub-cell (even inside an occupied coarse cell) must be rejected.");
+        Assert.IsFalse(occupancy.IsValid(fp, onStreak, sampleCount: 1),
+            "1 segmented sample cannot occupy multiple subgrid cells.");
+        // Tamper a subgrid coarse cell to all zeros while keeping coarse bit set:
+        var zeroSub = occupancy with
+        {
+            Subgrid = occupancy.Subgrid with
+            {
+                BitsBase64 = Convert.ToBase64String(new byte[Convert.FromBase64String(occupancy.Subgrid.BitsBase64).Length])
+            }
+        };
+        Assert.IsFalse(zeroSub.IsValid(fp), "An occupied coarse cell with zero occupied sub-cells must be rejected.");
+
+        // D8-M3 + D8-H1 + D10-M2: standalone 1-arg/3-arg IsValid accepts any physically valid budgeted coarse mask
+        // (including coarse-only masks where whole-product subgrid budget was exhausted), while 4-arg and 5-arg
+        // product-budget validation deterministically enforces exact Subgrid presence/absence against the budget.
+        var strippedSub = occupancy with { Subgrid = null };
+        Assert.IsTrue(strippedSub.IsValid(fp),
+            "Standalone 1-arg validation must accept a physically valid coarse-only budgeted mask.");
+        Assert.IsTrue(strippedSub.IsValid(fp, onStreak, sampleCount: 9000),
+            "Standalone 3-arg validation must accept a physically valid coarse-only budgeted mask.");
+        Assert.IsTrue(occupancy.IsValid(fp, onStreak, sampleCount: 9000, StellarFootprintOccupancy.MaximumSubgridBits));
+        Assert.IsFalse(strippedSub.IsValid(fp, onStreak, sampleCount: 9000, StellarFootprintOccupancy.MaximumSubgridBits),
+            "Product-budget validation must reject stripping Subgrid when refinement fits in budget.");
+        Assert.IsFalse(strippedSub.IsValid(fp, onStreak, sampleCount: 9000,
+            StellarFootprintOccupancy.MaximumCells, StellarFootprintOccupancy.MaximumSubgridBits),
+            "5-arg product-budget validation must reject stripping Subgrid when refinement fits in budget.");
+        Assert.IsTrue(strippedSub.IsValid(fp, onStreak, sampleCount: 9000, subgridBitBudget: 1),
+            "When whole-product subgrid budget is legitimately exhausted (ChooseSubgrid == null), Subgrid == null must validate.");
+        Assert.IsFalse(occupancy.IsValid(fp, onStreak, sampleCount: 9000, subgridBitBudget: 1),
+            "When whole-product subgrid budget is exhausted, an unexpected Subgrid must be rejected.");
+    }
+
+    [TestMethod]
+    public void ProductOccupancyBudgetsAccountForWorstCaseJsonEscapingAndEnforceDeterministicCoarsening()
+    {
+        // 1. WorstCaseSerializedBase64Utf8ByteCount must strictly bound actual System.Text.Json default UTF-8 output
+        //    on the worst-case repeating [0xFB, 0xEF, 0xBE] pattern (which encodes to 100% '+' -> 6-byte \u002B).
+        byte[] allPlusPattern = [0xFB, 0xEF, 0xBE];
+        for (var bitCount = 1; bitCount <= 320; bitCount++)
+        {
+            var rawLength = (bitCount + 7) / 8;
+            var raw = new byte[rawLength];
+            for (var i = 0; i < rawLength; i++)
+                raw[i] = allPlusPattern[i % 3];
+            var serializedLength = JsonSerializer.SerializeToUtf8Bytes(Convert.ToBase64String(raw)).Length - 2; // exclude surrounding quotes
+            var bound = StellarFootprintOccupancy.WorstCaseSerializedBase64Utf8ByteCount(bitCount);
+            Assert.IsGreaterThanOrEqualTo(serializedLength, bound,
+                $"Worst-case Base64 UTF-8 bound must cover actual \\u002B-escaped length for {bitCount} bits.");
+        }
+
+        // 1b. Worst-case per-record serialized UTF-8 byte constants must strictly bound canonical System.Text.Json output.
+        var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
+        };
+        var worstDetection = new StellarDetection(
+            StellarDetector.MaximumSupportedCandidates - 1,
+            new PixelPoint(16777215.123456789, 16777215.123456789),
+            1.7976931348623157E+308, 65535.123456789012, 1.2345678901234567E+100, 1.2345678901234567E+100,
+            65535.123456789012, 1.2345678901234567E-100)
+        {
+            CentroidCovariance = new StellarCentroidCovariance(1.2345678901234567E+100, -1.2345678901234567E+100, 1.2345678901234567E+100),
+            CentroidCovarianceStatus = "propagated-noise-trail-moment-saturation-inflated-unvalidated",
+            SignalToNoise = 1.2345678901234567E+100,
+            Conditions = StellarSourceConditions.Saturated | StellarSourceConditions.Trailed | StellarSourceConditions.CovarianceUnavailable,
+            SaturatedSampleCount = int.MaxValue,
+            TrailLengthPixels = 1.2345678901234567E+100,
+            TrailAngleDegrees = -89.999999999999986
+        };
+        Assert.IsLessThanOrEqualTo(StellarFootprintOccupancy.WorstCaseBytesPerDetection,
+            JsonSerializer.SerializeToUtf8Bytes(worstDetection, webJson).Length + 1);
+        var worstExclusion = new StellarMeasurementExclusion(
+            new PixelPoint(16777215.5, 16777215.5), 65535.123456789012, StellarDetector.MaximumSupportedPixels,
+            StellarExclusionReasons.BackgroundUnavailable)
+        {
+            Footprint = new StellarFootprintBounds(16777215, 16777215, 16777215, 16777215)
+        };
+        Assert.IsLessThanOrEqualTo(StellarFootprintOccupancy.WorstCaseBytesPerExclusionFixed,
+            JsonSerializer.SerializeToUtf8Bytes(worstExclusion, webJson).Length + 1);
+
+        // 2. Across worst-case (detections, exclusions) pairs up to MaximumSupportedCandidates, projected worst-case
+        //    payload (including all-'+' coarse masks and all-'+' subgrids) must stay <= MaximumProductPayloadBytes
+        //    and retain positive CoarseCellBudget at DefaultReservedEnvelopeBytes.
+        var tileBounds = new StellarFootprintBounds(8, 8, 55, 49); // 48x42
+        var streakBounds = new StellarFootprintBounds(16, 16, 3055, 3055); // 3040x3040
+        (int Detections, int Exclusions, StellarFootprintBounds Shape)[] regimes =
+        [
+            (0, 4096, tileBounds),
+            (0, 4096, streakBounds),
+            (2048, 2048, tileBounds),
+            (2048, 2048, streakBounds),
+            (3840, 256, streakBounds),
+            (4088, 8, streakBounds),
+            (4095, 1, streakBounds)
+        ];
+        foreach (var (detections, exclusions, shape) in regimes)
+        {
+            var footprints = Enumerable.Repeat(shape, exclusions).ToArray();
+            var budget = StellarFootprintOccupancy.ComputeProductBudgets(detections, exclusions, footprints);
+            Assert.IsGreaterThan(0, budget.CoarseCellBudget);
+
+            var sampleOccupancy = StellarFootprintOccupancy.Create(
+                shape,
+                (x, y) => x == shape.MinX && y == shape.MinY,
+                budget.CoarseCellBudget,
+                budget.SubgridBitBudget);
+            var worstCoarse = (long)exclusions * (StellarFootprintOccupancy.WorstCaseCoarseOccupancyWrapperBytes +
+                StellarFootprintOccupancy.WorstCaseSerializedBase64Utf8ByteCount(sampleOccupancy.Columns * sampleOccupancy.Rows));
+            var refinable = sampleOccupancy.CellWidth > 1 || sampleOccupancy.CellHeight > 1 ? exclusions : 0;
+            var worstSubgrid = refinable > 0 && budget.SubgridBitBudget > 0
+                ? (long)refinable * (StellarFootprintOccupancy.WorstCaseSubgridWrapperBytes +
+                    StellarFootprintOccupancy.WorstCaseSerializedBase64Utf8ByteCount(budget.SubgridBitBudget))
+                : 0L;
+            var projectedTotal = StellarFootprintOccupancy.DefaultReservedEnvelopeBytes
+                + (long)detections * StellarFootprintOccupancy.WorstCaseBytesPerDetection
+                + (long)exclusions * StellarFootprintOccupancy.WorstCaseBytesPerExclusionFixed
+                + worstCoarse
+                + worstSubgrid;
+            Assert.IsLessThanOrEqualTo(StellarFootprintOccupancy.MaximumProductPayloadBytes, projectedTotal,
+                $"Worst-case all-'+' serialized total must stay <= 4 MiB for D={detections}, E={exclusions} (got {projectedTotal}).");
+        }
+
+        // 3. D10-M2 + D8-M3: Producer-generated budgeted 16x14 (3x3) coarse masks pass standalone 1-arg IsValid(footprint),
+        //    standalone 3-arg IsValid(footprint, peak, sampleCount), AND exact 5-arg IsValid, while corrupt standalone
+        //    masks still fail and 5-arg IsValid rejects artificially coarsened grids on small products.
+        var budget4096 = StellarFootprintOccupancy.ComputeProductBudgets(
+            0, 4096, Enumerable.Repeat(tileBounds, 4096).ToArray());
+        Assert.IsLessThan(StellarFootprintOccupancy.MaximumCells, budget4096.CoarseCellBudget);
+        var coarsened = StellarFootprintOccupancy.Create(
+            tileBounds,
+            static (x, y) => x == 8 || x == 55 || y == 8 || y == 49 || (x - 8) % 10 != 6,
+            budget4096.CoarseCellBudget,
+            budget4096.SubgridBitBudget);
+        Assert.AreEqual(16, coarsened.Columns);
+        Assert.AreEqual(14, coarsened.Rows);
+        Assert.AreEqual(3, coarsened.CellWidth);
+        Assert.AreEqual(3, coarsened.CellHeight);
+        Assert.IsNull(coarsened.Subgrid);
+        Assert.IsTrue(coarsened.IsValid(tileBounds),
+            "Standalone 1-arg IsValid must accept a producer-generated budgeted 16x14 coarse mask.");
+        Assert.IsTrue(coarsened.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856),
+            "Standalone 3-arg IsValid must accept a producer-generated budgeted 16x14 coarse mask.");
+        Assert.IsTrue(coarsened.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856,
+            budget4096.CoarseCellBudget, budget4096.SubgridBitBudget));
+        Assert.IsFalse(coarsened.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856,
+            StellarFootprintOccupancy.MaximumCells, StellarFootprintOccupancy.MaximumSubgridBits),
+            "An artificially coarsened grid must be rejected when full resolution fits in budget.");
+
+        // Corrupt standalone masks must still fail both 1-arg and 3-arg IsValid:
+        var tooFewCols = new StellarFootprintOccupancy(15, 14, 3, 3, Convert.ToBase64String(Enumerable.Repeat((byte)0xFF, 27).ToArray()));
+        var tooManyRows = new StellarFootprintOccupancy(16, 15, 3, 3, Convert.ToBase64String(Enumerable.Repeat((byte)0xFF, 30).ToArray()));
+        var oversizedCell = new StellarFootprintOccupancy(1, 14, 49, 3, Convert.ToBase64String([0xFF, 0x3F]));
+        var overMaxCellsFp = new StellarFootprintBounds(0, 0, 48, 42); // 49*43 = 2107 > 2048
+        var overMaxCells = new StellarFootprintOccupancy(49, 43, 1, 1, Convert.ToBase64String(new byte[(2107 + 7) / 8]));
+        var pixelGridWithSubgrid = StellarFootprintOccupancy.Create(new StellarFootprintBounds(0, 0, 3, 3), static (x, y) => x == 0 && y == 0) with
+        {
+            Subgrid = new StellarFootprintSubgridOccupancy(1, 1, Convert.ToBase64String([1]))
+        };
+        Assert.IsFalse(tooFewCols.IsValid(tileBounds));
+        Assert.IsFalse(tooFewCols.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856));
+        Assert.IsFalse(tooManyRows.IsValid(tileBounds));
+        Assert.IsFalse(tooManyRows.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856));
+        Assert.IsFalse(oversizedCell.IsValid(tileBounds));
+        Assert.IsFalse(oversizedCell.IsValid(tileBounds, new PixelPoint(8.5, 8.5), 1856));
+        Assert.IsFalse(overMaxCells.IsValid(overMaxCellsFp));
+        Assert.IsFalse(pixelGridWithSubgrid.IsValid(new StellarFootprintBounds(0, 0, 3, 3)));
+        Assert.IsFalse(coarsened.IsValid(tileBounds, new PixelPoint(8.5, 8.5), sampleCount: 1),
+            "1 sample cannot occupy 224 coarse cells.");
+        Assert.IsFalse(coarsened.IsValid(tileBounds, new PixelPoint(8.5, 8.5), sampleCount: 48 * 42 + 1),
+            "SampleCount exceeding bounding-box area must fail standalone validation.");
+
+        // 4. Exhausted envelope reserve omits Occupancy cleanly (CoarseCellBudget == 0) in StellarSourceMeasurer.Measure.
+        const int size = 128;
+        var pixels = Field(size, size);
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var r = double.Hypot(x + 0.5 - 64.5, y + 0.5 - 64.5);
+                if (r is >= 14.0 and <= 30.0)
+                    pixels[y * size + x] += 1800.0;
+            }
+        }
+        var exhausted = StellarSourceMeasurer.Measure(
+            pixels, Valid(pixels.Length), [], size, size, options: null,
+            reservedEnvelopeBytes: StellarFootprintOccupancy.MaximumProductPayloadBytes - 64);
+        var omittedRing = exhausted.Exclusions.Single(e => e.ReasonCode == StellarExclusionReasons.ExtendedRegion);
+        Assert.IsNull(omittedRing.Occupancy, "Exhausted envelope reserve must omit Occupancy cleanly.");
+        Assert.IsNotNull(omittedRing.Footprint);
     }
 
     private static StellarMeasurementResult Measure(double[] pixels, int width, int height, bool[]? valid = null,

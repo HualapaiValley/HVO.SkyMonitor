@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -21,8 +21,6 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     private readonly Counter<long> _outputBytes;
     private readonly Counter<long> _recovered;
     private readonly Counter<long> _postCommitCleanupFailures;
-    private readonly Counter<long> _reconciliationOutcomes;
-    private readonly Counter<long> _reconciliationBytes;
     private readonly Counter<long> _replayDispositions;
     private readonly Histogram<double> _validationDuration;
     private readonly Histogram<double> _dependencyWaitDuration;
@@ -31,12 +29,12 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     private readonly Histogram<double> _graphDuration;
     private readonly Histogram<double> _replayQueueWaitDuration;
     private readonly CaptureProcessingState _state;
-    private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureRuntimeState? _captureRuntimeState;
 
-    public CaptureProcessingTelemetry(CaptureProcessingState? state = null, FleetRuntimeState? fleetRuntimeState = null)
+    public CaptureProcessingTelemetry(CaptureProcessingState? state = null, CaptureRuntimeState? captureRuntimeState = null)
     {
         _state = state ?? new CaptureProcessingState();
-        _fleetRuntimeState = fleetRuntimeState;
+        _captureRuntimeState = captureRuntimeState;
         _graphs = _meter.CreateCounter<long>("camera_agent.processing.graphs", "{graph}");
         _executionStarts = _meter.CreateCounter<long>("camera_agent.processing.execution.starts", "{execution}");
         _nodes = _meter.CreateCounter<long>("camera_agent.processing.nodes", "{node}");
@@ -45,8 +43,6 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _outputBytes = _meter.CreateCounter<long>("camera_agent.processing.output.bytes", "By");
         _recovered = _meter.CreateCounter<long>("camera_agent.processing.recovered", "{output}");
         _postCommitCleanupFailures = _meter.CreateCounter<long>("camera_agent.processing.postcommit_cleanup.failures", "{failure}");
-        _reconciliationOutcomes = _meter.CreateCounter<long>("camera_agent.processing.reconciliation.outcomes", "{evidence}");
-        _reconciliationBytes = _meter.CreateCounter<long>("camera_agent.processing.reconciliation.bytes", "By");
         _replayDispositions = _meter.CreateCounter<long>("camera_agent.processing.replay.dispositions", "{execution}");
         _validationDuration = _meter.CreateHistogram<double>("camera_agent.processing.validation.duration", "s");
         _dependencyWaitDuration = _meter.CreateHistogram<double>("camera_agent.processing.dependency_wait.duration", "s");
@@ -81,7 +77,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     internal void RecordGraph(string outcome, TimeSpan duration, string executionClass = "Ephemeral")
     {
         _state.GraphCompleted(outcome);
-        _fleetRuntimeState?.ProcessingCompleted(duration);
+        _captureRuntimeState?.ProcessingCompleted(duration);
         var tags = new TagList { { "outcome", outcome }, { "execution.class", executionClass } };
         _graphs.Add(1, tags);
         _graphDuration.Record(duration.TotalSeconds, tags);
@@ -123,16 +119,6 @@ public sealed class CaptureProcessingTelemetry : IDisposable
 
     internal void RecordPostCommitCleanupFailure(CaptureProcessingGraphNode node, string reason)
         => _postCommitCleanupFailures.Add(1, NodeTags(node, "cleanup-failed", reason));
-
-    internal void RecordReconciliation(DerivedProductReconciliationSummary summary)
-    {
-        _reconciliationOutcomes.Add(summary.Available, new KeyValuePair<string, object?>("outcome", "available"));
-        _reconciliationOutcomes.Add(summary.Recoverable, new KeyValuePair<string, object?>("outcome", "recoverable"));
-        _reconciliationOutcomes.Add(summary.Cleaned, new KeyValuePair<string, object?>("outcome", "cleaned"));
-        _reconciliationOutcomes.Add(summary.Missing, new KeyValuePair<string, object?>("outcome", "missing"));
-        _reconciliationOutcomes.Add(summary.Quarantined, new KeyValuePair<string, object?>("outcome", "quarantined"));
-        _reconciliationBytes.Add(summary.QuarantineBytes, new KeyValuePair<string, object?>("outcome", "quarantined"));
-    }
 
     internal void RecordReplayClaim(DateTimeOffset acceptedUtc, DateTimeOffset claimedUtc)
         => _replayQueueWaitDuration.Record(Math.Max(0, (claimedUtc - acceptedUtc).TotalSeconds));

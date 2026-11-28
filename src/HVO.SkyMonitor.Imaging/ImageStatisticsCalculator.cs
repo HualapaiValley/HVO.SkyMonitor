@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Imaging;
@@ -19,6 +20,7 @@ public sealed record ImageStatisticsResult(
 public static class ImageStatisticsCalculator
 {
     public const string AlgorithmVersion = "integer-image-statistics-v1";
+    public const string StoredCodeAlgorithmVersion = "integer-stored-code-statistics-v1";
 
     /// <summary>Computes aggregate sample statistics for Mono8, linear 16-bit, or RGB24 pixels.</summary>
     public static ImageStatisticsResult Calculate(
@@ -37,6 +39,24 @@ public static class ImageStatisticsCalculator
         ReadOnlyMemory<byte> pixelData,
         ushort? saturationLevel = null,
         CancellationToken cancellationToken = default)
+        => Calculate(layout, pixelData, FrameByteOrder.LittleEndian, saturationLevel, false, cancellationToken);
+
+    /// <summary>Counts logical stored samples at or above a declared threshold in their actual byte order.</summary>
+    public static ImageStatisticsResult CalculateStored(
+        ImageLayout layout,
+        ReadOnlyMemory<byte> pixelData,
+        FrameByteOrder byteOrder,
+        ushort? storedWhite,
+        CancellationToken cancellationToken = default)
+        => Calculate(layout, pixelData, byteOrder, storedWhite, true, cancellationToken);
+
+    private static ImageStatisticsResult Calculate(
+        ImageLayout layout,
+        ReadOnlyMemory<byte> pixelData,
+        FrameByteOrder byteOrder,
+        ushort? saturationLevel,
+        bool storedCodes,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         layout.Validate();
@@ -49,7 +69,7 @@ public static class ImageStatisticsCalculator
         var formatMaximum = layout.PixelFormat is CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24
             ? byte.MaxValue
             : ushort.MaxValue;
-        var maximumSample = saturationLevel ?? formatMaximum;
+        var maximumSample = saturationLevel ?? (storedCodes ? null : formatMaximum);
         if (maximumSample > formatMaximum)
         {
             throw new ArgumentOutOfRangeException(nameof(saturationLevel));
@@ -70,7 +90,10 @@ public static class ImageStatisticsCalculator
                 for (var x = 0; x < layout.Width; x++)
                 {
                     var offset = row + x * 2;
-                    AddSample((ushort)(pixels[offset] | pixels[offset + 1] << 8));
+                    var sample = pixels.Slice(offset, sizeof(ushort));
+                    AddSample(byteOrder == FrameByteOrder.BigEndian
+                        ? BinaryPrimitives.ReadUInt16BigEndian(sample)
+                        : BinaryPrimitives.ReadUInt16LittleEndian(sample));
                 }
             }
             else
@@ -94,7 +117,7 @@ public static class ImageStatisticsCalculator
             sumOfSquares,
             zeroCount,
             saturatedCount,
-            AlgorithmVersion);
+            storedCodes ? StoredCodeAlgorithmVersion : AlgorithmVersion);
 
         void AddSample(ushort value)
         {
@@ -103,7 +126,8 @@ public static class ImageStatisticsCalculator
             sum += value;
             sumOfSquares += (ulong)value * value;
             zeroCount += value == 0 ? 1 : 0;
-            saturatedCount += value == maximumSample ? 1 : 0;
+            if (storedCodes ? value >= maximumSample : value == maximumSample)
+                saturatedCount++;
         }
     }
 }

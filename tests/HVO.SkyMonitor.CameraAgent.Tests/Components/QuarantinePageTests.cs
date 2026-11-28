@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class QuarantinePageTests
 {
     [TestMethod]
@@ -17,8 +18,8 @@ public sealed class QuarantinePageTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
-            OperatorUiResult<OperatorOutboxPage>.Success(new("RawEvidence", [], null,
-                [new OperatorOutboxItem("RawEvidence", "missing_evidence", null, "Raw evidence", 0, 4,
+            OperatorUiResult<OperatorQuarantinePage>.Success(new("RawEvidence", [], null,
+                [new OperatorQuarantineItem("RawEvidence", "missing_evidence", null, "Raw evidence", 0, 4,
                     OperatorUiTestData.Now, "required-file-missing", "restore-token", "loss-token")], null)));
         context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().NavigateTo("/operations/quarantine?kind=RawEvidence");
         var cut = context.Render<QuarantinePage>();
@@ -38,33 +39,25 @@ public sealed class QuarantinePageTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
-            OperatorUiResult<OperatorOutboxPage>.Success(new(
-                "Artifact", ["raw-ingress"], "raw-ingress",
+            OperatorUiResult<OperatorQuarantinePage>.Success(new(
+                "TransientRuntime", [], null,
                 [CreateItem(7) with { Status = "Retry", ReplayToken = null,
                     CreatedUtc = DateTimeOffset.UtcNow.AddDays(-3), ReasonCode = "upstream-unavailable" }], null)));
-        service.OutboxHandler = (kind, action, token, reason, operation, _) =>
-        {
-            Assert.AreEqual("Artifact", kind);
-            Assert.AreEqual(OutboxOperationAction.Abandon, action);
-            Assert.AreEqual("abandon-7", token);
-            Assert.AreEqual("operator-approved-loss", reason);
-            Assert.IsFalse(string.IsNullOrWhiteSpace(operation));
-            return ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
-                "Abandon", "Applied", "Abandoned", null, OperatorUiTestData.Now)));
-        };
         var cut = context.Render<QuarantinePage>();
         cut.WaitForAssertion(() =>
         {
-            StringAssert.Contains(cut.Markup, "Artifact quarantine and retry", StringComparison.Ordinal);
-            Assert.AreEqual("3 d", cut.FindAll(".quarantine-list dl div").Single(static element => element.QuerySelector("dt")?.TextContent == "Artifact age").QuerySelector("dd")?.TextContent);
+            StringAssert.Contains(cut.Markup, "Quarantine and retry browser", StringComparison.Ordinal);
+            Assert.AreEqual("3 d", cut.FindAll(".quarantine-list dl div").Single(static element => element.QuerySelector("dt")?.TextContent == "Record age").QuerySelector("dd")?.TextContent);
             Assert.AreEqual("7", cut.FindAll(".quarantine-list dl div").Single(static element => element.QuerySelector("dt")?.TextContent == "Attempts").QuerySelector("dd")?.TextContent);
             StringAssert.Contains(cut.Markup, "Upstream unavailable", StringComparison.OrdinalIgnoreCase);
             Assert.IsEmpty(cut.FindAll("button[id$='-replay']"));
         });
         cut.Find("button[id$='-abandon']").Click();
-        cut.Find("#quarantine-reason").Change("operator-approved-loss");
-        cut.Find(".confirmation-actions .btn-danger").Click();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Current state: Abandoned", StringComparison.Ordinal));
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find("dialog").TextContent, "audited loss decision", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".confirmation-actions .btn-danger"));
+        });
     }
 
     [TestMethod]
@@ -75,8 +68,8 @@ public sealed class QuarantinePageTests
         context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         var service = Configure(context);
         service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
-            OperatorUiResult<OperatorOutboxPage>.Success(new(
-                "Artifact", ["raw-ingress"], "raw-ingress",
+            OperatorUiResult<OperatorQuarantinePage>.Success(new(
+                "TransientRuntime", [], null,
                 [CreateItem(1) with { Status = "Retry", ReplayToken = null,
                     CreatedUtc = OperatorUiTestData.Now.AddDays(-30),
                     UpdatedUtc = OperatorUiTestData.Now.AddSeconds(-5) }], null)));
@@ -84,7 +77,7 @@ public sealed class QuarantinePageTests
         cut.WaitForAssertion(() =>
         {
             var fields = cut.FindAll(".quarantine-list dl div");
-            Assert.AreEqual("30 d", fields.Single(static element => element.QuerySelector("dt")?.TextContent == "Artifact age").QuerySelector("dd")?.TextContent);
+            Assert.AreEqual("30 d", fields.Single(static element => element.QuerySelector("dt")?.TextContent == "Record age").QuerySelector("dd")?.TextContent);
             Assert.AreEqual("5s", fields.Single(static element => element.QuerySelector("dt")?.TextContent == "Last update age").QuerySelector("dd")?.TextContent);
             Assert.IsFalse(fields.Any(static element => element.QuerySelector("dt")?.TextContent == "Age"));
         });
@@ -98,17 +91,18 @@ public sealed class QuarantinePageTests
         var service = Configure(context);
         service.QuarantineHandler = (kind, alias, cursor, pageSize, _) =>
         {
-            Assert.AreEqual("Artifact", kind);
+            Assert.AreEqual("TransientRuntime", kind);
             Assert.AreEqual(25, pageSize);
             var start = cursor switch { null => 0, "25" => 25, "50" => 50, _ => -1 };
             var items = Enumerable.Range(start, Math.Min(25, 60 - start))
                 .Select(CreateItem)
                 .ToArray();
             var next = start switch { 0 => "25", 25 => "50", _ => null };
-            return ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
-                "Artifact", ["raw-ingress", "storage-1"], alias ?? "raw-ingress", items, next)));
+            return ValueTask.FromResult(OperatorUiResult<OperatorQuarantinePage>.Success(new(
+                "TransientRuntime", [], alias, items, next)));
         };
 
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().NavigateTo("/operations/quarantine?kind=TransientRuntime");
         var cut = context.Render<QuarantinePage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Record 24", StringComparison.Ordinal));
         cut.Find(".cursor-nav .btn-primary").Click();
@@ -130,11 +124,11 @@ public sealed class QuarantinePageTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
-            OperatorUiResult<OperatorOutboxPage>.Success(new(
-                "Artifact", ["raw-ingress"], "raw-ingress", [CreateItem(1)], null)));
+            OperatorUiResult<OperatorQuarantinePage>.Success(new(
+                "TransientRuntime", [], null, [CreateItem(1)], null)));
         service.OutboxHandler = (_, _, _, _, _, _) => ValueTask.FromResult(
             OperatorUiResult<OperatorCommandReceipt>.Failure(
-                OperatorUiResultKind.Unavailable, "The outbox command could not be completed."));
+                OperatorUiResultKind.Unavailable, "The quarantine command could not be completed."));
 
         var cut = context.Render<QuarantinePage>();
         cut.WaitForElement("button[id$='-replay']").Click();
@@ -165,9 +159,9 @@ public sealed class QuarantinePageTests
             Assert.AreEqual("TransientRuntime", kind);
             Assert.IsNull(alias);
             Assert.AreEqual(25, pageSize);
-            return ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
+            return ValueTask.FromResult(OperatorUiResult<OperatorQuarantinePage>.Success(new(
                 "TransientRuntime", [], null,
-                [new OperatorOutboxItem(
+                [new OperatorQuarantineItem(
                     "TransientRuntime", "quarantined", null, "Required transient", 3, 4096,
                     OperatorUiTestData.Now, "transient-runtime.input-levels-invalid", null, "abandon-token",
                     OperatorUiTestData.Now.AddHours(-1), AgentId: "agent-east", Lane: "transient",
@@ -223,9 +217,9 @@ public sealed class QuarantinePageTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
-            OperatorUiResult<OperatorOutboxPage>.Success(new(
+            OperatorUiResult<OperatorQuarantinePage>.Success(new(
                 "TransientRuntime", [], null,
-                [new OperatorOutboxItem(
+                [new OperatorQuarantineItem(
                     "TransientRuntime", "quarantined", null, "Required transient", 3, 4096,
                     OperatorUiTestData.Now, "transient-runtime.input-levels-invalid", null, "reference-token",
                     OperatorUiTestData.Now.AddHours(-1), AgentId: "agent-east", Lane: "transient",
@@ -240,7 +234,7 @@ public sealed class QuarantinePageTests
             submissions.Add(token);
             return ValueTask.FromResult(submissions.Count == 1
                 ? OperatorUiResult<OperatorCommandReceipt>.Failure(
-                    OperatorUiResultKind.Unavailable, "The outbox command could not be completed.")
+                    OperatorUiResultKind.Unavailable, "The quarantine command could not be completed.")
                 : OperatorUiResult<OperatorCommandReceipt>.Success(new(
                     "Abandon transient runtime item", "Applied", "Abandoned", null, OperatorUiTestData.Now)));
         };
@@ -275,8 +269,8 @@ public sealed class QuarantinePageTests
         });
     }
 
-    private static OperatorOutboxItem CreateItem(int index) => new(
-        "Artifact",
+    private static OperatorQuarantineItem CreateItem(int index) => new(
+        "TransientRuntime",
         "Quarantined",
         "raw-ingress",
         "Preview",

@@ -110,6 +110,32 @@ public sealed class LinearBayerReconstructionTests
     }
 
     [TestMethod]
+    public void ReusedPlanesOverwriteInvalidSupportAndRejectAliasing()
+    {
+        const int width = 5, height = 5, size = width * height, center = 2 * width + 2;
+        var raw = Mosaic(width, height, BayerPattern.Bggr, static (channel, _, _) => 32 * (channel + 1));
+        var valid = Valid(size);
+        var red = new double[size];
+        var green = new double[size];
+        var blue = new double[size];
+        var output = new bool[size];
+        LinearBayerReconstruction.ReconstructInto(raw, valid, width, height, BayerPattern.Bggr, red, green, blue, output);
+        Assert.AreEqual(32, red[center]);
+        Assert.AreEqual(64, green[center]);
+        Assert.AreEqual(96, blue[center]);
+        Assert.IsTrue(output[center]);
+
+        valid[center + 1] = false;
+        LinearBayerReconstruction.ReconstructInto(raw, valid, width, height, BayerPattern.Bggr, red, green, blue, output);
+        Assert.AreEqual(0, red[center]);
+        Assert.AreEqual(0, green[center]);
+        Assert.AreEqual(0, blue[center]);
+        Assert.IsFalse(output[center]);
+        Assert.ThrowsExactly<ArgumentException>(() => LinearBayerReconstruction.ReconstructInto(
+            raw, valid, width, height, BayerPattern.Bggr, raw, green, blue, output));
+    }
+
+    [TestMethod]
     public void InvalidInputSample_ExcludesCompleteNeighborhoodAndDoesNotLeakSignal()
     {
         const int width = 9, height = 7;

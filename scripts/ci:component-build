@@ -18,17 +18,13 @@ mode="${2:-}"
 case "$component" in
   shared)
     projects=(
-      src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj
       tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj
       tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj
       tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj
       tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj
       tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj
-      tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj
       tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj
       tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj
-      tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj
-      tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj
       tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj
     )
     ;;
@@ -41,19 +37,6 @@ case "$component" in
       tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj
     )
     ;;
-  logichost)
-    projects=(
-      src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
-      tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj
-      tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj
-    )
-    ;;
-  combined)
-    projects=(
-      tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj
-      tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj
-    )
-    ;;
   delivery)
     projects=(
       src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj
@@ -62,7 +45,7 @@ case "$component" in
     )
     ;;
   *)
-    printf 'Usage: scripts/ci:component-build <shared|cameraagent|logichost|combined|delivery> [--list-projects]\n' >&2
+    printf 'Usage: scripts/ci:component-build <shared|cameraagent|delivery> [--list-projects]\n' >&2
     exit 2
     ;;
 esac

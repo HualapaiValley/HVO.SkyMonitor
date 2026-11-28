@@ -1,14 +1,14 @@
 # Releases
 
-A final release, `vX.Y.Z`, or a release candidate, `vX.Y.Z-rc.<n>`, ships one product version from a commit on `main`
+A final release (`vX.Y.Z`), beta (`vX.Y.Z-beta.N`) or release candidate (`vX.Y.Z-rc.N`) ships one product version from a commit on `main`
 ([install contract](../hvo-install-contract.md) section 3,
 [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310)). The installer, the CameraAgent image and the
 release's files carry that one version; the approved star catalog keeps its own version and is attached as a file.
 Integration pre-releases, `vX.Y.Z-dev.<n>`, follow [prereleases.md](prereleases.md) instead.
 
-A release is trusted by `SHA256SUMS` and the build-provenance attestations the release workflow makes, as a pre-release
-is (contract section 4). The key-signed manifests and indexes, their Key Vault signing job and the trust root the
-installer embedded were retired by the owner on 2026-10-16; nothing in a release is signed with a key of ours.
+For final releases, betas and release candidates, `SHA256SUMS` covers the release files and GitHub build-provenance
+attestations cover those files and the CameraAgent image (contract section 4). On 2026-10-16 the owner retired the
+key-signed manifests and indexes, their Key Vault signing job and the trust root the installer embedded.
 
 ## CameraAgent ReadyToRun trial
 
@@ -90,7 +90,8 @@ service is required; unpinned custom base overrides and local source changes are
 - A build given no version is the development build of it, `X.Y.Z-dev`, so a workstation, CI or development image
   build says `X.Y.Z-dev+<commit>`, and a development CameraAgent image's version label is empty.
 - A release's builds are given the release's version as `-p:Version` (`scripts/release:assets`, and the image through
-  `HVO_VERSION`): `X.Y.Z`, `X.Y.Z-rc.<n>` or, for a pre-release, `X.Y.Z-dev.<n>`.
+  `HVO_VERSION`). The release workflow uses `X.Y.Z`, `X.Y.Z-beta.N` or `X.Y.Z-rc.N`. The integration workflow uses
+  `X.Y.Z-dev.<n>`.
 - `Directory.Build.targets` refuses a build given any other version, or an informational version other than the
   version (error `HVO1310`). A `VERSION` environment variable sets the version too, because MSBuild reads environment
   variables as properties: unset it if a build is refused for a version you did not pass.
@@ -200,11 +201,26 @@ the ancestry gate and, when needed, the sync before proceeding.
 Only the owner pushes `v*` tags; everything after the tag is the workflow's, until the owner approves publishing.
 
 1. **Version.** If `VersionPrefix` is not the version to release, change it first, in its own pull request.
-2. **Release pull request.** Rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, start a new empty
-   `## [Unreleased]` above it, and add `docs/upgrade-notes/X.Y.Z.md`: what someone upgrading must do, never empty.
+2. **Release pull request (final releases).** Assemble the pending fragments and any remaining Unreleased entries, using
+   the release date in ISO format. Preview the result before writing it.
+
+   ```bash
+   version="$(./scripts/release:version)"
+   release_date="$(date +%F)"
+   ./scripts/release:changelog "$version" --date "$release_date" --dry-run
+   ./scripts/release:changelog "$version" --date "$release_date"
+   ```
+
+   Commit the versioned `CHANGELOG.md` section and the consumed fragment deletions together. Add
+   `docs/upgrade-notes/X.Y.Z.md` with the steps an operator needs to upgrade. If fragment cleanup is
+   interrupted, compare the remaining fragments with the assembled release section. Remove a remaining
+   fragment once its entry is present in that section.
+
    The release tool copies every release's upgrade notes up to this one's into `release.json`, and the release page
-   shows this version's CHANGELOG section and notes (`scripts/release:notes`). A release candidate needs neither.
-3. **Promote** the release pull request's commit to `main`, the release branch, following
+   reads this version's assembled section and notes from the tagged commit. Run
+   `./scripts/release:notes --check "$version"` before handing off the release PR. Betas, release candidates and
+   integration prereleases leave pending fragments available for the final release.
+3. **Promote** the commit to `main`, the release branch, following
    [Before every promotion](#before-every-promotion) before marking its promotion pull request ready.
 4. **Tag** a commit on `main` with an annotated tag, and push only that tag:
 
@@ -218,12 +234,13 @@ Only the owner pushes `v*` tags; everything after the tag is the workflow's, unt
    notes and its image. Then approve the **Release / Publish** job in the `production-release` environment. GitHub
    holds the job until a required reviewer approves; nothing is published before that.
 
-A release candidate is cut the same way with a `vX.Y.Z-rc.<n>` tag, from `n = 1`. It is published as a GitHub
-pre-release and never becomes the latest release.
+Betas and release candidates follow these steps with `vX.Y.Z-beta.N` and `vX.Y.Z-rc.N` tags. `N` starts at 1 and
+has no leading zeros. Both publish as GitHub pre-releases and leave GitHub's latest release and the image's `latest`
+tag where they are.
 
 ### What the workflow does
 
-`.github/workflows/release.yml` runs on a pushed `vX.Y.Z` or `vX.Y.Z-rc.<n>` tag. The workflow defaults to
+`.github/workflows/release.yml` runs on a pushed `vX.Y.Z`, `vX.Y.Z-beta.N` or `vX.Y.Z-rc.N` tag. The workflow defaults to
 `contents: read`; each job asks only for what it needs:
 
 | Job | Runs on | Permissions | What it does |
@@ -232,7 +249,7 @@ pre-release and never becomes the latest release.
 | CI | The CI workflow's runners | `contents: read` | The whole CI workflow (`ci.yml`), called with `workflow_call`, qualifies the tagged commit. A called run sees the push of the tag, so it runs in full, as on `main` |
 | Image (amd64), Image (arm64) | `ubuntu-24.04`, `ubuntu-24.04-arm` | `contents: read` | Only after CI passed: shared `release-image.yml` builds each image natively and returns its archive SHA-256 |
 | Build | GitHub-hosted | `contents: read` | After both image jobs, verify their archive digests and OCI blobs with `scripts/release:combine-images`, then package with `scripts/release:assets --prebuilt-image`. It preserves the pre-release file contract and refuses a final release without its notes |
-| Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | As the pre-release draft job: checks the files name the tagged release (and a final release's `release.json` carries its notes), `scripts/release:check-image-labels`, `scripts/release:prerelease-check unreleased`, pushes the image under its version tag alone (`scripts/release:push-image`), attests the image and every file and verifies the image's attestation, creates a **draft** release with `--latest=false` (a pre-release for a release candidate), and reads its files back |
+| Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | As the pre-release draft job: checks the files name the tagged release (and a final release's `release.json` carries its notes), `scripts/release:check-image-labels`, `scripts/release:prerelease-check unreleased`, pushes the image under its version tag alone (`scripts/release:push-image`), attests the image and every file and verifies the image's attestation, creates a **draft** release with `--latest=false` and `--prerelease` for betas and release candidates, and reads its files back |
 | Install and Upgrade (linux-x64, linux-arm64) | `ubuntu-24.04`, and `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` installs a throwaway instance from the draft's offline archive for the platform, moves it to a stand-in image, upgrades it by digest from the registry, checks that a second upgrade is refused, and uninstalls, leaving the runner as it found it ([prereleases.md](prereleases.md#what-the-workflow-does) describes the test). Both platforms must pass |
 | Publish | GitHub-hosted, in `production-release` | `contents: write`, `actions: read`, `attestations: read` | Held until a required reviewer approves. `scripts/release:check-environment` checks the environment still requires a reviewer. Then, as the pre-release publish job does, it checks the draft still holds exactly the tested files with this workflow's attestations, and the image's attestation on record. `scripts/release:publish` publishes the draft and decides latest (below), in the release-wide `release-promotion` concurrency group |
 | Latest Image | GitHub-hosted | `contents: read`, `packages: write` | Only when publishing made the release the latest release, in the `release-promotion` group too: `scripts/release:tag-latest` checks the image's version tag still names the release's digest and copies it to `latest` |
@@ -243,8 +260,8 @@ The native image and packaging jobs retain the 120-minute limit. See [native bui
 
 Publishing makes a release the latest release, and moves the image's `latest` tag to its image, only when it is the
 newest final release: a final `vX.Y.Z` higher, by version number, than every published final release
-(`scripts/lib/releases.sh`). A release candidate, a pre-release, or a fix to an older version leaves both where they
-are. GitHub would otherwise make any release it publishes the latest, so `scripts/release:publish` always says which.
+(`scripts/lib/releases.sh`). Betas, release candidates, integration pre-releases and fixes to older versions leave
+both where they are. `scripts/release:publish` always sets GitHub's `--latest` flag explicitly.
 
 Every run's Publish and Latest Image jobs share one release-wide concurrency group, `release-promotion`, so two
 releases never decide or move latest at once, whatever order their tags were pushed in. Inside it, each script reads
@@ -326,7 +343,7 @@ the product version or a pre-release of it, and a final version needs the releas
 notes:
 
 ```bash
-version="$(scripts/release:version)-rc.1"
+version="$(scripts/release:version)-beta.1"
 scripts/release:assets --version "$version" --platforms linux/amd64 --builder default \
   --catalog-bundle "$HVO_PRODUCTION_CATALOG_BUNDLE" \
   --output /tmp/hvo-release --image-oci /tmp/hvo-release.oci.tar

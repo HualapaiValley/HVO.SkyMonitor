@@ -35,11 +35,19 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 nameof(request.RecipeName));
         }
         if (request.Inputs is null || request.Input is null ||
-            string.IsNullOrWhiteSpace(request.OutputVariant))
+            string.IsNullOrWhiteSpace(request.OutputVariant) ||
+            !ProcessingIdentity.IsValidUtf16(request.OutputVariant))
         {
             return ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidOptions,
                 nameof(request));
+        }
+        if (!ProcessingIdentity.IsValidUtf16(request.Input.Variant) ||
+            !ProcessingIdentity.IsValidUtf16(request.Input.RecipeIdentitySha256))
+        {
+            return ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidSelector,
+                nameof(request.Input));
         }
         if (request.Inputs.Any(static input => !IsValidInput(input)))
         {
@@ -74,9 +82,15 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         ProcessingRecipeIdentity identity;
         try
         {
-            var normalized = recipe.NormalizeOptions(request.Options);
+            var normalized = recipe is ExposureMeasurementRecipe
+                ? ExposureMeasurementRecipe.NormalizeOptions(request)
+                : recipe.NormalizeOptions(request.Options);
             var effective = ProcessingIdentity.BindExecutionInputs(
-                normalized, request.Input, request.Annotation, request.AuxiliaryInputs);
+                normalized,
+                request.Input,
+                request.Annotation,
+                request.AuxiliaryInputs,
+                BuiltInProcessingRecipes.ResolveDeliveredBayerPhase(request));
             identity = ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -90,6 +104,12 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 nameof(request.Options));
         }
         catch (ArgumentException)
+        {
+            return ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidOptions,
+                nameof(request.Options));
+        }
+        catch (InvalidDataException)
         {
             return ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.InvalidOptions,
@@ -141,7 +161,9 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
     private static bool IsValidInput(ProcessingArtifact? input)
     {
         if (input is null || input.ArtifactId == Guid.Empty || !Enum.IsDefined(input.Role) ||
-            string.IsNullOrWhiteSpace(input.Variant) || string.IsNullOrWhiteSpace(input.MediaType) ||
+            string.IsNullOrWhiteSpace(input.Variant) || !ProcessingIdentity.IsValidUtf16(input.Variant) ||
+            string.IsNullOrWhiteSpace(input.MediaType) || !ProcessingIdentity.IsValidUtf16(input.MediaType) ||
+            !ProcessingIdentity.IsValidUtf16(input.SchemaVersion) ||
             input.RecipeIdentitySha256 is not { Length: 64 } ||
             !input.RecipeIdentitySha256.All(Uri.IsHexDigit) ||
             input.CreatedUtc.Offset != TimeSpan.Zero || input.Integration < TimeSpan.Zero ||
@@ -152,12 +174,19 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
 
         var conditions = input.Conditions;
         return !string.IsNullOrWhiteSpace(compatibility.Rig) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.Rig) &&
             !string.IsNullOrWhiteSpace(compatibility.Orientation) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.Orientation) &&
             !string.IsNullOrWhiteSpace(compatibility.Calibration) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.Calibration) &&
             !string.IsNullOrWhiteSpace(compatibility.Mask) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.Mask) &&
             !string.IsNullOrWhiteSpace(compatibility.Sensor) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.Sensor) &&
             !string.IsNullOrWhiteSpace(compatibility.SetpointRegime) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.SetpointRegime) &&
             !string.IsNullOrWhiteSpace(compatibility.ProcessingProfile) &&
+            ProcessingIdentity.IsValidUtf16(compatibility.ProcessingProfile) &&
             (compatibility.LocationIdentitySha256 is null ||
                 compatibility.LocationIdentitySha256.Length == 64 &&
                 compatibility.LocationIdentitySha256.All(Uri.IsHexDigit)) &&
@@ -180,10 +209,12 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             !double.IsFinite(annotation.Transform.OffsetX) ||
             !double.IsFinite(annotation.Transform.OffsetY) ||
             annotation.Objects.Any(static item => item is null ||
-                string.IsNullOrWhiteSpace(item.Id) || item.DisplayName is null ||
+                string.IsNullOrWhiteSpace(item.Id) || !ProcessingIdentity.IsValidUtf16(item.Id) ||
+                item.DisplayName is null || !ProcessingIdentity.IsValidUtf16(item.DisplayName) ||
                 !IsFinite(item.Pixel.X, item.Pixel.Y)) ||
             annotation.Segments.Any(static item => item is null ||
                 string.IsNullOrWhiteSpace(item.ConstellationId) ||
+                !ProcessingIdentity.IsValidUtf16(item.ConstellationId) ||
                 !IsFinite(item.FromPixel.X, item.FromPixel.Y) ||
                 !IsFinite(item.ToPixel.X, item.ToPixel.Y)))
         {
@@ -209,7 +240,7 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         static bool IsFiniteNonZero(double value) => double.IsFinite(value) && value != 0;
         static bool ValidLines(IReadOnlyList<string>? lines) => lines is { Count: <= 8 } &&
             lines.All(static line => !string.IsNullOrWhiteSpace(line) && line.Length <= 64 &&
-                !line.Any(char.IsControl));
+                ProcessingIdentity.IsValidUtf16(line) && !line.Any(char.IsControl));
     }
 
     private static bool AreValidAuxiliaryInputs(IReadOnlyList<ProcessingAuxiliaryInput>? inputs)
@@ -219,7 +250,8 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             return true;
         }
         if (inputs.Count > 32 || inputs.Any(static input => input is null ||
-                string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 64) ||
+                string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 64 ||
+                !ProcessingIdentity.IsValidUtf16(input.Name)) ||
             inputs.Select(static input => input.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != inputs.Count)
         {
             return false;
@@ -228,7 +260,10 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
         {
             if (input.Kind == ProcessingAuxiliaryInputKind.Artifact)
             {
-                if (input.Selector is null || input.SchemaVersion is not null ||
+                if (input.Selector is null ||
+                    !ProcessingIdentity.IsValidUtf16(input.Selector.Variant) ||
+                    !ProcessingIdentity.IsValidUtf16(input.Selector.RecipeIdentitySha256) ||
+                    input.SchemaVersion is not null ||
                     input.IdentitySha256 is not null || !input.Payload.IsEmpty || input.ArtifactId == Guid.Empty)
                 {
                     return false;
@@ -237,6 +272,7 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
             else if (input.Kind == ProcessingAuxiliaryInputKind.CanonicalJson)
             {
                 if (input.Selector is not null || string.IsNullOrWhiteSpace(input.SchemaVersion) ||
+                    !ProcessingIdentity.IsValidUtf16(input.SchemaVersion) ||
                     input.ArtifactId is not null ||
                     input.IdentitySha256 is not { Length: 64 } ||
                     !input.IdentitySha256.All(Uri.IsHexDigit) ||

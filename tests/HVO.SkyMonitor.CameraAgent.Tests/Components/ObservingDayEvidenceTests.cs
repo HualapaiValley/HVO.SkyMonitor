@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ObservingDayEvidenceTests
 {
     private static readonly ObservingDay Day = ObservingDayCalendar.Create("America/Phoenix").Resolve(new DateOnly(2026, 7, 21));
@@ -71,7 +72,7 @@ public sealed class ObservingDayEvidenceTests
         }
 
         // A band is anchored to its nearer end, so the floor below can only grow toward the middle of the track.
-        var css = File.ReadAllText(Path.Combine(CameraAgentStateCompatibilityLabelTestsRoot(),
+        var css = File.ReadAllText(Path.Combine(CameraAgentStateContractLabelTestsRoot(),
             "src", "HVO.SkyMonitor.CameraAgent", "Components", "Pages", "ObservingDayTimeline.razor.css"));
         var rule = css.Split('\n').Single(static line => line.StartsWith(".timeline-bar--captures ", StringComparison.Ordinal));
         StringAssert.Contains(rule, "min-width: 2px;", StringComparison.Ordinal);
@@ -81,8 +82,8 @@ public sealed class ObservingDayEvidenceTests
             StringComparison.Ordinal);
     }
 
-    private static string CameraAgentStateCompatibilityLabelTestsRoot()
-        => HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.RepositoryRoot();
+    private static string CameraAgentStateContractLabelTestsRoot()
+        => HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateContractLabelTests.RepositoryRoot();
 
     [TestMethod]
     public void EmptyEvidenceKeepsEveryLaneWithoutClaimingClearOrUsableSky()

@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
 public sealed class CameraAgentControlStoreTests
 {
     private DirectoryInfo _root = null!;
@@ -243,7 +244,7 @@ public sealed class CameraAgentControlStoreTests
         File.Delete(path);
         File.CreateSymbolicLink(path, Path.Combine(_root.FullName, "outside.json"));
         using var linked = Create();
-        await Assert.ThrowsAsync<SkyMonitor.Storage.FileSystem.FileSystemFaultException>(() => linked.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsAsync<SkyMonitor.LocalFiles.FileSystemFaultException>(() => linked.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
     }
 
     [TestMethod]

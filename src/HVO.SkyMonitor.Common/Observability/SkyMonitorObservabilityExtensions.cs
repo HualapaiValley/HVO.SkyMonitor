@@ -50,43 +50,6 @@ public static class SkyMonitorObservabilityExtensions
         "LaneQuarantineTerminalCount", "ProcessingQuarantineCount", "MissingProductCount", "DurableStateUnavailable",
         "ReconciliationFailed", "ReplayTerminalCount", "ReplayRetryCount"
     };
-    private static readonly HashSet<string> ArtifactOutboxHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount", "OldestAgeSeconds"
-    };
-    private static readonly HashSet<string> ArtifactConsistencyHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Condition", "ReconciliationWindowSeconds"
-    };
-    private static readonly HashSet<string> ArtifactRetentionHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Condition", "PendingCount", "PendingBytes", "PendingOldestAgeSeconds"
-    };
-    private static readonly HashSet<string> CentralDerivativeWorkerHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds"
-    };
-    private static readonly HashSet<string> ObjectStoreHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Reason", "QuarantinedBuckets", "ReclaimFailedCount", "RetiredBytes", "OldestRetiredAgeSeconds", "ReconciledUtc",
-        "ReconciliationTruncatedBuckets", "ReconciliationFailedBuckets", "ReconciliationAgeSeconds"
-    };
-    private static readonly HashSet<string> EnvironmentalObservationHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "SourceCount", "ObservationCount", "NewestReceivedAgeSeconds", "RetentionEligibleCount",
-        "RetentionOldestAgeSeconds", "RetentionLastSucceededUtc"
-    };
-    private static readonly HashSet<string> DeploymentLocationHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "PendingCount", "OldestAgeSeconds", "PendingWorkCount", "PendingCaptureCount",
-        "OldestWorkAgeSeconds", "OldestWorkProgressAgeSeconds", "UndiscoveredWorkCount", "RetryCount",
-        "ExpiredLeaseCount"
-    };
-    private static readonly HashSet<string> EnvironmentalDeliveryHealthDataKeys = new(StringComparer.Ordinal)
-    {
-        "Availability", "PendingCount", "PendingBytes", "LeasedCount", "RetryCount", "QuarantineCount",
-        "TerminalCount", "OverflowCount", "OldestAgeSeconds"
-    };
     private static readonly HashSet<string> EnvironmentalAcquisitionHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Availability", "ConfiguredSourceCount", "RequiredSourceCount", "InitializedSourceCount",
@@ -102,6 +65,10 @@ public static class SkyMonitorObservabilityExtensions
     private static readonly HashSet<string> SpaceWeatherHealthDataKeys = new(StringComparer.Ordinal)
     {
         "Availability", "Reason"
+    };
+    private static readonly HashSet<string> OperatorNotificationsHealthDataKeys = new(StringComparer.Ordinal)
+    {
+        "Availability", "ReasonCode", "QueueDepth", "SmtpState", "WebhookState"
     };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)
     {
@@ -122,7 +89,14 @@ public static class SkyMonitorObservabilityExtensions
     public static IHostApplicationBuilder AddSkyMonitorObservability(
         this IHostApplicationBuilder builder,
         string? serviceVersion = null)
-        => AddSkyMonitorObservability(builder, serviceVersion, Environment.GetEnvironmentVariable);
+        => AddSkyMonitorObservability(builder, serviceVersion, enableCollection: true);
+
+    /// <summary>Configures the telemetry stack, with an option to leave only local console logging enabled.</summary>
+    public static IHostApplicationBuilder AddSkyMonitorObservability(
+        this IHostApplicationBuilder builder,
+        string? serviceVersion,
+        bool enableCollection)
+        => AddSkyMonitorObservability(builder, serviceVersion, Environment.GetEnvironmentVariable, enableCollection);
 
     /// <summary>
     /// Configures observability, reading the OTLP environment variables that the log sink applies through
@@ -131,12 +105,17 @@ public static class SkyMonitorObservabilityExtensions
     internal static IHostApplicationBuilder AddSkyMonitorObservability(
         IHostApplicationBuilder builder,
         string? serviceVersion,
-        Func<string, string?> getEnvironmentVariable)
+        Func<string, string?> getEnvironmentVariable,
+        bool enableCollection = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
         var telemetrySection = builder.Configuration.GetSection("Telemetry");
         var resolvedServiceVersion = ResolveServiceVersion(telemetrySection["ServiceVersion"], serviceVersion);
-        ConfigureSerilog(builder, resolvedServiceVersion, getEnvironmentVariable);
+        ConfigureSerilog(builder, resolvedServiceVersion, getEnvironmentVariable, enableCollection);
+        if (!enableCollection)
+        {
+            return builder;
+        }
         builder.Services.AddTelemetry(telemetrySection);
         if (resolvedServiceVersion is not null)
         {
@@ -164,15 +143,6 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ReplayRunner");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.ProcessingRunner");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.ProcessingFairness");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
-            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Transients");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Calibration");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.RawIngress");
@@ -180,13 +150,6 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.DeploymentLocation");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Outbox");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DerivativeWorker");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.ProcessingRunner");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.EnvironmentalObservations");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.LogicHost.DeploymentLocation");
-            options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Transients");
             options.AdditionalActivitySources.Add("HVO.SkyMonitor.CameraAgent.Calibration");
             options.AdditionalActivitySources.Add(builder.Environment.ApplicationName);
@@ -205,15 +168,6 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ReplayRunner")
-                    .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.DerivativeWorker")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.ProcessingRunner")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.ProcessingFairness")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.EnvironmentalObservations")
-                    .AddMeter("HVO.SkyMonitor.LogicHost.DeploymentLocation")
-                    .AddMeter("HVO.SkyMonitor.CameraAgent.EnvironmentalDelivery")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Transients")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Calibration")
                     .AddOtlpExporter());
@@ -286,17 +240,10 @@ public static class SkyMonitorObservabilityExtensions
             "raw-ingress" => RawIngressHealthDataKeys,
             "capture-lanes" => CaptureLaneHealthDataKeys,
             "capture-processing" => CaptureProcessingHealthDataKeys,
-            "artifact-outbox" => ArtifactOutboxHealthDataKeys,
-            "artifact-consistency" => ArtifactConsistencyHealthDataKeys,
-            "artifact-retention" => ArtifactRetentionHealthDataKeys,
-            "central-derivative-worker" => CentralDerivativeWorkerHealthDataKeys,
-            "object-store" => ObjectStoreHealthDataKeys,
-            "environmental-observations" => EnvironmentalObservationHealthDataKeys,
-            "environmental-delivery" => EnvironmentalDeliveryHealthDataKeys,
             "environmental-acquisition" => EnvironmentalAcquisitionHealthDataKeys,
             "orbital-elements" => OrbitalElementsHealthDataKeys,
             "space-weather" => SpaceWeatherHealthDataKeys,
-            "deployment-location" => DeploymentLocationHealthDataKeys,
+            "operator-notifications" => OperatorNotificationsHealthDataKeys,
             "calibration-library" => CalibrationLibraryHealthDataKeys,
             _ => null
         };
@@ -328,7 +275,8 @@ public static class SkyMonitorObservabilityExtensions
     private static void ConfigureSerilog(
         IHostApplicationBuilder builder,
         string? serviceVersion,
-        Func<string, string?> getEnvironmentVariable)
+        Func<string, string?> getEnvironmentVariable,
+        bool enableCollection)
     {
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Information()
@@ -346,7 +294,7 @@ public static class SkyMonitorObservabilityExtensions
         }
 
         var endpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
+        if (enableCollection && !string.IsNullOrWhiteSpace(endpoint))
         {
             var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName;
             var resourceAttributes = new Dictionary<string, object>

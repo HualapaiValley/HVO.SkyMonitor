@@ -10,14 +10,7 @@ toolchain for cloud or isolated workspaces.
 - Docker Engine with Compose.
 - Exact .NET SDK from `global.json`.
 - `jq` for protected JSON input to .NET User Secrets.
-- Access to development shared-service credentials.
 - An ignored root `.env` based on `.env.template`.
-
-Redis and Mailpit topology is defined by
-`deploy/hvo-docker/docker-compose.shared-services.yml` and normally runs
-persistently on `hvo-docker.hvo.lan`. SQL Server is provisioned separately on
-that host. LogicHost object storage is local to the LogicHost host and is
-created by `with-env` under `HVO_OBJECT_STORE_ROOT` for direct runs.
 
 ## Environment Setup
 
@@ -26,38 +19,21 @@ cp .env.template .env
 chmod 600 .env
 ```
 
-Populate every required password in `.env`. In particular,
-`CAMERA_AGENT_ADMIN_PASSWORD` and `CAMERA_AGENT_OAUTH_CLIENT_SECRET` have no
-Compose fallback. Use unique values for every reachable development deployment.
-
-Start and stop application containers without changing shared-service data:
+Set `CAMERA_AGENT_ADMIN_PASSWORD` in `.env` and install the
+[approved catalog](../catalog/production-install.md). The development
+container listens on `http://localhost:5130` by default.
 
 ```bash
 ./scripts/infra:start
 ./scripts/infra:status
-./scripts/infra:stop logichost cameraagent
+./scripts/infra:stop
 ```
 
-The application Compose topology exposes LogicHost at
-`http://localhost:5174` and CameraAgent at `http://localhost:5130` by default.
-It is Development-only and HTTP-only.
+## Direct execution
 
-## Direct Hosts
-
-Do not run a direct host while its container owns the same port.
-
-Both direct hosts require a verified production snapshot under
-`${HVO_RUNTIME_DATA_ROOT:-./data}/catalog`. Build and install it once using
-[`docs/catalog/production-install.md`](../catalog/production-install.md).
-`with-env` supplies this root and requires production package kind; it never
-falls back to the nine-row test fixture.
-
-LogicHost requires the root `.env` translation performed by `with-env`:
-
-```bash
-./scripts/with-env dotnet run \
-  --project src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj
-```
+Stop the development container before starting another process on its port.
+`with-env` selects the verified production catalog at
+`${HVO_RUNTIME_DATA_ROOT:-./data}/catalog`.
 
 CameraAgent supports project User Secrets. Set its local owner password through
 the prompt before the first direct run:
@@ -90,43 +66,30 @@ The launch profiles include HTTPS endpoints for direct development. Repository
 Compose does not provide HTTPS termination and must not be described as a
 production identity deployment.
 
-## Identity Workflow
+## Identity
 
-After startup:
-
-```bash
-./scripts/identity:smoke
-```
-
-- LogicHost user registration is `/Account/Register`.
-- LogicHost API-key management is `/Account/Manage/ApiKeys`.
-- Device registration is `/devices/register` and inventory is `/devices`.
-- CameraAgent registration and envelope import is Operations > Registration at
-  `/operations/registration`; the older `/devices/bootstrap` address still opens it.
-- CameraAgent temporary-owner replacement is
-  `/Account/ReplaceTemporaryPassword`; bounded authenticated status is
-  `/api/internal/owner-bootstrap/status`.
-- API-key proof uses `/api/v1.0/status/detailed`; anonymous
-  `/api/v1.0/status` does not validate a key.
-
-Use Mailpit for LogicHost confirmation/reset email in the development topology.
-CameraAgent's local email sender does not deliver recovery links.
+Sign in with the local owner account to view the CameraAgent operator UI,
+including Operations and its authenticated endpoints.
+See the [identity runbook](../identity/operations-runbook.md) for owner
+bootstrap, recovery and API keys.
 
 ## Testing
 
 Use the exact SDK and canonical commands from the
-[CI pipeline runbook](ci-pipeline.md). Fast selections are:
+[CI pipeline runbook](ci-pipeline.md). Use the [active test selection](ci-pipeline.md#active-test-selection).
 
 ```bash
 DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
-  dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Unit'
+  dotnet test HVO.SkyMonitor.v9.slnx \
+    --filter 'TestCategory=Unit&TestCategory!=Performance'
 
-dotnet test HVO.SkyMonitor.v9.slnx --filter 'TestCategory=Integration'
+
+dotnet test HVO.SkyMonitor.v9.slnx \
+  --filter 'TestCategory=Integration'
+
 ```
 
-Integration selection requires Docker. Manual and Soak remain opt-in; External
-validation is owned by its separate workflow; no Hardware MSTest cases
-currently exist.
+Docker-backed CameraAgent acceptance requires an isolated Docker environment. Manual, Soak, Performance, External and Hardware selections follow the CI runbook.
 
 Validate infrastructure and active documentation commands with:
 
@@ -142,10 +105,6 @@ developer state.
 
 | Symptom | Action |
 | --- | --- |
-| Database migration fails | Verify `SQLSERVER_*` endpoint/database/login values in `.env` and confirm the login owns approved migration rights on `SkyMonitor`. |
-| Object-store access fails | Verify `HVO_OBJECT_STORE_ROOT` exists with both `skymonitor-artifacts` and `skymonitor-diagnostics` directories, is writable by the running user, and is not held by another LogicHost process. |
-| Redis connection times out | Verify `REDIS_*`, the selected endpoint, and the `skymonitor:` instance prefix. |
-| SMTP email is missing | Verify `SMTP_*`, then inspect the configured Mailpit instance without retaining confirmation links. |
 | CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets; it needs at least 8 characters. |
 | CameraAgent sign-in says the account is locked | Wait five minutes after five failed attempts, or recover the owner. |
 | CameraAgent owner cannot access operations after login | Complete `/Account/ReplaceTemporaryPassword`; pending setup intentionally denies ordinary owner UI and APIs without stopping capture. |

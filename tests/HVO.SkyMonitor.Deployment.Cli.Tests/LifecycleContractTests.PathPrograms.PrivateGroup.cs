@@ -22,7 +22,7 @@ public sealed partial class LifecycleContractTests
             Directory.CreateDirectory(local);
             Assert.AreEqual((UnixFileMode)0x1fd, File.GetUnixFileMode(local), "the existing folder must reproduce umask 0002");
             var result = await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
-            { Release = newer.Folder, MigrationBackwardCompatible = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            { Release = newer.Folder }, fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
             Assert.AreEqual("completed", result.Outcome);
             var bin = Path.Combine(local, "bin");

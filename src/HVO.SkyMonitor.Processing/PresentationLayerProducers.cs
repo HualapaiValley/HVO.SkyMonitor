@@ -99,7 +99,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v13-plain-circle-bounded-expected-labels";
+    public const string SceneProducerVersion = "projected-scene-presentation-v15-plain-circle-bounded-point-source-labels";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
@@ -108,6 +108,7 @@ public static class PresentationLayerProducers
     public const double ResolvedFootprintPaddingPixels = AnnotationRenderer.ResolvedFootprintPaddingPixels;
     public const string MetadataProducerVersion = "metadata-corner-presentation-v6-original-colours";
     public const string CloudProducerVersion = "cloud-presentation-v5-original-colours";
+    public const string RegionalVisibilityProducerVersion = "regional-stellar-visibility-presentation-v1";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -167,9 +168,13 @@ public static class PresentationLayerProducers
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false,
         HorizonObstructionSceneEligibility? horizon = null,
-        bool includeDeepSky = true)
+        bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null,
+        bool allowCompatibleExposureAssociations = false)
     => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
-            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon, includeDeepSky: includeDeepSky);
+            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon,
+            includeDeepSky: includeDeepSky, deepSkyStyle: deepSkyStyle,
+            allowCompatibleExposureAssociations: allowCompatibleExposureAssociations);
 
     internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
         ProjectedSceneV1 scene,
@@ -183,7 +188,9 @@ public static class PresentationLayerProducers
         bool expectedPositionDiagnostics = false,
         ScenePresentationStyleV1? selectedStyle = null,
         HorizonObstructionSceneEligibility? horizon = null,
-        bool includeDeepSky = true)
+        bool includeDeepSky = true,
+        PresentationDeepSkyStyleV1? deepSkyStyle = null,
+        bool allowCompatibleExposureAssociations = false)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -191,7 +198,7 @@ public static class PresentationLayerProducers
         var sceneStyleIdentity = selectedStyle?.IdentitySha256;
         if (associations is not null &&
             (!MeasuredStellarAssociationJson.Validate(associations).IsValid ||
-             !string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase)))
+             !AssociationsBindScene(associations, scene, allowCompatibleExposureAssociations)))
             throw new ArgumentException("The measured associations do not describe this projected scene.", nameof(associations));
         style = style is null
             ? new PresentationAnnotationStyleV1(ConstellationIds: [])
@@ -335,9 +342,14 @@ public static class PresentationLayerProducers
             var labelled = annotatedObjects.Select(static item => (item.Id, item.DisplayName, item.Pixel, item.Magnitude))
                 .Concat(footprintOnly.Select(static item => (Id: item.Footprint.Id, DisplayName: item.Footprint.DisplayName,
                     Pixel: item.Anchor, Magnitude: item.Footprint.Appearance?.VisualMagnitude ?? double.MaxValue))).ToArray();
-            // Footprint-only labels are solar-system bodies, which the policy leaves untouched.
+            // Resolved-footprint solar-system bodies stay outside point-source label gating.
             var labeled = StellarLabelPolicy.Apply(labelled
-                .Select(static item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)).ToArray(),
+                .Select(item => new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel)
+                {
+                    FootprintParts = footprints.TryGetValue(item.Id, out var fp) && fp.Parts.Count > 0
+                        ? [new ResolvedFootprintPart(true, [item.Pixel])]
+                        : null
+                }).ToArray(),
                 associations, expectedPositionDiagnostics)
                 .Where(static item => item.DrawLabel)
                 .ToDictionary(static item => item.Id, StringComparer.Ordinal);
@@ -371,16 +383,22 @@ public static class PresentationLayerProducers
         }
         var remainingPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives -
             markers.Length - footprintSegments.Count - starTexts.Sum(static block => block.Lines.Count);
+        if (deepSkyStyle is { MaximumLabels: < 0 or > 24 })
+            throw new ArgumentOutOfRangeException(nameof(deepSkyStyle));
+        var effectiveDeepSkyStyle = deepSkyStyle ?? new PresentationDeepSkyStyleV1();
+        var maxDeepSkyLabels = includeLabels
+            ? Math.Min(effectiveDeepSkyStyle.MaximumLabels, Math.Max(0, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1))
+            : 0;
         var curated = !includeDeepSky || scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
             ? null : PresentationDeepSkyLayerProducer.Create(scene,
-            new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
-                ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:
+            effectiveDeepSkyStyle with { MaximumLabels = maxDeepSkyLabels }, reservedLabelBounds:
                 starTexts.Select(block =>
                 {
                     using var font = PresentationFont.Create(block, 0);
                     var bounds = PresentationFont.BackplateBounds(block, width, height, font);
                     return new ResolvedFootprintBounds(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
-                }).ToArray(), maximumPrimitives: remainingPrimitives, horizon: horizon?.SelectDeepSky(scene)).Payload;
+                }).ToArray(), maximumPrimitives: remainingPrimitives, horizon: horizon?.SelectDeepSky(scene),
+                sceneStyleIdentitySha256: sceneStyleIdentity).Payload;
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, markers,
@@ -569,5 +587,213 @@ public static class PresentationLayerProducers
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
                     bits, lineThickness, color ?? new PresentationColor(255, 64, 32))),
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels, textBlocks: texts));
+    }
+
+    /// <summary>Creates a reference-exposure overlay payload for step 30b regional stellar visibility without reporting a cloud-cover percentage.</summary>
+    public static PresentationLayerPayloadV1 FromRegionalStellarVisibility(
+        RegionalStellarVisibilityV1 assessment, int widthPixels, int heightPixels, bool includeSummaryLabel = true,
+        int lineThickness = 2, PresentationColor? deficitColor = null)
+    {
+        ArgumentNullException.ThrowIfNull(assessment);
+        var validation = RegionalStellarVisibilityJson.Validate(assessment);
+        if (!validation.IsValid) throw new ArgumentException("Regional stellar visibility assessment is invalid.", nameof(assessment));
+        var count = checked(assessment.Grid.Columns * assessment.Grid.Rows);
+        byte[] deficitBits;
+        if (assessment.Mask is { } mask)
+        {
+            deficitBits = mask.DeficitBits.ToArray();
+        }
+        else
+        {
+            deficitBits = new byte[(count + 7) / 8];
+            for (var index = 0; index < assessment.Tiles.Count; index++)
+            {
+                if (assessment.Tiles[index].Status == RegionalVisibilityTileStatus.DetectionDeficit)
+                {
+                    deficitBits[index >> 3] |= (byte)(1 << (index & 7));
+                }
+            }
+        }
+        var texts = includeSummaryLabel ? new[]
+        {
+            new PresentationTextBlockV1(PresentationTextAnchor.Point, new PixelPoint(3, 18),
+                new ReadOnlyCollection<string>(
+                [
+                    assessment.Status == RegionalVisibilityAssessmentStatus.Assessed
+                        ? string.Create(CultureInfo.InvariantCulture,
+                            $"Star visibility: {assessment.Grid.DeficitTileCount}/{assessment.Grid.AssessedTileCount} deficit tiles")
+                        : string.Create(CultureInfo.InvariantCulture,
+                            $"Star visibility: {assessment.Status}"),
+                    string.Create(CultureInfo.InvariantCulture,
+                        $"Geometry {assessment.GeometryBasis} / Focus {assessment.FocusBasis}")
+                ]), 1, 0, 2, new PresentationColor(255, 224, 128))
+        } : [];
+        return PresentationLayerPayloadJson.Create(
+            assessment.AssessmentIdentitySha256,
+            widthPixels,
+            heightPixels,
+            textBlocks: texts,
+            tileMask: assessment.Status == RegionalVisibilityAssessmentStatus.Assessed
+                ? new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
+                    deficitBits, lineThickness, deficitColor ?? new PresentationColor(255, 192, 64))
+                : null);
+    }
+
+    private const double CompatibleSceneCoordinateTolerancePixels = 0.5;
+    private const double DegreesToRadians = Math.PI / 180.0;
+    // Earth's sidereal rotation rate matching AstronomyTime.GreenwichMeanSiderealDegrees:
+    // 360.98564736629 deg/day (~7.2921158553e-5 rad/s, ~15.041 arcsec/s).
+    private const double EarthSiderealAngularRateRadiansPerSecond = 360.98564736629 * DegreesToRadians / 86400.0;
+    // Conservative upper bound on geocentric proper angular motion of any point-source solar-system planet
+    // (Mercury peaks near ~2.25 deg/day prograde at superior conjunction and ~1.4 deg/day retrograde near inferior
+    // conjunction, plus IAU-1976 equatorial precession ~50.3 arcsec/year). Including this in the angular-shift bound
+    // ensures solar-system body motion (including across enabled refraction cutoffs) cannot exceed the 0.5 px tolerance.
+    private const double MaximumPlanetProperMotionRadiansPerSecond = 3.0 * DegreesToRadians / 86400.0;
+    // Hard upper cap on allowed epoch difference even for tiny-focal-length all-sky optics while cleanly accepting
+    // real request-to-shutter latency (hundreds of milliseconds) and sub-millisecond timing truncation.
+    private const double MaximumCompatibleEpochSkewSeconds = 30.0;
+    // Bennett's refraction formula is smooth and strictly compressive (0 < d(apparent)/d(geometric) < 1) only on
+    // [-1 deg, 90 deg]; below -1 deg it becomes non-monotonic and singular.
+    private const double BennettMonotoneFloorDegrees = -1.0;
+
+    internal static bool AreEpochsCompatibleForScene(
+        DateTimeOffset associationEpoch, DateTimeOffset sceneEpoch, ProjectedSceneV1 scene)
+    {
+        var deltaSeconds = Math.Abs((sceneEpoch - associationEpoch).TotalSeconds);
+        if (!double.IsFinite(deltaSeconds) || deltaSeconds > MaximumCompatibleEpochSkewSeconds)
+            return false;
+        if (deltaSeconds == 0)
+            return true;
+        var maxAngularShiftRadians = MaximumApparentAngularShiftRadians(deltaSeconds, scene.Refraction);
+        if (!double.IsFinite(maxAngularShiftRadians))
+            return false;
+        var maxScalePixelsPerRadian = MaximumDeliveredPixelScalePerRadian(scene);
+        return double.IsFinite(maxScalePixelsPerRadian) &&
+            maxAngularShiftRadians * maxScalePixelsPerRadian <= CompatibleSceneCoordinateTolerancePixels;
+    }
+
+    private static double MaximumApparentAngularShiftRadians(double deltaSeconds, RefractionOptions refraction)
+    {
+        var geometricRadians = (EarthSiderealAngularRateRadiansPerSecond + MaximumPlanetProperMotionRadiansPerSecond) * deltaSeconds;
+        if (!refraction.Enabled)
+            return geometricRadians;
+        if (refraction.MinimumAltitudeDegrees < BennettMonotoneFloorDegrees)
+            return double.PositiveInfinity;
+        // Crossing MinimumAltitudeDegrees introduces a step jump of |Apply(m) - m|, and Bennett's slight negative
+        // residual at 90 deg adds up to 2*|Apply(90) - 90| across zenith. Over [-1 deg, 0 deg), cos(apparent)/cos(geom)
+        // is bounded above by 1/cos(1 deg).
+        var cutoffJumpDegrees = Math.Abs(
+            AtmosphericRefraction.Apply(refraction.MinimumAltitudeDegrees, refraction) - refraction.MinimumAltitudeDegrees);
+        var zenithOffsetDegrees = 2.0 * Math.Abs(AtmosphericRefraction.Apply(90.0, refraction) - 90.0);
+        if (!double.IsFinite(cutoffJumpDegrees) || !double.IsFinite(zenithOffsetDegrees))
+            return double.PositiveInfinity;
+        var azimuthalScale = 1.0 / Math.Cos(DegreesToRadians);
+        return geometricRadians * azimuthalScale + (cutoffJumpDegrees + zenithOffsetDegrees) * DegreesToRadians;
+    }
+
+    private static bool IsBoundedPlanetEphemeris(string? ephemerisModelVersion) =>
+        string.Equals(ephemerisModelVersion, "astronomy-engine-2.1.19-eqj-v1", StringComparison.Ordinal) ||
+        string.Equals(ephemerisModelVersion, "fixed-fixture-v1", StringComparison.Ordinal);
+
+    private static double MaximumDeliveredPixelScalePerRadian(ProjectedSceneV1 scene)
+    {
+        var projection = ProjectedSceneJson.ToProjectionContext(scene.Projection);
+        var boresight = new AltAzPoint(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees);
+        var sourceScale = ProjectionSamplingBounds.MaximumPixelsPerRadian(projection, boresight, Math.PI);
+        var minBin = Math.Min(Math.Max(1, scene.ImageTransform.BinX), Math.Max(1, scene.ImageTransform.BinY));
+        return sourceScale / minBin;
+    }
+
+    internal static bool AssociationsBindScene(
+        MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene, bool allowCompatibleExposureAssociations)
+    {
+        if (string.Equals(associations.Scene.SceneIdentitySha256, scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!allowCompatibleExposureAssociations)
+            return false;
+        return AreCompatibleExposureAssociations(associations, scene);
+    }
+
+    internal static bool AreCompatibleExposureAssociations(
+        MeasuredStellarAssociationsV1 associations, ProjectedSceneV1 scene)
+    {
+        if (associations.Scene.Kind != ProjectedSceneKind.Predicted ||
+            associations.Source.CaptureId != scene.Source.CaptureId ||
+            associations.Source.ArtifactId != scene.Source.ArtifactId ||
+            !string.Equals(associations.Source.DescriptorIdentitySha256, scene.Source.ArtifactIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
+            associations.Source.WidthPixels != scene.ImageTransform.OutputWidthPixels ||
+            associations.Source.HeightPixels != scene.ImageTransform.OutputHeightPixels ||
+            scene.CoordinateConvention != ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge ||
+            scene.ImageTransform != ProjectedSceneImageTransformV1.Identity(associations.Source.WidthPixels, associations.Source.HeightPixels) ||
+            !string.Equals(associations.Scene.CalibrationVersion, scene.Projection.CalibrationVersion, StringComparison.Ordinal) ||
+            associations.Scene.ProjectionGeometryIdentitySha256 is not { } expectedGeometry ||
+            !string.Equals(expectedGeometry, MeasuredStellarAssociationJson.ComputeProjectionGeometryIdentitySha256(scene), StringComparison.OrdinalIgnoreCase) ||
+            associations.Scene.EffectiveUtc is not { } associationEpoch ||
+            !AreEpochsCompatibleForScene(associationEpoch, scene.EffectiveUtc, scene))
+            return false;
+
+        if (associations.PointSourcePlanets is { } planetEvidence &&
+            (!AreEpochsCompatibleForScene(planetEvidence.EffectiveUtc, scene.EffectiveUtc, scene) ||
+             !planetEvidence.ProjectionMappingVersion.StartsWith(
+                 $"{scene.Projection.Model}:{scene.Projection.CalibrationVersion}:", StringComparison.Ordinal)))
+            return false;
+
+        // Require compatible delivered-image pixel coordinates for every shared predicted/associated object before
+        // transferring eligibility across scenes (rejecting mirrored, rotated, shifted, or differently projected scenes).
+        var sceneObjects = new Dictionary<string, ProjectedCelestialObject>(scene.Objects.Count, StringComparer.Ordinal);
+        foreach (var obj in scene.Objects)
+            sceneObjects[obj.Id] = obj;
+
+        var starWindowLimit = associations.Method.Settings.MaximumWindowPixels + CompatibleSceneCoordinateTolerancePixels;
+        foreach (var star in associations.Associations)
+        {
+            if (!sceneObjects.TryGetValue(star.CatalogId, out var obj)) continue;
+            if (obj.Kind != CelestialObjectKind.Star ||
+                double.Hypot(obj.Pixel.X - star.ExpectedX, obj.Pixel.Y - star.ExpectedY) > CompatibleSceneCoordinateTolerancePixels ||
+                double.Hypot(obj.Pixel.X - star.MeasuredX, obj.Pixel.Y - star.MeasuredY) > starWindowLimit)
+                return false;
+        }
+        foreach (var unmatched in associations.UnmatchedPredictions)
+        {
+            if (!sceneObjects.TryGetValue(unmatched.CatalogId, out var obj)) continue;
+            if (obj.Kind != CelestialObjectKind.Star ||
+                double.Hypot(obj.Pixel.X - unmatched.ExpectedX, obj.Pixel.Y - unmatched.ExpectedY) > CompatibleSceneCoordinateTolerancePixels)
+                return false;
+        }
+        if (associations.PointSourcePlanets is { } planets)
+        {
+            // When a planet is present in scene.Objects, its actual displacement between epochs is verified directly
+            // below; only unobserved/absent planets at non-zero epoch skew rely on the analytical ephemeris motion bound.
+            var boundedPlanetEphemeris =
+                planets.EffectiveUtc == scene.EffectiveUtc || IsBoundedPlanetEphemeris(planets.EphemerisModelVersion);
+            foreach (var planet in planets.Associations)
+            {
+                if (!sceneObjects.TryGetValue(planet.ObjectId, out var obj))
+                {
+                    if (!boundedPlanetEphemeris)
+                        return false;
+                    continue;
+                }
+                var planetWindowLimit = MeasuredStellarAssociationJson.PlanetMaximumWindow(
+                    associations.Method.Settings, planet.PropagatedPredictionSigmaPixels) + CompatibleSceneCoordinateTolerancePixels;
+                if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
+                    double.Hypot(obj.Pixel.X - planet.ExpectedX, obj.Pixel.Y - planet.ExpectedY) > CompatibleSceneCoordinateTolerancePixels ||
+                    double.Hypot(obj.Pixel.X - planet.MeasuredX, obj.Pixel.Y - planet.MeasuredY) > planetWindowLimit)
+                    return false;
+            }
+            foreach (var unmatched in planets.UnmatchedPredictions)
+            {
+                if (!sceneObjects.TryGetValue(unmatched.ObjectId, out var obj))
+                {
+                    if (!boundedPlanetEphemeris)
+                        return false;
+                    continue;
+                }
+                if (obj.Kind != CelestialObjectKind.SolarSystemBody ||
+                    double.Hypot(obj.Pixel.X - unmatched.ExpectedX, obj.Pixel.Y - unmatched.ExpectedY) > CompatibleSceneCoordinateTolerancePixels)
+                    return false;
+            }
+        }
+        return true;
     }
 }

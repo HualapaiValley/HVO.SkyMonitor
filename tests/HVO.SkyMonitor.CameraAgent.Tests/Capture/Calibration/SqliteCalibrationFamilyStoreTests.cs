@@ -6,8 +6,10 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -23,6 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Calibration")]
 [DoNotParallelize]
 public sealed class SqliteCalibrationFamilyStoreTests
 {
@@ -374,13 +377,13 @@ public sealed class SqliteCalibrationFamilyStoreTests
             var masters = await CreateLibraryMastersAsync(root, options).ConfigureAwait(false);
             // Today every bundle holds its own artifacts. Clear that, so only the family hold can keep the masters.
             ExecuteDatabase(Path.Combine(root, "journal", "raw-ingress.db"), "UPDATE calibration_library_bundles SET retention_hold = 0;");
-            using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
+            using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             using var processingStore = new SqliteCaptureProcessingStore(options);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var processingTelemetry = new CaptureProcessingTelemetry();
-            using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var persistence = new CaptureProcessingPersistence(
-                options, processingStore, frameStorage, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance,
+                silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
             using var families = new SqliteCalibrationFamilyStore(options, TimeProvider.System, NullLogger<SqliteCalibrationFamilyStore>.Instance);
             var holds = new CompositeProcessingRetentionHolds(
                 persistence, new CameraAgentClearReferenceLoader(options), library, calibrationFamilies: families);
@@ -388,7 +391,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
             var family = await families.StoreAsync(
                 Family("family-a", Member(10) with { Masters = [.. masters.Select(static master => new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))] }),
                 CancellationToken.None).ConfigureAwait(false);
-            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId, master.PayloadPath, master.ManifestPath)).ToArray();
+            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId)).ToArray();
 
             Assert.IsFalse((await HeldAsync(holds, root).ConfigureAwait(false)).Intersect(expected).Any(), "a stored family that is not active holds nothing");
 
@@ -405,6 +408,53 @@ public sealed class SqliteCalibrationFamilyStoreTests
         {
             DeleteRoot(root);
         }
+    }
+
+    [TestMethod]
+    public async Task SiloBundleOpenRunAndConfiguredClearReferenceHoldAndReleaseExactMaster()
+    {
+        var token = CancellationToken.None;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var root = silo.RootPath;
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 });
+        var master = (await CreateLibraryMastersAsync(root, options).ConfigureAwait(false))[0];
+        var artifacts = CalibrationSiloFixture.Storage(root);
+        using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, silo.Clock) { Silo = artifacts };
+        var loader = new CameraAgentClearReferenceLoader(options, artifacts, library);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+        var id = master.ArtifactId.ToString("D");
+        draft = draft with { Members = [draft.Members[0] with { ArtifactId = id, Role = "calibration-frame" }, draft.Members[1]] };
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        var locator = silo.MemberLocator(draft.GroupId, id);
+        silo.Clock.Advance(TimeSpan.FromDays(2));
+        var retention = SiloRetentionTests.OpenForFixture(silo);
+        await retention.SetPolicyAsync(new(false, [new("calibration-frame", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+        var database = Path.Combine(root, "journal", "raw-ingress.db");
+
+        async ValueTask<string> DecisionAsync(CameraAgentClearReferenceLoader configured)
+        {
+            var held = (await library.GetRetentionHoldsUnderLifecycleLockAsync(root, token).ConfigureAwait(false))
+                .Concat(await configured.GetRetentionHoldsAsync(root, token).ConfigureAwait(false));
+            var candidates = await retention.DryRunAsync(silo.Clock.GetUtcNow(), false,
+                held.Select(static hold => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, hold.ArtifactId.ToString("D"))).ToArray(),
+                token).ConfigureAwait(false);
+            return candidates.Single(candidate => candidate.Locator == locator).Decision;
+        }
+
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        ExecuteDatabase(database, """
+            UPDATE calibration_library_bundles SET retention_hold = 0;
+            INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256, calibration_bundle_id)
+            SELECT 'fixture-run', 'agent', 'camera', x'7b7d', 'fixture', bundle_id FROM calibration_library_bundles;
+            """);
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        ExecuteDatabase(database, "UPDATE centered_exposure_runs SET closed_reason = 'complete' WHERE run_id = 'fixture-run';");
+        Assert.AreEqual("expire-role", await DecisionAsync(loader).ConfigureAwait(false));
+
+        loader.RegisterRetentionHold(master.ManifestPath);
+        Assert.AreEqual("held-reference", await DecisionAsync(loader).ConfigureAwait(false));
+        var replacement = new CameraAgentClearReferenceLoader(options, artifacts, library);
+        Assert.AreEqual("expire-role", await DecisionAsync(replacement).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -545,9 +595,9 @@ public sealed class SqliteCalibrationFamilyStoreTests
                     "synthetic-calibration-model", model.SchemaVersion, SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var synthetic = await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var synthetic = await new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options))
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
-        using (var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System))
+        using (var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
         {
             _ = await library.AdoptPublishedBundleAsync(synthetic.LibraryBundle, CancellationToken.None).ConfigureAwait(false);
         }
@@ -571,6 +621,57 @@ public sealed class SqliteCalibrationFamilyStoreTests
 
     private static CalibrationFamilyActivationRequest Activation(string key, string identity, string? reason = null)
         => new(key, Target(), identity, "operator", reason);
+
+    [TestMethod]
+    public async Task SiloExpiryRespectsTheConfiguredMasterAcrossRestartAndAfterDeactivation()
+    {
+        var token = CancellationToken.None;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var member = Member(10);
+        var masterId = member.Masters[0].ArtifactId.ToString("D");
+        var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+        draft = draft with { Members = [draft.Members[0] with { ArtifactId = masterId, Role = "calibration-frame" }, draft.Members[1]] };
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromDays(2));
+        var retention = SiloRetentionTests.OpenForFixture(silo);
+        await retention.SetPolicyAsync(new(false, [new("calibration-frame", TimeSpan.Zero, false, true)]), token).ConfigureAwait(false);
+
+        static async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadHoldsAsync(SqliteCalibrationFamilyStore store, CancellationToken token) =>
+            (await store.GetActiveMasterArtifactIdsAsync(token).ConfigureAwait(false)).Select(static id =>
+                new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))).ToArray();
+        using (var first = CreateStore(silo.RootPath))
+        {
+            var configured = await first.StoreAsync(Family("retention-family", member), token).ConfigureAwait(false);
+            var service = new CalibrationFamilyActivationService(first, NullLogger<CalibrationFamilyActivationService>.Instance);
+            Assert.IsTrue((await service.ActivateAsync(Activation("retention-activate", configured.IdentitySha256), token).ConfigureAwait(false)).IsAccepted);
+            Assert.AreEqual("no-eligible-versions",
+                await retention.SweepAsync(true, ct => ReadHoldsAsync(first, ct), null, token).ConfigureAwait(false));
+        }
+        await silo.RestartAsync().ConfigureAwait(false);
+        using var reopened = CreateStore(silo.RootPath);
+        retention = SiloRetentionTests.OpenForFixture(silo);
+        var replacement = new CalibrationFamilyActivationService(reopened, NullLogger<CalibrationFamilyActivationService>.Instance);
+        var holdsCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deactivated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sweep = retention.SweepAsync(true, async ct =>
+        {
+            var holds = await ReadHoldsAsync(reopened, ct).ConfigureAwait(false);
+            holdsCaptured.SetResult();
+            await deactivated.Task.WaitAsync(ct).ConfigureAwait(false);
+            return holds;
+        }, null, token).AsTask();
+        try
+        {
+            await holdsCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+            Assert.IsTrue((await replacement.DeactivateAsync(Deactivation("retention-release"), token).ConfigureAwait(false)).IsAccepted);
+        }
+        finally
+        {
+            deactivated.SetResult();
+        }
+        Assert.AreEqual("no-eligible-versions", await sweep.ConfigureAwait(false));
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, ct => ReadHoldsAsync(reopened, ct), null, token).ConfigureAwait(false));
+    }
 
     private static CalibrationFamilyDeactivationRequest Deactivation(string key)
         => new(key, Agent, Rig, "operator", null);

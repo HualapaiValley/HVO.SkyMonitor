@@ -7,9 +7,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 /// <summary>Freezes captured facts under the raw retention lock, then restores at most three verified payloads at a time.</summary>
 internal sealed class TimeLapseSourceReader(IOptions<CameraAgentHostOptions> options, RawCaptureIngress ingress,
     SqliteCaptureProcessingStore processing, SqliteTimeLapseStore store,
-    Func<IDeploymentLocationStore?> locations, IPlanetEphemeris ephemeris)
+    Func<IDeploymentLocationStore?> locations, IPlanetEphemeris ephemeris, SiloArtifactStorage silo)
 {
     internal async ValueTask<CameraAgentTimeLapseSourcePlan> FreezeAsync(CameraAgentTimeLapseJob job, CancellationToken token)
     {
@@ -33,7 +33,6 @@ internal sealed class TimeLapseSourceReader(IOptions<CameraAgentHostOptions> opt
             if (candidates.Count > 8192) throw new InvalidDataException("The hourly source window exceeds 8192 captures.");
             var accepted = new List<CameraAgentTimeLapseRawSource>();
             var exclusions = new SortedDictionary<string, int>(StringComparer.Ordinal);
-            var root = PhysicalRoot.Open(options.Value.RawIngressRoot);
             var rig = RigProjectionContextFactory.CreateProfileHashSha256(job.Preset.Rig);
             foreach (var candidate in candidates)
             {
@@ -50,7 +49,8 @@ internal sealed class TimeLapseSourceReader(IOptions<CameraAgentHostOptions> opt
                 else if (job.Window.Policy.Selection == LocalAutomationSourceSelection.DarkNightActualSources &&
                     SolarAltitudeClassifier.DirectionAt(ephemeris, utc, job.Window.ReportingPeriod.Site.LatitudeDegrees,
                         job.Window.ReportingPeriod.Site.LongitudeDegrees).AltitudeDegrees > -18) reason = "timelapse.solar-excluded";
-                else if (!File.Exists(root.Resolve(candidate.PayloadRelativePath)) || !File.Exists(root.Resolve(candidate.SidecarRelativePath)))
+                else if (!await silo.HasMemberAsync(descriptor.Artifact.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(descriptor), token).ConfigureAwait(false))
                     reason = "timelapse.source-unavailable";
                 if (reason is null) accepted.Add(candidate);
                 else if (utc >= job.Window.StartUtc) exclusions[reason] = exclusions.GetValueOrDefault(reason) + 1;
@@ -68,16 +68,9 @@ internal sealed class TimeLapseSourceReader(IOptions<CameraAgentHostOptions> opt
     internal async ValueTask<ProcessingArtifact> RestoreAsync(CameraAgentTimeLapseRawSource source, CancellationToken token)
     {
         var descriptor = source.Descriptor;
-        var path = PhysicalRoot.Open(options.Value.RawIngressRoot).Resolve(source.PayloadRelativePath);
-        DurableSync.RequireRegularFile(path);
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous);
-        if (stream.Length != descriptor.Layout.ByteLength || stream.Length > 64 * 1024 * 1024)
-            throw new InvalidDataException("A frozen video source has an invalid payload length.");
-        var payload = new byte[checked((int)stream.Length)];
-        await stream.ReadExactlyAsync(payload, token).ConfigureAwait(false);
-        if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("A frozen video source differs from its committed checksum.");
-        return Describe(descriptor) with { Payload = payload };
+        var retained = await silo.ReadRawAsync(descriptor, token).ConfigureAwait(false)
+            ?? throw new TimeLapseInputUnavailableException(descriptor.Artifact.ArtifactId);
+        return Describe(descriptor) with { Payload = retained };
     }
 
     internal static ProcessingArtifact Describe(ReconstructionDescriptor descriptor)

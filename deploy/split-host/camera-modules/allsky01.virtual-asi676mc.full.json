@@ -1,5 +1,5 @@
 {
-  "agentId": "replace-with-registered-device-id",
+  "agentId": "use-local-device-id",
   "module": {
     "type": "VirtualSky",
     "options": {
@@ -12,12 +12,12 @@
       "bortleClass": 3,
       "shotNoiseEnabled": true,
       "readNoiseStandardDeviation": 0.0,
-      "catalogName": "HYG 4.2",
-      "catalogVersion": "4.2",
+      "catalogName": "HYG 4.4",
+      "catalogVersion": "4.4",
       "catalogSourceUrl": "https://codeberg.org/astronexus/hyg",
       "catalogLicense": "CC BY-SA 4.0",
-      "catalogChecksumSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
-      "catalogSchemaVersion": "2",
+      "catalogChecksumSha256": "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321",
+      "catalogSchemaVersion": "3",
       "transientScenario": {
         "schemaVersion": "virtual-transient-scenario-v1",
         "scenarioId": "production-like-recurring-331-color",
@@ -168,7 +168,7 @@
       { "id": "final-jpeg", "type": "JpegEncoding", "order": 80, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-final-jpeg", "jpegQuality": 90 } },
       { "id": "thumbnail-large", "type": "JpegEncoding", "order": 81, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-thumbnail-1024-jpeg", "jpegQuality": 85, "maximumDimension": 1024 } },
       { "id": "thumbnail-small", "type": "JpegEncoding", "order": 82, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-thumbnail-320-jpeg", "jpegQuality": 80, "maximumDimension": 320 } },
-      { "id": "storage", "type": "Storage", "order": 90, "dependsOn": ["$raw", "rolling", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small", "ProjectedScene"], "options": { "storageRoot": "/app/data/raw", "retentionDays": 1, "updateLatestFrame": true, "queueForUpload": false, "policies": [] } },
+      { "id": "storage", "type": "Storage", "order": 90, "dependsOn": ["$raw", "rolling", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small", "ProjectedScene"], "options": { "updateLatestFrame": true } },
       { "id": "telemetry", "type": "Telemetry", "order": 100, "dependsOn": ["calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small", "storage"] }
     ]
   },

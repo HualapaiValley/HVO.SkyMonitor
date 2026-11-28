@@ -258,11 +258,11 @@ public sealed class DockerClientTests
     }
 
     [TestMethod]
-    [DataRow("/srv/catalogs/hyg-v4.2-p3-s2-r1")]
+    [DataRow("/srv/catalogs/hyg-v4.4-p4-s3-r1")]
     [DataRow("/srv/catalogs")]
     public async Task EnsureNoPathReferencesAsync_DirectOrAncestorMount_IsRejected(string mountSource)
     {
-        const string candidate = "/srv/catalogs/hyg-v4.2-p3-s2-r1";
+        const string candidate = "/srv/catalogs/hyg-v4.4-p4-s3-r1";
         var runner = new FakeProcessRunner(
             "container-1\n",
             $"[{{\"Mounts\":[{{\"Source\":\"{mountSource}\"}}]}}]");

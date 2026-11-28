@@ -24,7 +24,7 @@ internal sealed record InstallRecord(
     DateTimeOffset UpdatedUtc,
     IReadOnlyList<InstallRecordInstance> Instances)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public const string ProductName = "HVO.SkyMonitor";
 
@@ -290,13 +290,15 @@ internal static partial class InstallRecordStore
         {
             using (var document = JsonDocument.Parse(content.ToArray()))
             {
-                // The schema first: a newer installer's record may hold what this one cannot keep.
                 if (document.RootElement.ValueKind == JsonValueKind.Object &&
                     document.RootElement.TryGetProperty("schemaVersion", out var schema) &&
-                    schema.TryGetInt32(out var number) && number > InstallRecord.CurrentSchemaVersion)
+                    schema.ValueKind == JsonValueKind.Number && schema.TryGetInt32(out var number))
                 {
-                    throw new InstallerException(
-                        $"Install record '{path}' was written by a newer installer (schema {number}); this one reads schema {InstallRecord.CurrentSchemaVersion}.");
+                    if (number < InstallRecord.CurrentSchemaVersion)
+                        throw InstallerException.Refused(CameraAgentStateContract.FreshInstallRequired);
+                    if (number > InstallRecord.CurrentSchemaVersion)
+                        throw new InstallerException(
+                            $"Install record '{path}' was written by a newer installer (schema {number}); this one reads schema {InstallRecord.CurrentSchemaVersion}.");
                 }
             }
             record = JsonSerializer.Deserialize(content, InstallRecordJsonContext.Default.InstallRecord)

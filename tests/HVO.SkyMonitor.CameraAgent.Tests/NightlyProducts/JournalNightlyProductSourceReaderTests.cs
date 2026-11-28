@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods do not require context-free continuations.")]
 public sealed class JournalNightlyProductSourceReaderTests
@@ -174,9 +176,16 @@ public sealed class JournalNightlyProductSourceReaderTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Restore_RejectsOversizedCommittedFilesWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    public async Task Restore_RejectsOversizedExactObjectVersions(bool sidecar)
     {
-        using var provider = CreateProvider();
+        var allocated = await VerifyOversizedVersionRejectionAsync(_root, sidecar);
+        Assert.IsLessThan(64L * 1024 * 1024, allocated,
+            "Reject the oversized version before allocating a buffer based on its untrusted length.");
+    }
+
+    internal static async Task<long> VerifyOversizedVersionRejectionAsync(string root, bool sidecar)
+    {
+        using var provider = CreateProvider(root);
         await CaptureAsync(provider);
         var reader = provider.GetRequiredService<INightlyProductSourceReader>();
         var selected = (await reader.ReadCandidatesAsync(NightlyProductFixture.NodeId, Exposure(0), Exposure(1), 32,
@@ -184,16 +193,19 @@ public sealed class JournalNightlyProductSourceReaderTests
         var output = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
             .ReadOutputByArtifactIdAsync(selected.ArtifactId, CancellationToken.None);
         Assert.IsNotNull(output);
-        var path = Path.Combine(_root, sidecar ? output.SidecarRelativePath : output.PayloadRelativePath);
-        using (var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
+        var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, selected.ArtifactId,
+            sidecar ? SiloArtifactStorage.ProductEvidenceRevision : output.OutputIdentitySha256, CancellationToken.None);
+        var path = Path.Combine(root, "oversized-version");
+        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             file.SetLength(256L * 1024 * 1024 + 1);
+        provider.GetRequiredService<SiloTestStore>().ReadContentOverride = exact => exact == locator
+            ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous)
+            : null;
 
         var before = GC.GetTotalAllocatedBytes(precise: true);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await reader.RestoreAsync([selected], CancellationToken.None));
-        var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
-        Assert.IsLessThan(1024L * 1024, allocated,
-            "A sparse corrupt payload/sidecar must be rejected using its retained length before reading its oversized contents.");
+        return GC.GetTotalAllocatedBytes(precise: true) - before;
     }
 
     [TestMethod]
@@ -243,16 +255,17 @@ public sealed class JournalNightlyProductSourceReaderTests
 
     private static DateTimeOffset Exposure(int index) => FirstExposureUtc.AddMinutes(index);
 
-    private ServiceProvider CreateProvider()
+    private ServiceProvider CreateProvider() => CreateProvider(_root);
+
+    private static ServiceProvider CreateProvider(string root)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
-                ["CameraAgent:RawIngressRoot"] = _root,
+                ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }
@@ -377,5 +390,32 @@ public sealed class JournalNightlyProductSourceReaderTests
             command.Parameters.AddWithValue(name, value);
         }
         Assert.IsGreaterThan(0, command.ExecuteNonQuery());
+    }
+}
+
+[TestClass]
+[TestCategory("Performance")]
+[TestProperty("Area", "NightlyProducts")]
+[DoNotParallelize]
+public sealed class JournalNightlyProductSourceReaderPerformanceTests
+{
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Restore_RejectsOversizedExactObjectVersionsWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-nightly-journal");
+        try
+        {
+            var allocated = await JournalNightlyProductSourceReaderTests.VerifyOversizedVersionRejectionAsync(root, sidecar)
+                .ConfigureAwait(false);
+            Assert.IsLessThan(1024L * 1024, allocated,
+                "Reject a corrupt payload or evidence version using its committed length.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
     }
 }

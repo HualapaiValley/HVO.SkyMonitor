@@ -17,12 +17,49 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class ProcessingExecutionPagesTests
 {
     internal static readonly DateTimeOffset Now = new(2026, 9, 4, 12, 0, 0, TimeSpan.Zero);
     private static readonly Guid RunningId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid CompletedId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid CaptureId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+    [TestMethod]
+    [DataRow(ExposureMeasurementStatus.Empty, 0, "no-candidates")]
+    [DataRow(ExposureMeasurementStatus.Unavailable, null, "linear-input-unavailable")]
+    [DataRow(ExposureMeasurementStatus.Unsuitable, 0, "all-candidates-rejected")]
+    public void RunExposureMeasurementDistinguishesZeroFromUnavailableAndRejected(
+        ExposureMeasurementStatus status, int? validCount, string reason)
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var raw = new ExposureMeasurementSourceV1(CaptureId, Guid.NewGuid(), new string('A', 64),
+            new string('B', 64), new string('C', 64), null,
+            new(2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 16, 16,
+                FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 65535, 8));
+        var measurement = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
+            new(raw, null, ExposureCalibrationDisposition.Missing, "no-master", "orientation"),
+            new(4, 0, 65535, 65535, 3, new(65535, 1, null)), null, null,
+            new(status, reason, validCount, null, null, null, [], []),
+            new(status, reason, validCount, null, null, 0, null, []));
+        var node = new CameraAgentProcessingNodeView(ExposureMeasurementProducts.StepAlias, false,
+            new string('A', 64), "Completed", null, 1, Now, Now, [], [], []);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(
+                Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)),
+                "shared", "local", [node])
+            { ExposureMeasurement = new(measurement, null) }
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement("section[aria-label='Exposure measurements']");
+        var facts = cut.Find("section[aria-label='Exposure measurements']").TextContent;
+        Assert.Contains("1 at or above 65535", facts);
+        Assert.Contains(reason, facts);
+        Assert.Contains(validCount is null ? "Unavailable / Unavailable" : $"0 / {status}", facts);
+    }
 
     private static void ConfigureTransientRun(BunitContext context)
     {
@@ -297,7 +334,7 @@ public sealed class ProcessingExecutionPagesTests
         ConfigureDiagram(context);
         context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions
         {
-            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Hybrid }
+            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Edge }
         }));
         var captured = Now.AddMinutes(-1);
         context.Services.AddSingleton<ICameraAgentTransientUiService>(new RecordedTransientUiService
@@ -617,8 +654,7 @@ public sealed class ProcessingExecutionPagesTests
         Assert.IsEmpty(cut.FindAll(".run-diagram__transient-node .status-icon.success"));
         cut.Find(".run-diagram__transient-node").Click();
         Assert.AreEqual(pending, selected);
-        Assert.HasCount(4, cut.FindAll(".ownership-zone"));
-        Assert.IsNotNull(cut.Find(".central.unavailable"));
+        Assert.HasCount(3, cut.FindAll(".ownership-zone"));
     }
 
     [TestMethod]
@@ -696,7 +732,7 @@ public sealed class ProcessingExecutionPagesTests
         {
             Detail = capture.Detail! with
             {
-                ArtifactStates = [new CameraAgentGalleryArtifactState(artifactId, "Held", "Available", [])]
+                ArtifactStates = [new CameraAgentGalleryArtifactState(artifactId, "Held")]
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
@@ -841,11 +877,13 @@ public sealed class ProcessingExecutionPagesTests
         public IReadOnlyList<string> StepAliases { get; set; } = ["preview", "telemetry", "calibration"];
         public ProcessingGraphRegistryState? Registry { get; set; }
         public Func<CapturePipelineConfig, OperatorUiResult<CaptureProcessingPlanPreview>>? Preview { get; set; }
+        public Func<CapturePipelineConfig, CancellationToken, ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>>>? PreviewHandler { get; set; }
         public Task<OperatorUiResult<CaptureProcessingPlanPreview>>? PendingPreview { get; set; }
         public Func<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason), OperatorUiResult<ProcessingGraphRevisionState>>? Create { get; set; }
         public List<(string Name, string Revision, CapturePipelineConfig Pipeline, string Key, string? Reason)> Created { get; } = [];
         public OperatorUiResult<ProcessingGraphRegistryState>? RegistryFailure { get; set; }
         public CameraAgentProcessingGraphRevisionDetail? RevisionDetail { get; set; }
+        public Func<string, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>>>? RevisionDetailHandler { get; set; }
         public OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>? RevisionDetailFailure { get; set; }
         public Func<string, OperatorUiResult<ProcessingGraphRegistryState>>? RegistryMutation { get; set; }
         public Func<string, OperatorUiResult<ProcessingGraphRevisionState>>? RevisionMutation { get; set; }
@@ -855,10 +893,13 @@ public sealed class ProcessingExecutionPagesTests
             => ValueTask.FromResult(RegistryFailure ?? OperatorUiResult<ProcessingGraphRegistryState>.Success(Registry!));
 
         public ValueTask<OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>> GetRevisionDetailAsync(string revisionId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
+            => RevisionDetailHandler is not null
+                ? RevisionDetailHandler(revisionId, cancellationToken)
+                : ValueTask.FromResult(RevisionDetailFailure ?? OperatorUiResult<CameraAgentProcessingGraphRevisionDetail>.Success(RevisionDetail!));
 
         public async ValueTask<OperatorUiResult<CaptureProcessingPlanPreview>> PreviewAsync(CapturePipelineConfig pipeline, CancellationToken cancellationToken)
-            => PendingPreview is { } pending ? await pending.ConfigureAwait(false)
+            => PreviewHandler is not null ? await PreviewHandler(pipeline, cancellationToken).ConfigureAwait(false)
+                : PendingPreview is { } pending ? await pending.ConfigureAwait(false)
                 : Preview?.Invoke(pipeline) ?? throw new NotSupportedException();
 
         public ValueTask<OperatorUiResult<ProcessingGraphRegistryState>> ActivateAsync(string revisionId, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)

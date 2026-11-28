@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,13 +23,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class EdgeUpgradeLaneTests
 {
     internal const string SupersededPlan = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     [TestMethod]
-    public async Task WorkPendingUnderAnEarlierPlanIsAbandonedAndItsRawStillUploads()
+    public async Task WorkPendingUnderAnEarlierPlanIsAbandonedAndLaterCaptureProcesses()
     {
         var root = CreateRoot("plan-superseded");
         try
@@ -54,22 +54,16 @@ public sealed class EdgeUpgradeLaneTests
             Assert.AreEqual(0L, await CountUnreleasedPinsAsync(root, first).ConfigureAwait(false));
             Assert.AreEqual(0L, (await fixture.Store.ReadOperationalStateAsync(CancellationToken.None)
                 .ConfigureAwait(false)).TerminalCount, "Abandoned work is not a terminal processing failure.");
-            Assert.IsTrue(await fixture.IsHeldAsync(first).ConfigureAwait(false),
-                "The raw stays held until its upload completes.");
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
 
             var second = await fixture.AcceptAsync(1).ConfigureAwait(false);
             Assert.AreEqual(RawIngressAvailability.Accepting, provider.GetRequiredService<RawIngressState>().Snapshot.Availability);
             var processed = await fixture.ProcessStandardAsync().ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Handled.Outcome, processed.Handled.Reason);
             Assert.AreEqual(second, processed.CaptureId, "The ordered lane moves past the abandoned head.");
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
 
-            await fixture.UploadAndAssertCompletedAsync(first).ConfigureAwait(false);
-            Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false), "The hold releases once the raw is uploaded.");
-            Assert.IsNotNull(await fixture.Outbox.ReadAsync(root, fixture.Receipts[first].Manifest.IdempotencyKey,
-                CancellationToken.None).ConfigureAwait(false), "The raw itself is queued for upload.");
-            await fixture.UploadAndAssertCompletedAsync(second).ConfigureAwait(false);
-            Assert.IsNotNull(await fixture.Persistence.FindCommittedSceneUploadAsync(
-                fixture.Receipts[second].Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false));
             Assert.IsFalse(await fixture.IsHeldAsync(second).ConfigureAwait(false));
         }
         finally
@@ -97,13 +91,13 @@ public sealed class EdgeUpgradeLaneTests
             Assert.AreEqual(("Expired", "processing.live-maximum-age"),
                 await ReadExecutionAsync(root, first).ConfigureAwait(false));
             Assert.AreEqual(0L, await CountUnreleasedPinsAsync(root, first).ConfigureAwait(false));
-            Assert.IsTrue(await fixture.IsHeldAsync(first).ConfigureAwait(false));
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
 
             var second = await fixture.AcceptAsync(1).ConfigureAwait(false);
             var processed = await fixture.ProcessStandardAsync().ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Handled.Outcome, processed.Handled.Reason);
             Assert.AreEqual(second, processed.CaptureId);
-            await fixture.UploadAndAssertCompletedAsync(first).ConfigureAwait(false);
             Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
         }
         finally
@@ -128,6 +122,7 @@ public sealed class EdgeUpgradeLaneTests
                 first = await fixture.AcceptAsync(0).ConfigureAwait(false);
                 evidenceInvalid = await fixture.AcceptAsync(1).ConfigureAwait(false);
                 firstReceipt = fixture.Receipts[first];
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
                 clock.Now = clock.Now.AddSeconds(11);
                 Assert.IsNull(await fixture.Ingress.ClaimAsync(fixture.Standard, "expiry-test", fixture.Configuration,
                     CancellationToken.None).ConfigureAwait(false));
@@ -151,14 +146,6 @@ public sealed class EdgeUpgradeLaneTests
                     await ReadLaneAsync(root, first, "standard").ConfigureAwait(false));
                 Assert.AreEqual(("quarantined", "evidence-invalid"),
                     await ReadLaneAsync(root, evidenceInvalid, "standard").ConfigureAwait(false));
-                Assert.IsTrue(await fixture.IsHeldAsync(first).ConfigureAwait(false), "The upload lane still holds the raw.");
-                var upload = await fixture.Ingress.ClaimAsync(fixture.Upload, "conversion-test", fixture.Configuration,
-                    CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(upload);
-                Assert.AreEqual(first, upload.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
-                var uploaded = await fixture.UploadHandler.HandleAsync(upload.Context, CancellationToken.None).ConfigureAwait(false);
-                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, uploaded.Outcome, uploaded.Reason);
-                await fixture.Ingress.CompleteAsync(upload, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
             }
         }
@@ -233,41 +220,6 @@ public sealed class EdgeUpgradeLaneTests
         }
     }
 
-    [TestMethod]
-    public async Task SceneRequiredUploadWaitingForAbandonedWorkCompletesWithTheRawOnly()
-    {
-        var root = CreateRoot("scene-abandoned");
-        try
-        {
-            var clock = new MutableTimeProvider(DateTimeOffset.UtcNow);
-            using var provider = CreateProvider(root, clock);
-            var fixture = await StartAsync(provider, root).ConfigureAwait(false);
-            var first = await fixture.AcceptAsync(0).ConfigureAwait(false);
-            var upload = await fixture.Ingress.ClaimAsync(fixture.Upload, "raw-first", fixture.Configuration,
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(upload);
-            var waiting = await fixture.UploadHandler.HandleAsync(upload.Context, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual("outbox-scene-pending", waiting.Reason);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Deferred,
-                await fixture.Ingress.FailAsync(upload, waiting, CancellationToken.None).ConfigureAwait(false));
-
-            await ExecuteAsync(root, "UPDATE processing_execution_nodes SET plan_sha256 = $plan;",
-                ("$plan", SupersededPlan)).ConfigureAwait(false);
-            var abandoned = await fixture.ProcessStandardAsync().ConfigureAwait(false);
-            Assert.AreEqual("Abandoned", abandoned.Acknowledged.ToString(), abandoned.Handled.Reason);
-
-            clock.Now = clock.Now.AddMinutes(1);
-            await fixture.UploadAndAssertCompletedAsync(first).ConfigureAwait(false);
-            Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
-            Assert.AreEqual(1L, (await fixture.Outbox.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false))
-                .PendingCount, "Only the raw is queued; no scene was ever committed.");
-        }
-        finally
-        {
-            Cleanup(root);
-        }
-    }
-
     internal static async Task<UpgradeFixture> StartAsync(ServiceProvider provider, string root)
     {
         var ingress = provider.GetRequiredService<RawCaptureIngress>();
@@ -284,10 +236,7 @@ public sealed class EdgeUpgradeLaneTests
             module,
             configuration,
             lanes.Single(static lane => lane.Name == "standard"),
-            lanes.Single(static lane => lane.Name == "upload"),
             provider.GetRequiredService<StandardCaptureLaneHandler>(),
-            provider.GetRequiredService<UploadCaptureLaneHandler>(),
-            provider.GetRequiredService<IArtifactOutbox>(),
             provider.GetRequiredService<CaptureProcessingPersistence>(),
             provider.GetRequiredService<SqliteCaptureProcessingStore>());
     }
@@ -298,10 +247,7 @@ public sealed class EdgeUpgradeLaneTests
         VirtualSkyCameraModule Module,
         CameraModuleConfig Configuration,
         CaptureLaneDefinition Standard,
-        CaptureLaneDefinition Upload,
         StandardCaptureLaneHandler StandardHandler,
-        UploadCaptureLaneHandler UploadHandler,
-        IArtifactOutbox Outbox,
         CaptureProcessingPersistence Persistence,
         SqliteCaptureProcessingStore Store)
     {
@@ -336,23 +282,10 @@ public sealed class EdgeUpgradeLaneTests
             return (lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId, handled, acknowledged);
         }
 
-        internal async Task UploadAndAssertCompletedAsync(Guid captureId)
-        {
-            var lease = await Ingress.ClaimAsync(Upload, "upgrade-upload", Configuration, CancellationToken.None)
-                .ConfigureAwait(false);
-            Assert.IsNotNull(lease, "The upload row is claimable.");
-            Assert.AreEqual(captureId, lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
-            var uploaded = await UploadHandler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, uploaded.Outcome, uploaded.Reason);
-            await Ingress.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(("completed", (string?)null), await ReadLaneAsync(Root, captureId, "upload").ConfigureAwait(false));
-        }
-
         internal async Task<bool> IsHeldAsync(Guid captureId)
         {
             var artifactId = Receipts[captureId].Manifest.Descriptor.Artifact.ArtifactId;
-            return (await Ingress.GetRetentionHoldsAsync(Root, CancellationToken.None).ConfigureAwait(false))
-                .Any(hold => hold.ArtifactId == artifactId);
+            return (await Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false)).Contains(artifactId);
         }
     }
 
@@ -438,8 +371,6 @@ public sealed class EdgeUpgradeLaneTests
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = "edge-upgrade-agent",
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
         };
         if (liveMaximumQueueAgeSeconds is { } maximumAge)
         {
@@ -450,7 +381,7 @@ public sealed class EdgeUpgradeLaneTests
         services.AddLogging();
         services.AddSingleton(clock);
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

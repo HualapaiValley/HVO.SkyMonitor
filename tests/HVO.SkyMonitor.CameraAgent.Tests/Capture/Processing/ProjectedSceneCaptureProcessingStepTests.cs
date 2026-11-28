@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class ProjectedSceneCaptureProcessingStepTests
 {
@@ -161,7 +162,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey));
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog"));
             File.Delete(fixture.PayloadPath);
             var step = CreateStep(staging, options: new() { IndependentPrediction = legacyIndependentPrediction });
 
@@ -301,7 +302,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey), execution);
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog"), execution);
             File.Delete(fixture.PayloadPath);
             var runnerOptions = new LocalReplayRunnerOptions
             {
@@ -369,7 +370,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var sceneId = new string('B', 64);
             var fixture = CreateContext(root, new SceneProvenance(
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
-                "projection-v1", "astronomy-v1", "sensor-v1"));
+                "projection-v1", "astronomy-v1", "sensor-v1", CatalogId: "test-catalog"));
             var step = CreateStep(staging);
 
             await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
@@ -400,7 +401,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: firstKey));
+                ProjectedSceneStageKey: firstKey, CatalogId: "test-catalog"));
             var step = CreateStep(staging);
             var descriptorContext = new CaptureDescriptorProcessingContext(fixture.Context);
 
@@ -434,7 +435,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: key));
+                ProjectedSceneStageKey: key, CatalogId: "test-catalog"));
             using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
             var step = CreateStep(staging, maintenance: hold.Gate);
 
@@ -468,7 +469,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
                 "projection-v1", "astronomy-v1", "sensor-v1",
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey));
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog"));
             var step = CreateStep(staging, stagingStore: new DeleteCompletedFailingStore(staging));
 
             await Assert.ThrowsExactlyAsync<IOException>(async () =>
@@ -529,7 +530,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 RigProjectionContextFactory.AlgorithmVersion, scene.Request.AlgorithmVersion,
                 config.Rig.Sensor.SensorRecipeVersion,
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                ProjectedSceneStageKey: stageKey), changedConfig);
+                ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog"), changedConfig);
             File.Delete(fixture.PayloadPath);
             var step = CreateStep(staging);
 
@@ -903,7 +904,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
         "projection-v1", "astronomy-v1", "sensor-v1",
         ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-        ProjectedSceneStageKey: stageKey);
+        ProjectedSceneStageKey: stageKey, CatalogId: "test-catalog");
 
     private static (ProcessingArtifact Artifact, ProjectedSceneV1 Scene) CreateFrozenSceneArtifact(
         ReconstructionDescriptor descriptor, VisibleScene visible, string? labelledSchemaVersion = null)

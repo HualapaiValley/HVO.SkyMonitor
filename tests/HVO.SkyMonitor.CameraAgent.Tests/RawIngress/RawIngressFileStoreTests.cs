@@ -1,11 +1,13 @@
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Runtime.InteropServices;
+using FileSystemFaultException = HVO.SkyMonitor.LocalFiles.FileSystemFaultException;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "RawIngress")]
 public sealed class RawIngressFileStoreTests
 {
     [TestMethod]
@@ -29,9 +31,9 @@ public sealed class RawIngressFileStoreTests
         Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
         try
         {
-            var actual = await Assert.ThrowsExactlyAsync<IOException>(() =>
+            var actual = await Assert.ThrowsAsync<IOException>(() =>
                 store.PublishPayloadAsync(paths, new byte[] { 1, 2, 3 }, CancellationToken.None)).ConfigureAwait(false);
-            Assert.AreSame(injected, actual, "The shared exception wrapper must not change CameraAgent's failure contract.");
+            Assert.AreSame(injected, actual is FileSystemFaultException fault ? fault.InnerException : actual);
             Assert.AreEqual(1, flushes);
             Assert.AreEqual(OperatingSystem.IsLinux() ? directorySyncs : 0, syncs);
             Assert.AreEqual(stop, phases[^1]);
@@ -83,7 +85,7 @@ public sealed class RawIngressFileStoreTests
         var missingFile = Path.Combine(root, "not-created", "evidence.bin");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, missingFile);
         Assert.IsFalse(Directory.Exists(root), "Path inspection must not create runtime state.");
-        Assert.ThrowsExactly<IOException>(() =>
+        Assert.ThrowsExactly<FileSystemFaultException>(() =>
             RawIngressFileStore.EnsureNoSymbolicLinks(root, Path.Combine(root + "-sibling", "evidence.bin")));
     }
 
@@ -99,10 +101,10 @@ public sealed class RawIngressFileStoreTests
             RawIngressFileStore.EnsureNoSymbolicLinks(root, target);
             Directory.Delete(Path.GetDirectoryName(target)!);
             Directory.CreateSymbolicLink(Path.GetDirectoryName(target)!, Path.GetTempPath());
-            Assert.ThrowsExactly<IOException>(() => RawIngressFileStore.EnsureNoSymbolicLinks(root, target));
+            Assert.ThrowsExactly<FileSystemFaultException>(() => RawIngressFileStore.EnsureNoSymbolicLinks(root, target));
             var dangling = Path.Combine(root, "dangling.bin");
             File.CreateSymbolicLink(dangling, Path.Combine(root, "missing.bin"));
-            Assert.ThrowsExactly<IOException>(() => RawIngressFileStore.EnsureNoSymbolicLinks(root, dangling));
+            Assert.ThrowsExactly<FileSystemFaultException>(() => RawIngressFileStore.EnsureNoSymbolicLinks(root, dangling));
         }
         finally
         {
@@ -153,7 +155,7 @@ public sealed class RawIngressFileStoreTests
             RawIngressFileStore.SyncDirectory(directory);
             var file = Path.Combine(directory, "not-a-directory");
             File.WriteAllText(file, "test");
-            Assert.ThrowsExactly<IOException>(() => RawIngressFileStore.SyncDirectory(file));
+            Assert.ThrowsExactly<FileSystemFaultException>(() => RawIngressFileStore.SyncDirectory(file));
         }
         finally
         {

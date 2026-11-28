@@ -14,6 +14,7 @@ public static class BuiltInProcessingRecipes
     public const string Annotation = "annotation";
     public const string RollingMean = "rolling-mean";
     public const string ImageQuality = "image-quality";
+    public const string ExposureMeasurement = "exposure-measurement";
     public const string NoOpAnalyzer = "no-op-analyzer";
     public const string CloudAssessment = "cloud-assessment";
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
@@ -59,14 +60,48 @@ public static class BuiltInProcessingRecipes
         JsonElement options,
         ProcessingInputSelector selector,
         ProcessingAnnotationInput? annotation = null,
-        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null)
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null) =>
+        CreateExecutionIdentity(recipeName, options, selector, annotation, auxiliaryInputs, deliveredCfaPhase: null);
+
+    public static ProcessingRecipeIdentity CreateExecutionIdentity(ProcessingExecutionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return CreateExecutionIdentity(
+            request.RecipeName,
+            request.Options,
+            request.Input,
+            request.Annotation,
+            request.AuxiliaryInputs,
+            ResolveDeliveredBayerPhase(request));
+    }
+
+    internal static BayerPattern? ResolveDeliveredBayerPhase(ProcessingExecutionRequest request)
+    {
+        if (request.RecipeName is not (EncodedPreview or FixedPreview or Annotation))
+        {
+            return null;
+        }
+        var primary = ProcessingRecipeSupport.ResolveSingle(request, out _);
+        return primary?.Layout is { PixelFormat: CameraPixelFormat.BayerRggb16 } layout
+            ? BayerRggb16Demosaicer.ResolvePattern(layout)
+            : null;
+    }
+
+    private static ProcessingRecipeIdentity CreateExecutionIdentity(
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        ProcessingAnnotationInput? annotation,
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs,
+        BayerPattern? deliveredCfaPhase)
     {
         ArgumentNullException.ThrowIfNull(selector);
         var recipe = CreateAll().SingleOrDefault(candidate =>
             string.Equals(candidate.Definition.Name, recipeName, StringComparison.Ordinal))
             ?? throw new ArgumentException("The requested built-in recipe is unknown.", nameof(recipeName));
         var normalized = recipe.NormalizeOptions(options);
-        var effective = ProcessingIdentity.BindExecutionInputs(normalized, selector, annotation, auxiliaryInputs);
+        var effective = ProcessingIdentity.BindExecutionInputs(
+            normalized, selector, annotation, auxiliaryInputs, deliveredCfaPhase);
         return ProcessingIdentity.CreateRecipeIdentity(recipe.Definition, effective);
     }
 
@@ -115,6 +150,7 @@ public static class BuiltInProcessingRecipes
         new AnnotationRecipe(),
         new RollingMeanRecipe(),
         new ImageQualityRecipe(),
+        new ExposureMeasurementRecipe(),
         new NoOpAnalyzerRecipe(),
         new CloudAssessmentRecipe(),
         new WeatherCloudOverlayRecipe(),
@@ -442,6 +478,7 @@ internal static class ProcessingRecipeSupport
             VariantIsValid(selector.Variant),
         ProcessingInputKind.RecipeResult => selector.Role != FrameArtifactRole.Raw &&
             !string.IsNullOrWhiteSpace(selector.Variant) &&
+            ProcessingIdentity.IsValidUtf16(selector.Variant) &&
             IsSha256(selector.RecipeIdentitySha256),
         _ => false
     };
@@ -454,7 +491,8 @@ internal static class ProcessingRecipeSupport
             selector.RecipeIdentitySha256,
             StringComparison.OrdinalIgnoreCase));
 
-    private static bool VariantIsValid(string? variant) => variant is null || !string.IsNullOrWhiteSpace(variant);
+    private static bool VariantIsValid(string? variant) =>
+        variant is null || !string.IsNullOrWhiteSpace(variant) && ProcessingIdentity.IsValidUtf16(variant);
 
     private static bool IsSha256(string? value) =>
         value is { Length: 64 } && value.All(Uri.IsHexDigit);
@@ -576,12 +614,15 @@ internal sealed class EncodedPreviewRecipe : IProcessingRecipe
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
                 break;
             case CameraPixelFormat.BayerRggb16:
-                display = BayerRggb16Demosaicer.DemosaicToRgb24(
-                    layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, CreateStretch(options));
-                displayFormat = CameraPixelFormat.Rgb24;
-                algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
-                break;
+                {
+                    var pattern = BayerRggb16Demosaicer.ResolvePattern(layout);
+                    display = BayerRggb16Demosaicer.DemosaicToRgb24(
+                        layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, CreateStretch(options), pattern);
+                    displayFormat = CameraPixelFormat.Rgb24;
+                    algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
+                    algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(pattern)));
+                    break;
+                }
             case CameraPixelFormat.Rgb24:
             case CameraPixelFormat.Mono8:
                 display = ProcessingRecipeSupport.PackRows(layout, input.Payload, cancellationToken);
@@ -676,7 +717,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
     internal const string ProjectedSceneAuxiliaryInputName = "projected-scene";
 
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v4",
+        BuiltInProcessingRecipes.Annotation, "1.0.0", "projected-annotation-v5",
         ProcessingOperationKind.Transform);
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -836,13 +877,14 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         var source = matches[0].source;
         if (matches.Length != 1 || source.ProductKind != ProcessingProductKind.Metadata ||
             !string.Equals(source.MediaType, StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType, StringComparison.Ordinal) ||
-            !string.Equals(source.SchemaVersion, MeasuredStellarAssociationsV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            !MeasuredStellarAssociationsV1.IsSupportedSchemaVersion(source.SchemaVersion))
         {
             failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidMeasuredStellarAssociations, nameof(request.AuxiliaryInputs));
             return false;
         }
         var parsed = MeasuredStellarAssociationJson.Parse(source.Payload);
         if (!parsed.Validation.IsValid || parsed.Associations is not { } product ||
+            !string.Equals(product.SchemaVersion, source.SchemaVersion, StringComparison.Ordinal) ||
             (source.ContentIdentitySha256 is { } content &&
              !string.Equals(content, product.AssociationIdentitySha256, StringComparison.OrdinalIgnoreCase)))
         {
@@ -856,13 +898,29 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             .SingleOrDefault();
         var sceneIdentity = scene?.ContentIdentitySha256;
         if (input.CaptureId is null && sceneIdentity is null ||
-            input.CaptureId is { } captureId && product.Source.CaptureId != captureId ||
-            sceneIdentity is not null &&
-            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            input.CaptureId is { } captureId && product.Source.CaptureId != captureId)
         {
             failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
                 nameof(product.Source));
             return false;
+        }
+        if (sceneIdentity is not null &&
+            !string.Equals(sceneIdentity, product.Scene.SceneIdentitySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            var compatibleExposureAssociation = false;
+            if (source.RecipeDescriptor?.Name == ExposureAssociationProducts.RecipeName && scene is not null)
+            {
+                var parsedScene = HVO.SkyMonitor.Astronomy.ProjectedSceneJson.Parse(scene.Payload);
+                compatibleExposureAssociation = parsedScene.IsValid && parsedScene.Scene is { } verifiedScene &&
+                    string.Equals(verifiedScene.SceneIdentitySha256, sceneIdentity, StringComparison.OrdinalIgnoreCase) &&
+                    ExposureAssociationProducts.IsCompatibleWithScene(source, product, verifiedScene);
+            }
+            if (!compatibleExposureAssociation)
+            {
+                failure = ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.MeasuredStellarAssociationsSourceMismatch,
+                    nameof(product.Source));
+                return false;
+            }
         }
         associations = product;
         return true;
@@ -913,12 +971,15 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
                 algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
                 break;
             case CameraPixelFormat.BayerRggb16:
-                pixels = BayerRggb16Demosaicer.DemosaicToRgb24(
-                    layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, stretch);
-                format = CameraPixelFormat.Rgb24;
-                algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
-                algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersion));
-                break;
+                {
+                    var pattern = BayerRggb16Demosaicer.ResolvePattern(layout);
+                    pixels = BayerRggb16Demosaicer.DemosaicToRgb24(
+                        layout.Width, layout.Height, input.Payload, cancellationToken, layout.StrideBytes, stretch, pattern);
+                    format = CameraPixelFormat.Rgb24;
+                    algorithms.Add(new("display-stretch", Mono16DisplayStretch.AlgorithmVersion));
+                    algorithms.Add(new("rggb-demosaic", BayerRggb16Demosaicer.AlgorithmVersionFor(pattern)));
+                    break;
+                }
             case CameraPixelFormat.Mono8:
             case CameraPixelFormat.Rgb24:
                 pixels = ProcessingRecipeSupport.PackRows(layout, input.Payload, cancellationToken);

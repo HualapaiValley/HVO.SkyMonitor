@@ -1,19 +1,14 @@
 namespace HVO.SkyMonitor.Processing;
 
-/// <summary>Existing local artifact storage controls; graph drafts never perform storage operations.</summary>
 public static class StorageOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
-        "capture-storage-options-v1", "Storage", "cameraagent-step-v2:Storage", "Artifact storage",
-        "Storage is owned by the active capture profile. Enabled Storage nodes must match that profile's directory, retention, latest-frame/upload flags and artifact policies. Preview, save, validation, activation and rollback reject differences. Pause acquisition and drain standard processing before changing the profile. Configured-basic refreshes automatically; Named graphs need reconciliation, validation and activation before resuming. Raw is retained while incompatible processing is skipped. Replay requiring a scene needs its committed product; optional scene failures are recorded as unavailable.",
+        "capture-storage-options-v1", "Storage", "cameraagent-step-v2:Storage", "Silo publication",
+        "The active capture profile sets publication for this node. Configure Silo storage and retention on the CameraAgent instance.",
         [
-            ProcessingOptionDescriptor.Text("storageRoot", "storageRoot", "Storage directory",
-                "Must match the active capture profile. This directory cannot be changed independently in a graph draft; editing does not move existing artifacts.", "/tmp/camera", null, isRequired: true),
-            ProcessingOptionDescriptor.WholeNumber("retentionDays", "retentionDays", "Artifact retention",
-                "Must match the active capture profile, whose policy also controls retention sweeps. Artifact-specific policies may extend this period but cannot shorten it.", 30, 1, 3650, "days"),
             ProcessingOptionDescriptor.Toggle("updateLatestFrame", "updateLatestFrame", "Update latest frame",
-                "Must match the active capture profile. Publish the selected preview through the existing latest-frame service.", true),
-            ProcessingOptionDescriptor.Toggle("queueForUpload", "queueForUpload", "Queue artifacts for upload",
-                "Must match the active capture profile, which also controls upload draining. Existing per-artifact overrides still apply.", false)
+                "The active capture profile controls publication of the selected preview to Current Sky.", true),
+            ProcessingOptionDescriptor.Toggle("publishArchive", "publishArchive", "Publish archive selection",
+                "The active capture profile selects whether to record durable products as a Silo archive group.", false)
         ]);
 }

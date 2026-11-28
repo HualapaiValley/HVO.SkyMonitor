@@ -1,16 +1,20 @@
 using System.Globalization;
 using Bunit;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class SatellitePassPlannerTests
 {
     [TestMethod]
@@ -114,6 +118,99 @@ public sealed class SatellitePassPlannerTests
         Assert.Contains("Original start +1.00 h", cut.Find("tbody").TextContent, StringComparison.Ordinal);
         Assert.Contains("Original end +4.00 h", cut.Find("tbody").TextContent, StringComparison.Ordinal);
         Assert.Contains("Complete computation does not imply", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("USSF public GP via CelesTrak", "US Space Force / Space-Track public GP data via CelesTrak")]
+    [DataRow("USSF/Space-Track public GP via CelesTrak", "US Space Force / Space-Track public GP data via CelesTrak")]
+    [DataRow("Custom provider credit", "Custom provider credit")]
+    public void ProvenanceRowsShowRetainedIdentitiesAndNormalizeLegacyCredit(string credit, string displayedCredit)
+    {
+        var snapshot = Fixture.Query.SearchQuery.Request.Snapshot;
+        var source = snapshot.Manifest.Sources.Single() with { UnderlyingLineage = credit };
+        var pass = Fixture.Search.Passes.Single();
+        var search = Fixture.Search with { Passes = [pass with { Source = source }], SnapshotProfileVersion = snapshot.Manifest.ProfileVersion };
+        using var context = Context(new Adapter { SearchView = search, ArcView = Fixture.Detail });
+        var cut = Render(context);
+        SearchFixture(cut);
+        cut.Find(".satellite-select").Click();
+
+        var provenance = cut.FindAll(".satellite-provenance dl");
+        Assert.HasCount(2, provenance);
+        var searchRows = provenance[0].QuerySelectorAll("dt").ToDictionary(row => row.TextContent, row => row.NextElementSibling!.TextContent);
+        Assert.AreEqual(search.Prediction.SnapshotManifestSha256, searchRows["Snapshot SHA256"]);
+        Assert.AreEqual(snapshot.Manifest.ProfileVersion, searchRows["Snapshot format"]);
+        Assert.AreEqual(search.SearchIdentitySha256, searchRows["Search identity SHA256"]);
+        Assert.AreEqual(search.Prediction.SelectionPolicySha256, searchRows["Selection policy SHA256"]);
+        var model = search.Prediction.Model;
+        Assert.AreEqual($"{model.Propagator.Name} / {model.Propagator.Version} / {model.Propagator.ImplementationSha256}", searchRows["Propagator"]);
+        Assert.AreEqual($"{model.GravityModel} / {model.TemeConversionVersion} / {model.Refraction}", searchRows["Model"]);
+        Assert.AreEqual($"{model.EarthOrientationStatus} / {model.EarthOrientationSha256}", searchRows["Earth orientation"]);
+        Assert.AreEqual(model.LeapSecondsSha256, searchRows["Leap-second table SHA256"]);
+        Assert.Contains(search.Context.Rig.RigProfileHashSha256, searchRows["Geometry basis"], StringComparison.Ordinal);
+
+        var passRows = provenance[1].QuerySelectorAll("dt").ToDictionary(row => row.TextContent, row => row.NextElementSibling!.TextContent);
+        Assert.AreEqual(pass.Pass.Lineage.SourceDataset, passRows["Source dataset"]);
+        Assert.AreEqual(displayedCredit, passRows["Source attribution"]);
+        Assert.AreEqual(source.RawSha256, passRows["Provider payload SHA256"]);
+        Assert.AreEqual(pass.Pass.Lineage.RecordSha256, passRows["Record SHA256"]);
+        Assert.AreEqual(pass.Pass.ProductSha256, passRows["Pass SHA256"]);
+        Assert.Contains(source.RetrievedUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture),
+            passRows["Source retrieval UTC"], StringComparison.Ordinal);
+        Assert.Contains(pass.Pass.Lineage.EpochUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture),
+            passRows["Element epoch"], StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(true, "ready")]
+    [DataRow(true, "empty")]
+    [DataRow(true, "missing")]
+    [DataRow(false, "missing")]
+    public void SiteHorizonCheckboxAndProfileTextRequireProfileAndProduct(bool hasProfile, string productState)
+    {
+        var rig = new PlanningTestInputs.Config().Value.Rig;
+        var observer = Fixture.Context.Observer;
+        var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "site-test", 3, "installation",
+            HorizonObstructionProfile.ComputeSiteIdentitySha256(observer.LatitudeDegrees, observer.LongitudeDegrees, observer.ElevationMeters),
+            HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
+            [new(0, 0), new(90, 0), new(180, 0), new(270, 0)]);
+        var profileHash = profile.ComputeIdentitySha256();
+        var horizon = new HorizonObstructionPredictionProduct(new(HorizonObstructionProducts.SchemaVersion,
+            Fixture.Arc.ProductSha256, profileHash, observer.CanonicalSha256, Fixture.Context.Rig.RigProfileVersion,
+            RigProjectionContextFactory.AlgorithmVersion, ProjectedSceneImageTransformV1.Identity(100, 100)), new string('C', 64),
+            Enumerable.Repeat(HorizonObstructionEligibility.Clear, Fixture.Arc.Samples.Count).ToArray(),
+            new bool[Fixture.Arc.Samples.Count - 1]);
+        var planningContext = Fixture.Context with { ObstructionRig = hasProfile ? rig with { HorizonObstruction = profile } : null };
+        var detail = Fixture.Detail with
+        {
+            Context = planningContext,
+            Obstruction = productState switch { "ready" => [horizon], "empty" => [], _ => null }
+        };
+        var service = new Adapter { SearchView = Fixture.Search with { Context = planningContext }, ArcView = detail };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        cut.Find(".satellite-select").Click();
+
+        if (!hasProfile || productState != "ready")
+        {
+            Assert.IsEmpty(cut.FindAll("#satellite-apply-horizon"));
+            Assert.Contains("Site obstruction is unknown for this arc. The path uses the geometric horizon.", cut.Markup, StringComparison.Ordinal);
+            Assert.DoesNotContain(profileHash, cut.Markup, StringComparison.Ordinal);
+            return;
+        }
+
+        var checkbox = cut.Find("#satellite-apply-horizon");
+        Assert.IsTrue(checkbox.HasAttribute("checked"));
+        Assert.Contains("Apply site horizon to angular view", checkbox.ParentElement!.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Site horizon site-test revision 3", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains(profileHash, cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("angular view omits obstructed, unknown and incompatible path segments", cut.Markup, StringComparison.Ordinal);
+        checkbox.Change(false);
+        Assert.IsFalse(cut.Find("#satellite-apply-horizon").HasAttribute("checked"));
+        Assert.Contains("angular view shows the full geometric arc", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("configured-rig preview applies the site horizon", cut.Markup, StringComparison.Ordinal);
+        Assert.HasCount(1, service.ArcRequests);
     }
 
     [TestMethod]

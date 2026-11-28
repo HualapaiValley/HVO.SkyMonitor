@@ -53,7 +53,7 @@ public sealed partial class InstallerFlowTests
             Assert.IsNull(result.DeepSkyCatalog);
             Assert.AreEqual(r2, manifest.PreviousDeepSkyCatalog);
             Assert.IsTrue(manifest.HasPreviousDeepSkySelection);
-            Assert.AreEqual("hyg-v42-production", manifest.Catalog.CatalogId);
+            Assert.AreEqual("hyg-v44-production", manifest.Catalog.CatalogId);
             Assert.IsFalse((await File.ReadAllTextAsync(Path.Combine(paths.ConfigRoot, "compose", "compose.yml"))).Contains(DeepSkyCatalogSelection.Mount, StringComparison.Ordinal));
             Assert.IsFalse((await File.ReadAllTextAsync(Path.Combine(paths.ConfigRoot, "compose", "instance.env"))).Contains("HVO_DEEP_SKY_CATALOG_ROOT=", StringComparison.Ordinal));
             foreach (var (key, value) in new[] { ("Enabled", "false"), ("Root", "/app/deep-sky-catalog"),
@@ -68,12 +68,12 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual("completed", reset.Outcome);
             var installed = await InstallResourceRequestAsync(request, OpenNgcLegacyInstallerRunner(request), new InstallerOwnerClient());
             Assert.IsNull(installed.DeepSkyCatalog);
-            Assert.AreEqual(CameraAgentImageContract.ComposedCatalogContract, installed.Image.CatalogContract);
+            Assert.AreEqual(CameraAgentImageContract.CatalogContract, installed.Image.CatalogContract);
             manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
             result = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, CancellationToken.None);
             CameraAgentLifecycleManager.EnsureCorrelated(paths, installed.InstanceId, manifest, result, false);
             runner = OpenNgcLifecycleRunner(paths, manifest);
-            var upgrade = command with { Operation = LifecycleOperationKind.Upgrade, ImageReference = OpenNgcUpgradeReference, MigrationBackwardCompatible = true };
+            var upgrade = command with { Operation = LifecycleOperationKind.Upgrade, ImageReference = OpenNgcUpgradeReference };
             Assert.AreEqual("status", (await CameraAgentLifecycleManager.ExecuteAsync(command with { Operation = null }, runner, null, null,
                 RuntimeUid, RuntimeGid, CancellationToken.None)).Outcome);
             Assert.AreEqual("planned", (await CameraAgentLifecycleManager.ExecuteAsync(upgrade with { DryRun = true }, runner, null, null,

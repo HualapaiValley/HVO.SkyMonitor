@@ -28,15 +28,14 @@ public sealed class ExitCodeContractTests
     /// <summary>Every command the parser accepts, with arguments it accepts.</summary>
     private static readonly (string Name, string[] Arguments)[] Commands =
     [
-        ("preflight", ["preflight", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "preflight-run"]),
-        ("partial-prepare-cleanup", ["partial-prepare-cleanup", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "failed-run", "--dry-run"]),
-        ("existing-down", ["existing-down", "--inventory", "/private/inventory.json", "--mode", "isolated", "--run-id", "deployed-run", "--preserve-state"]),
         ("status", ["status", "--instance-id", Id]),
         ("cameraagent install",
             ["cameraagent", "install", "--friendly-name", "North Camera", "--catalog-bundle", "/srv/hvo/catalog.bundle", "--image-ref", ImageRef]),
         ("cameraagent lifecycle-worker", ["cameraagent", "lifecycle-worker", "--instance-id", Id, "--once"]),
         ("cameraagent recover-owner", ["cameraagent", "recover-owner", "--instance-id", Id, "--generate-password"]),
         ("cameraagent preflight", ["cameraagent", "preflight", "--instance-id", Id, "--image-ref", ImageRef]),
+        ("cameraagent first-resume", ["cameraagent", "first-resume", "--instance-id", Id]),
+        ("cameraagent silo-verify", ["cameraagent", "silo-verify", "--instance-id", Id]),
         ("cameraagent reset-state", ["cameraagent", "reset-state", "--instance-id", Id, "--confirm-instance-id", Id]),
         ("cameraagent upgrade", ["cameraagent", "upgrade", "--instance-id", Id, "--image-ref", ImageRef]),
         ("cameraagent rollback", ["cameraagent", "rollback", "--instance-id", Id]),
@@ -46,7 +45,7 @@ public sealed class ExitCodeContractTests
         ("cameraagent backup", ["cameraagent", "backup", "--instance-id", Id]),
         ("cameraagent restore", ["cameraagent", "restore", Archive, "--instance-id", Id]),
         ("catalog install", ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle"]),
-        ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.2-p3-s2-r1"]),
+        ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.4-p4-s3-r1"]),
         ("catalog rollback", ["catalog", "rollback", "--instance-id", Id]),
         ("catalog gc", ["catalog", "gc", "--dry-run"]),
         ("host set-product-root", ["host", "set-product-root", "/srv/data/hvo-skymonitor"])
@@ -65,18 +64,6 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("existing-down", "done", 0)]
-    [DataRow("existing-down", "failed", 1)]
-    [DataRow("existing-down", "refused", 3)]
-    [DataRow("existing-down", "interrupted", 130)]
-    [DataRow("preflight", "done", 0)]
-    [DataRow("preflight", "failed", 1)]
-    [DataRow("preflight", "refused", 3)]
-    [DataRow("preflight", "interrupted", 130)]
-    [DataRow("partial-prepare-cleanup", "done", 0)]
-    [DataRow("partial-prepare-cleanup", "failed", 1)]
-    [DataRow("partial-prepare-cleanup", "refused", 3)]
-    [DataRow("partial-prepare-cleanup", "interrupted", 130)]
     [DataRow("status", "done", 0)]
     [DataRow("status", "failed", 1)]
     [DataRow("status", "refused", 3)]
@@ -97,6 +84,14 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent preflight", "failed", 1)]
     [DataRow("cameraagent preflight", "refused", 3)]
     [DataRow("cameraagent preflight", "interrupted", 130)]
+    [DataRow("cameraagent first-resume", "done", 0)]
+    [DataRow("cameraagent first-resume", "failed", 1)]
+    [DataRow("cameraagent first-resume", "refused", 3)]
+    [DataRow("cameraagent first-resume", "interrupted", 130)]
+    [DataRow("cameraagent silo-verify", "done", 0)]
+    [DataRow("cameraagent silo-verify", "failed", 1)]
+    [DataRow("cameraagent silo-verify", "refused", 3)]
+    [DataRow("cameraagent silo-verify", "interrupted", 130)]
     [DataRow("cameraagent reset-state", "done", 0)]
     [DataRow("cameraagent reset-state", "failed", 1)]
     [DataRow("cameraagent reset-state", "refused", 3)]
@@ -161,14 +156,13 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("preflight")]
-    [DataRow("existing-down")]
-    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent first-resume")]
+    [DataRow("cameraagent silo-verify")]
     [DataRow("cameraagent reset-state")]
     [DataRow("cameraagent upgrade")]
     [DataRow("cameraagent rollback")]
@@ -195,14 +189,13 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("preflight")]
-    [DataRow("existing-down")]
-    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent first-resume")]
+    [DataRow("cameraagent silo-verify")]
     [DataRow("cameraagent reset-state")]
     [DataRow("cameraagent upgrade")]
     [DataRow("cameraagent rollback")]
@@ -230,14 +223,13 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("preflight")]
-    [DataRow("existing-down")]
-    [DataRow("partial-prepare-cleanup")]
     [DataRow("status")]
     [DataRow("cameraagent install")]
     [DataRow("cameraagent lifecycle-worker")]
     [DataRow("cameraagent recover-owner")]
     [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent first-resume")]
+    [DataRow("cameraagent silo-verify")]
     [DataRow("cameraagent reset-state")]
     [DataRow("cameraagent upgrade")]
     [DataRow("cameraagent rollback")]
@@ -374,26 +366,6 @@ public sealed class ExitCodeContractTests
     }
 
     [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RunAsync_DeprecatedOptionWithJson_IsAWarningInTheResultAndWithoutJsonOnStandardError()
-    {
-        using var host = new PolicyHost();
-        var services = Substituted(host, "done");
-        string[] upgrade = [.. Arguments("cameraagent upgrade"), "--migration-backward-compatible"];
-
-        var json = await RunAsync([.. upgrade, "--json"], services, CancellationToken.None);
-        var human = await RunAsync(upgrade, services, CancellationToken.None);
-
-        Assert.AreEqual(0, json.ExitCode);
-        Assert.AreEqual(string.Empty, json.Error);
-        using var document = JsonDocument.Parse(json.Output);
-        var warning = document.RootElement.GetProperty("warnings")[0];
-        Assert.AreEqual("option-deprecated", warning.GetProperty("code").GetString());
-        Assert.AreEqual(0, human.ExitCode);
-        StringAssert.StartsWith(human.Error, "Warning: --migration-backward-compatible is deprecated", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
     public async Task RunAsync_LifecycleWorkerOnceJson_ReportsAPollWithoutInventingOperationSuccess()
     {
         using var host = new PolicyHost();
@@ -436,20 +408,18 @@ public sealed class ExitCodeContractTests
                 null, null, null, null, null, [], null, DateTimeOffset.UtcNow)))
         {
             ControlWorker = (_, _) => Run(static () => true),
-            SplitHostPreflight = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
-            ExistingDown = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" }),
-            PartialPrepare = (_, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["phaseStatus"] = "passed" })
+            Silo = (request, _) => Run(() => new System.Text.Json.Nodes.JsonObject { ["instanceId"] = request.InstanceId!.Value.ToString("D") })
         };
     }
 
     private static CameraAgentStatePreflightReport Report(Guid instanceId, bool compatible)
         => new(1, compatible ? "compatible" : "incompatible", instanceId, "/var/lib/hvo-sky/cameraagents/x", ImageRef, null,
-            "cameraagent-state-v2", null, "cameraagent-state-v2", compatible, [], DateTimeOffset.UtcNow);
+            "cameraagent-silo-state-v1", "cameraagent-silo-state-v1", compatible, [], DateTimeOffset.UtcNow);
 
     private static InstallationResult Installation(InstallRequest request)
     {
         var catalog = new CatalogInstallationIdentity(
-            HygV42.CatalogId, "hyg-v4.2-p3-s2-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/x",
+            HygV44.CatalogId, "hyg-v4.4-p4-s3-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/x",
             new string('a', 64), "local-offline");
         return new InstallationResult(
             1, InstallationOutcome.Installed, Guid.NewGuid(), request.InstanceId ?? Guid.NewGuid(), Guid.NewGuid(),

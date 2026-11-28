@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
 {
-    private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
+    private const string ExpectedCatalogSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
     private static readonly int WarmupCaptureCount = ReadPositiveInteger("HVO_ISSUE_197_WARMUP_CAPTURES", 5, 1);
     private static readonly int MeasuredCaptureCount = ReadPositiveInteger("HVO_ISSUE_197_MEASURED_CAPTURES", 30, 3);
     private static readonly FrameArtifactRole[] ExpectedRoles =
@@ -446,7 +446,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
             $"{agent.Name} did not sustain the declared five-second cadence.");
 
         var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            agent.CatalogRoot, "hyg-v42-production"));
+            agent.CatalogRoot, "hyg-v44-production"));
         Assert.AreEqual(ExpectedCatalogSha256, snapshot.DatabaseSha256, ignoreCase: true);
         Assert.IsEmpty(Directory.EnumerateFiles(agent.CatalogRoot, "*.db-*", SearchOption.AllDirectories).ToArray());
         var catalogInode = await StatInodeAsync(snapshot.DatabasePath).ConfigureAwait(false);
@@ -462,11 +462,6 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         var summary = await client.GetFromJsonAsync<CameraAgentOperationsSummary>("/api/v1/operations/summary").ConfigureAwait(false);
         Assert.IsNotNull(summary);
         Assert.AreEqual(agent.AgentId, summary.Configuration.Value.AgentId);
-        Assert.AreEqual("Disabled", summary.Configuration.Value.CentralIntegration);
-        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.PendingCount);
-        Assert.AreEqual("Disabled", summary.Heartbeat.Value.Availability);
-        Assert.AreEqual("Disabled", summary.EnvironmentalDelivery.Value.Availability);
         using var galleryPage = await client.GetAsync(new Uri("/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, galleryPage.StatusCode);
         using var detailPage = await client.GetAsync(new Uri($"/gallery/{captures[^1].CaptureId:D}", UriKind.Relative)).ConfigureAwait(false);
@@ -513,7 +508,6 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         CollectionAssert.AreEqual(ExpectedProcessingNodes, steps.Select(static step => step.GetProperty("id").GetString()).ToArray());
         var storage = steps.Single(static step => step.GetProperty("id").GetString() == "LocalStorage").GetProperty("options");
         Assert.AreEqual($"/var/lib/hvo/{agent.Name}-197", storage.GetProperty("storageRoot").GetString());
-        Assert.IsFalse(storage.GetProperty("queueForUpload").GetBoolean());
         var retentionDays = storage.GetProperty("retentionDays").GetInt32();
         Assert.AreEqual(7, retentionDays);
         return retentionDays;
@@ -794,7 +788,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
                 {
                     var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                     if (body.Contains("Production celestial catalog snapshot is installed", StringComparison.Ordinal) &&
-                        body.Contains("119625", StringComparison.Ordinal) &&
+                        body.Contains("119613", StringComparison.Ordinal) &&
                         !body.Contains(ExpectedCatalogSha256, StringComparison.OrdinalIgnoreCase))
                     {
                         return;

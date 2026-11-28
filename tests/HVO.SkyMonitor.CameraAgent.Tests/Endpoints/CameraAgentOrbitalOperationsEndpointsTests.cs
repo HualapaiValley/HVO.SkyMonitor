@@ -26,6 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 public sealed class CameraAgentOrbitalOperationsEndpointsTests : OrbitalStoreTestBase
 {
     private const string Get = "GetCameraAgentOrbitalElements";

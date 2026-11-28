@@ -10,11 +10,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -23,6 +23,40 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class DurableCaptureProcessingTests
 {
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("astrometry.capture-cadence", "CadenceSkipped", "astrometry.capture-cadence")]
+    [DataRow("processing.dependency-unavailable", "Unavailable", "astrometry.inputs-unavailable")]
+    public async Task RetainedAstrometry_ReadsTheJournaledSkipReason(string reason, string availability, string assessmentReason)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Options, store);
+            using var service = new CameraAgentRetainedAstrometryService(store, artifacts);
+            var captureId = fixture.Manifest.Descriptor.Capture.CaptureId;
+            var node = new CaptureProcessingGraphNode("astrometry", new OutcomeStep(ProcessingOutcome.Skipped(reason)),
+                ["$raw"], false, BuiltInProcessingRecipes.MeasuredAstrometry, FrameArtifactRole.Metadata, "assessment",
+                new string('A', 64));
+            await store.WriteNodeAsync(captureId, node, DurableProcessingNodeStatus.Skipped, reason, 1, null,
+                null, fixture.Manifest.Descriptor.Timing.DurableIngressUtc, TimeSpan.Zero, ProcessingOutcomeStatus.Skipped,
+                [], 0, null, [], CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(reason, await store.ReadAstrometrySkipReasonAsync(captureId, CancellationToken.None).ConfigureAwait(false));
+            var assessment = await service.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(captureId, assessment.CaptureId);
+            Assert.AreEqual(availability, assessment.Availability);
+            Assert.AreEqual(assessmentReason, assessment.Reason);
+            Assert.IsNull(assessment.Solution);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     [TestCategory("Integration")]
     [DataRow("accepted")]
@@ -51,14 +85,14 @@ public sealed partial class DurableCaptureProcessingTests
             Dictionary<Guid, byte[]> manifests;
             string identity;
             using (var telemetry = new CaptureProcessingTelemetry())
-            using (var store = new SqliteCaptureProcessingStore(f.Fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            using (var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options))
             using (var gate = new CaptureAstrometryExecutionGate())
             {
-                var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, storage, telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance, interrupted ? new AstrometryCommitInterruption() : null);
+                var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, telemetry,
+                    NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(root),
+                    interrupted ? new AstrometryCommitInterruption() : null);
                 var graph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
-                using var currentArtifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
+                using var currentArtifacts = SiloInfrastructureFixture.OpenArtifactReader(f.Fixture.Options, store);
                 using var currentReader = new CameraAgentRetainedAstrometryService(store, currentArtifacts);
                 var empty = await currentReader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false);
                 Assert.IsTrue(empty.Completed);
@@ -77,7 +111,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsNotNull(node);
                 Assert.HasCount(2, node.Outputs);
                 var solutionOutput = node.Outputs.Single(p => p.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-                var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, solutionOutput.PayloadRelativePath)).ConfigureAwait(false));
+                var solution = MeasuredAstrometryJson.Parse(await ReadProductPartAsync(root, solutionOutput).ConfigureAwait(false));
                 identity = solution.SolutionIdentitySha256;
                 Assert.AreEqual(outcomeScenario == "accepted" ? AstrometricAssessmentStatus.Accepted : outcomeScenario == "rejected" ? AstrometricAssessmentStatus.Rejected : outcomeScenario == "budget"
                     ? AstrometricAssessmentStatus.BudgetExceeded : AstrometricAssessmentStatus.Unavailable, solution.Assessment.Status, solution.Assessment.ReasonCode);
@@ -99,7 +133,7 @@ public sealed partial class DurableCaptureProcessingTests
                 payloads = new(); manifests = new();
                 foreach (var output in all)
                 {
-                    payloads.Add(output.ArtifactId, await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false));
+                    payloads.Add(output.ArtifactId, await ReadProductPartAsync(root, output).ConfigureAwait(false));
                     var m = output.ProductManifest!;
                     var upload = new StructuredProcessingProductManifestV1(StructuredProcessingProductManifestV1.CurrentSchemaVersion,
                         new(f.Fixture.Manifest.Descriptor, m.Artifact, m.OutputIdentitySha256, m.Algorithms, m.Compatibility,
@@ -119,10 +153,9 @@ public sealed partial class DurableCaptureProcessingTests
                 ? await SeedUnverifiableNewerAstrometryAsync(root, f.Fixture.Manifest.Descriptor.Capture.CaptureId).ConfigureAwait(false)
                 : (Guid?)null;
             using var restartedTelemetry = new CaptureProcessingTelemetry();
-            using var restartedStore = new SqliteCaptureProcessingStore(f.Fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var restartedStore = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
             using var restartedGate = new CaptureAstrometryExecutionGate();
-            var restartedPersistence = CreatePersistence(f.Fixture.Options, restartedStore, restartedStorage, restartedTelemetry);
+            var restartedPersistence = CreatePersistence(f.Fixture.Options, restartedStore, restartedTelemetry);
             var noExecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(ProcessingOutcome.TerminalFailure("unexpected-refit")));
             var resumed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item, AstrometryGraph(f, noExecution, restartedGate, persistence: restartedPersistence),
                 restartedPersistence, restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
@@ -136,11 +169,16 @@ public sealed partial class DurableCaptureProcessingTests
                     "tamper-scene" => ProjectedSceneV1.CurrentSchemaVersion,
                     _ => MeasuredStellarAssociationsV1.CurrentSchemaVersion
                 };
-                var path = scenario == "tamper-raw" ? Path.Combine(root, "raw.bin") : Path.Combine(root,
-                    (await restartedStore.ReadOutputByArtifactIdAsync(manifests.Keys.Single(id => ImportAstrometryProduct(manifests[id], payloads[id]).SchemaVersion == schema), CancellationToken.None).ConfigureAwait(false))!.PayloadRelativePath);
-                await File.AppendAllTextAsync(path, " ").ConfigureAwait(false);
+                var rawSource = f.Fixture.Manifest.Descriptor;
+                var artifactId = scenario == "tamper-raw" ? rawSource.Artifact.ArtifactId
+                    : manifests.Keys.Single(id => ImportAstrometryProduct(manifests[id], payloads[id]).SchemaVersion == schema);
+                var revision = scenario == "tamper-raw" ? CaptureContractJson.ComputeDescriptorSha256(rawSource)
+                    : (await restartedStore.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false))!.OutputIdentitySha256;
+                var silo = SiloInfrastructureFixture.ProductStore(root);
+                var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(silo, artifactId, revision, CancellationToken.None).ConfigureAwait(false);
+                silo.GetRequiredService<SiloTestStore>().Damage(locator);
             }
-            using var artifactReader = new CameraAgentArtifactService(f.Fixture.Options, restartedStore, new CameraAgentPreviewEncoder());
+            using var artifactReader = SiloInfrastructureFixture.OpenArtifactReader(f.Fixture.Options, restartedStore);
             using var astrometryReader = new CameraAgentRetainedAstrometryService(restartedStore, artifactReader);
             var view = await astrometryReader.GetAsync(f.Fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
             if (scenario.StartsWith("tamper-", StringComparison.Ordinal))
@@ -167,7 +205,13 @@ public sealed partial class DurableCaptureProcessingTests
                 if (invalidNewerCapture is { } invalid) Assert.AreEqual(invalid, candidates[0].CaptureId);
                 Assert.AreEqual(view.CaptureId, candidates[^1].CaptureId);
                 if (scenario == "accepted")
+                {
                     await CheckLatestReadCapacityAsync(restartedStore, artifactReader, view.CaptureId, identity).ConfigureAwait(false);
+                    var output = await restartedStore.ReadOutputByArtifactIdAsync(view.ArtifactId!.Value, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.IsNotNull(output);
+                    await AssertPinnedAssessmentWithAmbiguousHistoryAsync(root, astrometryReader, output, identity).ConfigureAwait(false);
+                }
             }
             else Assert.IsNull(latest);
 
@@ -182,7 +226,8 @@ public sealed partial class DurableCaptureProcessingTests
             var measured = artifacts[view.Solution!.MeasuredArtifactId];
             var scene = artifacts.Values.Single(p => ProjectedSceneV1.IsSupportedSchemaVersion(p.SchemaVersion));
             var context = artifacts.Values.Single(p => p.SchemaVersion == MeasuredAstrometryContextV1.CurrentSchemaVersion);
-            var request = RetainedAstrometryProducts.Request(raw, measured, scene, context, f.Options.Recipe, original.Variant);
+            var request = RetainedAstrometryProducts.Request(raw, measured, scene, context,
+                f.Options.Recipe with { UseScientificAssociations = true }, original.Variant);
             var verified = RetainedAstrometryProducts.Verify(request, RetainedAstrometryProducts.Product(original));
             Assert.AreEqual(identity, verified.SolutionIdentitySha256);
             var replaySubmission = f.Fixture.Item.Submission with
@@ -241,15 +286,14 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var f = await CreateAstrometryDurabilityFixtureAsync(root, "unavailable").ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(f.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item,
                 AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence), persistence,
                 telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
-            using var real = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var real = SiloInfrastructureFixture.OpenArtifactReader(f.Fixture.Options, store);
             var decorated = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             using var cancellation = new CancellationTokenSource();
             decorated.Setup(a => a.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -276,7 +320,7 @@ public sealed partial class DurableCaptureProcessingTests
                 });
             // Lower the aggregate budget to exercise accounting independently of individual limits.
             // At production limits the sum of the five individual caps is already below 44 MiB.
-            using var reader = new CameraAgentRetainedAstrometryService(store, decorated.Object,
+            using var reader = CreateUnpooledAstrometryReader(store, decorated.Object,
                 fault == "total-limit" ? MeasuredAstrometryJson.MaximumSolutionBytes : CameraAgentRetainedAstrometryService.MaximumReadBytes);
             if (fault == "cancel")
             {
@@ -318,11 +362,10 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var centered = await ProduceAcceptedAsync(first).ConfigureAwait(false);
             Assert.AreEqual("measured boresight", centered.ScaleReference);
@@ -430,6 +473,47 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
+    private static async Task AssertPinnedAssessmentWithAmbiguousHistoryAsync(string root,
+        CameraAgentRetainedAstrometryService reader, DurableProcessingOutput output, string identity)
+    {
+        var captureId = output.Capture.CaptureId;
+        var pin = new CenteredViewArtifact(output.ArtifactId, output.OutputIdentitySha256, output.Artifact.ChecksumSha256);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_outputs(output_identity_sha256,capture_id,agent_id,node_id,artifact_id,role,variant,
+                payload_relative_path,sidecar_relative_path,descriptor_json,recipe_identity_sha256,algorithms_json,
+                compatibility_json,total_integration_ticks,capture_sequence,committed_unix_ms,product_kind,
+                product_schema_version,content_identity_sha256)
+            SELECT $duplicate,capture_id,agent_id,node_id,$artifact,role,variant,'absent-product','absent-manifest',
+                descriptor_json,recipe_identity_sha256,algorithms_json,compatibility_json,total_integration_ticks,
+                capture_sequence,committed_unix_ms,product_kind,product_schema_version,content_identity_sha256
+            FROM processing_outputs WHERE output_identity_sha256 = $output;
+            """;
+        command.Parameters.AddWithValue("$duplicate", new string('C', 64));
+        command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$output", output.OutputIdentitySha256);
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        try
+        {
+            var ambiguous = await reader.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("assessment-ambiguous", ambiguous.Reason);
+            var exact = await reader.GetExactAsync(captureId, pin, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(identity, exact.SolutionIdentitySha256);
+            Assert.AreEqual(pin.ArtifactId, exact.ArtifactId);
+            Assert.IsNotNull(exact.Diagnostics);
+            var wrongPin = await reader.GetExactAsync(captureId, pin with { PayloadSha256 = new string('D', 64) },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(wrongPin.Solution);
+        }
+        finally
+        {
+            command.CommandText = "DELETE FROM processing_outputs WHERE output_identity_sha256 = $duplicate;";
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+    }
+
     private static async Task CheckLatestReadCapacityAsync(SqliteCaptureProcessingStore store,
         CameraAgentArtifactService artifacts, Guid captureId, string identity)
     {
@@ -448,7 +532,7 @@ public sealed partial class DurableCaptureProcessingTests
                 return await artifacts.OpenContentAsync(id, token).ConfigureAwait(false);
             });
 
-        using var reader = new CameraAgentRetainedAstrometryService(store, blocked.Object);
+        using var reader = CreateUnpooledAstrometryReader(store, blocked.Object);
         var held = reader.GetAsync(captureId, cancellation.Token).AsTask();
         await entering.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
         var busy = await reader.ReadLatestAcceptedAsync(deadline.Token).ConfigureAwait(false);
@@ -494,9 +578,12 @@ public sealed partial class DurableCaptureProcessingTests
     private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root,
         string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1,
         MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null,
-        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null)
+        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null,
+        MeasuredAstrometryOptions? recipe = null,
+        SqliteRawCaptureJournal? benchmarkJournal = null, bool settledSiloJournal = false)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
+        recipe ??= MeasuredAstrometryFixture.Options;
         var bytes = reference.Raw.Payload.ToArray();
         if (scenario == "rejected")
         {
@@ -558,16 +645,11 @@ public sealed partial class DurableCaptureProcessingTests
         var manifestBytes = CaptureContractJson.Serialize(manifest);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), bytes).ConfigureAwait(false);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.json"), manifestBytes).ConfigureAwait(false);
-        if (hostCompatible)
-        {
-            // Native recovery requires canonical paths and millisecond timestamps, just as the
-            // production descriptor factory writes them. Root aliases are fixture conveniences.
-            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
-            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
-            await RawIngressFileStore.EnsureCompatibilityIndexAsync(root, manifestBytes, CancellationToken.None).ConfigureAwait(false);
-        }
-        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
+        var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1,
+            usesSilo: commit is not null || settledSiloJournal);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
@@ -582,13 +664,23 @@ public sealed partial class DurableCaptureProcessingTests
             ? await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false)
             : await commit(journal, entry, submission).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, outcome);
-        if (hostCompatible)
+        await SiloInfrastructureFixture.PublishRawFixtureAsync(
+            SiloInfrastructureFixture.ProductStorage(root), entry, manifest, bytes, CancellationToken.None).ConfigureAwait(false);
+        if (commit is not null || settledSiloJournal)
+            await journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, siloVisible: true, CancellationToken.None)
+                .ConfigureAwait(false);
+        else if (hostCompatible && benchmarkJournal is null)
         {
             var recovered = await new RawIngressReconciler(root, journal)
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual((prior?.Count ?? 0) + 1, recovered.Inspected);
             Assert.AreEqual(0, recovered.Quarantined);
             Assert.AreEqual(0, recovered.MissingEvidence);
+        }
+        if (settledSiloJournal)
+        {
+            File.Delete(paths.PayloadAbsolutePath);
+            File.Delete(paths.SidecarAbsolutePath);
         }
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
             new StoredFrameReference(payloadRelativePath, Path.Combine(root, payloadRelativePath), descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw), CaptureContractJson.ComputeManifestSha256(manifestBytes));
@@ -598,8 +690,7 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 Catalog = new(reference.Context.CatalogMetadata, reference.Context.CatalogStars, reference.Context.CatalogPackage,
                 scenario != "unavailable", 7),
-                Recipe = MeasuredAstrometryFixture.Options with
-                { MaximumExecutionMilliseconds = scenario == "budget" ? .000001 : 20000 }
+                Recipe = scenario == "budget" ? recipe with { MaximumExecutionMilliseconds = .000001 } : recipe
             });
     }
 }

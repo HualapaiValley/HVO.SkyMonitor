@@ -14,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -114,6 +115,8 @@ public sealed partial class ProcessingGraphOperationsTests
             var metadata = catalog.As<ICelestialCatalogMetadataSource>();
             metadata.SetupGet(value => value.Metadata).Returns(catalogData.Metadata);
             metadata.SetupGet(value => value.PreprocessingVersion).Returns(catalogData.Provenance!.PreprocessingVersion);
+            metadata.SetupGet(value => value.CatalogId).Returns(catalogData.Provenance!.CatalogId);
+            metadata.SetupGet(value => value.CatalogPackageVersion).Returns(catalogData.Provenance!.PackageVersion);
             catalog.Setup(value => value.QueryCandidatesAsync(It.IsAny<CatalogCandidateQuery>(), It.IsAny<CancellationToken>()))
                 .Returns((CatalogCandidateQuery query, CancellationToken cancellation) => stars.QueryCandidatesAsync(query, cancellation));
 
@@ -147,10 +150,8 @@ public sealed partial class ProcessingGraphOperationsTests
                             Options = JsonSerializer.SerializeToElement(new { maximumMagnitude = 6.5 })
                         },
                         new("Storage", "archive", DependsOn: [canonicalId], Options: JsonSerializer.SerializeToElement(
-                            new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = Path.Combine(root, "archive"), QueueForUpload = false, UpdateLatestFrame = false
-                            }))
+                            new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };
@@ -272,8 +273,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     Assert.AreEqual(DurableProcessingNodeStatus.Completed, solve.Status, solve.Reason);
                     var output = solve.Outputs.Single(value => value.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-                    var assessment = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(
-                        Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false)).Assessment;
+                    var assessment = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false)).Assessment;
                     Assert.AreEqual(AstrometricAssessmentStatus.Rejected, assessment.Status);
                     Assert.AreEqual("insufficient-detections", assessment.ReasonCode);
                     CollectionAssert.AreEqual(new[] { raw.Manifest.Descriptor.Artifact.ArtifactId, solverMeasurement.ArtifactId, independent.ArtifactId },
@@ -309,7 +309,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
             async Task<MeasuredStellarAssociationsV1> ReadAssociationAsync(DurableProcessingOutput output)
             {
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false);
                 var product = MeasuredStellarAssociationJson.Parse(bytes).Associations;
                 Assert.IsNotNull(product);
                 return product;
@@ -514,7 +514,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Readout = fullFrame
                 },
                 Pipeline = new([new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }))],
+                    new SiloCaptureProcessingStepOptions {  }))],
                     CapturePipelineSchemaVersions.ExplicitV2)
             };
             var compatible = full with
@@ -593,7 +593,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 config = config with
                 {
                     Pipeline = new([new("Storage", "LocalStorage", Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }),
+                        new SiloCaptureProcessingStepOptions {  }),
                         DependsOn: ["$raw"])], CapturePipelineSchemaVersions.ExplicitV2)
                 };
             }
@@ -863,12 +863,11 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path)
-        => new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+    private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path) =>
+        new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, path),
             AgentId = "reference-astrometry-test",
-            CentralIntegration = new() { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
 
@@ -891,28 +890,31 @@ public sealed partial class ProcessingGraphOperationsTests
 }
 
 [TestClass]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class VerifiedReferenceAstrometryCatalogTests
 {
     [TestMethod]
     [TestCategory("Manual")]
-    public async Task ReferenceAstrometry_GeneratesTheVerifiedHyg42SelectionAtEachRequestedDepth()
+    public async Task ReferenceAstrometry_GeneratesTheVerifiedHyg44SelectionAtEachRequestedDepth()
     {
-        var bundle = Environment.GetEnvironmentVariable("HVO_BETA_HYG42_BUNDLE");
+        var bundle = Environment.GetEnvironmentVariable("HVO_BETA_HYG44_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle))
-            Assert.Inconclusive("Set HVO_BETA_HYG42_BUNDLE to the verified production HYG 4.2 bundle directory.");
-        var catalog = CatalogSnapshotResolver.ResolveDirectory(bundle!, new(bundle!, "hyg-v42-production")
+            Assert.Inconclusive("Set HVO_BETA_HYG44_BUNDLE to the verified production HYG 4.4 bundle directory.");
+        var catalog = CatalogSnapshotResolver.ResolveDirectory(bundle!, new(bundle!, "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         }).Catalog;
         var pipeline = new CapturePipelineConfig([], CapturePipelineSchemaVersions.ExplicitV2);
         var token = CancellationToken.None;
         var (_, standard) = await ReferenceAstrometryPreset.ApplyAsync(pipeline, null, catalog, token).ConfigureAwait(false);
         Assert.AreEqual(3.25, standard.MaximumMagnitude);
         Assert.AreEqual(2500, standard.MaximumEntries);
-        Assert.AreEqual("0323fa224d3953443b145fefe4d946f2d0a9ae22828a9b72fad9acbe42dc5596", standard.SelectionIdentitySha256);
+        Assert.AreEqual("34969606077401b3a4eb133c71c10a4b1a28a5a64608fcd2456fb31248a5ae39", standard.SelectionIdentitySha256);
+        var standardSnapshot = await standard.ResolveAsync(catalog, token).ConfigureAwait(false);
+        Assert.HasCount(226, standardSnapshot.Stars);
         var (_, custom) = await ReferenceAstrometryPreset.ApplyAsync(pipeline, 5, catalog, token).ConfigureAwait(false);
         Assert.AreEqual(standard.CatalogIdentitySha256, custom.CatalogIdentitySha256);
-        Assert.AreEqual("ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8", custom.SelectionIdentitySha256);
+        Assert.AreEqual("0888c0f063b1eb4344077d754806ce2f15112e30c0006c303b41714f19189a04", custom.SelectionIdentitySha256);
         var customSnapshot = await custom.ResolveAsync(catalog, token).ConfigureAwait(false);
         Assert.HasCount(1637, customSnapshot.Stars);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>

@@ -10,21 +10,14 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [DoNotParallelize]
 public sealed partial class UpgradePreflightTests
 {
-    private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
     private const string LegacyIdentityMigration = "20251125021552_CreateLocalIdentity";
-    private const string MinimumCompatibleRevision = "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f";
+    private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
 
     private static readonly uint RuntimeUid = NativeLinux.getuid();
     private static readonly uint RuntimeGid = NativeLinux.getgid();
 
     private static readonly CameraAgentStateRequirements CurrentRequirements = new(
-        CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, 2);
-
-    private static readonly string[] ExpectedLegacyFindingCodes =
-    [
-        "catalog-manifest-version", "identity-migration-lineage", "raw-ingress-schema",
-        "bind-source-missing", "bind-source-mode"
-    ];
+        CameraAgentStateContract.Current, CurrentIdentityMigration, 13, 2);
 
     private static readonly string[] ExpectedTightenedModes = ["0500", "0600"];
 
@@ -48,72 +41,8 @@ public sealed partial class UpgradePreflightTests
         Assert.AreEqual("bind-source-mode", report.Findings.Single(static finding => finding.Blocking).Code);
         var text = CameraAgentStatePreflight.Render(report);
         StringAssert.Contains(text, "0700", StringComparison.Ordinal);
-        StringAssert.Contains(text, "follow their listed remediation", StringComparison.Ordinal);
+        StringAssert.Contains(text, "owner-only read, write, and execute", StringComparison.Ordinal);
         Assert.DoesNotContain("reset", text, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_CapturedPre70Ecdd3State_ReportsEveryIncompatibleBoundaryWithoutStartingCameraAgent()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 1);
-        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 11);
-        fixture.CreateBindSources();
-        fixture.RelaxBindSourceMode(CameraAgentStateLayout.DataProtectionDirectoryName);
-        fixture.RemoveBindSource(CameraAgentStateLayout.ProvisioningDirectoryName);
-
-        var report = Evaluate(fixture);
-
-        Assert.IsFalse(report.Compatible);
-        Assert.AreEqual("incompatible", report.Outcome);
-        Assert.AreEqual(MinimumCompatibleRevision, report.MinimumCompatibleRevision);
-        var codes = report.Findings.Select(static finding => finding.Code).ToArray();
-        CollectionAssert.AreEquivalent(ExpectedLegacyFindingCodes, codes);
-        Assert.IsTrue(report.Findings.All(static finding => finding.Blocking));
-
-        var catalog = report.Findings.Single(static finding => finding.Code == "catalog-manifest-version");
-        Assert.AreEqual("1", catalog.Observed);
-        Assert.AreEqual("2", catalog.Expected);
-        var identity = report.Findings.Single(static finding => finding.Code == "identity-migration-lineage");
-        Assert.AreEqual(LegacyIdentityMigration, identity.Observed);
-        Assert.AreEqual(CurrentIdentityMigration, identity.Expected);
-        var rawIngress = report.Findings.Single(static finding => finding.Code == "raw-ingress-schema");
-        Assert.AreEqual("11", rawIngress.Observed);
-        Assert.AreEqual("13", rawIngress.Expected);
-        var mode = report.Findings.Single(static finding => finding.Code == "bind-source-mode");
-        Assert.AreEqual("0755", mode.Observed);
-        Assert.AreEqual("0700", mode.Expected);
-
-        // One rendered report carries every boundary, so the operator never discovers them through restart loops.
-        var rendered = CameraAgentStatePreflight.Render(report);
-        foreach (var code in codes)
-        {
-            StringAssert.Contains(rendered, code, StringComparison.Ordinal);
-        }
-        StringAssert.Contains(rendered, MinimumCompatibleRevision, StringComparison.Ordinal);
-        StringAssert.Contains(rendered, "Review the blocking findings below and follow their listed remediation", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(MinimumCompatibleRevision)]
-    [DataRow("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c")]
-    public void Render_CompatibleStateDoesNotRecommendResetWhenTheSnapshotBoundaryAdvances(string revision)
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 13);
-        fixture.CreateBindSources();
-        var report = Evaluate(fixture, CurrentRequirements with { MinimumCompatibleRevision = revision });
-        Assert.IsTrue(report.Compatible);
-        var text = CameraAgentStatePreflight.Render(report);
-        StringAssert.Contains(text, "compatible.", StringComparison.Ordinal);
-        StringAssert.Contains(text, revision, StringComparison.Ordinal);
-        Assert.DoesNotContain("reset", text, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("state-disposition", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [TestMethod]
@@ -238,7 +167,7 @@ public sealed partial class UpgradePreflightTests
             $"sha256:{new string('c', 64)}",
             null,
             CurrentRequirements with { CatalogManifestVersion = 3 },
-            CameraAgentStateContract.LegacyUnbounded,
+            CameraAgentStateContract.Current,
             RuntimeUid,
             RuntimeGid,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess);
@@ -308,86 +237,11 @@ public sealed partial class UpgradePreflightTests
         var oldImage = CurrentRequirements with { RawIngressSchema = 12 };
         fixture.SetRawIngressVersion(13);
         Assert.IsTrue(Evaluate(fixture).Compatible);
-        var rollback = Evaluate(fixture, oldImage, CameraAgentStateContractPolicy.AllowLegacy);
+        var rollback = Evaluate(fixture, oldImage);
         Assert.IsFalse(rollback.Compatible);
         Assert.AreEqual("raw-ingress-schema", rollback.Findings.Single(static finding => finding.Blocking).Code);
         fixture.SetRawIngressVersion(11);
         Assert.IsFalse(Evaluate(fixture).Compatible);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_V13ToV14RequiresCanonicalSchemaAndExplicitMigrationDeclaration()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.CreateBindSources();
-        var candidate = CurrentRequirements with
-        {
-            RawIngressSchema = 14,
-            RawIngressMigration = RawIngressV13Schema.MigrationContract
-        };
-        fixture.WriteCanonicalV13RawIngressDatabase();
-
-        Assert.IsTrue(Evaluate(fixture, candidate).Compatible, "canonical v13 must be eligible for v14");
-        Assert.IsFalse(Evaluate(fixture, candidate with { RawIngressMigration = null }).Compatible,
-            "schema 14 alone must not authorize migration");
-        Assert.IsFalse(Evaluate(fixture, candidate with { RawIngressMigration = "unrelated" }).Compatible);
-        Assert.IsFalse(Evaluate(fixture, CurrentRequirements with
-        {
-            RawIngressSchema = 15,
-            RawIngressMigration = RawIngressV13Schema.MigrationContract
-        }).Compatible);
-        Assert.IsFalse(Evaluate(fixture, CurrentRequirements with { RawIngressSchema = 12 },
-            CameraAgentStateContractPolicy.AllowLegacy).Compatible, "rollback 13 to 12 remains refused");
-        Assert.IsFalse(Evaluate(fixture, candidate, CameraAgentStateContractPolicy.AllowLegacy).Compatible,
-            "the forward exception is not a restore-only allowance");
-
-        fixture.ChangeRawIngressSchema("CREATE TABLE installer_drift (id INTEGER);");
-        var drift = Evaluate(fixture, candidate);
-        Assert.IsFalse(drift.Compatible);
-        Assert.AreEqual("raw-ingress-schema", drift.Findings.Single(static finding => finding.Blocking).Code);
-        Assert.AreEqual("13", drift.Findings.Single(static finding => finding.Blocking).Observed);
-        fixture.ChangeRawIngressSchema("DROP TABLE installer_drift;");
-        fixture.ChangeRawIngressSchema("PRAGMA foreign_keys = OFF; INSERT INTO transient_candidates (candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256, state, phase, timeout_unix_ms, created_unix_ms, updated_unix_ms) VALUES ('orphan', 'missing', 'agent', 'edge', 1, '" + new string('a', 64) + "', 'pending', 'reserved', 1, 1, 1);");
-        var orphan = Evaluate(fixture, candidate);
-        Assert.IsFalse(orphan.Compatible, "a canonical schema with an orphan must not be eligible");
-        Assert.AreEqual("raw-ingress-schema", orphan.Findings.Single(static finding => finding.Blocking).Code);
-        fixture.SetRawIngressVersion(14);
-        Assert.IsFalse(Evaluate(fixture, CurrentRequirements,
-            CameraAgentStateContractPolicy.AllowLegacy).Compatible,
-            "a restore-only rollback from 14 to 13 must still be refused");
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_ExactV14RequiresCanonicalHealthyJournalAndRejectsRollback()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.CreateBindSources();
-        var candidate = CurrentRequirements with
-        {
-            RawIngressSchema = 14,
-            RawIngressMigration = RawIngressV13Schema.MigrationContract
-        };
-        fixture.WriteCanonicalV14RawIngressDatabase();
-        Assert.IsTrue(Evaluate(fixture, candidate).Compatible, "canonical v14 must pass exact-match preflight");
-        Assert.IsTrue(Evaluate(fixture, candidate with { RawIngressMigration = null }).Compatible,
-            "an already-migrated v14 journal needs no forward migration declaration");
-        Assert.IsFalse(Evaluate(fixture, CurrentRequirements, CameraAgentStateContractPolicy.AllowLegacy).Compatible,
-            "rollback from v14 to v13 must remain refused");
-
-        fixture.ChangeRawIngressSchema("CREATE TABLE installer_drift (id INTEGER);");
-        AssertRawIngressRejected(Evaluate(fixture, candidate));
-        fixture.ChangeRawIngressSchema("DROP TABLE installer_drift;");
-        fixture.ChangeRawIngressSchema("PRAGMA foreign_keys = OFF; INSERT INTO transient_candidates (candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256, state, phase, timeout_unix_ms, created_unix_ms, updated_unix_ms) VALUES ('orphan', 'missing', 'agent', 'edge', 1, '" + new string('a', 64) + "', 'pending', 'reserved', 1, 1, 1);");
-        AssertRawIngressRejected(Evaluate(fixture, candidate));
-        fixture.ChangeRawIngressSchema("DELETE FROM transient_candidates WHERE candidate_id = 'orphan';");
-        fixture.ChangeRawIngressSchema("PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = 'BROKEN' WHERE name = 'raw_captures'; PRAGMA writable_schema = OFF;");
-        var corrupt = Evaluate(fixture, candidate);
-        Assert.IsFalse(corrupt.Compatible);
-        Assert.IsTrue(corrupt.Findings.Any(static finding => finding.Code is "raw-ingress-schema" or "raw-ingress-schema-unreadable"));
     }
 
     private static void AssertRawIngressRejected(CameraAgentStatePreflightReport report)
@@ -408,8 +262,7 @@ public sealed partial class UpgradePreflightTests
         var candidate = new ImageInstallationIdentity(
             "registry", $"cameraagent@sha256:{new string('b', 64)}",
             $"sha256:{new string('c', 64)}", "amd64", null,
-            UpgradeCompatibility: CameraAgentStateContract.Current,
-            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            StateContract: CameraAgentStateContract.Current,
             IdentityMigration: CurrentIdentityMigration,
             RawIngressSchema: "13",
             CatalogManifestVersion: "2");
@@ -423,42 +276,6 @@ public sealed partial class UpgradePreflightTests
         StringAssert.Contains(exception.Message, "raw-ingress-schema", StringComparison.Ordinal);
         Assert.AreEqual(12L, CameraAgentStatePreflight.ReadRawIngressVersion(
             CameraAgentStateLayout.RawIngressDatabasePath(fixture.Paths.StateRoot)));
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_SupersededUnboundedLabel_IsRejectedForUpgradeAndAcceptedForRollback()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 12);
-        fixture.CreateBindSources();
-        var legacy = new CameraAgentStateRequirements(
-            CameraAgentStateContract.LegacyUnbounded, null, null, null, null);
-
-        var upgrade = Evaluate(fixture, legacy);
-        Assert.IsFalse(upgrade.Compatible);
-        Assert.AreEqual(1, upgrade.Findings.Count, CameraAgentStatePreflight.Render(upgrade));
-        var blocking = upgrade.Findings.Single(static finding => finding.Blocking);
-        Assert.AreEqual("candidate-state-contract-unsupported", blocking.Code);
-        Assert.AreEqual(CameraAgentStateContract.LegacyUnbounded, blocking.Observed);
-
-        var rollback = Evaluate(fixture, legacy, CameraAgentStateContractPolicy.AllowLegacy);
-        Assert.IsTrue(rollback.Compatible, CameraAgentStatePreflight.Render(rollback));
-        var advisory = rollback.Findings.Single();
-        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
-        Assert.IsFalse(advisory.Blocking, "a rollback target may not be blocked for predating the correction");
-        foreach (var label in new[]
-                 {
-                     "minimum-compatible-revision", "identity-migration", "raw-ingress-schema",
-                     "catalog-manifest-version"
-                 })
-        {
-            StringAssert.Contains(advisory.Path, label, StringComparison.Ordinal);
-        }
-        StringAssert.Contains(
-            CameraAgentStatePreflight.Render(rollback), "candidate-boundaries-undeclared", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -481,46 +298,6 @@ public sealed partial class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task EnsureCompatibleAsync_LegacyState_FailsOnceWithTheCompleteBoundaryReport()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 1);
-        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 11);
-        fixture.CreateBindSources();
-        var candidate = new ImageInstallationIdentity(
-            "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
-            UpgradeCompatibility: CameraAgentStateContract.Current,
-            MinimumCompatibleRevision: MinimumCompatibleRevision,
-            IdentityMigration: CurrentIdentityMigration,
-            RawIngressSchema: "13",
-            CatalogManifestVersion: "2");
-
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => CameraAgentStatePreflight.EnsureCompatibleAsync(
-                fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
-                RuntimeUid, RuntimeGid,
-                HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
-                persist: true, renderToStandardError: false, CancellationToken.None));
-
-        foreach (var code in new[] { "catalog-manifest-version", "identity-migration-lineage", "raw-ingress-schema" })
-        {
-            StringAssert.Contains(exception.Message, code, StringComparison.Ordinal);
-        }
-        StringAssert.Contains(exception.Message, MinimumCompatibleRevision, StringComparison.Ordinal);
-
-        var reportPath = Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json");
-        Assert.IsTrue(File.Exists(reportPath), "the consolidated report must be retained for the operator");
-        await using var stream = SafeFileSystem.OpenOwnerFileRead(reportPath);
-        var persisted = await JsonSerializer.DeserializeAsync(
-            stream, DeploymentJsonContext.Default.CameraAgentStatePreflightReport, CancellationToken.None);
-        Assert.AreEqual("incompatible", persisted!.Outcome);
-        Assert.IsFalse(persisted.Compatible);
-        Assert.AreEqual(3, persisted.Findings.Count);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task EnsureCompatibleAsync_CompatibleState_RetainsTheReportWithoutThrowing()
     {
         using var fixture = new PreflightFixture();
@@ -530,14 +307,13 @@ public sealed partial class UpgradePreflightTests
         fixture.CreateBindSources();
         var candidate = new ImageInstallationIdentity(
             "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
-            UpgradeCompatibility: CameraAgentStateContract.Current,
-            MinimumCompatibleRevision: MinimumCompatibleRevision,
+            StateContract: CameraAgentStateContract.Current,
             IdentityMigration: CurrentIdentityMigration,
             RawIngressSchema: "13",
             CatalogManifestVersion: "2");
 
         var report = await CameraAgentStatePreflight.EnsureCompatibleAsync(
-            fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+            fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.Current,
             RuntimeUid, RuntimeGid,
             HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
             persist: true, renderToStandardError: false, CancellationToken.None);
@@ -547,28 +323,6 @@ public sealed partial class UpgradePreflightTests
             DeploymentSchemaVersions.StatePreflightReport,
             report.SchemaVersion);
         Assert.IsTrue(File.Exists(Path.Combine(fixture.Paths.DeploymentStateRoot, "state-preflight.json")));
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_UndeclaredCandidateBoundaries_AreSkippedRatherThanCompared()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.WriteIdentityDatabase(LegacyIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 11);
-        fixture.CreateBindSources();
-        var undeclared = new CameraAgentStateRequirements(CameraAgentStateContract.Current, null, null, null, null);
-
-        var report = Evaluate(fixture, undeclared);
-
-        // A boundary the image does not declare cannot be compared, so it is skipped rather than treated as met,
-        // and the report names every skipped boundary. The catalog manifest version is still compared against the
-        // resolver constant the runtime enforces, which this instance satisfies.
-        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
-        var advisory = report.Findings.Single();
-        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
-        Assert.IsFalse(advisory.Blocking);
     }
 
     [TestMethod]
@@ -605,32 +359,6 @@ public sealed partial class UpgradePreflightTests
         var finding = report.Findings.Single();
         Assert.AreEqual("identity-migration-lineage", finding.Code);
         Assert.AreEqual("no recorded migration", finding.Observed);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Evaluate_PartiallyDeclaredCandidate_NamesOnlyTheOmittedBoundaries()
-    {
-        using var fixture = new PreflightFixture();
-        fixture.WriteCatalogManifest(manifestVersion: 2);
-        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
-        fixture.WriteRawIngressDatabase(schemaVersion: 13);
-        fixture.CreateBindSources();
-        var partial = new CameraAgentStateRequirements(
-            CameraAgentStateContract.Current, MinimumCompatibleRevision, CurrentIdentityMigration, 13, null);
-
-        var report = Evaluate(fixture, partial);
-
-        Assert.IsTrue(report.Compatible, CameraAgentStatePreflight.Render(report));
-        var advisory = report.Findings.Single();
-        Assert.AreEqual("candidate-boundaries-undeclared", advisory.Code);
-        StringAssert.Contains(advisory.Path, "catalog-manifest-version", StringComparison.Ordinal);
-        foreach (var declared in new[] { "minimum-compatible-revision", "identity-migration", "raw-ingress-schema" })
-        {
-            Assert.IsFalse(
-                advisory.Path.Contains(declared, StringComparison.Ordinal),
-                $"a declared boundary must not be reported as omitted: {declared}");
-        }
     }
 
     [TestMethod]
@@ -677,7 +405,7 @@ public sealed partial class UpgradePreflightTests
             Console.SetError(suppressed);
             await Assert.ThrowsExactlyAsync<InstallerException>(
                 () => CameraAgentStatePreflight.EnsureCompatibleAsync(
-                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.Current,
                     RuntimeUid, RuntimeGid,
                     HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
                     persist: true, renderToStandardError: false, CancellationToken.None));
@@ -690,7 +418,7 @@ public sealed partial class UpgradePreflightTests
             Console.SetError(rendered);
             await Assert.ThrowsExactlyAsync<InstallerException>(
                 () => CameraAgentStatePreflight.EnsureCompatibleAsync(
-                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.LegacyUnbounded,
+                    fixture.Paths, fixture.InstanceId, candidate, CameraAgentStateContract.Current,
                     RuntimeUid, RuntimeGid,
                     HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
                     persist: true, renderToStandardError: true, CancellationToken.None));
@@ -707,8 +435,7 @@ public sealed partial class UpgradePreflightTests
 
     private static ImageInstallationIdentity IncompatibleCandidate() => new(
         "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
-        UpgradeCompatibility: CameraAgentStateContract.Current,
-        MinimumCompatibleRevision: MinimumCompatibleRevision,
+        StateContract: CameraAgentStateContract.Current,
         IdentityMigration: CurrentIdentityMigration,
         RawIngressSchema: "12",
         CatalogManifestVersion: "2");
@@ -968,19 +695,17 @@ public sealed partial class UpgradePreflightTests
 
     private static CameraAgentStatePreflightReport Evaluate(
         PreflightFixture fixture,
-        CameraAgentStateRequirements? requirements = null,
-        CameraAgentStateContractPolicy policy = CameraAgentStateContractPolicy.RequireCurrent)
+        CameraAgentStateRequirements? requirements = null)
         => CameraAgentStatePreflight.Evaluate(
             fixture.Paths,
             fixture.InstanceId,
             $"sha256:{new string('c', 64)}",
             candidateRelease: null,
             requirements ?? CurrentRequirements,
-            CameraAgentStateContract.LegacyUnbounded,
+            CameraAgentStateContract.Current,
             RuntimeUid,
             RuntimeGid,
-            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
-            policy);
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess);
 
     private sealed class PreflightFixture : IDisposable
     {
@@ -989,7 +714,7 @@ public sealed partial class UpgradePreflightTests
             Root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-{Guid.NewGuid():N}");
             InstanceId = Guid.NewGuid();
             InstallationId = Guid.NewGuid();
-            Paths = InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId);
+            Paths = InstallationPaths.Create(Root, InstanceId, HygV44.CatalogId);
             foreach (var directory in new[]
             {
                 Paths.ProductRoot, Path.Combine(Paths.ProductRoot, "cameraagents"), Paths.InstanceRoot,
@@ -1009,14 +734,14 @@ public sealed partial class UpgradePreflightTests
 
         public void WriteCatalogManifest(int manifestVersion)
         {
-            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV42.PackageVersion);
+            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV44.PackageVersion);
             SafeFileSystem.CreateOwnerDirectory(versionRoot);
             File.WriteAllText(
                 Path.Combine(versionRoot, "manifest.json"),
                 "{\"manifestVersion\":" + manifestVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                ",\"catalog\":{\"id\":\"" + HygV42.CatalogId + "\"}}");
+                ",\"catalog\":{\"id\":\"" + HygV44.CatalogId + "\"}}");
             Directory.CreateSymbolicLink(
-                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV42.PackageVersion}");
+                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV44.PackageVersion}");
         }
 
         public void CreateBindSources()
@@ -1162,22 +887,22 @@ public sealed partial class UpgradePreflightTests
             var applicationIdentity = Guid.NewGuid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
             var catalog = new CatalogInstallationIdentity(
-                HygV42.CatalogId, HygV42.PackageVersion, "2", "3",
-                HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount,
+                HygV44.CatalogId, HygV44.PackageVersion, "3", "4",
+                HygV44.DatabaseSha256, HygV44.DatabaseLength, HygV44.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,
-                UpgradeCompatibility: CameraAgentStateContract.LegacyUnbounded, SourceRevision: new string('8', 40),
+                StateContract: CameraAgentStateContract.Current, SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
-                CatalogContract: "hyg-v42-production-p3-s2");
+                CatalogContract: CameraAgentImageContract.CatalogContract);
             var manifest = new InstanceManifest(
-                1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent, InstanceId,
+                DeploymentSchemaVersions.InstanceManifest, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent, InstanceId,
                 "Preflight Camera", applicationIdentity, $"installer-{InstanceId:D}", 1, new string('d', 64),
                 "owner@example.test", 0, 0, 0, "UTC", InstallationId, RuntimeUid, RuntimeGid, Paths.ProductRoot,
                 Paths.ConfigRoot, Paths.StateRoot, ComposeDeployment.TemplateVersion, new string('e', 64),
                 new string('f', 64), new string('1', 64), "default", "1", "1", "active", new string('2', 64),
-                new string('3', 64), catalog, image, null, daemon, CameraAgentStateContract.LegacyUnbounded,
-                DateTimeOffset.UtcNow, LifecycleCondition: condition);
+                new string('3', 64), catalog, image, null, daemon, CameraAgentStateContract.Current,
+                DateTimeOffset.UtcNow, LifecycleCondition: condition, LifecycleControlTokenSha256: new string('4', 64));
             await SafeFileSystem.WriteJsonAtomicAsync(
                 Paths.ManifestPath, manifest, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
             await SafeFileSystem.WriteJsonAtomicAsync(
@@ -1187,7 +912,7 @@ public sealed partial class UpgradePreflightTests
             await SafeFileSystem.WriteJsonAtomicAsync(
                 Paths.StatePath,
                 new InstallationState(
-                    1, InstallationId, InstanceId, new string('4', 64), InstallationPhase.Completed,
+                    DeploymentSchemaVersions.InstallationState, InstallationId, InstanceId, new string('4', 64), InstallationPhase.Completed,
                     InstallationStatus.Completed, DateTimeOffset.UtcNow),
                 DeploymentJsonContext.Default.InstallationState, CancellationToken.None);
             await File.WriteAllTextAsync(Paths.ResultPath, "{}", CancellationToken.None);

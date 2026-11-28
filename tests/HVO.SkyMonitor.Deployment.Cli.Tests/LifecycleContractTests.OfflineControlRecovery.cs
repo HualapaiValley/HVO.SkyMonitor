@@ -70,7 +70,7 @@ public sealed partial class LifecycleContractTests
         var (_, path, _) = await PendingControlAsync(fixture, terminal: false);
         var before = await File.ReadAllBytesAsync(path);
         var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Upgrade) with { ImageReference = candidate, NoDownload = true, MigrationBackwardCompatible = true },
+            fixture.Request(LifecycleOperationKind.Upgrade) with { ImageReference = candidate, NoDownload = true },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
         StringAssert.Contains(refused.Message, "lifecycle-worker", StringComparison.Ordinal);
@@ -159,50 +159,6 @@ public sealed partial class LifecycleContractTests
             var state = new Dictionary<string, object> { ["Running"] = observation != "stopped" };
             if (observation != "missing-health") state["Health"] = new { Status = observation == "stopped" ? "healthy" : observation };
             return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[] { new { State = state, Image = "sha256:test" } }), ""));
-        }
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task RollbackAfterOfflineAdmissionStillVerifiesTheReturnedOriginalAndRetainsControl(bool terminal)
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('a', 64)}";
-        var candidateImageId = $"sha256:{new string('b', 64)}";
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        var lifecycle = new FakeLifecycleClient();
-        await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
-        {
-            ImageReference = candidateReference,
-            NoDownload = true,
-            MigrationBackwardCompatible = true
-        }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
-        var (_, path, _) = await PendingControlAsync(fixture, terminal);
-        var before = await File.ReadAllBytesAsync(path);
-        fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
-        var returning = new ReturnAfterControlAdmission(fixture.Runner);
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Rollback), returning,
-            _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual("completed", result.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, result.Image!.ImageId);
-        Assert.IsTrue(returning.Inspections >= 3);
-        Assert.AreEqual(2, lifecycle.PauseCount, "Rollback must still authenticate and drain the returned original.");
-        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
-    }
-
-    private sealed class ReturnAfterControlAdmission(FakeRunner inner) : IProcessRunner
-    {
-        internal int Inspections;
-        public Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
-        {
-            var effective = arguments is ["--host", _, ..] ? arguments.Skip(2).ToArray() : arguments;
-            if (fileName == "docker" && effective is ["container", "inspect", _, ..] && ++Inspections == 3)
-                inner.Reboot(inner.ActiveImageId, wasRunning: true);
-            return inner.RunAsync(fileName, arguments, cancellationToken);
         }
     }
 

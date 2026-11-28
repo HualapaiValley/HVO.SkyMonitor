@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class CaptureProcessingGraphPerformanceTests
 {
@@ -29,7 +30,6 @@ public sealed class CaptureProcessingGraphPerformanceTests
     private static readonly JsonSerializerOptions EvidenceJsonOptions = new() { WriteIndented = true };
     private static readonly string[] FaultStageCoverage =
     [
-        "payload-publication:FileSystemFrameStorageServiceTests.SaveAsync_MatchingPayloadWithoutSidecar_CompletesPublication",
         "sidecar-publication:DurableCaptureProcessingTests.PublishedOutputWithoutSqliteCommit_ReplayConvergesExactEvidence",
         "sqlite-outcome:DurableCaptureProcessingTests.PublishedOutputWithoutSqliteCommit_ReplayConvergesExactEvidence",
         "dependency-transition:DurableCaptureProcessingTests.OptionalRetryableDependency_RunsDependentAfterRetrySucceeds",
@@ -250,7 +250,6 @@ public sealed class CaptureProcessingGraphPerformanceTests
         Array.Sort(latencies);
         var cpu = Process.GetCurrentProcess().TotalProcessorTime - cpuBefore;
         var rssAfter = Process.GetCurrentProcess().WorkingSet64;
-        var persistence = await MeasurePersistenceAsync(executor, raw, workload).ConfigureAwait(false);
         return new RecipeMeasurement(
             workload,
             MeasuredIterations,
@@ -263,72 +262,7 @@ public sealed class CaptureProcessingGraphPerformanceTests
             final!.Payload.Length,
             final.OutputIdentitySha256,
             final.ChecksumSha256,
-            final.SourceArtifactIds.Count,
-            persistence);
-    }
-
-    private static async Task<PersistenceMeasurement> MeasurePersistenceAsync(
-        ProcessingRecipeExecutor executor,
-        ProcessingArtifact raw,
-        string workload)
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-issue96-persistence", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var rawManifest = ReconstructableCaptureContractTests.CreateManifest(
-                raw.Layout!.PixelFormat,
-                raw.Layout.Width,
-                raw.Layout.Height,
-                raw.Layout.StrideBytes,
-                raw.Payload.ToArray());
-            var latencies = new double[MeasuredIterations];
-            long writtenBytes = 0;
-            var iterationOffset = raw.ArtifactId == Guid.Parse("10000000-0000-0000-0000-000000000001") ? 0 : 100_000;
-            for (var index = 0; index < MeasuredIterations; index++)
-            {
-                var product = await ExecuteRecipeGraphAsync(
-                    executor, raw, index + 100 + iterationOffset).ConfigureAwait(false);
-                var artifactId = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
-                var frame = new CameraFrame(
-                    rawManifest.Descriptor.Timing.ExposureStartedUtc,
-                    product.Layout!.Width,
-                    product.Layout.Height,
-                    product.Layout.PixelFormat,
-                    product.Payload,
-                    new FrameMetadata(
-                        rawManifest.Descriptor.Controls.EffectiveExposure,
-                        rawManifest.Descriptor.Controls.EffectiveGain,
-                        rawManifest.Descriptor.Controls.EffectiveTemperatureC ?? 0,
-                        workload,
-                        Offset: rawManifest.Descriptor.Controls.EffectiveOffset),
-                    product.Layout.StrideBytes);
-                var artifact = new FrameArtifact(
-                    artifactId,
-                    product.Role,
-                    frame,
-                    product.SourceArtifactIds,
-                    product.Recipe.Descriptor.ImplementationVersion);
-                var descriptor = DerivativeDescriptorFactory.Create(
-                    rawManifest.Descriptor, artifactId, workload, product);
-                var stopwatch = Stopwatch.StartNew();
-                await storage.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
-                stopwatch.Stop();
-                latencies[index] = stopwatch.Elapsed.TotalMilliseconds;
-                writtenBytes += product.Payload.Length;
-            }
-            Array.Sort(latencies);
-            return new PersistenceMeasurement(
-                latencies[MeasuredIterations / 2],
-                latencies[(int)Math.Ceiling(MeasuredIterations * 0.95) - 1],
-                writtenBytes,
-                Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
+            final.SourceArtifactIds.Count);
     }
 
     private static async Task<StandardLaneMeasurement> MeasureStandardLaneAsync(
@@ -385,7 +319,6 @@ public sealed class CaptureProcessingGraphPerformanceTests
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
             var calibration = new CalibrationCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("calibration", "calibration", 0),
@@ -415,9 +348,9 @@ public sealed class CaptureProcessingGraphPerformanceTests
                 new CaptureProcessingPersistence(
                     options,
                     store,
-                    storage,
                     telemetry,
-                    new ForwardingLogger<CaptureProcessingPersistence>(runtimeObservation)),
+                    new ForwardingLogger<CaptureProcessingPersistence>(runtimeObservation),
+                    SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot)),
                 telemetry,
                 new ForwardingLogger<StandardCaptureLaneHandler>(runtimeObservation),
                 null!);
@@ -860,10 +793,7 @@ public sealed class CaptureProcessingGraphPerformanceTests
     private sealed record RecipeMeasurement(
         string Workload, int Iterations, double MedianMilliseconds, double P95Milliseconds,
         double CpuMilliseconds, long AllocatedBytes, long RssBeforeBytes, long RssAfterBytes,
-        int OutputBytes, string OutputIdentitySha256, string ChecksumSha256, int SourceCount,
-        PersistenceMeasurement Persistence);
-    private sealed record PersistenceMeasurement(
-        double MedianMilliseconds, double P95Milliseconds, long WrittenBytes, int FileCount);
+        int OutputBytes, string OutputIdentitySha256, string ChecksumSha256, int SourceCount);
     private sealed record StandardLaneMeasurement(
         string Workload, int Iterations, double MedianMilliseconds, double P95Milliseconds,
         double CpuMilliseconds, long AllocatedBytes, long RssBeforeBytes, long RssAfterBytes,

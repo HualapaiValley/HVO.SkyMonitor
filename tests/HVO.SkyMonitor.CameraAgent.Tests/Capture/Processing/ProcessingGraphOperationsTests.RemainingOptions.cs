@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -18,6 +19,8 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("AstrometryPrediction")]
     [DataRow("MeasuredStellarAssociations")]
     [DataRow("MeasuredAstrometry")]
+    [DataRow(ExposureAssociationProducts.StepAlias)]
+    [DataRow(ExposureAstrometryCaptureProcessingStep.CenteredAlias)]
     [DataRow("CaptureSatelliteTracks")]
     [DataRow("CaptureSatelliteLayer")]
     [DataRow("Storage")]
@@ -26,11 +29,11 @@ public sealed partial class ProcessingGraphOperationsTests
         object runtime = alias switch
         {
             "AstrometryPrediction" => new AstrometryPredictionCaptureProcessingStepOptions(),
-            "MeasuredStellarAssociations" => new MeasuredStellarAssociationProcessingStepOptions(),
-            "MeasuredAstrometry" => new MeasuredAstrometryCaptureOptions(),
+            "MeasuredStellarAssociations" or ExposureAssociationProducts.StepAlias => new MeasuredStellarAssociationProcessingStepOptions(),
+            "MeasuredAstrometry" or ExposureAstrometryCaptureProcessingStep.CenteredAlias => new MeasuredAstrometryCaptureOptions(),
             "CaptureSatelliteTracks" => new CaptureSatelliteTracksOptions(),
             "CaptureSatelliteLayer" => new CaptureSatelliteLayerOptions(),
-            _ => new FileStorageCaptureProcessingStepOptions()
+            _ => new SiloCaptureProcessingStepOptions()
         };
         var descriptor = ProcessingNodeOptionsForm.DescriptorFor(alias);
         Assert.IsNotNull(descriptor);
@@ -44,14 +47,27 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public void EveryRegisteredNodeHasAnOptionsPanel()
+    public void RegisteredNodesHaveOptionsPanelsOrAreSystemManaged()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-node-inventory");
         try
         {
             using var provider = CreateRemainingOptionsProvider(root);
+            var managedAliases = new List<string>();
             foreach (var registration in provider.GetServices<CaptureProcessingStepRegistration>())
-                Assert.IsNotNull(ProcessingNodeOptionsForm.DescriptorFor(registration.Alias), registration.Alias);
+            {
+                var descriptor = ProcessingNodeOptionsForm.DescriptorFor(registration.Alias);
+                if (ExposureMeasurementProducts.IsSystemManagedStepAlias(registration.Alias))
+                {
+                    Assert.IsNull(descriptor, registration.Alias);
+                    managedAliases.Add(registration.Alias);
+                }
+                else
+                {
+                    Assert.IsNotNull(descriptor, registration.Alias);
+                }
+            }
+            CollectionAssert.AreEquivalent(new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias }, managedAliases);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -136,15 +152,16 @@ public sealed partial class ProcessingGraphOperationsTests
             Options: JsonSerializer.SerializeToElement(new CaptureSatelliteTracksOptions { CatalogNumbers = ["25544"] }), Publication: durable),
         new("CaptureSatelliteLayer", "satellite-layer", DependsOn: ["satellites"], Required: false, Publication: durable),
         new("Storage", "storage", DependsOn: ["$raw"],
-            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))
+            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions {  }))
         ]);
         return pipeline;
     }
 
-    internal static ServiceProvider CreateRemainingOptionsProvider(string root) => CreateProvider(root,
+    internal static ServiceProvider CreateRemainingOptionsProvider(string root, SiloInstalledStorage? sharedStorage = null) => CreateProvider(root,
         configureServices: services =>
         {
             services.AddSingleton(Moq.Mock.Of<ICameraAgentOrbitalTimeSource>());
             services.AddSingleton(Moq.Mock.Of<IDeploymentLocationStore>());
+            if (sharedStorage is not null) services.AddSingleton(sharedStorage);
         });
 }

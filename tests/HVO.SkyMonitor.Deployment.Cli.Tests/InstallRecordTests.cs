@@ -99,10 +99,10 @@ public sealed partial class InstallRecordTests
     }
 
     [TestMethod]
-    [DataRow("{\"schemaVersion\":2,\"future\":true}", "newer installer (schema 2)")]
+    [DataRow("{\"schemaVersion\":3,\"future\":true}", "newer installer (schema 3)")]
     [DataRow("not json", "not valid JSON")]
-    [DataRow("{\"schemaVersion\":1,\"product\":\"HVO.SkyMonitor\",\"productRoot\":\"/var/lib/hvo-sky\",\"installerVersion\":\"1\",\"updatedUtc\":\"2026-10-18T03:00:00+00:00\",\"instances\":[],\"extra\":1}", "not valid JSON")]
-    [DataRow("{\"schemaVersion\":1,\"product\":\"HVO.RoofController\",\"productRoot\":\"/var/lib/hvo-sky\",\"installerVersion\":\"1\",\"updatedUtc\":\"2026-10-18T03:00:00+00:00\",\"instances\":[]}", "product must be HVO.SkyMonitor")]
+    [DataRow("{\"schemaVersion\":2,\"product\":\"HVO.SkyMonitor\",\"productRoot\":\"/var/lib/hvo-sky\",\"installerVersion\":\"1\",\"updatedUtc\":\"2026-10-18T03:00:00+00:00\",\"instances\":[],\"extra\":1}", "not valid JSON")]
+    [DataRow("{\"schemaVersion\":2,\"product\":\"HVO.RoofController\",\"productRoot\":\"/var/lib/hvo-sky\",\"installerVersion\":\"1\",\"updatedUtc\":\"2026-10-18T03:00:00+00:00\",\"instances\":[]}", "product must be HVO.SkyMonitor")]
     public void Parse_ARecordThisInstallerCouldNotHaveWritten_IsRefused(string json, string reason)
     {
         ArgumentNullException.ThrowIfNull(json);
@@ -121,7 +121,7 @@ public sealed partial class InstallRecordTests
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { ImageId = "cameraagent:latest" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { FriendlyName = "bad\nname" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Url = new Uri("http://user:pass@localhost:5130/") }));
-        Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Component = "LogicHost" }));
+        Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Component = "OtherProduct" }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { Resources = CameraAgentContainerResources.Legacy }));
         Assert.IsNotNull(InstallRecordStore.EntryProblem(Entry(First) with { UpdatedUtc = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.FromHours(-7)) }));
     }
@@ -205,7 +205,7 @@ public sealed partial class InstallRecordTests
         Assert.AreEqual(DeploymentPlanAction.Remove, removed);
         Assert.AreEqual(DeploymentPlanAction.Unchanged, removedAgain);
         Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(location.Path));
-        StringAssert.Contains(written, "\"schemaVersion\": 1", StringComparison.Ordinal);
+        StringAssert.Contains(written, "\"schemaVersion\": 2", StringComparison.Ordinal);
         Assert.IsEmpty((await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances);
     }
 
@@ -401,7 +401,7 @@ public sealed partial class InstallRecordTests
         public ProductRoot()
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-install-record-{Guid.NewGuid():N}");
-            Paths = InstallationPaths.Create(root, Instance, HygV42.CatalogId);
+            Paths = InstallationPaths.Create(root, Instance, HygV44.CatalogId);
             foreach (var directory in new[] { Paths.ProductRoot, Paths.InstanceRoot, Paths.DeploymentStateRoot, Paths.OperationsRoot })
             {
                 Directory.CreateDirectory(directory);
@@ -428,14 +428,14 @@ public sealed partial class InstallRecordTests
         {
             static ImageInstallationIdentity Image(string id) => new("registry", $"cameraagent@{id}", id, "amd64", null);
             var catalog = new CatalogInstallationIdentity(
-                HygV42.CatalogId, "1", "1", "1", new string('a', 64), 1, 1, Paths.CatalogRoot, new string('a', 64), "local-offline");
+                HygV44.CatalogId, "1", "1", "1", new string('a', 64), 1, 1, Paths.CatalogRoot, new string('a', 64), "local-offline");
             return new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent, Instance, "North Camera",
                 Guid.NewGuid(), $"installer-{Instance:D}", 1, new string('d', 64), "owner@example.test", 0, 0, 0, "UTC",
                 Guid.NewGuid(), 1000, 1000, Paths.ProductRoot, Paths.ConfigRoot, Paths.StateRoot, "v1", new string('e', 64),
                 new string('f', 64), new string('1', 64), "default", "1", "1", "active", new string('2', 64), new string('3', 64),
                 catalog, Image(image), previousImage is null ? null : Image(previousImage),
-                new DockerDaemonIdentity("daemon", "host", "amd64", "29.0.0"), "cameraagent-state-v2", Now,
+                new DockerDaemonIdentity("daemon", "host", "amd64", "29.0.0"), "cameraagent-silo-state-v1", Now,
                 Resources: CameraAgentContainerResources.Default);
         }
 

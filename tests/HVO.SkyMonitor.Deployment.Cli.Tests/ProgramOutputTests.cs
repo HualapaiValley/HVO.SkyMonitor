@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -20,14 +21,13 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install <command> [options]
 
         Commands:
-          preflight
-          partial-prepare-cleanup
-          existing-down
           status
           cameraagent install
           cameraagent lifecycle-worker
           cameraagent recover-owner
           cameraagent preflight
+          cameraagent first-resume
+          cameraagent silo-verify
           cameraagent reset-state
           cameraagent upgrade
           cameraagent rollback
@@ -52,37 +52,43 @@ public sealed class ProgramOutputTests
         Install a CameraAgent instance, or change an installed one's container limits.
 
         Options:
-          --answers <file>                 Read the install from a JSON answers file with "schemaVersion": 1.
-          --config <file>                  Deprecated: read the whole install from a JSON file. Use --answers.
-          --instance-id <uuid>             The instance's ID.
-          --friendly-name <name>           The instance's display name.
-          --owner-email <email>            The owner's email, also a sign-in name (default owner@cameraagent.local).
-          --bind-address <address>         The address CameraAgent listens on (default 127.0.0.1).
-          --port <port>                    The port CameraAgent listens on (default 5130).
-          --product-root <path>            The product root (default: this host's production product root).
-          --catalog-bundle <path>          The catalog bundle folder.
-          --release <folder>               The release folder, holding the release's release.json and SHA256SUMS.
-          --image-source <source>          With --release: archive (default) loads its offline image archive; registry pulls its image.
-          --image-ref <image>              An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's.
-          --image-archive <path>           With --image-ref: the image archive to load it from.
-          --image-archive-sha256 <sha256>  The image archive's SHA-256, required with --image-archive.
-          --password-file <path>           An owner-only file holding the owner's temporary password.
-          --latitude <degrees>             The camera's latitude (default 0).
-          --longitude <degrees>            The camera's longitude (default 0).
-          --elevation <metres>             The camera's elevation (default 0).
-          --time-zone <zone>               The camera's IANA time zone (default UTC).
-          --replay-profile <profile>       Where archived replay runs: in-process (default) or local-runner.
-          --illumination-mode <mode>       VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
-          --cpus <count>                   The container's CPU limit.
-          --memory <size>                  The container's memory limit, such as 4g.
-          --plan                           Show what the command would change, and change nothing.
-          --dry-run                        The older name of --plan.
-          --resume                         Finish an interrupted run of the same command.
-          --json                           Write the result, or the error, as JSON.
-          --generate-password              Generate the owner's temporary password into an owner-only file.
-          --acknowledge-plaintext-http     Accept plain HTTP on a --bind-address other than loopback.
-          --no-download                    Pull nothing: the image must already be on this host or in an offline archive.
-          -h, --help                       Show this help.
+          --answers <file>                       Read the install from a JSON answers file with "schemaVersion": 1.
+          --config <file>                        Deprecated: read the whole install from a JSON file. Use --answers.
+          --instance-id <uuid>                   The instance's ID.
+          --friendly-name <name>                 The instance's display name.
+          --owner-email <email>                  The owner's email, also a sign-in name (default owner@cameraagent.local).
+          --bind-address <address>               The address CameraAgent listens on (default 127.0.0.1).
+          --port <port>                          The port CameraAgent listens on (default 5130).
+          --product-root <path>                  The product root (default: this host's production product root).
+          --catalog-bundle <path>                The catalog bundle folder.
+          --release <folder>                     The release folder, holding the release's release.json and SHA256SUMS.
+          --image-source <source>                With --release: archive (default) loads its offline image archive; registry pulls its image.
+          --image-ref <image>                    An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's.
+          --image-archive <path>                 With --image-ref: the image archive to load it from.
+          --image-archive-sha256 <sha256>        The image archive's SHA-256, required with --image-archive.
+          --password-file <path>                 An owner-only file holding the owner's temporary password.
+          --latitude <degrees>                   The camera's latitude (default 0).
+          --longitude <degrees>                  The camera's longitude (default 0).
+          --elevation <metres>                   The camera's elevation (default 0).
+          --time-zone <zone>                     The camera's IANA time zone (default UTC).
+          --replay-profile in-process            CameraAgent runs archived replay in process.
+          --illumination-mode <mode>             VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
+          --cpus <count>                         The container's CPU limit.
+          --memory <size>                        The container's memory limit, such as 4g.
+          --storage-layout silo                  A new instance uses Silo storage.
+          --silo-image-archive <path>            With silo: a docker save archive of the pinned Silo image, verified before it is loaded.
+          --silo-archive-endpoint <url>          With silo: the optional archive Silo's https:// endpoint, verified read-only.
+          --silo-archive-bucket <name>           The archive bucket, which must be versioned.
+          --silo-archive-ca-file <path>          A PEM certificate authority the archive endpoint must chain to.
+          --silo-archive-credential-file <path>  An owner-only file with the archive access key ID and secret on two lines.
+          --plan                                 Show what the command would change, and change nothing.
+          --dry-run                              The older name of --plan.
+          --resume                               Finish an interrupted run of the same command.
+          --json                                 Write the result, or the error, as JSON.
+          --generate-password                    Generate the owner's temporary password into an owner-only file.
+          --acknowledge-plaintext-http           Accept plain HTTP on a --bind-address other than loopback.
+          --no-download                          Pull nothing: the image must already be on this host or in an offline archive.
+          -h, --help                             Show this help.
 
         A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with the other value options. A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.
         """;
@@ -108,9 +114,11 @@ public sealed class ProgramOutputTests
           cameraagent lifecycle-worker   Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.
           cameraagent recover-owner      Give an instance's owner a new temporary password.
           cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
+          cameraagent first-resume       Resume a new Silo-layout instance's capture once, only while its installer first-boot pause is still the latest command.
+          cameraagent silo-verify        Check, changing nothing, a Silo-layout instance's store, binding, listeners, data root, headroom, archive and first-boot pause.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.
           cameraagent upgrade            Move an instance to a release's image (--release) or an immutable one (--image-ref).
-          cameraagent rollback           Return an instance to the image it ran before its last upgrade.
+          cameraagent rollback           Run the retained previous CameraAgent image on the same state contract.
           cameraagent reinstall          Start an uninstalled instance again from the state it kept.
           cameraagent uninstall          Remove an instance's containers, keeping its state for cameraagent reinstall.
           cameraagent purge              Remove an uninstalled instance and everything it keeps.
@@ -216,6 +224,9 @@ public sealed class ProgramOutputTests
 
     [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
+    [DataRow("preflight", "Unknown command 'preflight'.")]
+    [DataRow("partial-prepare-cleanup", "Unknown command 'partial-prepare-cleanup'.")]
+    [DataRow("existing-down", "Unknown command 'existing-down'.")]
     [DataRow("", "Missing command.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
     [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]
@@ -312,20 +323,197 @@ public sealed class ProgramOutputTests
     }
 
     [TestMethod]
-    public async Task Main_LifecycleUsage_NamesThePlanAndTheDeprecatedMigrationAssertion()
+    public async Task Main_LifecycleUsage_NamesThePlanAndOmitsRemovedOptions()
     {
         var (exitCode, output, _) = await RunCommandLineAsync("cameraagent upgrade --help");
 
         Assert.AreEqual(0, exitCode);
-        StringAssert.Contains(output, "  --plan                           Show what the command would change, and change nothing." + Environment.NewLine, StringComparison.Ordinal);
-        StringAssert.Contains(output, "  --migration-backward-compatible  Deprecated, and has no effect." + Environment.NewLine, StringComparison.Ordinal);
+        StringAssert.Contains(output, "Show what the command would change, and change nothing." + Environment.NewLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", output, StringComparison.Ordinal);
         StringAssert.Contains(output, "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.", StringComparison.Ordinal);
     }
+
+    [TestMethod]
+    [DataRow(true, true, true, 200, "Runtime running=True, alive=True, healthy=True (/health HTTP 200)")]
+    [DataRow(true, true, false, 503, "Runtime running=True, alive=True, healthy=False (/health HTTP 503)")]
+    [DataRow(true, false, false, 503, "Runtime running=True, alive=False, healthy=False (/health HTTP 503)")]
+    [DataRow(true, true, null, null, "Runtime running=True, alive=True, healthy=unknown")]
+    [DataRow(false, false, false, null, "Runtime running=False, alive=False, healthy=False")]
+    [DataRow(false, null, null, null, "Runtime running=False, alive=unknown, healthy=unknown")]
+    [DataRow(null, true, true, 200, null)]
+    public async Task RunAsync_LifecycleHumanOutput_FormatsRuntimeReadinessAndStatusCode(
+        bool? running,
+        bool? alive,
+        bool? healthy,
+        int? healthStatusCode,
+        string? expectedRuntimeLine)
+    {
+        var result = CreateLifecycleResult(
+            outcome: "status",
+            running: running,
+            alive: alive,
+            healthy: healthy,
+            healthStatusCode: healthStatusCode);
+
+        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        var lines = output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.AreEqual("Outcome: status", lines[0]);
+        if (expectedRuntimeLine is null)
+        {
+            Assert.IsFalse(output.Contains("Runtime running=", StringComparison.Ordinal), output);
+        }
+        else
+        {
+            CollectionAssert.Contains(lines, expectedRuntimeLine);
+            if (healthStatusCode is null)
+            {
+                Assert.IsFalse(output.Contains("(/health HTTP", StringComparison.Ordinal), output);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("planned", "Plan:")]
+    [DataRow("completed", "Changes:")]
+    public async Task RunAsync_LifecycleHumanOutput_FormatsOptionalSections(
+        string outcome,
+        string expectedPlanHeading)
+    {
+        var operationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var instanceId = Guid.Parse("5a3f7c1e-2b4d-4e6f-8a9b-0c1d2e3f4a5b");
+        var imageId = $"sha256:{new string('a', 64)}";
+        var plan = DeploymentPlan.Of([new DeploymentPlanItem(DeploymentPlanAction.Change, "container", "cameraagent", "upgrade")]);
+        var catalog = new CatalogInstallationIdentity(
+            "hyg-v44-production", "hyg-v4.4-p4-s3-r1", "1", "1", new string('b', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg",
+            new string('b', 64), "local-offline");
+        var deepSkyCatalog = new CatalogInstallationIdentity(
+            "openngc", "openngc-v1.0-r1", "1", "1", new string('d', 64), 1, 1, "/var/lib/hvo-sky/catalogs/openngc",
+            new string('d', 64), "local-offline");
+        var result = CreateLifecycleResult(
+            outcome: outcome,
+            operation: LifecycleOperationKind.Upgrade,
+            operationId: operationId,
+            instanceId: instanceId,
+            lifecycleCondition: InstanceLifecycleCondition.Installed,
+            image: new ImageInstallationIdentity("archive", imageId, imageId, "amd64", null),
+            catalog: catalog,
+            deepSkyCatalog: deepSkyCatalog,
+            running: true,
+            alive: true,
+            healthy: false,
+            healthStatusCode: 503,
+            preservedPaths: ["/var/lib/hvo-sky/cameraagents/a/state", "/var/lib/hvo-sky/cameraagents/a/captures"],
+            resumeCommand: $"hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
+            plan: plan);
+
+        var (exitCode, output, error) = await RunWithServicesAsync(StatusArguments, LifecycleServices(result));
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        string[] expectedLines =
+        [
+            $"Outcome: {outcome}",
+            $"Operation: Upgrade / {operationId:D}",
+            $"Instance: {instanceId:D} / Installed",
+            $"Image: {imageId}",
+            "Catalog: hyg-v44-production / hyg-v4.4-p4-s3-r1",
+            "Deep-sky catalog: openngc / openngc-v1.0-r1",
+            "Runtime running=True, alive=True, healthy=False (/health HTTP 503)",
+            "Preserved: /var/lib/hvo-sky/cameraagents/a/state",
+            "Preserved: /var/lib/hvo-sky/cameraagents/a/captures",
+            $"Resume: hvo-sky-install cameraagent upgrade --instance-id {instanceId:D} --resume",
+            expectedPlanHeading,
+            .. DeploymentPlanText.Lines(plan)
+        ];
+        Assert.AreEqual(string.Join(Environment.NewLine, expectedLines) + Environment.NewLine, output);
+    }
+
+    private static readonly string[] StatusArguments = ["status"];
+
+    private static LifecycleResult CreateLifecycleResult(
+        string outcome,
+        LifecycleOperationKind? operation = null,
+        Guid? operationId = null,
+        Guid? instanceId = null,
+        InstanceLifecycleCondition? lifecycleCondition = null,
+        ImageInstallationIdentity? image = null,
+        CatalogInstallationIdentity? catalog = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null,
+        bool? running = null,
+        bool? alive = null,
+        bool? healthy = null,
+        int? healthStatusCode = null,
+        IReadOnlyList<string>? preservedPaths = null,
+        string? resumeCommand = null,
+        DeploymentPlan? plan = null)
+        => new(
+            SchemaVersion: 1,
+            Operation: operation,
+            Outcome: outcome,
+            OperationId: operationId,
+            InstanceId: instanceId,
+            LifecycleCondition: lifecycleCondition,
+            ProductRoot: "/var/lib/hvo-sky",
+            InstanceRoot: null,
+            Image: image,
+            PreviousImage: null,
+            Catalog: catalog,
+            PreviousCatalog: null,
+            DockerDaemon: null,
+            Running: running,
+            Healthy: healthy,
+            PreservedPaths: preservedPaths ?? [],
+            ResumeCommand: resumeCommand,
+            CompletedUtc: new DateTimeOffset(2026, 11, 25, 12, 35, 00, TimeSpan.Zero))
+        {
+            Alive = alive,
+            HealthStatusCode = healthStatusCode,
+            DeepSkyCatalog = deepSkyCatalog,
+            Plan = plan
+        };
+
+    private static ProgramServices LifecycleServices(LifecycleResult result)
+        => new(
+            Parse: _ => new LifecycleRequest(result.Operation, result.InstanceId, result.ProductRoot, dryRun: false, resume: false, json: false),
+            Install: static (_, _) => throw new InvalidOperationException("Unexpected install call."),
+            Preflight: static (_, _) => throw new InvalidOperationException("Unexpected preflight call."),
+            Reset: static (_, _) => throw new InvalidOperationException("Unexpected reset call."),
+            HostPolicy: static (_, _) => throw new InvalidOperationException("Unexpected host-policy call."),
+            OwnerRecovery: static (_, _) => throw new InvalidOperationException("Unexpected owner-recovery call."),
+            Lifecycle: (_, _) => Task.FromResult(result))
+        {
+            Wizard = null
+        };
 
     private static string Text(string usage) => usage.ReplaceLineEndings() + Environment.NewLine;
 
     private static Task<(int ExitCode, string Output, string Error)> RunCommandLineAsync(string commandLine)
         => RunAsync(commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+    private static async Task<(int ExitCode, string Output, string Error)> RunWithServicesAsync(
+        string[] arguments,
+        ProgramServices services)
+    {
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        Console.SetOut(output);
+        Console.SetError(error);
+        try
+        {
+            var exitCode = await Program.RunAsync(arguments, services, CancellationToken.None);
+            return (exitCode, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+        }
+    }
 
     private static async Task<(int ExitCode, string Output, string Error)> RunAsync(params string[] arguments)
     {

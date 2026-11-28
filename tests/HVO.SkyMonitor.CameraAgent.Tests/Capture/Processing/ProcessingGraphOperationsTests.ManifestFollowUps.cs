@@ -72,7 +72,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
             var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);
@@ -127,7 +127,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(0, combined.Detail.Nodes.Single().Outputs.Single().Ordinal);
             Assert.AreEqual(3, combined.RunManifest!.Nodes.Single().Outputs.Single().Ordinal);
             Assert.AreEqual(3, (await operations.ReadRunManifestAsync(id, CancellationToken.None).ConfigureAwait(false))!.Nodes.Single().Outputs.Single().Ordinal);
-            foreach (var consumer in replay ? new[] { "api", "ui", "replay", "export" } : new[] { "api", "ui", "export" })
+            foreach (var consumer in replay ? new[] { "api", "ui", "replay" } : new[] { "api", "ui" })
             {
                 using var body = JsonDocument.Parse(await ReadManifestJournalConsumerAsync(root, operations, id, consumer, false).ConfigureAwait(false));
                 var json = body.RootElement;

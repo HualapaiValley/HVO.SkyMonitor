@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Exercise the compiled category audit with VSTest diagnostic messages."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+import uuid
+
+ROOT = Path(__file__).resolve().parent.parent
+AUDIT = ROOT / "scripts/test-categories/bin/Release/net10.0/HVO.SkyMonitor.TestCategoryAudit.dll"
+DOTNET = shutil.which("dotnet")
+UNIT = "Fixture.Unit.Tests"
+PERFORMANCE = "Fixture.Performance.Tests"
+CAMERA_AGENT = "HVO.SkyMonitor.CameraAgent.Tests"
+
+
+class DiscoveryAudit(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.summary = self.root / "summary.md"
+        mock_dotnet = self.root / "dotnet"
+        mock_dotnet.write_text("""#!/usr/bin/env python3
+from pathlib import Path
+import shutil
+import sys
+assert sys.argv[1] == "test" and sys.argv[3:8] == [
+    "--no-build", "--no-restore", "--configuration", "Release", "--list-tests"]
+assert sys.argv[8] == "--diag" and len(sys.argv) == 10
+shutil.copyfile(Path(sys.argv[2]).with_suffix(".fixture"), sys.argv[9])
+""")
+        mock_dotnet.chmod(0o755)
+        self.projects = [UNIT, PERFORMANCE]
+        for project in self.projects:
+            directory = self.root / "tests" / project
+            directory.mkdir(parents=True)
+            (directory / f"{project}.csproj").touch()
+            assembly = self.assembly(project)
+            assembly.parent.mkdir(parents=True)
+            assembly.touch()
+        self.write_solution(self.projects)
+        self.inventory = self.root / "tests/unit-test-projects.json"
+        self.inventory.write_text(json.dumps([UNIT]))
+        self.write_discovery(UNIT, [self.case(UNIT, "Unit")])
+        self.write_discovery(PERFORMANCE, [self.case(PERFORMANCE, "Performance")])
+
+    def assembly(self, project):
+        return self.root / "tests" / project / "bin/Release/net10.0" / f"{project}.dll"
+
+    def write_solution(self, projects):
+        items = "".join(f'<Project Path="tests/{project}/{project}.csproj" />' for project in projects)
+        (self.root / "HVO.SkyMonitor.v9.slnx").write_text(f"<Solution>{items}</Solution>")
+
+    def case(self, project, *categories, name="Fixture.Tests.Cases", areas=(), traits=(), case_id=None):
+        properties = [{"Key": {"Id": "MSTestDiscoverer.TestCategory"}, "Value": list(categories)}]
+        trait_items = [{"Key": "Area", "Value": area} for area in areas] + list(traits)
+        if trait_items:
+            properties.append({"Key": {"Id": "TestObject.Traits"}, "Value": trait_items})
+        return {
+            "Id": case_id or str(uuid.uuid4()),
+            "FullyQualifiedName": name,
+            "Source": str(self.assembly(project)),
+            "Properties": properties,
+        }
+
+    def write_discovery(self, project, cases, *, complete=True, **overrides):
+        def message(kind, payload):
+            data = json.dumps({"MessageType": f"TestDiscovery.{kind}", "Payload": payload})
+            return f"TpTrace Verbose: Received message: {data}\n"
+
+        lines = [message("TestFound", cases[:-1])]
+        if complete:
+            payload = {
+                "TotalTests": len(cases),
+                "IsAborted": False,
+                "FullyDiscoveredSources": [str(self.assembly(project))],
+                "PartiallyDiscoveredSources": [],
+                "NotDiscoveredSources": [],
+                "SkippedDiscoverySources": [],
+                "LastDiscoveredTests": cases[-1:],
+            }
+            lines.append(message("Completed", payload | overrides))
+        (self.root / "tests" / project / f"{project}.fixture").write_text("".join(lines))
+
+    def audit(self, *args):
+        return subprocess.run([DOTNET, str(AUDIT), *args], cwd=self.root, text=True, capture_output=True,
+                              env=os.environ | {"DOTNET_HOST_PATH": str(self.root / "dotnet"),
+                                                "TMPDIR": str(self.root), "GITHUB_STEP_SUMMARY": str(self.summary)})
+
+    def assert_rejected(self, reason):
+        result = self.audit()
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn(reason, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(self.summary.exists())
+
+    def test_report_updates_without_editing_unit_inventory(self):
+        original = self.inventory.read_bytes()
+        initial = self.audit()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self.assertIn("| **Total** | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 2 |", initial.stdout)
+        self.assertEqual(initial.stdout, self.summary.read_text())
+        self.assertLess(initial.stdout.index(PERFORMANCE), initial.stdout.index(UNIT))
+        # Data rows can share a fully qualified method name and must be counted separately.
+        self.write_discovery(UNIT, [self.case(UNIT, "Unit"), self.case(UNIT, "Unit")])
+        updated = self.audit()
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertIn("| **Total** | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 3 |", updated.stdout)
+        self.assertEqual(original, self.inventory.read_bytes())
+        self.assertEqual(initial.stdout + updated.stdout, self.summary.read_text())
+        matrix = self.audit("--emit-matrix")
+        self.assertEqual(matrix.returncode, 0, matrix.stderr)
+        self.assertIn(f"Unit\ttests/{UNIT}/{UNIT}.csproj\t2\n", matrix.stdout)
+        self.assertIn(f"Performance\ttests/{PERFORMANCE}/{PERFORMANCE}.csproj\t1\n", matrix.stdout)
+        self.assertEqual(initial.stdout + updated.stdout, self.summary.read_text())
+
+    def test_invalid_categories_fail_without_publishing_totals(self):
+        for categories, reason in (
+            ([], "uncategorized test"),
+            (["Unit", "Performance"], "multiply categorized test"),
+            (["Unit", "Typo"], "unknown test category"),
+        ):
+            with self.subTest(categories=categories):
+                self.write_discovery(UNIT, [self.case(UNIT, *categories)])
+                self.assert_rejected(reason)
+
+    def test_invalid_literal_and_deferred_data_source_fail(self):
+        source = self.root / "tests" / UNIT / "Cases.cs"
+        source.write_text('[TestCategory("Typo")] [TestCategory(CategoryName)] [DynamicData(nameof(Rows))]')
+        result = self.audit()
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("unknown test category 'Typo'", result.stderr)
+        self.assertIn("test category must use a literal value", result.stderr)
+        self.assertIn("test data source that static discovery cannot expand", result.stderr)
+        self.assertFalse(self.summary.exists())
+
+    def test_incomplete_test_discovery_fails_closed(self):
+        case = self.case(UNIT, "Unit")
+        for options, reason in (
+            ({"complete": False}, "reported no total"),
+            ({"IsAborted": True}, "Incomplete or ambiguous VSTest discovery"),
+            ({"PartiallyDiscoveredSources": [str(self.assembly(UNIT))]}, "Incomplete or ambiguous VSTest discovery"),
+            ({"FullyDiscoveredSources": []}, "Incomplete or ambiguous VSTest discovery"),
+            ({"TotalTests": 2}, "reported 2 and yielded 1 unique cases"),
+        ):
+            with self.subTest(options=options):
+                self.write_discovery(UNIT, [case], **options)
+                self.assert_rejected(reason)
+        self.write_discovery(UNIT, [case, case])
+        self.assert_rejected("reused case ID")
+        self.write_discovery(UNIT, [case | {"Source": str(self.assembly(PERFORMANCE))}])
+        self.assert_rejected("unexpected assembly")
+
+    def test_assembly_and_membership_checks_remain_independent(self):
+        self.write_solution([UNIT])
+        self.assert_rejected("solution inventory differ")
+        self.write_solution(self.projects)
+        for inventory in ([UNIT, UNIT], [UNIT, "Missing.Tests"], [UNIT, None]):
+            with self.subTest(inventory=inventory):
+                self.inventory.write_text(json.dumps(inventory))
+                self.assert_rejected("Invalid, duplicate, or unknown project")
+        self.inventory.write_text(json.dumps([UNIT, PERFORMANCE]))
+        self.assert_rejected("Unit discovery disagrees with membership")
+        # This also catches a project that drops off the manifest while retaining Unit cases.
+        self.inventory.write_text(json.dumps([PERFORMANCE]))
+        self.assert_rejected(f"{UNIT}: Unit discovery disagrees with membership")
+        self.inventory.write_text(json.dumps([UNIT]))
+        self.assembly(UNIT).unlink()
+        self.assert_rejected("Release assembly missing")
+
+    def test_emit_cameraagent_discovery(self):
+        missing_inventory = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(missing_inventory.returncode, 1, missing_inventory)
+        self.assertIn(f"{CAMERA_AGENT} is missing from the Unit project inventory.", missing_inventory.stderr)
+        self.assertEqual(missing_inventory.stdout, "")
+        self.assertFalse(self.summary.exists())
+
+        camera_dir = self.root / "tests" / CAMERA_AGENT
+        camera_dir.mkdir(parents=True)
+        (camera_dir / f"{CAMERA_AGENT}.csproj").touch()
+        camera_assembly = self.assembly(CAMERA_AGENT)
+        camera_assembly.parent.mkdir(parents=True)
+        camera_assembly.touch()
+        self.write_solution([*self.projects, CAMERA_AGENT])
+        self.inventory.write_text(json.dumps([UNIT, CAMERA_AGENT]))
+
+        id_low = str(uuid.UUID(int=1))
+        id_mid = str(uuid.UUID(int=2))
+        id_high = str(uuid.UUID(int=3))
+        self.write_discovery(CAMERA_AGENT, [
+            self.case(CAMERA_AGENT, "Unit", name="CameraSuite.Beta", areas=("Modules.VirtualSky",),
+                      traits=({"Key": "Owner", "Value": "Ignored"},), case_id=id_high),
+            self.case(CAMERA_AGENT, "Unit", "Unit", name="CameraSuite.Alpha", areas=("Capture.Processing",),
+                      case_id=id_low),
+            self.case(CAMERA_AGENT, "Performance", name="CameraSuite.Perf", areas=("Capture.Processing",),
+                      case_id=id_mid),
+        ])
+
+        result = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(result.returncode, 0, result)
+        self.assertEqual(result.stderr, "")
+        self.assertFalse(self.summary.exists())
+        self.assertEqual(json.loads(result.stdout), [
+            {"Id": id_low, "Name": "CameraSuite.Alpha", "Categories": ["Unit"], "Areas": ["Capture.Processing"]},
+            {"Id": id_mid, "Name": "CameraSuite.Perf", "Categories": ["Performance"], "Areas": ["Capture.Processing"]},
+            {"Id": id_high, "Name": "CameraSuite.Beta", "Categories": ["Unit"], "Areas": ["Modules.VirtualSky"]},
+        ])
+
+        self.write_discovery(CAMERA_AGENT, [
+            self.case(CAMERA_AGENT, "Unit", name="CameraSuite.NullArea", traits=({"Key": "Area", "Value": None},)),
+        ])
+        null_area = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(null_area.returncode, 1, null_area)
+        self.assertIn("null Area trait", null_area.stderr)
+        self.assertEqual(null_area.stdout, "")
+
+        camera_assembly.unlink()
+        missing_assembly = self.audit("--emit-cameraagent-discovery")
+        self.assertEqual(missing_assembly.returncode, 1, missing_assembly)
+        self.assertIn("Release assembly missing", missing_assembly.stderr)
+        self.assertEqual(missing_assembly.stdout, "")
+
+        bad_args = self.audit("--emit-matrix", "--emit-cameraagent-discovery")
+        self.assertEqual(bad_args.returncode, 2, bad_args)
+        self.assertIn("Usage:", bad_args.stderr)
+
+
+if __name__ == "__main__":
+    if not DOTNET or not AUDIT.is_file():
+        raise SystemExit("Build scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj in Release first.")
+    unittest.main()

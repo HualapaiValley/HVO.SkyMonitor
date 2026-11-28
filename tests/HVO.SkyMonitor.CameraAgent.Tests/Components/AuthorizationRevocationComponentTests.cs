@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "bUnit InvokeAsync must retain its renderer synchronization context.")]
 public sealed class AuthorizationRevocationComponentTests
 {
@@ -107,8 +108,8 @@ public sealed class AuthorizationRevocationComponentTests
         context.JSInterop.Mode = JSRuntimeMode.Loose;
         var service = Configure(context);
         var cut = context.Render<QuarantinePage>();
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Artifact quarantine", StringComparison.Ordinal));
-        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(Denied<OperatorOutboxPage>());
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Quarantine and retry browser", StringComparison.Ordinal));
+        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(Denied<OperatorQuarantinePage>());
 
         await cut.InvokeAsync(cut.Instance.RefreshAuthorizationAsync);
         cut.Render();

@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,7 +25,7 @@ public sealed partial class DurableCaptureProcessingTests
     [DataRow("payload")]
     [DataRow("sidecar")]
     [TestCategory("Integration")]
-    public async Task ActualMeasuredAssociations_PublishAndRestoreExactOutboxEvidenceOrRejectTampering(string fault)
+    public async Task ActualMeasuredAssociations_PublishAndRestoreExactLocalEvidenceOrRejectTampering(string fault)
     {
         ArgumentNullException.ThrowIfNull(fault);
         var root = CreateTestRoot();
@@ -37,17 +36,13 @@ public sealed partial class DurableCaptureProcessingTests
             ProcessingProduct product;
             byte[] payload;
             byte[] sidecar;
-            byte[] queuedManifest;
-            string idempotencyKey;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
-            using (var outbox = new SqliteArtifactOutbox())
             {
-                var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+                var persistence = CreatePersistence(fixture.Options, store, telemetry);
                 var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
                 var observer = new MeasuredDurabilityObservationStep();
-                var producerGraph = CreateMeasuredDurabilityGraph(sceneInput, adapter, persistence, outbox, fixture.Options, root);
+                var producerGraph = CreateMeasuredDurabilityGraph(sceneInput, adapter, persistence, fixture.Options, root);
                 var graph = new CaptureProcessingGraph([
                     .. producerGraph.Nodes,
                     new CaptureProcessingGraphNode("observe-initial", observer, ["measured"], true,
@@ -77,45 +72,28 @@ public sealed partial class DurableCaptureProcessingTests
                 CollectionAssert.AreEqual(new[] { fixture.Manifest.Descriptor.Artifact.ArtifactId },
                     product.SourceArtifactIds.ToArray());
                 Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(output.ProductManifest);
-                payload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
-                sidecar = await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false);
+                payload = await ReadProductPartAsync(root, output).ConfigureAwait(false);
+                sidecar = await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false);
                 CollectionAssert.AreEqual(product.Payload.ToArray(), payload);
                 CollectionAssert.AreEqual(output.EvidenceJson, sidecar);
                 Assert.AreEqual(product.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(payload));
-                var upload = new StructuredProcessingProductManifestV1(
-                    StructuredProcessingProductManifestV1.CurrentSchemaVersion,
-                    new StructuredProcessingProductDescriptorV1(fixture.Manifest.Descriptor, output.Artifact,
-                        product.OutputIdentitySha256, product.Algorithms, product.Compatibility,
-                        product.TotalIntegration.Ticks, product.Payload.Length, product.Kind,
-                        product.SchemaVersion!, product.ContentIdentitySha256!), output.PayloadRelativePath, "measured");
-                idempotencyKey = upload.IdempotencyKey;
-                var queued = await outbox.ReadAsync(root, idempotencyKey, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(queued);
-                Assert.AreEqual(ArtifactOutboxStatus.Pending, queued.Status);
-                queuedManifest = queued.ManifestBytes.ToArray();
-                CollectionAssert.AreEqual(StructuredProcessingProductManifestJson.Serialize(upload), queuedManifest);
-                Assert.AreEqual(1L, (await outbox.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).PendingCount);
             }
 
             if (fault != "none")
             {
-                var path = Path.Combine(root, fault == "payload" ? output.PayloadRelativePath : output.SidecarRelativePath);
                 var original = fault == "payload" ? payload : sidecar;
                 var tampered = new byte[original.Length + 1];
                 tampered[0] = (byte)' ';
                 original.CopyTo(tampered, 1);
-                await File.WriteAllBytesAsync(path, tampered).ConfigureAwait(false);
+                await SubstituteProductPartAsync(root, output, tampered, evidence: fault == "sidecar").ConfigureAwait(false);
             }
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            using var restartedOutbox = new SqliteArtifactOutbox();
-            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry);
+            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedTelemetry);
             var noReexecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(
                 ProcessingOutcome.TerminalFailure("fixture.unexpected-reexecution")));
             var inspector = new RestoredMetadataInspectingStep(product);
-            var restartedGraph = CreateMeasuredDurabilityGraph(sceneInput, noReexecution, restartedPersistence,
-                restartedOutbox, fixture.Options, root);
+            var restartedGraph = CreateMeasuredDurabilityGraph(sceneInput, noReexecution, restartedPersistence, fixture.Options, root);
             var graphWithInspection = new CaptureProcessingGraph([
                 .. restartedGraph.Nodes,
                 new CaptureProcessingGraphNode("inspect-measured", inspector, ["measured"], true,
@@ -135,9 +113,9 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.AreEqual(1, node.Attempt, "Restart must restore, never silently rerun a completed producer.");
                 }
                 CollectionAssert.AreEqual(payload,
-                    await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false));
+                    await ReadProductPartAsync(root, output).ConfigureAwait(false));
                 CollectionAssert.AreEqual(sidecar,
-                    await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
+                    await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             }
             else
             {
@@ -147,24 +125,6 @@ public sealed partial class DurableCaptureProcessingTests
                     .ConfigureAwait(false);
                 Assert.IsFalse(inspector.SawExactProduct);
             }
-            var retained = await restartedOutbox.ReadAsync(root, idempotencyKey, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(retained);
-            CollectionAssert.AreEqual(queuedManifest, retained.ManifestBytes.ToArray());
-            Assert.AreEqual(ArtifactOutboxStatus.Pending, retained.Status);
-            if (fault == "none")
-            {
-                var lease = await restartedOutbox.ClaimAsync(root, "fixture-worker", TimeSpan.FromMinutes(1),
-                    CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(lease);
-                Assert.AreEqual(idempotencyKey, lease.Record.IdempotencyKey);
-                Assert.AreEqual(ArtifactOutboxManifestKind.StructuredProductV1, lease.Record.ManifestKind);
-                var manifest = lease.Record.ProductManifest;
-                Assert.IsNotNull(manifest);
-                Assert.AreEqual(MeasuredStellarAssociationsV1.CurrentSchemaVersion, manifest.Descriptor.ProductSchemaVersion);
-                Assert.AreEqual(product.OutputIdentitySha256, manifest.Descriptor.OutputIdentitySha256);
-                Assert.AreEqual(product.ContentIdentitySha256, manifest.Descriptor.ContentIdentitySha256);
-                CollectionAssert.AreEqual(queuedManifest, lease.Record.ManifestBytes.ToArray());
-            }
         }
         finally
         {
@@ -173,16 +133,15 @@ public sealed partial class DurableCaptureProcessingTests
     }
 
     private static CaptureProcessingGraph CreateMeasuredDurabilityGraph(ProcessingAuxiliaryInput scene,
-        CameraAgentRecipeExecutionAdapter adapter, CaptureProcessingPersistence persistence, SqliteArtifactOutbox outbox,
+        CameraAgentRecipeExecutionAdapter adapter, CaptureProcessingPersistence persistence,
         IOptions<CameraAgentHostOptions> options, string root)
     {
         var sceneStep = new DurabilitySceneRecipeStep(scene, adapter);
         var measured = new MeasuredStellarAssociationCaptureProcessingStep(new("measured", "MeasuredStellarAssociations", 1),
             new MeasuredStellarAssociationProcessingStepOptions(), adapter);
-        var storage = new FileStorageCaptureProcessingStep(new("storage", "Storage", 2),
-            new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = true, UpdateLatestFrame = false },
-            Mock.Of<ILatestFrameAccessor>(), Mock.Of<IFrameStorageService>(), outbox, options,
-            NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
+        var storage = new SiloCaptureProcessingStep(new("storage", "Storage", 2),
+            new SiloCaptureProcessingStepOptions { UpdateLatestFrame = false },
+            Mock.Of<ILatestFrameAccessor>(), persistence);
         return new CaptureProcessingGraph([
             new CaptureProcessingGraphNode("scene", sceneStep, [], true, sceneStep.RecipeName,
                 sceneStep.OutputRole, sceneStep.OutputVariant, new string('A', 64)),
@@ -238,18 +197,19 @@ public sealed partial class DurableCaptureProcessingTests
             SchemaVersion: scene.SchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: sceneBytes)
         { ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes) };
         var manifestBytes = CaptureContractJson.Serialize(manifest);
-        await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), bytes).ConfigureAwait(false);
-        await File.WriteAllBytesAsync(Path.Combine(root, "raw.json"), manifestBytes).ConfigureAwait(false);
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var reserved = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId,
             descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(descriptor.Capture.CaptureSequence, reserved.CaptureSequence);
-        Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
+        var entry = new RawIngressJournalEntry(
             descriptor.Capture.AgentId, descriptor.Capture.CaptureSequence, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
             descriptor.Artifact.ChecksumSha256, bytes.Length, "raw.bin", "raw.json", manifestBytes,
-            descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
+            descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc);
+        Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false));
+        await SiloInfrastructureFixture.PublishRawFixtureAsync(
+            SiloInfrastructureFixture.ProductStorage(root), entry, manifest, bytes, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame).IsValid);
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
             new StoredFrameReference("raw.bin", Path.Combine(root, "raw.bin"), utc, FrameArtifactRole.Raw),

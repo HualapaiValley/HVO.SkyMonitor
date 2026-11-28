@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
@@ -46,6 +47,41 @@ public sealed class AstrometricSolverTests
         var center = mapping.LocalPixelScale(new(256, 256)); var edge = mapping.LocalPixelScale(new(440, 256));
         Assert.AreEqual(center.XArcsecondsPerPixel!.Value, center.YArcsecondsPerPixel!.Value, 1e-7);
         Assert.AreNotEqual(edge.XArcsecondsPerPixel, edge.YArcsecondsPerPixel);
+    }
+
+    [TestMethod]
+    public void CaptureCalculator_UsesOneExposureAndReadoutForBothDirectionsAndTrackSamples()
+    {
+        var fixture = Accepted.Value;
+        var mapping = new AstrometricMapping(fixture.Calibration, fixture.Result.Assessment);
+        var readout = new FrameReadoutDescriptor(1200, 1300, 80, 120, 1024, 1024, 2, 2,
+            FrameBinningAlgorithm.DigitalAverageV1, null, null);
+        var calculator = mapping.CreateCalculator(readout);
+        var readoutPixel = new PixelPoint(280.25, 240.5);
+        var nativePixel = new PixelPoint(640.5, 601);
+        var sky = calculator.PixelToSky(readoutPixel)!;
+        Assert.AreEqual(sky, calculator.PixelToSky(nativePixel, AstrometricPixelSpace.NativeSensor));
+        Assert.AreEqual(fixture.Result.Assessment.Frame.MidpointUtc, sky.CoordinateEpochUtc);
+        var readoutRoundTrip = calculator.EquatorialToPixel(sky.EquatorialMeanOfDate)!.Value;
+        var nativeRoundTrip = calculator.HorizontalToPixel(sky.Horizontal, AstrometricPixelSpace.NativeSensor)!.Value;
+        Assert.IsLessThan(1e-7, AstrometricTestFixture.Distance(readoutPixel, readoutRoundTrip));
+        Assert.IsLessThan(1e-7, AstrometricTestFixture.Distance(nativePixel, nativeRoundTrip));
+        Assert.IsNull(calculator.PixelToSky(new(79, 200), AstrometricPixelSpace.NativeSensor));
+        Assert.IsNull(mapping.CreateCalculator().PixelToSky(nativePixel, AstrometricPixelSpace.NativeSensor));
+        Assert.IsNull(calculator.HorizontalToPixel(new(-.001, 180)));
+        Assert.IsNull(calculator.EquatorialToPixel(new(24, 0)));
+        Assert.IsNull(calculator.EquatorialToPixel(new(2, double.NaN)));
+        const AstrometricPixelSpace invalidSpace = (AstrometricPixelSpace)(-1);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => calculator.HorizontalToPixel(new(-.001, 180), invalidSpace));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => calculator.MapTrack([], invalidSpace));
+        Assert.ThrowsExactly<ArgumentException>(() => mapping.CreateCalculator(readout with { RoiWidth = 1023 }));
+        Assert.ThrowsExactly<ArgumentException>(() => calculator.MapTrack(new PixelPoint[AstrometricCaptureCalculator.MaximumTrackSamples + 1]));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.ThrowsExactly<OperationCanceledException>(() => calculator.MapTrack([readoutPixel], cancellationToken: cancelled.Token));
+        var mapped = calculator.MapTrack([readoutPixel, new(double.NaN, 20), new(512, 256)]);
+        CollectionAssert.AreEqual(new AstrometricSkyPoint?[] { sky, null, null }, mapped.ToArray());
+        Assert.AreEqual(fixture.Result.Assessment.IdentitySha256, calculator.AssessmentIdentitySha256);
     }
     [TestMethod]
     public void WarmSolve_UsesPriorWithoutGlobalSearchAndPreservesCalibrationIdentity()

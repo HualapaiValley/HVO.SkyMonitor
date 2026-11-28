@@ -6,9 +6,49 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Scheduling")]
 public sealed class CaptureScheduleEngineTests
 {
     private static readonly ObservatoryLocation Observer = new(35.347, -113.878, 1000, "America/Phoenix");
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void LegacyAlwaysOpenAdmissionRetainsFinitePolicyEdgesBeyondPreview(bool dateException)
+    {
+        var closedDate = new DateOnly(2026, 7, 15);
+        var closed = new DateTimeOffset(closedDate.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var reopened = closed.AddDays(1);
+        var definition = Definition([Profile("legacy")], []) with
+        {
+            LegacyAlwaysOpen = true,
+            LegacySetpointProfileId = "legacy",
+            DateExceptions = dateException ? [new("closed", closedDate, ForceClosed: true)] : null,
+            Blackouts = dateException ? null : [new("closed", closed, reopened)]
+        };
+
+        var farBefore = Evaluate(closed.AddDays(-21));
+        var nearBefore = Evaluate(closed.AddHours(-2));
+        var denied = Evaluate(closed);
+        var nearAfter = Evaluate(reopened);
+        var farAfter = Evaluate(reopened.AddDays(21));
+        Assert.AreEqual(new CaptureScheduleOpenSegment(null, closed), farBefore.OpenSegment);
+        Assert.AreEqual(closed, farBefore.NextTransitionUtc);
+        Assert.AreEqual(farBefore.OpenSegment, nearBefore.OpenSegment);
+        Assert.IsFalse(denied.Admitted);
+        Assert.AreEqual(new CaptureScheduleOpenSegment(reopened, null), nearAfter.OpenSegment);
+        Assert.AreEqual(nearAfter.OpenSegment, farAfter.OpenSegment);
+        Assert.IsNull(farAfter.NextTransitionUtc);
+
+        CaptureScheduleDecision Evaluate(DateTimeOffset utc)
+        {
+            var date = DateOnly.FromDateTime(utc.UtcDateTime);
+            var preview = CaptureScheduleIntervalExpander.ExpandAdmission(
+                definition, date.AddDays(-4), 9, TimeZoneInfo.Utc, Observer, new FixedSolarEvents());
+            return CaptureScheduleEvaluator.Evaluate(definition, preview,
+                new CaptureScheduleEvaluationRequest(utc, CaptureScheduleSafetyState.Available, false));
+        }
+    }
 
     [TestMethod]
     public void Identity_NormalizesDeclarationOrderAndRejectsDuplicateIdentifiers()

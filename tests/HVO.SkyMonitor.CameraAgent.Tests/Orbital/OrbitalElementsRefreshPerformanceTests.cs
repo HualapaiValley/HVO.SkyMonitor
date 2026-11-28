@@ -38,6 +38,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </remarks>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Orbital")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class OrbitalElementsRefreshPerformanceTests : OrbitalStoreTestBase
@@ -251,7 +252,7 @@ public sealed class OrbitalElementsRefreshPerformanceTests : OrbitalStoreTestBas
             Assert.AreEqual(1, reader.LoadCount, "Warm current reads perform no materialization.");
             var afterFirst = Storage(root);
             var manifestBytes = FileBytes(store.ManifestPath(first.ManifestSha256));
-            var rawBytes = FileBytes(store.RawPath(OrbitalElementsStoreTestData.Hash(workload.Raw)));
+            var rawBytes = FileBytes(store.RawPath(OrbitalElementsStoreTestData.Hash(workload.Raw), SqliteOrbitalElementsStore.CsvExtension));
 
             // An identical body two hours later: a new manifest activates over the unchanged payload.
             clock.Advance(Floor);
@@ -425,7 +426,7 @@ public sealed class OrbitalElementsRefreshPerformanceTests : OrbitalStoreTestBas
             Baseline = "none: there is no prior orbital acquisition implementation, so this is a first measurement",
             Workload = new
             {
-                Description = "deterministic synthetic CelesTrak-GP-shaped JSON generated in memory; no provider bytes, no network",
+                Description = "deterministic synthetic CelesTrak GP CSV generated in memory; no provider bytes, no network",
                 OrbitalPerformanceWorkload.RecordCount,
                 OrbitalPerformanceWorkload.ObjectCount,
                 SixDigitCatalogRecords = OrbitalPerformanceWorkload.SixDigitObjects,

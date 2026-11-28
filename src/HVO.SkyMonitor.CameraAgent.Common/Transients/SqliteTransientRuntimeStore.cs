@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using System.Diagnostics.CodeAnalysis;
@@ -271,6 +272,7 @@ internal sealed record TransientRuntimeTotals(long Frames, long Candidates, long
 internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement, IDisposable
 {
     private static readonly JsonSerializerOptions CaptureContextJson = new(JsonSerializerDefaults.Web);
+    private readonly SiloArtifactStorage _silo;
 
     public async ValueTask<TransientCaptureRunState?> ReadCaptureRunAsync(
         Guid captureId, CancellationToken cancellationToken)
@@ -413,6 +415,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         TransientWorkerTelemetry telemetry,
+        SiloArtifactStorage silo,
         ITransientRuntimeFaultInjector? faultInjector = null)
     {
         var configured = options.Value;
@@ -422,6 +425,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         _timeProvider = timeProvider;
         _telemetry = telemetry;
         _faultInjector = faultInjector ?? NullTransientRuntimeFaultInjector.Instance;
+        _silo = silo ?? throw new ArgumentNullException(nameof(silo));
         _limits = configured.CaptureDistribution;
         _required = configured.TransientDetection.Required;
     }
@@ -575,7 +579,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 using var command = connection.CreateCommand();
                 command.CommandText = """
                     SELECT r.raw_capture_row_id, r.raw_artifact_id, r.payload_length,
-                           r.payload_relative_path, r.sidecar_relative_path, r.manifest_json,
+                           r.payload_relative_path, r.manifest_json,
                            r.manifest_sha256, r.payload_sha256, r.state,
                             COALESCE(f.attempt_count, 0), COALESCE(f.available_unix_ms, r.committed_unix_ms),
                             c.context_json, c.context_sha256
@@ -597,17 +601,16 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 var artifactId = Guid.ParseExact(reader.GetString(1), "N");
                 var payloadLength = reader.GetInt64(2);
                 var payloadRelativePath = reader.GetString(3);
-                var sidecarRelativePath = reader.GetString(4);
-                var manifestJson = await reader.GetFieldValueAsync<byte[]>(5, cancellationToken).ConfigureAwait(false);
-                var manifestSha256 = reader.GetString(6);
-                var payloadSha256 = reader.GetString(7);
-                var state = reader.GetString(8);
-                var attempt = reader.GetInt32(9);
-                var available = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(10));
-                var contextJson = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
-                    ? null : await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
-                var contextSha256 = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
-                    ? null : reader.GetString(12);
+                var manifestJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
+                var manifestSha256 = reader.GetString(5);
+                var payloadSha256 = reader.GetString(6);
+                var state = reader.GetString(7);
+                var attempt = reader.GetInt32(8);
+                var available = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(9));
+                var contextJson = await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false)
+                    ? null : await reader.GetFieldValueAsync<byte[]>(10, cancellationToken).ConfigureAwait(false);
+                var contextSha256 = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
+                    ? null : reader.GetString(11);
                 await reader.DisposeAsync().ConfigureAwait(false);
                 if (!string.Equals(state, "committed", StringComparison.Ordinal))
                 {
@@ -623,15 +626,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 {
                     throw new InvalidDataException("Transient runtime source manifest is invalid or altered.");
                 }
-                var payloadPath = Resolve(payloadRelativePath);
-                var sidecarPath = Resolve(sidecarRelativePath);
-                if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-                {
-                    throw new FileNotFoundException("Transient runtime source evidence is missing.");
-                }
-                RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
-                RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
-                if (payloadLength > int.MaxValue || new FileInfo(payloadPath).Length != payloadLength)
+                if (payloadLength > int.MaxValue || manifest.Descriptor.Layout.ByteLength != payloadLength)
                 {
                     throw new InvalidDataException("Transient runtime source payload length differs from committed evidence.");
                 }
@@ -655,27 +650,11 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                         throw new InvalidDataException("Transient capture context is invalid.", exception);
                     }
                 }
-                var payloadStream = OpenEvidence(payloadPath);
-                try
-                {
-                    var sidecarStream = OpenEvidence(sidecarPath);
-                    snapshots.Add(new TransientEvidenceSnapshot(
-                        offset,
-                        payloadLength,
-                        payloadSha256,
-                        manifestJson,
-                        manifest,
-                        payloadStream,
-                        sidecarStream,
-                        new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt),
-                        capturedConfiguration,
-                        capturedRigSha256));
-                }
-                catch
-                {
-                    await payloadStream.DisposeAsync().ConfigureAwait(false);
-                    throw;
-                }
+                var (payloadStream, sidecarStream) = await _silo.OpenLiveRawPairAsync(manifest.Descriptor, manifestJson,
+                    cancellationToken).ConfigureAwait(false);
+                snapshots.Add(new TransientEvidenceSnapshot(offset, payloadLength, payloadSha256, manifestJson, manifest,
+                    payloadStream, sidecarStream, new TransientRuntimeFrame(rawRowId, agentId, sequence, artifactId, available, attempt),
+                    capturedConfiguration, capturedRigSha256));
             }
         }
         catch
@@ -1227,7 +1206,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 using var evidenceReader = await evidenceRead.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 if (!await evidenceReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+                    throw new QuarantineOperationCollisionException("Transient runtime quarantine no longer exists.");
                 }
                 var evidence = await ReadQuarantineRecordAsync(evidenceReader, cancellationToken).ConfigureAwait(false);
                 EnsureExactTarget(evidence, target);
@@ -1249,7 +1228,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+                throw new QuarantineOperationCollisionException("Transient runtime quarantine no longer exists.");
             }
             var current = await ReadQuarantineRecordAsync(reader, cancellationToken).ConfigureAwait(false);
             await reader.DisposeAsync().ConfigureAwait(false);
@@ -1272,7 +1251,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 work.Parameters.AddWithValue("$expected", target.ExpectedWorkUpdatedUtc.ToUnixTimeMilliseconds());
                 if (await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
-                    throw new OutboxOperationCollisionException("Transient lane work changed before abandonment.");
+                    throw new QuarantineOperationCollisionException("Transient lane work changed before abandonment.");
                 }
             }
             using (var frame = connection.CreateCommand())
@@ -1290,7 +1269,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 frame.Parameters.AddWithValue("$failure", target.ExpectedFailureReason);
                 if (await frame.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
-                    throw new OutboxOperationCollisionException("Transient worker frame changed before abandonment.");
+                    throw new QuarantineOperationCollisionException("Transient worker frame changed before abandonment.");
                 }
             }
             await InsertOperationReceiptAsync(
@@ -1328,7 +1307,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {
-            throw new OutboxOperationCollisionException("Transient runtime operation collided with durable state.", exception);
+            throw new QuarantineOperationCollisionException("Transient runtime operation collided with durable state.", exception);
         }
         finally
         {
@@ -1705,7 +1684,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 ownership.InventorySha256,
                 ownership.LegacyOwnershipExternallyEstablished,
                 out var normalizedOwnership) || ownership != normalizedOwnership ||
-            !OutboxOperationsReasonCodes.IsAllowed(OutboxOperationAction.Abandon, reasonCode))
+            !QuarantineOperationReasonCodes.IsAllowed(QuarantineOperationAction.Abandon, reasonCode))
         {
             throw new ArgumentException("Transient runtime operation is invalid.");
         }
@@ -1731,7 +1710,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             current.WorkUpdatedUtc != target.ExpectedWorkUpdatedUtc ||
             current.FrameUpdatedUtc != target.ExpectedFrameUpdatedUtc)
         {
-            throw new OutboxOperationCollisionException("Transient runtime identity or state changed.");
+            throw new QuarantineOperationCollisionException("Transient runtime identity or state changed.");
         }
     }
 
@@ -1740,52 +1719,39 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         TransientRuntimeOperationTarget target,
         CancellationToken cancellationToken)
     {
-        string payloadRelativePath;
-        string sidecarRelativePath;
         long payloadLength;
         byte[] manifestJson;
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
-                SELECT payload_relative_path, sidecar_relative_path, payload_length, payload_sha256,
-                       manifest_json, manifest_sha256, state, retention_hold
+                SELECT payload_length, payload_sha256, manifest_json, manifest_sha256, state, retention_hold
                 FROM raw_captures WHERE raw_capture_row_id = $raw;
                 """;
             command.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
-                reader.GetString(3) != target.PayloadSha256 || reader.GetString(5) != target.ManifestSha256 ||
-                reader.GetString(6) != "committed" || !reader.GetBoolean(7))
+                reader.GetString(1) != target.PayloadSha256 || reader.GetString(3) != target.ManifestSha256 ||
+                reader.GetString(4) != "committed" || !reader.GetBoolean(5))
             {
                 throw new InvalidDataException("Transient runtime source evidence or retention hold changed.");
             }
-            payloadRelativePath = reader.GetString(0);
-            sidecarRelativePath = reader.GetString(1);
-            payloadLength = reader.GetInt64(2);
-            manifestJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
+            payloadLength = reader.GetInt64(0);
+            manifestJson = await reader.GetFieldValueAsync<byte[]>(2, cancellationToken).ConfigureAwait(false);
         }
-        var payloadPath = Resolve(payloadRelativePath);
-        var sidecarPath = Resolve(sidecarRelativePath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath) || new FileInfo(payloadPath).Length != payloadLength)
+
+        var parsed = CaptureContractJson.ParseManifest(manifestJson);
+        if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
+            manifest.Descriptor.Layout.ByteLength != payloadLength || manifest.Descriptor.Artifact.ArtifactId != target.ArtifactId ||
+            manifest.Descriptor.Artifact.ChecksumSha256 != target.PayloadSha256 ||
+            CaptureContractJson.ComputeManifestSha256(manifestJson) != target.ManifestSha256)
+            throw new InvalidDataException("The transient runtime source has inconsistent admission evidence.");
+        try
         {
-            throw new InvalidDataException("Transient runtime source evidence is unavailable.");
+            await _silo.VerifyLiveRawPairAsync(manifest.Descriptor, manifestJson, cancellationToken).ConfigureAwait(false);
         }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
-        using (var payload = OpenEvidence(payloadPath))
+        catch (FileNotFoundException exception)
         {
-            var checksum = Convert.ToHexString(
-                await SHA256.HashDataAsync(payload, cancellationToken).ConfigureAwait(false));
-            if (!string.Equals(checksum, target.PayloadSha256, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Transient runtime source payload checksum is invalid.");
-            }
-        }
-        using var sidecar = OpenEvidence(sidecarPath);
-        var sidecarBytes = await ReadExactlyAsync(sidecar, manifestJson.Length, cancellationToken).ConfigureAwait(false);
-        if (!sidecarBytes.AsSpan().SequenceEqual(manifestJson))
-        {
-            throw new InvalidDataException("Transient runtime source sidecar differs from its durable manifest.");
+            throw new InvalidDataException("Transient runtime source evidence is unavailable.", exception);
         }
     }
 
@@ -1840,7 +1806,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             reader.GetString(22) != "abandon" || reader.GetString(23) != actor || reader.GetString(24) != reasonCode ||
             reader.GetString(27) != reader.GetString(28))
         {
-            throw new OutboxOperationCollisionException("Idempotency key belongs to another transient runtime operation.");
+            throw new QuarantineOperationCollisionException("Idempotency key belongs to another transient runtime operation.");
         }
         return new TransientRuntimeOperationReceipt(
             TransientRuntimeOperationDisposition.Duplicate, reader.GetString(25), actor, reasonCode,
@@ -2112,17 +2078,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         return output;
     }
 
-    private static FileStream OpenEvidence(string path)
-        => new(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
     private static async ValueTask<byte[]> ReadExactlyAsync(
-        FileStream stream,
+        Stream stream,
         int length,
         CancellationToken cancellationToken)
     {
@@ -2135,24 +2092,6 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         return output;
     }
 
-    private string Resolve(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
-        {
-            throw new InvalidDataException("Transient runtime source path is not a safe relative path.");
-        }
-        var resolved = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = _root.EndsWith(Path.DirectorySeparatorChar)
-            ? _root
-            : _root + Path.DirectorySeparatorChar;
-        if (!resolved.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Transient runtime source path escapes the ingress root.");
-        }
-        return resolved;
-    }
-
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated busy timeout is a validated integer option; no SQL value is user supplied.")]
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
@@ -2183,10 +2122,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             EnsureDatabaseFilesArePhysical();
-            connection.CreateFunction<string?, string>(
-                "hvo_sha256",
-                static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
-                isDeterministic: true);
+            Sqlite.SqliteHashFunctions.RegisterSha256(connection);
             return connection;
         }
         catch
@@ -2493,8 +2429,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         string PayloadSha256,
         byte[] ManifestJson,
         ArtifactManifestV2 Manifest,
-        FileStream PayloadStream,
-        FileStream SidecarStream,
+        Stream PayloadStream,
+        Stream SidecarStream,
         TransientRuntimeFrame Runtime,
         CameraModuleConfig? CaptureConfiguration,
         string? CapturedRigSha256) : IAsyncDisposable

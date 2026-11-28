@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
 
 internal sealed class EnvironmentalObservationSchemaInitializationService(
     IOptions<CameraAgentHostOptions> options,
-    SqliteEnvironmentalObservationOutbox store) : IHostedService
+    SqliteEnvironmentalObservationStore store) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {

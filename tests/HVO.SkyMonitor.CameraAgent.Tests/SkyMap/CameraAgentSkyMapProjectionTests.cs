@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SkyMap;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "SkyMap")]
 public sealed class CameraAgentSkyMapProjectionTests
 {
     private static readonly DateTimeOffset Instant = new(2026, 1, 15, 6, 30, 0, TimeSpan.Zero);
@@ -166,7 +167,6 @@ public sealed class CameraAgentSkyMapProjectionTests
         Assert.AreEqual("sky-map-fixture-location", result.Observer.LocationId);
         Assert.AreEqual(1, result.Observer.Version);
         Assert.AreEqual(CameraAgentSkyMapLocationOrigin.StartupSeed, result.Observer.Origin);
-        Assert.IsFalse(result.Observer.StagedAcknowledgementPending);
         Assert.IsTrue(result.Observer.EffectiveAtInstant);
         Assert.AreEqual(35d, result.Observer.LatitudeDegrees);
         Assert.AreEqual(-115d, result.Observer.LongitudeDegrees);
@@ -463,15 +463,20 @@ public sealed class CameraAgentSkyMapProjectionTests
     {
         private readonly InMemoryCelestialCatalog _catalog;
 
-        internal FixtureCatalog(IEnumerable<CelestialCatalogObject> objects, CatalogMetadata metadata)
+        internal FixtureCatalog(IEnumerable<CelestialCatalogObject> objects, CatalogMetadata metadata,
+            string preprocessingVersion = "3")
         {
             _catalog = new InMemoryCelestialCatalog(objects);
             Metadata = metadata;
+            PreprocessingVersion = preprocessingVersion;
         }
+
+        public string CatalogId => Metadata.Name;
+        public string CatalogPackageVersion => Metadata.Version;
 
         public CatalogMetadata Metadata { get; }
 
-        public string PreprocessingVersion => "3";
+        public string PreprocessingVersion { get; }
 
         public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => _catalog.Query(query);
 

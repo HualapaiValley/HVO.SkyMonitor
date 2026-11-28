@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -40,6 +39,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "NightlyProducts")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods do not require context-free continuations.")]
 public sealed class NightlyProductGenerationPerformanceTests
@@ -156,9 +156,7 @@ public sealed class NightlyProductGenerationPerformanceTests
                 {
                     journalBytes = DirectoryBytes(Path.Combine(root, "journal")),
                     nightlyDatabaseBytes = DirectoryBytes(Path.Combine(root, SqliteNightlyProductStore.DirectoryName)),
-                    nightlyProductFileBytes = DirectoryBytes(Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName)),
-                    nightlyProductFiles = Directory.EnumerateFiles(
-                        Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName), "*", SearchOption.AllDirectories).Count()
+                    siloPayloadVersions = await CountSiloPayloadVersionsAsync(root)
                 },
                 process = Process()
             });
@@ -312,7 +310,8 @@ public sealed class NightlyProductGenerationPerformanceTests
         };
         var options = NightlyProductFixture.HostOptions(root, nightly);
         var clock = new NightlyClock(AfterRollover);
-        var store = new SqliteNightlyProductStore(options, clock);
+        using var silo = new NightlySiloFixture(root);
+        var store = silo.OpenStore(options, clock);
         var generator = Generator(store);
         try
         {
@@ -329,7 +328,7 @@ public sealed class NightlyProductGenerationPerformanceTests
                         generator.Dispose();
                         store.Dispose();
                         SqliteConnection.ClearAllPools();
-                        store = new SqliteNightlyProductStore(options, clock);
+                        store = silo.OpenStore(options, clock);
                         generator = Generator(store);
                     }
                     (report, var run) = await MeasureRunAsync(generator, reader, kind, NightlyProductFixture.Occurrence(kind, nightly));
@@ -342,12 +341,12 @@ public sealed class NightlyProductGenerationPerformanceTests
                 if (restartEveryRun)
                 {
                     generator.Dispose(); store.Dispose(); SqliteConnection.ClearAllPools();
-                    store = new SqliteNightlyProductStore(options, clock); generator = Generator(store);
+                    store = silo.OpenStore(options, clock); generator = Generator(store);
                 }
                 var (unchanged, unchangedRun) = await MeasureRunAsync(generator, reader, kind, NightlyProductFixture.Occurrence(kind, nightly));
                 Assert.AreEqual(0, unchanged.ProductsPublished, unchanged.Describe());
                 Assert.AreEqual(0, unchangedRun.Restores, "An unchanged re-run restored source payloads.");
-                result[kind] = await DescribeAsync(root, store, kind, runs, unchangedRun);
+                result[kind] = await DescribeAsync(store, kind, runs, unchangedRun);
             }
             return result;
         }
@@ -368,7 +367,6 @@ public sealed class NightlyProductGenerationPerformanceTests
     }
 
     private static async Task<KindEvidence> DescribeAsync(
-        string root,
         SqliteNightlyProductStore store,
         NightlyProductKind kind,
         List<RunEvidence> runs,
@@ -391,12 +389,7 @@ public sealed class NightlyProductGenerationPerformanceTests
         }
         Assert.HasCount(1, finals, "A completed window must contain exactly one final product.");
         var night = finals.Single();
-        var directory = Path.Combine(
-            root, SqliteNightlyProductStore.ProductDirectoryName, "2026", "10", "01", NightlyProductContract.TargetFor(kind));
-        var stem = Path.Combine(directory, night.Summary.ProductId.ToString("N"));
-        Assert.AreEqual(night.PayloadSha256, await FileSha256Async(stem + ".bin"), "The night payload file does not match its record.");
-        Assert.AreEqual(night.RenditionSha256, await FileSha256Async(stem + ".jpg"), "The night rendition file does not match its record.");
-        Assert.AreEqual(night.ProvenanceSha256, await FileSha256Async(stem + ".provenance.json"), "The night provenance file does not match its record.");
+        await store.VerifyPublicationAsync(night.Summary.ProductId, CancellationToken.None);
 
         var lineage = await FrameLineageAsync(store, night);
         var windows = (await store.ListWindowsAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
@@ -594,12 +587,11 @@ public sealed class NightlyProductGenerationPerformanceTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }
@@ -615,10 +607,23 @@ public sealed class NightlyProductGenerationPerformanceTests
                 CapturePipelineDependencyPolicy.RejectEnabledDependent),
             "issue-993-performance");
 
-    private static async Task<string> FileSha256Async(string path)
+    private static async Task<object> CountSiloPayloadVersionsAsync(string root)
     {
-        await using var stream = File.OpenRead(path);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream));
+        using var silo = new NightlySiloFixture(root);
+        var objects = silo.Objects;
+        var count = 0;
+        long bytes = 0;
+        foreach (var key in objects.Keys("p/"))
+        {
+            foreach (var version in objects.VersionsOf(key))
+            {
+                using var member = await objects.OpenVersionAsync(key, version, CancellationToken.None);
+                Assert.IsNotNull(member.Content);
+                count++;
+                bytes += member.Content.Length;
+            }
+        }
+        return new { count, bytes };
     }
 
     private static long DirectoryBytes(string path) =>

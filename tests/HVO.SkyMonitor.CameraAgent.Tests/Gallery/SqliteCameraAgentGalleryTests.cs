@@ -9,9 +9,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -19,6 +21,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Gallery")]
 [DoNotParallelize]
 public sealed class SqliteCameraAgentGalleryTests
 {
@@ -46,8 +49,6 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     private static readonly string[] SourceDependency = ["source"];
-    private static readonly string[] ExpectedDeliveryStatuses = ["Pending", "Retry", "Acknowledged", "Quarantined"];
-    private static readonly string[] ExpectedTwoRootDeliveryStatuses = ["raw-ingress:Pending", "storage-1:Acknowledged"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
@@ -242,7 +243,6 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNull(legacyNode.StartedUtc);
         Assert.IsNull(legacyNode.DurationMilliseconds);
         Assert.IsNull(legacyNode.Outcome);
-        Assert.AreEqual("Unavailable", detail.Detail.ArtifactStates[0].DeliveryAvailability);
         Assert.AreEqual("Unavailable", detail.Detail.CloudAssessment.Availability);
         Assert.AreEqual("Unavailable", detail.CanonicalSceneAvailability);
         var json = JsonSerializer.Serialize(detail);
@@ -560,12 +560,7 @@ public sealed class SqliteCameraAgentGalleryTests
         var optionalNode = AssertSingle(optional!.Detail!.ProcessingNodes);
         Assert.IsFalse(AssertSingle(optional.ProcessingNodes).Required);
         Assert.AreEqual("calibration.library.corrupt", optionalNode.FailureCategory);
-        var delivery = required.Detail.ArtifactStates.Single(state =>
-            state.ArtifactId == requiredRaw.Descriptor.Artifact.ArtifactId);
-        CollectionAssert.AreEqual(
-            ExpectedDeliveryStatuses,
-            delivery.DeliveryStatuses.Select(static item => item.Status).ToArray());
-        Assert.IsTrue(delivery.DeliveryStatuses.All(static item => item.StorageAlias == "raw-ingress"));
+
     }
 
     [TestMethod]
@@ -638,33 +633,6 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
-    public async Task DetailAggregatesDeliveryStatusAcrossConfiguredStorageAliasesAsync()
-    {
-        using var fixture = await GalleryFixture.CreateAsync(twoStorageRoots: true).ConfigureAwait(false);
-        var raw = await fixture.AddRawAsync(Utc(7), "Physical", null).ConfigureAwait(false);
-        await GalleryFixture.SetDeliveryStatusesAsync(
-            fixture.Root,
-            raw.Descriptor.Artifact.ArtifactId,
-            ["pending"]).ConfigureAwait(false);
-        await GalleryFixture.SetDeliveryStatusesAsync(
-            fixture.SecondaryRoot!,
-            raw.Descriptor.Artifact.ArtifactId,
-            ["acknowledged"]).ConfigureAwait(false);
-
-        var detail = await fixture.Gallery.GetCaptureAsync(
-            raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
-
-        var delivery = detail!.Detail!.ArtifactStates.Single(state =>
-            state.ArtifactId == raw.Descriptor.Artifact.ArtifactId);
-        CollectionAssert.AreEqual(
-            ExpectedTwoRootDeliveryStatuses,
-            delivery.DeliveryStatuses.Select(static item => $"{item.StorageAlias}:{item.Status}").ToArray());
-        var json = JsonSerializer.Serialize(detail);
-        Assert.IsFalse(json.Contains(fixture.Root, StringComparison.Ordinal));
-        Assert.IsFalse(json.Contains(fixture.SecondaryRoot!, StringComparison.Ordinal));
-    }
-
-    [TestMethod]
     [DataRow(CloudAssessmentStatus.Quantified, true, "Quantified", true)]
     [DataRow(CloudAssessmentStatus.Contaminated, true, "Contaminated", true)]
     [DataRow(CloudAssessmentStatus.Quantified, false, "Quantified", false)]
@@ -674,7 +642,7 @@ public sealed class SqliteCameraAgentGalleryTests
         string expectedStatus,
         bool expectedMask)
     {
-        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await GalleryFixture.CreateAsync(withSilo: true).ConfigureAwait(false);
         var raw = await fixture.AddRawAsync(Utc(8), "Physical", null).ConfigureAwait(false);
         var assessment = CreateCloudAssessment(raw, status, includeMask);
         await fixture.AddCloudAssessmentAsync(raw, assessment).ConfigureAwait(false);
@@ -1053,7 +1021,7 @@ public sealed class SqliteCameraAgentGalleryTests
         "projection",
         "projection-v1",
         "astronomy-v1",
-        "sensor-v1");
+        "sensor-v1", CatalogId: "test-catalog");
 
     private static CloudAssessmentV1 CreateCloudAssessment(
         ArtifactManifestV2 raw,
@@ -1455,17 +1423,20 @@ public sealed class SqliteCameraAgentGalleryTests
     {
         private readonly SqliteRawCaptureJournal _journal;
         private readonly SqliteCaptureProcessingStore _processingStore;
+        private readonly ServiceProvider? _siloProvider;
 
         private GalleryFixture(
             string root,
             SqliteRawCaptureJournal journal,
             SqliteCaptureProcessingStore processingStore,
-            SqliteCameraAgentGallery gallery)
+            SqliteCameraAgentGallery gallery,
+            ServiceProvider? siloProvider)
         {
             Root = root;
             _journal = journal;
             _processingStore = processingStore;
             Gallery = gallery;
+            _siloProvider = siloProvider;
         }
 
         internal string Root { get; }
@@ -1475,7 +1446,7 @@ public sealed class SqliteCameraAgentGalleryTests
         internal SqliteCameraAgentGallery Gallery { get; }
 
         internal static async Task<GalleryFixture> CreateAsync(bool twoStorageRoots = false,
-            IDeploymentLocationStore? deploymentLocation = null)
+            IDeploymentLocationStore? deploymentLocation = null, bool withSilo = false)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -1495,11 +1466,14 @@ public sealed class SqliteCameraAgentGalleryTests
                     new("raw-ingress", root),
                     new("storage-1", secondaryRoot)
                 ]);
+            var siloProvider = withSilo ? SiloInfrastructureFixture.OpenStore(root) : null;
             return new GalleryFixture(
                 root,
                 journal,
                 processingStore,
-                new SqliteCameraAgentGallery(options, processingStore, resolver, deploymentLocation: deploymentLocation))
+                new SqliteCameraAgentGallery(options, processingStore, deploymentLocation: deploymentLocation,
+                    silo: siloProvider?.GetRequiredService<SiloArtifactStorage>()),
+                siloProvider)
             {
                 SecondaryRoot = secondaryRoot
             };
@@ -1537,7 +1511,7 @@ public sealed class SqliteCameraAgentGalleryTests
         }
 
         internal SqliteCameraAgentGallery OpenArchive(ObservingDayCalendar calendar)
-            => new(CreateOptions(Root), _processingStore, null, new FixedObservingDayCalendarProvider(calendar));
+            => new(CreateOptions(Root), _processingStore, new FixedObservingDayCalendarProvider(calendar));
 
         internal RestartedGallery OpenRestartedGallery()
         {
@@ -1802,10 +1776,12 @@ public sealed class SqliteCameraAgentGalleryTests
                     productSchemaVersion,
                     new string('D', 64));
             var evidence = DurableProcessingProductManifestJson.Serialize(manifest);
-            var path = Path.Combine(Root, relativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.ChangeExtension(path, ".manifest.json"), evidence).ConfigureAwait(false);
+            if (_siloProvider is not null)
+            {
+                await SiloInfrastructureFixture.PublishArtifactAsync(_siloProvider.GetRequiredService<SiloArtifactStorage>(),
+                    raw.Descriptor with { Artifact = artifact }, outputIdentity, payload,
+                    SiloArtifactStorage.ProductEvidenceRevision, evidence, CancellationToken.None).ConfigureAwait(false);
+            }
 
             using var connection = await OpenAsync().ConfigureAwait(false);
             using (var node = connection.CreateCommand())
@@ -1887,7 +1863,7 @@ public sealed class SqliteCameraAgentGalleryTests
         private sealed class FixedStorageResolver(IReadOnlyList<CameraAgentStorageLocation> locations)
             : ICameraAgentStorageResolver
         {
-            public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetUploadLocationsAsync(
+            public ValueTask<IReadOnlyList<CameraAgentStorageLocation>> GetStorageLocationsAsync(
                 CancellationToken cancellationToken) => ValueTask.FromResult(locations);
 
             public ValueTask<CameraAgentStorageLocation?> ResolveAliasAsync(
@@ -1924,6 +1900,7 @@ public sealed class SqliteCameraAgentGalleryTests
 
         public void Dispose()
         {
+            _siloProvider?.Dispose();
             _processingStore.Dispose();
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))

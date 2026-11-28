@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// <summary>#1383: unconfigured layer steps draw the original overlay colours, constellation width and opacity.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture.Processing")]
 public sealed class PresentationOverlayDefaultOptionsTests
 {
     [TestMethod]

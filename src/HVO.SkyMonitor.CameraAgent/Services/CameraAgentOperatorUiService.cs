@@ -16,7 +16,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Settings;
@@ -49,7 +48,7 @@ internal sealed record OperatorUiResult<T>(
 }
 
 [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Instances are created and consumed through Razor component parameters.")]
-public sealed record OperatorOutboxItem(
+public sealed record OperatorQuarantineItem(
     string Kind,
     string Status,
     string? StorageAlias,
@@ -77,11 +76,11 @@ public sealed record OperatorOutboxItem(
     string? ProcessingProfileSha256 = null,
     string? DurableState = null);
 
-internal sealed record OperatorOutboxPage(
+internal sealed record OperatorQuarantinePage(
     string Kind,
     IReadOnlyList<string> StorageAliases,
     string? StorageAlias,
-    IReadOnlyList<OperatorOutboxItem> Items,
+    IReadOnlyList<OperatorQuarantineItem> Items,
     string? NextCursor);
 
 /// <param name="DisplayName">
@@ -90,8 +89,6 @@ internal sealed record OperatorOutboxPage(
 /// </param>
 internal sealed record CameraAgentOperationsView(
     CameraAgentOperationsSummary Summary,
-    IReadOnlyList<OperatorOutboxItem> ArtifactQuarantine,
-    IReadOnlyList<OperatorOutboxItem> EnvironmentalQuarantine,
     string? DisplayName = null);
 
 internal sealed record OperatorCommandReceipt(
@@ -112,14 +109,11 @@ internal sealed record CameraAgentSystemStatus(
     string ValidationStatus,
     string AgentId,
     string ModuleType,
-    string CentralIntegration,
     CameraAgentSensorStatus Sensor,
     CameraAgentOpticsStatus Optics,
     CameraAgentCapturePolicyStatus Capture,
     IReadOnlyList<CameraAgentPipelineNodeStatus> Pipeline,
     CameraAgentRetentionStatus Retention,
-    CameraAgentUploadStatus Upload,
-    CameraAgentEnvironmentalPolicyStatus Environmental,
     CameraAgentTransientPolicyStatus Transient);
 
 internal sealed record CameraAgentSensorStatus(
@@ -163,10 +157,6 @@ internal sealed record CameraAgentPipelineNodeStatus(
     IReadOnlyList<string> Dependencies);
 
 internal sealed record CameraAgentRetentionStatus(
-    int SweepIntervalMinutes,
-    double PressureThresholdPercent,
-    double PressureRecoveryPercent,
-    int PressureRetentionDays,
     long RawIngressReserveBytes,
     bool EnvironmentalHistoryEnabled,
     int EnvironmentalRetentionDays,
@@ -177,32 +167,7 @@ internal sealed record CameraAgentRetentionStatus(
 /// The latest recorded reconciliation of local evidence with its durable records. Either member is null until its
 /// pass has completed in this process.
 /// </summary>
-internal sealed record CameraAgentStorageReconciliation(
-    RawIngressReconciliationReport? RawIngress,
-    DerivedProductReconciliationReport? DerivedProducts);
-
-/// <summary>One artifact outbox record on the Delivery page, with the storage alias that holds it.</summary>
-internal sealed record CameraAgentDeliveryRecord(string StorageAlias, ArtifactOutboxDeliveryRecord Record);
-
-internal sealed record CameraAgentUploadStatus(
-    bool Enabled,
-    int BatchSize,
-    int PollIntervalSeconds,
-    int RetryInitialDelaySeconds,
-    int RetryMaximumDelaySeconds,
-    int BandwidthLimitBytesPerSecond,
-    int RequiredMaximumPendingCount,
-    long RequiredMaximumPendingBytes,
-    int OptionalMaximumPendingCount,
-    long OptionalMaximumPendingBytes);
-
-internal sealed record CameraAgentEnvironmentalPolicyStatus(
-    bool Enabled,
-    int BatchSize,
-    int PollIntervalSeconds,
-    int MaximumAttempts,
-    int MaximumPendingCount,
-    long MaximumPendingBytes);
+internal sealed record CameraAgentStorageReconciliation(RawIngressReconciliationReport? RawIngress);
 
 internal sealed record CameraAgentTransientPolicyStatus(
     string Mode,
@@ -216,7 +181,10 @@ internal sealed record CameraAgentTransientPolicyStatus(
 public sealed record CameraAgentCaptureDetailView(
     CameraAgentGalleryCapture Capture,
     CameraAgentCapturePresentation Presentation,
-    CameraAgentCurrentSkyFacts? Facts = null);
+    CameraAgentCurrentSkyFacts? Facts = null)
+{
+    public CameraAgentCenteredArchiveView? CenteredArchive { get; init; }
+}
 
 // Current Sky reads the presentation and the durable facts of the displayed
 // capture together; facts may be unavailable while the image still shows.
@@ -234,14 +202,14 @@ internal sealed record CameraAgentCurrentSkyView(
 
     /// <summary>The operator's minimum time between image changes.</summary>
     public TimeSpan MinimumRefreshInterval { get; init; } = TimeSpan.FromSeconds(CurrentSkyRefreshSetting.DefaultSeconds);
+
+    /// <summary>Present when a centered live pipeline run is active for the selected camera profile.</summary>
+    public CameraAgentCenteredLiveView? Centered { get; init; }
 }
 
 // Current operational facts are separate from the retained capture's historical acquisition/profile facts.
 internal sealed record CameraAgentCurrentSkyOperations(
-    bool CentralIntegrationEnabled,
-    bool ArtifactUploadEnabled,
-    RawIngressReconciliationReport? RawReconciliation,
-    DerivedProductReconciliationReport? ProductReconciliation);
+    RawIngressReconciliationReport? RawReconciliation);
 
 // The current mode describes configuration now; only Run describes the requested capture's retained outcome.
 internal sealed record CameraAgentCaptureTransientView(
@@ -260,7 +228,7 @@ internal interface ICameraAgentOperatorUiService
     ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(
         CancellationToken cancellationToken);
 
-    ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(
+    ValueTask<OperatorUiResult<OperatorQuarantinePage>> GetQuarantinePageAsync(
         string kind,
         string? storageAlias,
         string? cursor,
@@ -278,12 +246,22 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
+        CancellationToken cancellationToken)
+        => GetCaptureDetailViewAsync(captureId, cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
         CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null,
         CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
+
+    ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
         CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
@@ -309,6 +287,28 @@ internal interface ICameraAgentOperatorUiService
 
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
+        => GetCurrentSkyViewAsync(cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>> GetCenteredPresentationAsync(
+        string baseId,
+        string revisionId,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+            new(CameraAgentLayeredPresentationStatus.NotRetained, null, null)));
+
+    ValueTask<OperatorUiResult<CenteredViewSavedSelection>> SaveCenteredViewSelectionAsync(
+        Guid referenceCaptureId,
+        string baseId,
+        string revisionId,
+        IReadOnlyList<string> enabledLayerIds,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CenteredViewSavedSelection>.Failure(
+            OperatorUiResultKind.Unavailable,
+            "Saving a centered view selection is unavailable."));
+
     ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
         Guid captureId, CancellationToken cancellationToken);
 
@@ -331,13 +331,6 @@ internal interface ICameraAgentOperatorUiService
 
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
-    /// <summary>
-    /// The newest artifact outbox records of each upload location in configuration order, each location
-    /// bounded separately: its unfinished work first, then its newest acknowledged or abandoned records.
-    /// Empty when central integration is disabled.
-    /// </summary>
-    ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken);
-
     ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken);
 
     /// <summary>
@@ -358,16 +351,16 @@ internal interface ICameraAgentOperatorUiService
         bool legacyOwnershipExternallyEstablished,
         CancellationToken cancellationToken);
 
-    ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(
+    ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveQuarantineAsync(
         string kind,
-        OutboxOperationAction action,
+        QuarantineOperationAction action,
         string actionToken,
         string reasonCode,
         string idempotencyKey,
         CancellationToken cancellationToken);
 }
 
-internal sealed class CameraAgentOperatorUiService(
+internal sealed partial class CameraAgentOperatorUiService(
     AuthenticationStateProvider authenticationStateProvider,
     IAuthorizationService authorizationService,
     CameraAgentOperationsSummaryProvider operationsProvider,
@@ -378,30 +371,27 @@ internal sealed class CameraAgentOperatorUiService(
     ICameraAgentLayeredPresentationService layeredPresentations,
     ICameraAgentPresentationMaterializer presentationMaterializer,
     CaptureAdmissionCoordinator captureControl,
-    ICameraAgentStorageResolver storageResolver,
-    IArtifactOutbox artifactOutbox,
-    IEnvironmentalObservationOutbox environmentalOutbox,
-    EnvironmentalObservationDeliveryWakeup environmentalWakeup,
     ITransientRuntimeManagement transientRuntime,
     ICameraAgentConfigurationAccessor configurationAccessor,
     CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     IEnumerable<CaptureProcessingStepRegistration> processingRegistrations,
     IEnumerable<CameraModuleRegistration> moduleRegistrations,
     IOptions<CameraAgentHostOptions> hostOptions,
-    OutboxOperationsTokenService tokens,
+    LocalOperationsTokenService tokens,
     TimeProvider timeProvider,
     ILogger<CameraAgentOperatorUiService> logger,
     ISiteProfileStore? siteProfileStore = null,
     RawIngressState? rawIngressState = null,
-    CaptureProcessingState? captureProcessingState = null,
     IRawEvidenceOperations? rawEvidenceOperations = null,
     IProcessingLaneQuarantineOperations? processingLaneQuarantine = null,
     ICameraAgentProcessingCompletion? processingCompletion = null,
     CurrentSkyRefreshSetting? currentSkyRefresh = null,
-    ICameraAgentRetainedAstrometryService? retainedAstrometry = null) : ICameraAgentOperatorUiService
+    ICameraAgentRetainedAstrometryService? retainedAstrometry = null,
+    ICenteredViewLookup? centeredViewLookup = null,
+    ICenteredViewReadIndex? centeredViewIndex = null,
+    ICenteredViewPublisher? centeredViewPublisher = null,
+    ICenteredViewPresentationReader? centeredViewPresentation = null) : ICameraAgentOperatorUiService
 {
-    private const int MaximumQuarantineItems = 8;
-    private const int QuarantineReadSize = 50;
     /// <summary>The reason recorded for a pause the operator gave no note for.</summary>
     internal const string PauseReasonCode = "operator-maintenance";
     /// <summary>The reason recorded for a resume the operator gave no note for.</summary>
@@ -420,17 +410,10 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var summary = await operationsProvider.GetAsync(cancellationToken).ConfigureAwait(false);
-            var centralDisabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
-            var artifacts = centralDisabled
-                ? []
-                : await ReadArtifactQuarantineAsync(cancellationToken).ConfigureAwait(false);
-            var environmental = centralDisabled
-                ? []
-                : await ReadEnvironmentalQuarantineAsync(cancellationToken).ConfigureAwait(false);
             var displayName = await ReadDisplayNameAsync(
                 siteProfileStore, _hostOptions.DisplayName, logger, cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentOperationsView>.Success(
-                new(summary, artifacts, environmental, displayName));
+                new(summary, displayName));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -530,7 +513,7 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(
+    public async ValueTask<OperatorUiResult<OperatorQuarantinePage>> GetQuarantinePageAsync(
         string kind,
         string? storageAlias,
         string? cursor,
@@ -539,16 +522,14 @@ internal sealed class CameraAgentOperatorUiService(
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
         {
-            return Denied<OperatorOutboxPage>();
+            return Denied<OperatorQuarantinePage>();
         }
         if (pageSize is < 1 or > 50 ||
-            !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "ProcessingLane", StringComparison.OrdinalIgnoreCase))
         {
-            return OperatorUiResult<OperatorOutboxPage>.Failure(
+            return OperatorUiResult<OperatorQuarantinePage>.Failure(
                 OperatorUiResultKind.Invalid,
                 "The quarantine source or cursor is invalid.");
         }
@@ -561,16 +542,16 @@ internal sealed class CameraAgentOperatorUiService(
                 if (processingLaneQuarantine is null || !string.IsNullOrWhiteSpace(storageAlias) ||
                     cursor is not null && !tokens.TryReadProcessingLaneCursor(cursor, out laneCursor))
                 {
-                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                    return OperatorUiResult<OperatorQuarantinePage>.Failure(
                         OperatorUiResultKind.Invalid, "The processing lane quarantine query is invalid.");
                 }
                 var lanePage = await processingLaneQuarantine.ReadPageAsync(pageSize, laneCursor, cancellationToken)
                     .ConfigureAwait(false);
-                return OperatorUiResult<OperatorOutboxPage>.Success(new("ProcessingLane", [], null,
-                    lanePage.Items.Select(item => new OperatorOutboxItem(
+                return OperatorUiResult<OperatorQuarantinePage>.Success(new("ProcessingLane", [], null,
+                    lanePage.Items.Select(item => new OperatorQuarantineItem(
                         "ProcessingLane", "Quarantined", null, "Standard lane", item.AttemptCount, item.PayloadBytes,
                         item.LatestAudit?.OccurredUtc ?? item.CreatedUtc,
-                        OutboxOperationsReasonCodes.Sanitize(item.Target.FailureReason),
+                        QuarantineOperationReasonCodes.Sanitize(item.Target.FailureReason),
                         null, tokens.ProtectProcessingLaneAction(item.Target), item.CreatedUtc,
                         AuditSummary: item.LatestAudit is null ? null :
                             $"{item.LatestAudit.Reason}; actor {item.LatestAudit.Actor}; {item.LatestAudit.OccurredUtc:O}",
@@ -585,13 +566,13 @@ internal sealed class CameraAgentOperatorUiService(
                 long? rawCursor = null;
                 if (rawEvidenceOperations is null || !string.IsNullOrWhiteSpace(storageAlias) ||
                     cursor is not null && !tokens.TryReadRawEvidenceCursor(cursor, out rawCursor))
-                    return OperatorUiResult<OperatorOutboxPage>.Failure(OperatorUiResultKind.Invalid, "The raw evidence query is invalid.");
+                    return OperatorUiResult<OperatorQuarantinePage>.Failure(OperatorUiResultKind.Invalid, "The raw evidence query is invalid.");
                 var rawPage = await rawEvidenceOperations.ReadEvidencePageAsync(pageSize, rawCursor, cancellationToken).ConfigureAwait(false);
-                return OperatorUiResult<OperatorOutboxPage>.Success(new("RawEvidence", [], null,
-                    rawPage.Items.Select(item => new OperatorOutboxItem(
+                return OperatorUiResult<OperatorQuarantinePage>.Success(new("RawEvidence", [], null,
+                    rawPage.Items.Select(item => new OperatorQuarantineItem(
                         "RawEvidence", item.WrittenOff ? "WrittenOff" : item.Target.State, null, "Raw evidence", 0,
                         item.PayloadBytes, item.LatestAudit?.OccurredUtc ?? item.CreatedUtc,
-                        OutboxOperationsReasonCodes.Sanitize(item.Target.FailureReason),
+                        QuarantineOperationReasonCodes.Sanitize(item.Target.FailureReason),
                         item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
                         item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target),
                         item.CreatedUtc, AuditSummary: item.LatestAudit is null ? null :
@@ -605,14 +586,14 @@ internal sealed class CameraAgentOperatorUiService(
             {
                 if (!string.IsNullOrWhiteSpace(storageAlias))
                 {
-                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                    return OperatorUiResult<OperatorQuarantinePage>.Failure(
                         OperatorUiResultKind.Invalid, "Transient runtime quarantine is not storage-alias scoped.");
                 }
                 TransientRuntimeQuarantineCursor? runtimeCursor = null;
                 if (!string.IsNullOrWhiteSpace(cursor) &&
                     !tokens.TryReadTransientRuntimeCursor(cursor, out runtimeCursor))
                 {
-                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                    return OperatorUiResult<OperatorQuarantinePage>.Failure(
                         OperatorUiResultKind.Invalid, "The quarantine source or cursor is invalid.");
                 }
                 var runtimePage = await transientRuntime.ReadQuarantinePageAsync(
@@ -625,10 +606,10 @@ internal sealed class CameraAgentOperatorUiService(
                         item.PayloadSha256, item.ProcessingProfileSha256, item.Mode, item.Required, item.OuterLaneState,
                         item.WorkState, item.FrameState, item.FailureReason, item.OuterLaneUpdatedUtc,
                         item.WorkUpdatedUtc, item.FrameUpdatedUtc);
-                    return new OperatorOutboxItem(
+                    return new OperatorQuarantineItem(
                         "TransientRuntime", item.FrameState, null, item.Required ? "Required transient" : "Optional transient",
                         item.AttemptCount, item.PayloadBytes, item.FrameUpdatedUtc,
-                        OutboxOperationsReasonCodes.Sanitize(item.FailureReason),
+                        QuarantineOperationReasonCodes.Sanitize(item.FailureReason),
                         null,
                         tokens.ProtectTransientRuntimeReference(target),
                         item.CreatedUtc, null, null,
@@ -637,134 +618,15 @@ internal sealed class CameraAgentOperatorUiService(
                         $"{item.ProcessingProfileName} {item.ProcessingProfileVersion}", item.ProcessingProfileSha256,
                         $"{item.Mode}; outer {item.OuterLaneState}; work {item.WorkState}; frame {item.FrameState}");
                 }).ToArray();
-                return OperatorUiResult<OperatorOutboxPage>.Success(new(
+                return OperatorUiResult<OperatorQuarantinePage>.Success(new(
                     "TransientRuntime", [], null, runtimeItems,
                     runtimePage.NextCursor is null
                         ? null
                         : tokens.ProtectTransientRuntimeCursor(runtimePage.NextCursor)));
             }
 
-            if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
-            {
-                return OperatorUiResult<OperatorOutboxPage>.Success(new(
-                    string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) ? "Artifact" : "Environmental",
-                    [], null, [], null));
-            }
-
-            if (string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase))
-            {
-                var locations = await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false);
-                var aliases = locations.Select(static location => location.Alias).ToArray();
-                var location = string.IsNullOrWhiteSpace(storageAlias)
-                    ? locations.Count == 0 ? null : locations[0]
-                    : locations.SingleOrDefault(item => string.Equals(item.Alias, storageAlias, StringComparison.Ordinal));
-                if (location is null)
-                {
-                    return string.IsNullOrWhiteSpace(storageAlias) && locations.Count == 0
-                        ? OperatorUiResult<OperatorOutboxPage>.Success(new("Artifact", aliases, null, [], null))
-                        : OperatorUiResult<OperatorOutboxPage>.Failure(
-                            OperatorUiResultKind.Invalid,
-                            "The selected storage alias is invalid.");
-                }
-                ArtifactOutboxOperationsCursor? artifactCursor = null;
-                if (!string.IsNullOrWhiteSpace(cursor) &&
-                    !tokens.TryReadArtifactCursor(cursor, location.Alias, out artifactCursor))
-                {
-                    return OperatorUiResult<OperatorOutboxPage>.Failure(
-                        OperatorUiResultKind.Invalid,
-                        "The quarantine source or cursor is invalid.");
-                }
-
-                var page = await artifactOutbox.ReadOperationsPageAsync(
-                    location.Root,
-                    pageSize,
-                    artifactCursor,
-                    cancellationToken).ConfigureAwait(false);
-                var items = new List<OperatorOutboxItem>(page.Items.Count);
-                foreach (var item in page.Items)
-                {
-                    var audit = await artifactOutbox.ReadOperationsAuditAsync(
-                        location.Root, item.RecordKey, 1, null, cancellationToken).ConfigureAwait(false);
-                    items.Add(new OperatorOutboxItem(
-                        "Artifact",
-                        item.Status.ToString(),
-                        location.Alias,
-                        item.Role?.ToString(),
-                        item.AttemptCount,
-                        item.PayloadBytes,
-                        item.UpdatedUtc,
-                        OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
-                        item.CanReplay
-                            ? tokens.ProtectArtifactAction(OutboxOperationAction.Replay, location.Alias, item.RecordKey)
-                            : null,
-                        item.CanAbandon
-                            ? tokens.ProtectArtifactAction(OutboxOperationAction.Abandon, location.Alias, item.RecordKey)
-                            : null,
-                        item.CreatedUtc,
-                        item.NextAttemptUtc,
-                        item.MediaType,
-                        FormatAuditSummary(audit.Items.Count == 0 ? null : audit.Items[0])));
-                }
-                return OperatorUiResult<OperatorOutboxPage>.Success(new(
-                    "Artifact",
-                    aliases,
-                    location.Alias,
-                    items,
-                    page.NextCursor is null ? null : tokens.ProtectArtifactCursor(location.Alias, page.NextCursor)));
-            }
-
-            if (!string.IsNullOrWhiteSpace(storageAlias))
-            {
-                return OperatorUiResult<OperatorOutboxPage>.Failure(
-                    OperatorUiResultKind.Invalid,
-                    "Environmental quarantine is not storage-alias scoped.");
-            }
-            EnvironmentalOutboxOperationsCursor? environmentalCursor = null;
-            if (!string.IsNullOrWhiteSpace(cursor) &&
-                !tokens.TryReadEnvironmentalCursor(cursor, out environmentalCursor))
-            {
-                return OperatorUiResult<OperatorOutboxPage>.Failure(
-                    OperatorUiResultKind.Invalid,
-                    "The quarantine source or cursor is invalid.");
-            }
-            var environmentalPage = await environmentalOutbox.ReadOperationsPageAsync(
-                _hostOptions.RawIngressRoot,
-                pageSize,
-                environmentalCursor,
-                cancellationToken).ConfigureAwait(false);
-            var environmentalItems = new List<OperatorOutboxItem>(environmentalPage.Items.Count);
-            foreach (var item in environmentalPage.Items)
-            {
-                var audit = await environmentalOutbox.ReadOperationsAuditAsync(
-                    _hostOptions.RawIngressRoot, item.RecordId, 1, null, cancellationToken).ConfigureAwait(false);
-                environmentalItems.Add(new OperatorOutboxItem(
-                    "Environmental",
-                    item.Status,
-                    null,
-                    null,
-                    item.AttemptCount,
-                    item.PayloadBytes,
-                    item.UpdatedUtc,
-                    OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
-                    item.CanReplay
-                        ? tokens.ProtectEnvironmentalAction(OutboxOperationAction.Replay, item.RecordId)
-                        : null,
-                    item.CanAbandon
-                        ? tokens.ProtectEnvironmentalAction(OutboxOperationAction.Abandon, item.RecordId)
-                        : null,
-                    item.CreatedUtc,
-                    null,
-                    null,
-                    FormatAuditSummary(audit.Items.Count == 0 ? null : audit.Items[0])));
-            }
-            return OperatorUiResult<OperatorOutboxPage>.Success(new(
-                "Environmental",
-                [],
-                null,
-                environmentalItems,
-                environmentalPage.NextCursor is null
-                    ? null
-                    : tokens.ProtectEnvironmentalCursor(environmentalPage.NextCursor)));
+            return OperatorUiResult<OperatorQuarantinePage>.Failure(
+                OperatorUiResultKind.Invalid, "The quarantine source is invalid.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -773,7 +635,7 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent quarantine UI read failed.");
-            return Unavailable<OperatorOutboxPage>("The quarantine page is temporarily unavailable.");
+            return Unavailable<OperatorQuarantinePage>("The quarantine page is temporarily unavailable.");
         }
     }
 
@@ -827,12 +689,19 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+        => GetCaptureDetailViewAsync(captureId, centeredRequest: null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
         CancellationToken cancellationToken)
     {
-        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        var principal = await GetAuthorizedReadPrincipalAsync().ConfigureAwait(false);
+        if (principal is null)
         {
             return Denied<CameraAgentCaptureDetailView>();
         }
@@ -864,7 +733,15 @@ internal sealed class CameraAgentOperatorUiService(
                     CombinedLineageUnavailable = combined.Availability != CameraAgentPresentationSlotAvailability.Missing
                 };
             }
-            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts));
+            var centeredArchive = await ReadCenteredArchiveAsync(
+                captureId,
+                centeredRequest,
+                CameraAgentCredentialAccess.GetOwnerId(principal),
+                cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(capture, presentation, facts)
+            {
+                CenteredArchive = centeredArchive
+            });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -904,20 +781,46 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+        => GetCurrentSkyViewAsync(CenteredLiveMode.Centered, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
     {
-        var presentation = await GetCurrentImagePresentationAsync(cancellationToken).ConfigureAwait(false);
-        if (!presentation.IsSuccess || presentation.Value is null)
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
         {
-            return OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "The current sky image is temporarily unavailable.");
+            return Denied<CameraAgentCurrentSkyView>();
         }
-        var (current, pending) = await ResolveCompleteDisplayAsync(presentation.Value, cancellationToken).ConfigureAwait(false);
+
+        if (centeredViewLookup is not null && centeredViewIndex is not null && centeredViewPresentation is not null)
+        {
+            var centeredResult = await TryGetCenteredCurrentSkyViewAsync(mode, cancellationToken).ConfigureAwait(false);
+            if (centeredResult is not null)
+            {
+                return centeredResult;
+            }
+        }
+
+        CameraAgentCurrentImagePresentation currentImage;
+        try
+        {
+            currentImage = await currentImagePresentation.GetAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent current-image presentation read failed.");
+            return Unavailable<CameraAgentCurrentSkyView>("The current sky image is temporarily unavailable.");
+        }
+
+        var (current, pending) = await ResolveCompleteDisplayAsync(currentImage, cancellationToken).ConfigureAwait(false);
         var minimumRefresh = TimeSpan.FromSeconds(currentSkyRefresh?.Seconds ?? CurrentSkyRefreshSetting.DefaultSeconds);
-        var operations = new CameraAgentCurrentSkyOperations(
-            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled,
-            _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled && _hostOptions.CaptureDistribution.UploadEnabled,
-            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation);
+        var operations = CreateCurrentSkyOperations();
         var displayed = current.DisplayCapture ?? current.LatestCapture;
         if (displayed is null)
         {
@@ -925,24 +828,45 @@ internal sealed class CameraAgentOperatorUiService(
         }
         var combinedArtifactId = current.Stages
             .FirstOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined)?.ArtifactId;
+        var (facts, factsUnavailableReason) = await ReadCachedFactsAsync(displayed.CaptureId, combinedArtifactId, cancellationToken)
+            .ConfigureAwait(false);
+        return View(facts, factsUnavailableReason);
+
+        OperatorUiResult<CameraAgentCurrentSkyView> View(CameraAgentCurrentSkyFacts? facts, string? factsUnavailableReason)
+            => OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(current, facts, factsUnavailableReason, operations)
+            {
+                ProcessingPending = pending,
+                MinimumRefreshInterval = minimumRefresh
+            });
+    }
+
+    private CameraAgentCurrentSkyOperations CreateCurrentSkyOperations() => new(
+        rawIngressState?.LastReconciliation);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    private async ValueTask<(CameraAgentCurrentSkyFacts? Facts, string? UnavailableReason)> ReadCachedFactsAsync(
+        Guid captureId,
+        Guid? combinedArtifactId,
+        CancellationToken cancellationToken)
+    {
         // Facts are immutable once a capture is committed, so a circuit that
         // polls every few seconds re-reads them only when the capture changes.
         // Availability and cloud facts can still change for a displayed capture, so the memo expires.
-        if (_cachedFacts is { } cached && cached.Facts.CaptureId == displayed.CaptureId && cached.CombinedArtifactId == combinedArtifactId &&
+        if (_cachedFacts is { } cached && cached.Facts.CaptureId == captureId && cached.CombinedArtifactId == combinedArtifactId &&
             timeProvider.GetUtcNow() - cached.ReadUtc < FactsCacheLifetime)
         {
-            return View(cached.Facts, null);
+            return (cached.Facts, null);
         }
         try
         {
-            var capture = await gallery.GetCaptureAsync(displayed.CaptureId, cancellationToken).ConfigureAwait(false);
+            var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
             if (capture is null)
             {
-                return View(null, "The displayed capture is no longer retained.");
+                return (null, "The displayed capture is no longer retained.");
             }
             var facts = CameraAgentCurrentSkyFactsProjector.Project(capture, observingDays.Current, combinedArtifactId);
             _cachedFacts = (facts, combinedArtifactId, timeProvider.GetUtcNow());
-            return View(facts, null);
+            return (facts, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -951,15 +875,8 @@ internal sealed class CameraAgentOperatorUiService(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "CameraAgent current sky facts read failed.");
-            return View(null, "Capture facts are temporarily unavailable.");
+            return (null, "Capture facts are temporarily unavailable.");
         }
-
-        OperatorUiResult<CameraAgentCurrentSkyView> View(CameraAgentCurrentSkyFacts? facts, string? factsUnavailableReason)
-            => OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(current, facts, factsUnavailableReason, operations)
-            {
-                ProcessingPending = pending,
-                MinimumRefreshInterval = minimumRefresh
-            });
     }
 
     // Current Sky moves only to a capture whose overlays are settled: retained, or never coming because its processing
@@ -1214,15 +1131,22 @@ internal sealed class CameraAgentOperatorUiService(
             : new(OperatorUiResultKind.Unavailable, read, "The latest accepted measured result is temporarily unavailable.");
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+        => GetRetainedAstrometryAsync(captureId, evidence: null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
             return Denied<CameraAgentRetainedAstrometry>();
         try
         {
-            var value = retainedAstrometry is null ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
-                : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            var value = retainedAstrometry is null
+                ? new CameraAgentRetainedAstrometry(captureId, "NotRetained", "assessment-not-retained")
+                : evidence is not null
+                    ? await retainedAstrometry.GetExactAsync(captureId, evidence, cancellationToken).ConfigureAwait(false)
+                    : await retainedAstrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
             return value.CaptureId == captureId
                 ? OperatorUiResult<CameraAgentRetainedAstrometry>.Success(value)
                 : Unavailable<CameraAgentRetainedAstrometry>("The retained assessment identity does not match this capture.");
@@ -1361,10 +1285,7 @@ internal sealed class CameraAgentOperatorUiService(
             var optics = config.Rig.Optics;
             var capture = config.Rig.Pipeline;
             var envelope = capture.Envelope;
-            var distribution = _hostOptions.CaptureDistribution;
-            var environmental = _hostOptions.EnvironmentalDelivery;
             var transient = _hostOptions.TransientDetection;
-            var centralEnabled = _hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Enabled;
 
             var status = new CameraAgentSystemStatus(
                 startupConfig.DeploymentLocation is { } deploymentLocation
@@ -1374,7 +1295,6 @@ internal sealed class CameraAgentOperatorUiService(
                 "Validated at startup",
                 startupConfig.AgentId ?? "Unavailable",
                 ResolveModuleAlias(startupConfig.ModuleType, moduleRegistrations),
-                _hostOptions.CentralIntegration.Mode.ToString(),
                 new CameraAgentSensorStatus(
                     sensor.Name,
                     sensor.WidthPixels,
@@ -1408,33 +1328,11 @@ internal sealed class CameraAgentOperatorUiService(
                     envelope?.Preference.ToString() ?? "Fixed day/night defaults"),
                 pipeline,
                 new CameraAgentRetentionStatus(
-                    _hostOptions.RetentionSweepIntervalMinutes,
-                    _hostOptions.DiskPressureThresholdPercent,
-                    _hostOptions.DiskPressureRecoveryPercent,
-                    _hostOptions.DiskPressureRetentionDays,
                     _hostOptions.RawIngressReserveBytes,
                     _hostOptions.EnvironmentalAcquisition.Enabled,
                     _hostOptions.EnvironmentalAcquisition.RetentionDays,
                     _hostOptions.EnvironmentalAcquisition.MaximumHistoryCount,
                     _hostOptions.EnvironmentalAcquisition.MaximumHistoryBytes),
-                new CameraAgentUploadStatus(
-                    centralEnabled && distribution.UploadEnabled,
-                    _hostOptions.UploadBatchSize,
-                    _hostOptions.UploadPollIntervalSeconds,
-                    _hostOptions.UploadRetryInitialDelaySeconds,
-                    _hostOptions.UploadRetryMaximumDelaySeconds,
-                    _hostOptions.UploadBandwidthLimitBytesPerSecond,
-                    distribution.RequiredMaximumPendingCount,
-                    distribution.RequiredMaximumPendingBytes,
-                    distribution.OptionalMaximumPendingCount,
-                    distribution.OptionalMaximumPendingBytes),
-                new CameraAgentEnvironmentalPolicyStatus(
-                    centralEnabled && environmental.Enabled,
-                    environmental.BatchSize,
-                    environmental.PollIntervalSeconds,
-                    environmental.MaximumAttempts,
-                    environmental.MaximumPendingCount,
-                    environmental.MaximumPendingBytes),
                 new CameraAgentTransientPolicyStatus(
                     transient.Mode.ToString(),
                     transient.Required,
@@ -1546,9 +1444,9 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(
+    public async ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveQuarantineAsync(
         string kind,
-        OutboxOperationAction action,
+        QuarantineOperationAction action,
         string actionToken,
         string reasonCode,
         string idempotencyKey,
@@ -1559,19 +1457,19 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return Denied<OperatorCommandReceipt>();
         }
-        if (!OutboxOperationsReasonCodes.IsAllowed(action, reasonCode) ||
+        if (!QuarantineOperationReasonCodes.IsAllowed(action, reasonCode) ||
             string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
         {
             return OperatorUiResult<OperatorCommandReceipt>.Failure(
                 OperatorUiResultKind.Invalid,
-                "The outbox command was invalid.");
+                "The quarantine command was invalid.");
         }
 
         try
         {
             if (string.Equals(kind, "ProcessingLane", StringComparison.Ordinal) && processingLaneQuarantine is not null)
             {
-                if (action != OutboxOperationAction.Abandon ||
+                if (action != QuarantineOperationAction.Abandon ||
                     reasonCode != IProcessingLaneQuarantineOperations.ReasonCode ||
                     !tokens.TryReadProcessingLaneAction(actionToken, out var laneTarget) || laneTarget is null)
                 {
@@ -1586,7 +1484,7 @@ internal sealed class CameraAgentOperatorUiService(
             }
             if (string.Equals(kind, "RawEvidence", StringComparison.Ordinal) && rawEvidenceOperations is not null)
             {
-                var rawAction = action == OutboxOperationAction.Replay ? RawEvidenceReleaseAction.Revalidate : RawEvidenceReleaseAction.WriteOff;
+                var rawAction = action == QuarantineOperationAction.Replay ? RawEvidenceReleaseAction.Revalidate : RawEvidenceReleaseAction.WriteOff;
                 if (!tokens.TryReadRawEvidenceAction(rawAction, actionToken, out var target) || target is null)
                     return NotFound<OperatorCommandReceipt>("The raw evidence action expired or is no longer available.");
                 var receipt = await rawEvidenceOperations.ReleaseEvidenceAsync(
@@ -1596,37 +1494,8 @@ internal sealed class CameraAgentOperatorUiService(
                     receipt.Duplicate ? "Duplicate receipt" : "Applied",
                     rawAction == RawEvidenceReleaseAction.Revalidate ? "Revalidated" : "WrittenOff", null, receipt.Audit.OccurredUtc));
             }
-            OutboxOperationDisposition disposition;
-            if (string.Equals(kind, "Artifact", StringComparison.Ordinal) &&
-                tokens.TryReadArtifactAction(action, actionToken, out var alias, out var recordKey))
-            {
-                var location = await storageResolver.ResolveAliasAsync(alias, cancellationToken).ConfigureAwait(false);
-                if (location is null)
-                {
-                    return NotFound<OperatorCommandReceipt>("The outbox item is no longer available.");
-                }
-                disposition = await artifactOutbox.ResolveOperationsAsync(
-                    location.Root, recordKey, action, idempotencyKey, "owner", reasonCode, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else if (string.Equals(kind, "Environmental", StringComparison.Ordinal) &&
-                tokens.TryReadEnvironmentalAction(action, actionToken, out var recordId))
-            {
-                disposition = await environmentalOutbox.ResolveOperationsAsync(
-                    _hostOptions.RawIngressRoot,
-                    recordId,
-                    action,
-                    idempotencyKey,
-                    "owner",
-                    reasonCode,
-                    cancellationToken).ConfigureAwait(false);
-                if (action == OutboxOperationAction.Replay)
-                {
-                    environmentalWakeup.Signal();
-                }
-            }
-            else if (string.Equals(kind, "TransientRuntime", StringComparison.Ordinal) &&
-                action == OutboxOperationAction.Abandon &&
+            if (string.Equals(kind, "TransientRuntime", StringComparison.Ordinal) &&
+                action == QuarantineOperationAction.Abandon &&
                 tokens.TryReadTransientRuntimeAction(actionToken, out var runtimeTarget) && runtimeTarget is not null)
             {
                 var receipt = await transientRuntime.AbandonQuarantinedCaptureAsync(
@@ -1638,34 +1507,14 @@ internal sealed class CameraAgentOperatorUiService(
                     null,
                     receipt.CompletedUtc));
             }
-            else
-            {
-                return NotFound<OperatorCommandReceipt>("The outbox action expired or is no longer available.");
-            }
-
-            return OperatorUiResult<OperatorCommandReceipt>.Success(new(
-                string.Equals(kind, "Artifact", StringComparison.Ordinal)
-                    ? $"{action} artifact item"
-                    : string.Equals(kind, "Environmental", StringComparison.Ordinal)
-                        ? $"{action} environmental item"
-                        : $"{action} outbox item",
-                disposition == OutboxOperationDisposition.Duplicate ? "Duplicate receipt" : "Applied",
-                action == OutboxOperationAction.Replay ? "Pending" : "Abandoned",
-                null,
-                timeProvider.GetUtcNow()));
-        }
-        catch (OutboxOperationCollisionException)
-        {
-            return OperatorUiResult<OperatorCommandReceipt>.Failure(
-                OperatorUiResultKind.Conflict,
-                "The outbox item changed. Refresh and review the command again.");
+            return NotFound<OperatorCommandReceipt>("The quarantine action expired or is no longer available.");
         }
         catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException)
         {
-            logger.LogInformation(exception, "CameraAgent outbox UI command conflicted with current state.");
+            logger.LogInformation(exception, "CameraAgent quarantine command conflicted with current state.");
             return OperatorUiResult<OperatorCommandReceipt>.Failure(
                 OperatorUiResultKind.Conflict,
-                "The outbox item changed. Refresh and review the command again.");
+                "The quarantine item changed. Refresh and review the command again.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1673,49 +1522,8 @@ internal sealed class CameraAgentOperatorUiService(
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "CameraAgent outbox UI command failed.");
-            return Unavailable<OperatorCommandReceipt>("The outbox command could not be completed.");
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(
-        CancellationToken cancellationToken)
-    {
-        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
-        {
-            return Denied<IReadOnlyList<CameraAgentDeliveryRecord>>();
-        }
-        // A standalone agent never exports, so it must not create outbox stores just to show none.
-        if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
-        {
-            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]);
-        }
-
-        try
-        {
-            // Each store orders its own records exactly (unfinished work newest queued first, then the newest
-            // finished), but keeps no enqueue time that orders one store against another: CreatedUtc is the
-            // artifact's capture time and the attempt times move with every retry. So the locations are never
-            // merged into one bounded list, which would let one busy location hide another's newer work. Each
-            // keeps its own bounded list, in configuration order.
-            var merged = new List<CameraAgentDeliveryRecord>();
-            foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
-            {
-                merged.AddRange((await artifactOutbox.ReadRecentDeliveryAsync(
-                        location.Root, SqliteArtifactOutbox.MaximumRecentDeliveryRecords, cancellationToken).ConfigureAwait(false))
-                    .Select(record => new CameraAgentDeliveryRecord(location.Alias, record)));
-            }
-            return OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success(merged);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            logger.LogWarning(exception, "CameraAgent delivery UI read failed.");
-            return Unavailable<IReadOnlyList<CameraAgentDeliveryRecord>>("The delivery outbox could not be read.");
+            logger.LogWarning(exception, "CameraAgent quarantine command failed.");
+            return Unavailable<OperatorCommandReceipt>("The quarantine command could not be completed.");
         }
     }
 
@@ -1728,62 +1536,7 @@ internal sealed class CameraAgentOperatorUiService(
             return Denied<CameraAgentStorageReconciliation>();
         }
         return OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(
-            rawIngressState?.LastReconciliation, captureProcessingState?.LastReconciliation));
-    }
-
-    private async ValueTask<IReadOnlyList<OperatorOutboxItem>> ReadArtifactQuarantineAsync(
-        CancellationToken cancellationToken)
-    {
-        var items = new List<OperatorOutboxItem>();
-        foreach (var location in await storageResolver.GetUploadLocationsAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var page = await artifactOutbox.ReadOperationsPageAsync(
-                location.Root, QuarantineReadSize, null, cancellationToken).ConfigureAwait(false);
-            items.AddRange(page.Items
-                .Where(static item => item.Status == ArtifactOutboxStatus.Quarantined)
-                .Select(item => new OperatorOutboxItem(
-                    "Artifact",
-                    item.Status.ToString(),
-                    location.Alias,
-                    item.Role?.ToString(),
-                    item.AttemptCount,
-                    item.PayloadBytes,
-                    item.UpdatedUtc,
-                    OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
-                    item.CanReplay
-                        ? tokens.ProtectArtifactAction(OutboxOperationAction.Replay, location.Alias, item.RecordKey)
-                        : null,
-                    item.CanAbandon
-                        ? tokens.ProtectArtifactAction(OutboxOperationAction.Abandon, location.Alias, item.RecordKey)
-                        : null)));
-        }
-        return items.OrderByDescending(static item => item.UpdatedUtc).Take(MaximumQuarantineItems).ToArray();
-    }
-
-    private async ValueTask<IReadOnlyList<OperatorOutboxItem>> ReadEnvironmentalQuarantineAsync(
-        CancellationToken cancellationToken)
-    {
-        var page = await environmentalOutbox.ReadOperationsPageAsync(
-            _hostOptions.RawIngressRoot, QuarantineReadSize, null, cancellationToken).ConfigureAwait(false);
-        return page.Items
-            .Where(static item => item.Status is "quarantined" or "terminal")
-            .Take(MaximumQuarantineItems)
-            .Select(item => new OperatorOutboxItem(
-                "Environmental",
-                item.Status,
-                null,
-                null,
-                item.AttemptCount,
-                item.PayloadBytes,
-                item.UpdatedUtc,
-                OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
-                item.CanReplay
-                    ? tokens.ProtectEnvironmentalAction(OutboxOperationAction.Replay, item.RecordId)
-                    : null,
-                item.CanAbandon
-                    ? tokens.ProtectEnvironmentalAction(OutboxOperationAction.Abandon, item.RecordId)
-                    : null))
-            .ToArray();
+            rawIngressState?.LastReconciliation));
     }
 
     private async ValueTask<bool> IsAuthorizedAsync(string policyName)
@@ -1815,16 +1568,6 @@ internal sealed class CameraAgentOperatorUiService(
 
     private static OperatorUiResult<T> Unavailable<T>(string message) =>
         OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, message);
-
-    private static string? FormatAuditSummary(OutboxOperationsAuditRecord? audit) => audit is null
-        ? null
-        : $"{OperationsLabel(audit.Action)} by {audit.ActorKind}, {OutboxOperationsReasonCodes.Sanitize(audit.ReasonCode)}, {audit.OccurredUtc:O}";
-
-    private static string OperationsLabel(string value) => string.Equals(value, "replay", StringComparison.OrdinalIgnoreCase)
-        ? "Replay"
-        : string.Equals(value, "abandon", StringComparison.OrdinalIgnoreCase)
-            ? "Abandon"
-            : "System update";
 
     internal static string ResolveProcessingAlias(
         string configuredType,
@@ -1863,7 +1606,6 @@ internal sealed class CameraAgentOperatorUiService(
             status.ValidationStatus,
             status.AgentId,
             status.ModuleType,
-            status.CentralIntegration,
             status.Sensor,
             status.Optics,
             status.Capture,
@@ -1875,8 +1617,6 @@ internal sealed class CameraAgentOperatorUiService(
                 })
                 .ToArray(),
             status.Retention,
-            status.Upload,
-            status.Environmental,
             status.Transient
         };
         return Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(allowlisted)));

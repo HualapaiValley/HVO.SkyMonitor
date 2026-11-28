@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>Existing capture analysis controls, without replacing retained scientific inputs.</summary>
 public static class CaptureAnalysisOptionDescriptors
 {
+    public const string CenteredAstrometryAlias = "ExposureMeasuredAstrometry";
     public static ProcessingNodeOptionsDescriptor Prediction { get; } = new(
         "astrometry-prediction-options-v1", "AstrometryPrediction", "canonical-projected-scene-v1",
         "Astrometry catalog prediction",
@@ -17,7 +18,7 @@ public static class CaptureAnalysisOptionDescriptors
         ]);
 
     public static ProcessingNodeOptionsDescriptor StellarAssociations { get; } = new(
-        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", "measured-stellar-associations-v1",
+        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", MeasuredStellarAssociationRecipe.CurrentImplementationVersion,
         "Measured stellar associations",
         "Measure raw stars against this capture's retained projected scene. Association thresholds and label policy are preserved. Saving creates a draft; validate and activate it separately.",
         [
@@ -28,6 +29,10 @@ public static class CaptureAnalysisOptionDescriptors
             ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "Measured association output variant",
                 "Metadata output route. Update variant-specific dependent inputs separately.", "measured-stellar-associations-v1", 128, isIdentifier: true)
         ]);
+
+    public static ProcessingNodeOptionsDescriptor StellarAssociationsV1 { get; } = new(
+        "measured-stellar-association-options-v1", "MeasuredStellarAssociations", MeasuredStellarAssociationRecipe.V1ImplementationVersion,
+        StellarAssociations.Title, StellarAssociations.Help, StellarAssociations.Options);
 
     public static ProcessingNodeOptionsDescriptor Astrometry { get; } = new(
         "measured-astrometry-options-v1", "MeasuredAstrometry", "measured-astrometry-v1", "Measured astrometry",
@@ -40,4 +45,20 @@ public static class CaptureAnalysisOptionDescriptors
             ProcessingOptionDescriptor.WholeNumber("captureStride", "captureStride", "Capture stride",
                 "Assess one admitted capture in this many. The existing minimum of 60 bounds live work; replay retains its original assessment.", 60, 60, 1_000_000, "captures")
         ]);
+
+    public static ProcessingNodeOptionsDescriptor CenteredStellarAssociations { get; } = new(
+        "exposure-stellar-association-options-v1", ExposureAssociationProducts.StepAlias, ExposureAssociationProducts.ImplementationVersion,
+        "Exposure stellar associations",
+        "Associate retained exposure centroids with the capture's independent catalog prediction. Association thresholds and label policy are preserved.",
+        StellarAssociations.Options.Where(static option => option.Key != "useAstrometryPrediction"));
+
+    public static ProcessingNodeOptionsDescriptor CenteredStellarAssociationsV1 { get; } = new(
+        "exposure-stellar-association-options-v1", ExposureAssociationProducts.StepAlias, ExposureAssociationProducts.V1ImplementationVersion,
+        CenteredStellarAssociations.Title, CenteredStellarAssociations.Help, CenteredStellarAssociations.Options);
+
+    public static ProcessingNodeOptionsDescriptor CenteredAstrometry { get; } = new(
+        "exposure-measured-astrometry-options-v1", CenteredAstrometryAlias, MeasuredAstrometryRecipe.AlgorithmVersion,
+        "Exposure measured astrometry",
+        "Configure sampled assessments of retained exposure centroids. The retained catalog, clock and solver settings are preserved.",
+        Astrometry.Options.Where(static option => option.Key != "useAstrometryPrediction"));
 }

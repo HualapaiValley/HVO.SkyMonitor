@@ -66,7 +66,7 @@ public sealed partial class ProcessingNodeOptionsTests
                 descriptor == RetainedLayerOptionDescriptors.Cloud ? "Thickness\":8" : "Inset\":8", StringComparison.Ordinal);
             Assert.AreEqual(expected, ProcessingNodeOptionsCodec.Encode(descriptor, Json(source), edits).Options!.Value.GetRawText());
             var graph = Graph(Node("layer", descriptor.StepAlias, descriptor.StepVersion, source));
-            foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
+            foreach (var host in new[] { ProcessingGraphHosts.CameraAgent })
             {
                 var before = ProcessingGraphCompiler.Compile(graph, new(host, []));
                 var after = ProcessingGraphCompiler.Compile(RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, graph), new(host, []));

@@ -10,8 +10,191 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class OrbitalElementsStoreRetentionTests : OrbitalStoreTestBase
 {
+    [TestMethod]
+    public async Task SharedCsvRawBytesAreRemovedOnlyAfterTheLastDependingSnapshotRetires()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock, OrbitalElementsStoreTestData.Settings(root, maximumRetained: 1));
+        var raw = OrbitalRefreshTestHarness.ValidPayload();
+        var first = await PublishCsvAsync().ConfigureAwait(false);
+        var second = await PublishCsvAsync().ConfigureAwait(false);
+        Assert.AreNotEqual(first.ManifestSha256, second.ManifestSha256);
+        Assert.AreEqual(first.PayloadSha256, second.PayloadSha256);
+
+        await OrbitalElementsStoreTestData.PublishAsync(store, clock, OrbitalElementsStoreTestData.Build("legacy-one"))
+            .ConfigureAwait(false);
+        await store.ApplyRetentionAsync(CancellationToken.None).ConfigureAwait(false);
+        var rawPath = Path.Combine(root, "raw", OrbitalElementsStoreTestData.Hash(raw) + ".csv");
+        CollectionAssert.AreEqual(raw, await File.ReadAllBytesAsync(rawPath).ConfigureAwait(false));
+
+        await OrbitalElementsStoreTestData.PublishAsync(store, clock, OrbitalElementsStoreTestData.Build("legacy-two", "1"))
+            .ConfigureAwait(false);
+        await store.ApplyRetentionAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(rawPath));
+
+        async Task<OrbitalPublication> PublishCsvAsync()
+        {
+            var result = CelesTrakGpNormalizer.CreateCandidate(CelesTrakGpTestData.Retrieved(raw, clock.GetUtcNow()));
+            Assert.IsNotNull(result.Snapshot, result.Detail);
+            return await OrbitalElementsStoreTestData.PublishAsync(store, clock, new(result.Snapshot, raw)).ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task StartupMigrationHandlesDuplicateRawAndRefusesCorruptOrLinkedLegacyQuarantine()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var duplicateBody = "{truncated-duplicate"u8.ToArray();
+        var duplicateSha = OrbitalElementsStoreTestData.Hash(duplicateBody);
+        var corruptBody = "{truncated-corrupt"u8.ToArray();
+        var corruptSha = OrbitalElementsStoreTestData.Hash(corruptBody);
+        var linkedBody = "{truncated-link"u8.ToArray();
+        var linkedSha = OrbitalElementsStoreTestData.Hash(linkedBody);
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var first = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(first, duplicateBody, duplicateSha, "orbital.json-syntax", "dup", CancellationToken.None)
+                .ConfigureAwait(false);
+            clock.Advance(OrbitalElementsStoreTestData.Interval);
+            var second = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(second, corruptBody, corruptSha, "orbital.json-syntax", "corrupt", CancellationToken.None)
+                .ConfigureAwait(false);
+            clock.Advance(OrbitalElementsStoreTestData.Interval);
+            var third = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(third, linkedBody, linkedSha, "orbital.json-syntax", "link", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        // Case 1: matching .raw already exists alongside legacy .json -> duplicate .json removed, .raw kept.
+        var duplicateJson = Path.Combine(quarantine, duplicateSha + ".json");
+        var duplicateRaw = Path.Combine(quarantine, duplicateSha + ".raw");
+        await File.WriteAllBytesAsync(duplicateJson, duplicateBody).ConfigureAwait(false);
+
+        // Case 2: mismatched .raw exists alongside legacy .json -> both left untouched (ambiguous).
+        var corruptJson = Path.Combine(quarantine, corruptSha + ".json");
+        var corruptRaw = Path.Combine(quarantine, corruptSha + ".raw");
+        await File.WriteAllBytesAsync(corruptJson, corruptBody).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(corruptRaw, "unexpected-bytes"u8.ToArray()).ConfigureAwait(false);
+
+        // Case 3: symlink at legacy .json -> refused and left untouched without failing startup.
+        var linkedJson = Path.Combine(quarantine, linkedSha + ".json");
+        var linkedRaw = Path.Combine(quarantine, linkedSha + ".raw");
+        File.Delete(linkedRaw);
+        var outside = Path.Combine(root, "outside.txt");
+        await File.WriteAllBytesAsync(outside, linkedBody).ConfigureAwait(false);
+        File.CreateSymbolicLink(linkedJson, outside);
+
+        using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.IsFalse(File.Exists(duplicateJson));
+        CollectionAssert.AreEqual(duplicateBody, await File.ReadAllBytesAsync(duplicateRaw).ConfigureAwait(false));
+        Assert.IsTrue(File.Exists(corruptJson));
+        CollectionAssert.AreEqual("unexpected-bytes"u8.ToArray(), await File.ReadAllBytesAsync(corruptRaw).ConfigureAwait(false));
+        Assert.IsNotNull(new FileInfo(linkedJson).LinkTarget);
+        Assert.IsFalse(File.Exists(linkedRaw));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartupMigrationPreservesLegacyQuarantineJsonWhenSourceDigestMismatches(bool validRawExists)
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var validBody = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var expectedSha = OrbitalElementsStoreTestData.Hash(validBody);
+        var mismatchedSource = "{\"OBJECT_NAME\":\"CORRUPTED-SOURCE"u8.ToArray();
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(attempt, validBody, expectedSha, "orbital.json-syntax", "mismatched-source", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var legacyJsonPath = Path.Combine(quarantine, expectedSha + ".json");
+        var rawPath = Path.Combine(quarantine, expectedSha + ".raw");
+        await File.WriteAllBytesAsync(legacyJsonPath, mismatchedSource).ConfigureAwait(false);
+        if (!validRawExists)
+        {
+            File.Delete(rawPath);
+        }
+
+        using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(File.Exists(legacyJsonPath),
+            "Legacy quarantine .json whose bytes do not match its SHA-256 filename must be preserved untouched.");
+        CollectionAssert.AreEqual(mismatchedSource, await File.ReadAllBytesAsync(legacyJsonPath).ConfigureAwait(false));
+        Assert.AreEqual(validRawExists, File.Exists(rawPath),
+            validRawExists ? "Existing valid .raw must remain intact." : "Mismatched legacy .json must not be published as .raw.");
+        if (validRawExists)
+        {
+            CollectionAssert.AreEqual(validBody, await File.ReadAllBytesAsync(rawPath).ConfigureAwait(false));
+        }
+    }
+
+    [TestMethod]
+    public async Task StartupMigrationPreservesUnreadableLegacyQuarantineJson()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file permissions are required to make the legacy quarantine file unreadable.");
+            return;
+        }
+
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var settings = OrbitalElementsStoreTestData.Settings(root, maximumQuarantined: 4);
+        var quarantine = Path.Combine(root, "quarantine");
+        var validBody = "{\"OBJECT_NAME\":\"TRUNCATED"u8.ToArray();
+        var expectedSha = OrbitalElementsStoreTestData.Hash(validBody);
+
+        using (var initial = OrbitalElementsStoreTestData.Open(root, clock, settings))
+        {
+            var attempt = await OrbitalElementsStoreTestData.AdmitAsync(initial).ConfigureAwait(false);
+            await initial.RecordQuarantineAsync(attempt, validBody, expectedSha, "orbital.json-syntax", "unreadable-source", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        var legacyJsonPath = Path.Combine(quarantine, expectedSha + ".json");
+        var rawPath = Path.Combine(quarantine, expectedSha + ".raw");
+        File.Move(rawPath, legacyJsonPath, overwrite: false);
+        var originalMode = File.GetUnixFileMode(legacyJsonPath);
+        File.SetUnixFileMode(legacyJsonPath, UnixFileMode.None);
+        try
+        {
+            using (var restarted = OrbitalElementsStoreTestData.Open(root, clock, settings))
+            {
+                await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.IsTrue(File.Exists(legacyJsonPath));
+            Assert.IsFalse(File.Exists(rawPath));
+        }
+        finally
+        {
+            File.SetUnixFileMode(legacyJsonPath, originalMode);
+        }
+
+        CollectionAssert.AreEqual(validBody, await File.ReadAllBytesAsync(legacyJsonPath).ConfigureAwait(false));
+    }
+
     [TestMethod]
     public async Task SnapshotsOutsideThePolicyAreTombstonedThenDeletedAndTheActivePairIsProtected()
     {

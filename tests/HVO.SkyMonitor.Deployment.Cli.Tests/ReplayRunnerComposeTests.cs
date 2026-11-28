@@ -232,26 +232,6 @@ public sealed class ReplayRunnerComposeTests
     }
 
     [TestMethod]
-    public void LegacyRequestIdentityMatchesOnlyInProcessProfile()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var (inProcess, _) = CreateRequest(root, CameraAgentReplayProfile.InProcess);
-            var localRunner = inProcess with { ReplayProfile = CameraAgentReplayProfile.LocalRunner };
-            var instanceId = Guid.NewGuid();
-            var legacySha256 = CameraAgentInstaller.ComputeLegacyRequestSha256(inProcess, instanceId);
-
-            Assert.IsTrue(CameraAgentInstaller.RequestIdentityMatches(legacySha256, inProcess, instanceId));
-            Assert.IsFalse(CameraAgentInstaller.RequestIdentityMatches(legacySha256, localRunner, instanceId));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
     public void LocalRunnerRequiresImmutableImageCapabilityContract()
     {
         var image = new ImageInstallationIdentity(
@@ -260,11 +240,11 @@ public sealed class ReplayRunnerComposeTests
             $"sha256:{new string('a', 64)}",
             "amd64",
             null,
-            UpgradeCompatibility: "backward-compatible",
+            StateContract: CameraAgentStateContract.Current,
             SourceRevision: new string('b', 40),
             Component: "CameraAgent",
             ConfigurationContract: "cameraagent-install-v1",
-            CatalogContract: "hyg-v42-production-p3-s2");
+            CatalogContract: CameraAgentImageContract.CatalogContract);
 
         Assert.IsTrue(CameraAgentInstaller.IsValid(image, CameraAgentReplayProfile.InProcess));
         Assert.IsFalse(CameraAgentInstaller.IsValid(image, CameraAgentReplayProfile.LocalRunner));
@@ -288,11 +268,11 @@ public sealed class ReplayRunnerComposeTests
             $"sha256:{new string('a', 64)}",
             "amd64",
             null,
-            UpgradeCompatibility: "backward-compatible",
+            StateContract: CameraAgentStateContract.Current,
             SourceRevision: new string('b', 40),
             Component: "CameraAgent",
             ConfigurationContract: "cameraagent-install-v1",
-            CatalogContract: "hyg-v42-production-p3-s2");
+            CatalogContract: CameraAgentImageContract.CatalogContract);
 
         Assert.IsTrue(CameraAgentInstaller.IsValid(image, CameraAgentReplayProfile.InProcess));
         Assert.IsFalse(CameraAgentInstaller.IsValid(
@@ -310,7 +290,7 @@ public sealed class ReplayRunnerComposeTests
         NativeLinux.getuid(),
         NativeLinux.getgid(),
         $"sha256:{new string('a', 64)}",
-        HygV42.PackageVersion,
+        HygV44.PackageVersion,
         Path.Combine(paths.ConfigRoot, "owner-password"),
         "verification-token",
         "lifecycle-token",
@@ -323,6 +303,7 @@ public sealed class ReplayRunnerComposeTests
     {
         var request = new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             FriendlyName = "Replay Test",
             OwnerEmail = "owner@example.test",
             ProductRoot = root,
@@ -330,7 +311,7 @@ public sealed class ReplayRunnerComposeTests
             CatalogBundle = Path.Combine(root, "catalog.bundle"),
             ReplayProfile = replayProfile
         };
-        return (request, InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId));
+        return (request, InstallationPaths.Create(root, Guid.NewGuid(), HygV44.CatalogId));
     }
 
     private static Guid InstanceIdOf(InstallationPaths paths) => Guid.Parse(Path.GetFileName(paths.InstanceRoot));

@@ -7,14 +7,15 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpNormalizerTests
 {
     // Pinned identities of the valid fixture's candidate at RetrievedUtc with the default synthetic validators. A change
     // to the parser rules, normalizer rules, contract serialization or fixture bytes must change these deliberately.
-    private const string ValidNormalizedPayloadSha256 = "F3BDD6215306A5188CBDF1D518B0EC51A7AD55336B15388864B48B49BDABB8C8";
-    private const string ValidManifestSha256 = "0009A4DE70965F6C70F881576EADCB3E9D345B0BFCF4CAE0BC7453C3CCF5FE00";
-    private const string ParserImplementationSha256 = "79FEEE50CCC7D0D5108E8040D95A8048332C5C9AD4A13B17B1B2CC2249A8BF7A";
-    private const string NormalizerImplementationSha256 = "0D1E2F09E4F375287BC9353ECA0FBBE4BACED8782DF5E240DF564C5812A17583";
+    private const string ValidNormalizedPayloadSha256 = "CE58857E41EF795AE3CDEE6549CB577EB321BF4315CAA3DF567AFB52655BAC4F";
+    private const string ValidManifestSha256 = "0FF6381A4316755A2C2056E239871E192FBD0E7EABE8477FBD78F6D79B103F46";
+    private const string ParserImplementationSha256 = "72BB15B3B2C7E2A82FA489A8F4E0C8DE2F02211241E1D7D679E09F22CD58447C";
+    private const string NormalizerImplementationSha256 = "AF57240098DA1B68CCFD85138E372752B0F5C02F8B60B237AE38A13B51CBE8F0";
 
     private static readonly string[] ExpectedKnownExclusions =
     [
@@ -27,7 +28,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void ValidFixtureBecomesOneSnapshotWithFullProvenance()
     {
-        var raw = ReadFixture(ValidFixture);
+        var raw = ValidCsv();
 
         var result = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw));
 
@@ -35,7 +36,7 @@ public sealed class CelesTrakGpNormalizerTests
         Assert.AreEqual("records=8 objects=7", result.Detail);
         var manifest = result.Snapshot!.Manifest;
         Assert.AreEqual(OrbitalContract.SchemaVersion, manifest.SchemaVersion);
-        Assert.AreEqual(OrbitalContract.CelesTrakGpProfile, manifest.ProfileVersion);
+        Assert.AreEqual(OrbitalContract.CelesTrakGpCsvProfile, manifest.ProfileVersion);
         Assert.AreEqual(8, manifest.RecordCount);
         Assert.AreEqual(7, manifest.ObjectCount);
         Assert.AreEqual(new DateTimeOffset(1958, 3, 17, 12, 0, 0, TimeSpan.Zero), manifest.MinimumEpochUtc);
@@ -60,12 +61,13 @@ public sealed class CelesTrakGpNormalizerTests
         Assert.AreEqual(CelesTrakGpNormalizer.Normalizer, source.Normalizer);
         Assert.AreEqual(CelesTrakGpSource.TermsUri, source.TermsUri);
         Assert.AreEqual(CelesTrakGpSource.TermsReference, source.TermsReference);
+        Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak", source.TermsReference);
     }
 
     [TestMethod]
     public void ValidFixtureNormalizedIdentitiesArePinned()
     {
-        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ReadFixture(ValidFixture))).Snapshot!;
+        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ValidCsv())).Snapshot!;
 
         Assert.AreEqual(ValidNormalizedPayloadSha256, snapshot.Manifest.NormalizedPayloadSha256);
         Assert.AreEqual(ValidManifestSha256, snapshot.Manifest.ManifestSha256);
@@ -75,9 +77,9 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void SoftwareIdentitiesArePinnedToTheirRuleDescriptors()
     {
-        Assert.AreEqual(new OrbitalSoftwareIdentity("hvo-celestrak-gp-json-parser", "1", ParserImplementationSha256),
+        Assert.AreEqual(new OrbitalSoftwareIdentity("hvo-celestrak-gp-csv-parser", "1", ParserImplementationSha256),
             CelesTrakGpNormalizer.Parser);
-        Assert.AreEqual(new OrbitalSoftwareIdentity("hvo-celestrak-gp-normalizer", "1", NormalizerImplementationSha256),
+        Assert.AreEqual(new OrbitalSoftwareIdentity("hvo-celestrak-gp-csv-normalizer", "1", NormalizerImplementationSha256),
             CelesTrakGpNormalizer.Normalizer);
         Assert.AreEqual(ParserImplementationSha256, Sha256(Encoding.UTF8.GetBytes(CelesTrakGpParser.RuleDescriptor)));
         Assert.AreEqual(NormalizerImplementationSha256, Sha256(Encoding.UTF8.GetBytes(CelesTrakGpNormalizer.RuleDescriptor)));
@@ -91,7 +93,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void CandidateRoundTripsThroughTheSharedSnapshotParser()
     {
-        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ReadFixture(ValidFixture))).Snapshot!;
+        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ValidCsv())).Snapshot!;
 
         var parsed = OrbitalSnapshot.Parse(snapshot.SerializeManifest(), snapshot.SerializePayload());
 
@@ -103,13 +105,13 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void RawBoundEqualsTheSharedContractRawLengthBound()
     {
-        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ReadFixture(ValidFixture))).Snapshot!;
+        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ValidCsv())).Snapshot!;
         var source = snapshot.Manifest.Sources.Single();
 
         var atBound = OrbitalSnapshot.Create(snapshot.Records,
-            [source with { RawLengthBytes = CelesTrakGpSource.MaximumRawBytes }], snapshot.Manifest.Coverage);
+            [source with { RawLengthBytes = CelesTrakGpSource.MaximumRawBytes }], snapshot.Manifest.Coverage, snapshot.Manifest.ProfileVersion);
         var overBound = Assert.ThrowsExactly<ArgumentException>(() => OrbitalSnapshot.Create(snapshot.Records,
-            [source with { RawLengthBytes = CelesTrakGpSource.MaximumRawBytes + 1L }], snapshot.Manifest.Coverage));
+            [source with { RawLengthBytes = CelesTrakGpSource.MaximumRawBytes + 1L }], snapshot.Manifest.Coverage, snapshot.Manifest.ProfileVersion));
 
         Assert.AreEqual(CelesTrakGpSource.MaximumRawBytes, atBound.Manifest.Sources.Single().RawLengthBytes);
         Assert.AreEqual("source-provenance", overBound.Message);
@@ -118,7 +120,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void CandidatesAreDeterministic()
     {
-        var raw = ReadFixture(ValidFixture);
+        var raw = ValidCsv();
 
         var first = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw)).Snapshot!;
         var second = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw.ToArray())).Snapshot!;
@@ -130,7 +132,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void ValidFixtureRecordsMapEveryFieldWithoutInference()
     {
-        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ReadFixture(ValidFixture))).Snapshot!;
+        var snapshot = CelesTrakGpNormalizer.CreateCandidate(Retrieved(ValidCsv())).Snapshot!;
 
         var station = snapshot.RecordsFor(Norad("25544"));
         Assert.HasCount(2, station);
@@ -144,7 +146,7 @@ public sealed class CelesTrakGpNormalizerTests
         Assert.IsNull(newest.ValidFromUtc);
         Assert.IsNull(newest.ValidToUtc);
         Assert.AreEqual(new OrbitalElementModel("EARTH", "TEME", "UTC", "SGP4", OrbitalContract.GpDerivativeConvention,
-            OrbitalContract.CelesTrakGpProfile, CelesTrakGpNormalizer.Parser, CelesTrakGpNormalizer.Normalizer), newest.Model);
+            OrbitalContract.CelesTrakGpCsvProfile, CelesTrakGpNormalizer.Parser, CelesTrakGpNormalizer.Normalizer), newest.Model);
         Assert.AreEqual(new OrbitalMeanElements(15.50103472, 0.0006703, 51.6416, 247.4627, 130.536, 325.0288, 0.00034123,
             0.00016717, 0, 0, "U", 999, 47001), newest.Elements);
         Assert.AreEqual(newest.RecordSha256, OrbitalContract.ComputeRecordIdentity(newest with { RecordSha256 = string.Empty }));
@@ -190,21 +192,6 @@ public sealed class CelesTrakGpNormalizerTests
     }
 
     [TestMethod]
-    [DataRow("invalid-unknown-member.json", "orbital.unknown-member", "record=1 member=DECAY_DATE")]
-    [DataRow("invalid-duplicate-member.json", "orbital.duplicate-member", "record=1 member=MEAN_MOTION")]
-    [DataRow("invalid-conflicting-ref-frame.json", "orbital.conflicting-metadata", "record=1 member=REF_FRAME")]
-    [DataRow("invalid-norad-string.json", "orbital.member-type", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-norad-zero.json", "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-norad-negative.json", "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-norad-ten-digits.json", "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-norad-fraction.json", "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-norad-exponent.json", "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID")]
-    [DataRow("invalid-duplicate-record.json", "orbital.duplicate-record", "record=1 duplicate-of=0")]
-    [DataRow("invalid-root-object.json", "orbital.json-root", "root-not-array")]
-    public void InvalidFixtureRejectsTheWholeCandidate(string fixture, string reasonCode, string detail) =>
-        AssertRejected(ReadFixture(fixture), reasonCode, detail);
-
-    [TestMethod]
     [DataRow("EPOCH")]
     [DataRow("MEAN_MOTION")]
     [DataRow("ECCENTRICITY")]
@@ -219,8 +206,7 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("MEAN_MOTION_DOT")]
     [DataRow("MEAN_MOTION_DDOT")]
     public void MissingRequiredMemberRejects(string member) =>
-        AssertRejected(Payload(Record(), RecordFor(60002, (member, null))), "orbital.missing-member",
-            $"record=1 member={member}");
+        AssertRejected(Payload(Record((member, null))), "orbital.missing-member", $"header member={member}");
 
     [TestMethod]
     [DataRow("OBJECT_NAME")]
@@ -230,34 +216,12 @@ public sealed class CelesTrakGpNormalizerTests
     public void OptionalMembersMayBeOmitted(string member) => AssertAccepted(Payload(Record((member, null))));
 
     [TestMethod]
-    [DataRow("MEAN_MOTION", "\"15.2\"")]
-    [DataRow("ECCENTRICITY", "true")]
-    [DataRow("INCLINATION", "null")]
-    [DataRow("RA_OF_ASC_NODE", "\"NaN\"")]
-    [DataRow("BSTAR", "[0]")]
-    [DataRow("MEAN_MOTION_DOT", "{\"VALUE\":0}")]
-    [DataRow("EPOCH", "1729350000")]
-    [DataRow("EPOCH", "null")]
-    [DataRow("OBJECT_NAME", "42")]
-    [DataRow("OBJECT_ID", "false")]
-    [DataRow("OBJECT_NAME", "[\"A\"]")]
-    [DataRow("CLASSIFICATION_TYPE", "null")]
-    [DataRow("EPHEMERIS_TYPE", "\"0\"")]
-    [DataRow("NORAD_CAT_ID", "null")]
-    [DataRow("ELEMENT_SET_NO", "\"999\"")]
-    [DataRow("REV_AT_EPOCH", "true")]
-    [DataRow("CENTER_NAME", "0")]
-    [DataRow("REF_FRAME", "null")]
-    [DataRow("CCSDS_OMM_VERS", "3.0")]
-    [DataRow("COMMENT", "null")]
-    [DataRow("ORIGINATOR", "[]")]
-    public void MistypedMemberRejects(string member, string json) =>
-        AssertRejected(Payload(Record((member, json))), "orbital.member-type", $"record=0 member={member}");
-
-    [TestMethod]
     [DataRow("MEAN_MOTION", "1e400")]
     [DataRow("BSTAR", "-1e309")]
     [DataRow("MEAN_MOTION_DDOT", "1E+999")]
+    [DataRow("MEAN_MOTION", "NaN")]
+    [DataRow("BSTAR", "Infinity")]
+    [DataRow("MEAN_MOTION_DDOT", "-Infinity")]
     [DataRow("ELEMENT_SET_NO", "-1")]
     [DataRow("ELEMENT_SET_NO", "1.0")]
     [DataRow("ELEMENT_SET_NO", "1e3")]
@@ -266,88 +230,57 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("EPHEMERIS_TYPE", "0.0")]
     [DataRow("EPHEMERIS_TYPE", "-0")]
     [DataRow("EPHEMERIS_TYPE", "0e0")]
-    public void NonFiniteOrNonCanonicalNumbersReject(string member, string json) =>
-        AssertRejected(Payload(Record((member, json))), "orbital.invalid-number", $"record=0 member={member}");
+    public void NonFiniteOrNonCanonicalNumbersReject(string member, string field) =>
+        AssertRejected(Payload(Record((member, field))), "orbital.invalid-number", $"record=0 member={member}");
 
     [TestMethod]
     [DataRow("2")]
     [DataRow("4")]
     [DataRow("1")]
-    public void UnsupportedEphemerisTypeRejects(string json) =>
-        AssertRejected(Payload(Record(("EPHEMERIS_TYPE", json))), "orbital.unsupported-ephemeris-type",
+    public void UnsupportedEphemerisTypeRejects(string field) =>
+        AssertRejected(Payload(Record(("EPHEMERIS_TYPE", field))), "orbital.unsupported-ephemeris-type",
             "record=0 member=EPHEMERIS_TYPE");
 
     [TestMethod]
-    [DataRow("\"C\"")]
-    [DataRow("\"S\"")]
-    [DataRow("\"u\"")]
-    [DataRow("\"\"")]
-    [DataRow("\"U \"")]
-    public void UnsupportedClassificationRejects(string json) =>
-        AssertRejected(Payload(Record(("CLASSIFICATION_TYPE", json))), "orbital.unsupported-classification",
+    [DataRow("C")]
+    [DataRow("S")]
+    [DataRow("u")]
+    [DataRow("")]
+    [DataRow("U ")]
+    public void UnsupportedClassificationRejects(string field) =>
+        AssertRejected(Payload(Record(("CLASSIFICATION_TYPE", field))), "orbital.unsupported-classification",
             "record=0 member=CLASSIFICATION_TYPE");
 
     [TestMethod]
-    [DataRow("CENTER_NAME", "\"MOON\"")]
-    [DataRow("CENTER_NAME", "\"earth\"")]
-    [DataRow("REF_FRAME", "\"ITRF\"")]
-    [DataRow("REF_FRAME", "\"\"")]
-    [DataRow("TIME_SYSTEM", "\"TAI\"")]
-    [DataRow("TIME_SYSTEM", "\"UTC \"")]
-    [DataRow("MEAN_ELEMENT_THEORY", "\"SGP4-XP\"")]
-    [DataRow("MEAN_ELEMENT_THEORY", "\"DSST\"")]
-    [DataRow("CCSDS_OMM_VERS", "\"1.0\"")]
-    [DataRow("CCSDS_OMM_VERS", "\"3\"")]
-    [DataRow("CCSDS_OMM_VERS", "\"3.1\"")]
-    public void ConflictingMetadataRejects(string member, string json) =>
-        AssertRejected(Payload(Record((member, json))), "orbital.conflicting-metadata", $"record=0 member={member}");
+    [DataRow("CENTER_NAME", "MOON")]
+    [DataRow("CENTER_NAME", "earth")]
+    [DataRow("REF_FRAME", "ITRF")]
+    [DataRow("REF_FRAME", "")]
+    [DataRow("TIME_SYSTEM", "TAI")]
+    [DataRow("TIME_SYSTEM", "UTC ")]
+    [DataRow("MEAN_ELEMENT_THEORY", "SGP4-XP")]
+    [DataRow("MEAN_ELEMENT_THEORY", "DSST")]
+    [DataRow("CCSDS_OMM_VERS", "1.0")]
+    [DataRow("CCSDS_OMM_VERS", "3")]
+    [DataRow("CCSDS_OMM_VERS", "3.1")]
+    public void ConflictingMetadataRejects(string member, string field) =>
+        AssertRejected(Payload(Record((member, field))), "orbital.conflicting-metadata", $"record=0 member={member}");
 
     [TestMethod]
-    [DataRow("CENTER_NAME", "\"EARTH\"")]
-    [DataRow("CENTER_NAME", "\"\\u0045ARTH\"")]
-    [DataRow("REF_FRAME", "\"TEME\"")]
-    [DataRow("TIME_SYSTEM", "\"UTC\"")]
-    [DataRow("MEAN_ELEMENT_THEORY", "\"SGP4\"")]
-    [DataRow("CCSDS_OMM_VERS", "\"2.0\"")]
-    [DataRow("CCSDS_OMM_VERS", "\"3.0\"")]
-    [DataRow("COMMENT", "\"GENERATED BY HVO SYNTHETIC\"")]
-    [DataRow("ORIGINATOR", "\"HVO\"")]
-    public void ConsistentOptionalMetadataIsAcceptedAndDoesNotChangeTheRecord(string member, string json)
+    [DataRow("CENTER_NAME", "EARTH")]
+    [DataRow("REF_FRAME", "TEME")]
+    [DataRow("TIME_SYSTEM", "UTC")]
+    [DataRow("MEAN_ELEMENT_THEORY", "SGP4")]
+    [DataRow("CCSDS_OMM_VERS", "2.0")]
+    [DataRow("CCSDS_OMM_VERS", "3.0")]
+    [DataRow("COMMENT", "GENERATED BY HVO SYNTHETIC")]
+    [DataRow("ORIGINATOR", "HVO")]
+    public void ConsistentOptionalMetadataIsAcceptedAndDoesNotChangeTheRecord(string member, string field)
     {
         var plain = AssertAccepted(Payload(Record()));
-        var withMetadata = AssertAccepted(Payload(Record((member, json))));
+        var withMetadata = AssertAccepted(Payload(Record((member, field))));
 
         Assert.AreEqual(plain.Records.Single().RecordSha256, withMetadata.Records.Single().RecordSha256);
-    }
-
-    [TestMethod]
-    [DataRow("OBJECT_NAME", "\"BAD\\u0001NAME\"")]
-    [DataRow("OBJECT_NAME", "\"BAD\\nNAME\"")]
-    [DataRow("OBJECT_NAME", "\"BAD\\u007FNAME\"")]
-    [DataRow("OBJECT_ID", "\"\\u0085\"")]
-    [DataRow("OBJECT_ID", "\"\\uD800\"")]
-    [DataRow("OBJECT_NAME", "\"\\uDC00X\"")]
-    [DataRow("COMMENT", "\"TAB\\tINSIDE\"")]
-    [DataRow("ORIGINATOR", "\"\\u0000\"")]
-    public void TextWithControlCharactersOrLoneSurrogatesRejects(string member, string json) =>
-        AssertRejected(Payload(Record((member, json))), "orbital.invalid-text", $"record=0 member={member}");
-
-    [TestMethod]
-    public void TextIsBoundedAtTwoHundredFiftySixCharacters()
-    {
-        var name = new string('N', 256);
-        var accepted = AssertAccepted(Payload(Record(("OBJECT_NAME", $"\"{name}\""))));
-        Assert.AreEqual(name, accepted.Records.Single().ObjectName);
-
-        var escaped = string.Concat(Enumerable.Repeat("\\u0041", 256));
-        Assert.AreEqual(new string('A', 256), AssertAccepted(Payload(Record(("OBJECT_NAME", $"\"{escaped}\"")))).Records.Single().ObjectName);
-
-        AssertRejected(Payload(Record(("OBJECT_NAME", $"\"{new string('N', 257)}\""))), "orbital.invalid-text",
-            "record=0 member=OBJECT_NAME");
-        AssertRejected(Payload(Record(("OBJECT_NAME", $"\"{escaped}\\u0041\""))), "orbital.invalid-text",
-            "record=0 member=OBJECT_NAME");
-        AssertRejected(Payload(Record(("COMMENT", $"\"{new string('C', 257)}\""))), "orbital.invalid-text",
-            "record=0 member=COMMENT");
     }
 
     [TestMethod]
@@ -376,9 +309,9 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("20261019T060000")]
     [DataRow("+2026-10-19T06:00:00")]
     [DataRow("2026-10-19T06:00:00.123456789012345678901234")]
-    [DataRow("\\uFF12026-10-19T06:00:00")]
+    [DataRow("\uFF12026-10-19T06:00:00")]
     public void EpochOutsideTheDocumentedGrammarRejects(string epoch) =>
-        AssertRejected(Payload(Record(("EPOCH", $"\"{epoch}\""))), "orbital.invalid-epoch", "record=0 member=EPOCH");
+        AssertRejected(Payload(Record(("EPOCH", epoch))), "orbital.invalid-epoch", "record=0 member=EPOCH");
 
     [TestMethod]
     [DataRow("2026-10-19T06:00:00", 0L)]
@@ -386,10 +319,9 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("2026-10-19T06:00:00.5", 5_000_000L)]
     [DataRow("2026-10-19T06:00:00.1234567Z", 1_234_567L)]
     [DataRow("2026-10-19T06:00:00.000001", 10L)]
-    [DataRow("2026-10-19T06\\u003A00:00", 0L)]
     public void EpochInTheDocumentedGrammarIsUtc(string epoch, long fractionTicks)
     {
-        var record = AssertAccepted(Payload(Record(("EPOCH", $"\"{epoch}\"")))).Records.Single();
+        var record = AssertAccepted(Payload(Record(("EPOCH", epoch)))).Records.Single();
 
         Assert.AreEqual(new DateTimeOffset(2026, 10, 19, 6, 0, 0, TimeSpan.Zero).AddTicks(fractionTicks), record.EpochUtc);
         Assert.AreEqual(TimeSpan.Zero, record.EpochUtc.Offset);
@@ -398,7 +330,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void LeapDayIsAValidEpoch()
     {
-        var record = AssertAccepted(Payload(Record(("EPOCH", "\"2024-02-29T23:59:59\"")))).Records.Single();
+        var record = AssertAccepted(Payload(Record(("EPOCH", "2024-02-29T23:59:59")))).Records.Single();
         Assert.AreEqual(new DateTimeOffset(2024, 2, 29, 23, 59, 59, TimeSpan.Zero), record.EpochUtc);
     }
 
@@ -411,7 +343,7 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("9999-12-31T23:59:59.9999999", false)]
     public void EpochMustFallBetweenSputnikAndThirtyDaysAfterRetrieval(string epoch, bool accepted)
     {
-        var payload = Payload(Record(("EPOCH", $"\"{epoch}\"")));
+        var payload = Payload(Record(("EPOCH", epoch)));
         if (accepted)
         {
             AssertAccepted(payload);
@@ -423,46 +355,6 @@ public sealed class CelesTrakGpNormalizerTests
     }
 
     [TestMethod]
-    [DataRow("DECAY_DATE", "DECAY_DATE")]
-    [DataRow("decay_date", "__________")]
-    [DataRow("Object_Name", "O______N___")]
-    [DataRow("MEAN MOTION", "MEAN_MOTION")]
-    [DataRow("EPOCH ", "EPOCH_")]
-    [DataRow("\\u0000X", "__0000X")]
-    [DataRow("\\u00C9POCH", "__00C9POCH")]
-    [DataRow("\u00C9POCH", "__POCH")]
-    [DataRow("", "_")]
-    [DataRow("A\\\"B", "A__B")]
-    [DataRow("<SCRIPT>", "_SCRIPT_")]
-    [DataRow("<script>", "________")]
-    public void UnknownMemberRejectsWithASanitizedName(string name, string reported)
-    {
-        var record = Record().TrimEnd('}') + $",\"{name}\":1}}";
-        AssertRejected(Payload(record), "orbital.unknown-member", $"record=0 member={reported}");
-    }
-
-    [TestMethod]
-    public void ReportedUnknownMemberNameIsTruncatedToSixtyFourCharacters()
-    {
-        var name = new string('X', 200);
-        var record = Record().TrimEnd('}') + $",\"{name}\":1}}";
-        AssertRejected(Payload(record), "orbital.unknown-member", $"record=0 member={new string('X', 64)}");
-
-        Assert.AreEqual(new string('_', 64), CelesTrakGpParser.SanitizeMemberName(Encoding.UTF8.GetBytes(new string('x', 65))));
-    }
-
-    [TestMethod]
-    public void EscapedSpellingsOfKnownMembersAreThoseMembers()
-    {
-        var escaped = Record().Replace("\"EPOCH\"", "\"\\u0045POCH\"", StringComparison.Ordinal);
-        Assert.AreEqual(AssertAccepted(Payload(Record())).Records.Single().RecordSha256,
-            AssertAccepted(Payload(escaped)).Records.Single().RecordSha256);
-
-        var duplicated = Record().TrimEnd('}') + ",\"\\u0045POCH\":\"2026-10-19T06:00:00\"}";
-        AssertRejected(Payload(duplicated), "orbital.duplicate-member", "record=0 member=EPOCH");
-    }
-
-    [TestMethod]
     [DataRow("ECCENTRICITY", "1.0")]
     [DataRow("ECCENTRICITY", "1.5")]
     [DataRow("ECCENTRICITY", "-0.0001")]
@@ -470,8 +362,8 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("MEAN_MOTION", "-15.2")]
     [DataRow("INCLINATION", "180.5")]
     [DataRow("INCLINATION", "-0.1")]
-    public void ElementsOutsideTheSharedContractRejectTheCandidate(string member, string json) =>
-        AssertRejected(Payload(Record(), RecordFor(60002, (member, json))), "orbital.record-contract",
+    public void ElementsOutsideTheSharedContractRejectTheCandidate(string member, string field) =>
+        AssertRejected(Payload(Record(), RecordFor(60002, (member, field))), "orbital.record-contract",
             "record=1 contract=element-range");
 
     [TestMethod]
@@ -481,8 +373,8 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("MEAN_MOTION", "0.0001")]
     [DataRow("MEAN_ANOMALY", "-90")]
     [DataRow("RA_OF_ASC_NODE", "720.5")]
-    public void ElementsAtTheContractBoundsAreAccepted(string member, string json) =>
-        AssertAccepted(Payload(Record((member, json))));
+    public void ElementsAtTheContractBoundsAreAccepted(string member, string field) =>
+        AssertAccepted(Payload(Record((member, field))));
 
     [TestMethod]
     public void AnglesAndNegativeZeroNormalizeToOneRecordIdentity()
@@ -505,7 +397,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void DistinctRecordsForOneObjectAreAllKept()
     {
-        var snapshot = AssertAccepted(Payload(Record(), Record(("EPOCH", "\"2026-10-18T06:00:00\"")),
+        var snapshot = AssertAccepted(Payload(Record(), Record(("EPOCH", "2026-10-18T06:00:00")),
             Record(("ELEMENT_SET_NO", "998"))));
 
         Assert.AreEqual(3, snapshot.Manifest.RecordCount);
@@ -519,7 +411,7 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("HVO SYNTHETIC [-]")]
     public void ObjectTypeAndStatusAreNeverInferredFromNames(string name)
     {
-        var record = AssertAccepted(Payload(Record(("OBJECT_NAME", $"\"{name}\"")))).Records.Single();
+        var record = AssertAccepted(Payload(Record(("OBJECT_NAME", name)))).Records.Single();
 
         Assert.AreEqual(name, record.ObjectName);
         Assert.IsNull(record.SourceAssertedType);
@@ -527,97 +419,74 @@ public sealed class CelesTrakGpNormalizerTests
     }
 
     [TestMethod]
-    public void MemberOrderAndWhitespaceDoNotChangeTheNormalizedPayload()
+    public void ColumnOrderQuotingAndLineEndingsPreserveCanonicalValues()
     {
-        var compact = AssertAccepted(Payload(Record(), RecordFor(60002)));
-        var reordered = "{" + string.Join(',', Record().Trim('{', '}').Split(',').Reverse()) + "}";
-        var spaced = Encoding.UTF8.GetBytes("\n[\r\n  " + RecordFor(60002).Replace(",", " ,\t", StringComparison.Ordinal) +
-            " ,\n  " + reordered + "\n]\n");
+        const string Name = "HVO, \"quoted\" \u00c9";
+        var record = Record(("OBJECT_NAME", Name));
+        var baseline = AssertAccepted(Payload(record));
+        var reversed = record.Reverse().ToDictionary();
+        var csv = Encoding.UTF8.GetString(Payload(reversed))
+            .Replace("15.2,", "\"15.2\",", StringComparison.Ordinal)
+            .TrimEnd('\n').Replace("\n", "\r\n", StringComparison.Ordinal);
+        var raw = Encoding.UTF8.GetBytes("\uFEFF" + csv);
 
-        var other = AssertAccepted(spaced);
+        var alternative = AssertAccepted(raw);
 
-        Assert.AreEqual(compact.Manifest.NormalizedPayloadSha256, other.Manifest.NormalizedPayloadSha256);
-        CollectionAssert.AreEqual(compact.SerializePayload(), other.SerializePayload());
-        Assert.AreNotEqual(compact.Manifest.Sources.Single().RawSha256, other.Manifest.Sources.Single().RawSha256);
+        Assert.AreEqual(Name, alternative.Records.Single().ObjectName);
+        CollectionAssert.AreEqual(baseline.SerializePayload(), alternative.SerializePayload());
+        Assert.AreEqual(Sha256(raw), alternative.Manifest.Sources.Single().RawSha256);
     }
 
     [TestMethod]
-    [DataRow("bom")]
-    [DataRow("block-comment")]
-    [DataRow("line-comment")]
-    [DataRow("trailing-comma-array")]
-    [DataRow("trailing-comma-object")]
-    [DataRow("trailing-array")]
-    [DataRow("trailing-text")]
-    [DataRow("unterminated-array")]
-    [DataRow("unterminated-object")]
-    [DataRow("unterminated-string")]
-    [DataRow("nan")]
-    [DataRow("infinity")]
-    [DataRow("negative-infinity")]
-    [DataRow("leading-zero")]
-    [DataRow("single-quotes")]
-    [DataRow("raw-tab-in-string")]
-    [DataRow("missing-colon")]
-    [DataRow("escaped-lone-surrogate-name")]
-    [DataRow("invalid-utf8")]
-    [DataRow("overlong-utf8")]
-    [DataRow("utf16")]
-    public void MalformedJsonRejectsAsSyntax(string shape)
+    [DataRow("OBJECT_NAME,OBJECT_NAME", "orbital.duplicate-member", "header member=OBJECT_NAME")]
+    [DataRow("SECRET_COLUMN", "orbital.unknown-member", "column=0")]
+    [DataRow("\"malformed", "orbital.csv-header", "invalid-header")]
+    [DataRow("[]", "orbital.unknown-member", "column=0")]
+    public void InvalidHeadersReject(string csv, string reasonCode, string detail) =>
+        AssertRejected(Encoding.UTF8.GetBytes(csv), reasonCode, detail);
+
+    [TestMethod]
+    [DataRow("\"unterminated", "orbital.csv-syntax", "record=1 invalid-row")]
+    [DataRow("\"closed\"suffix", "orbital.csv-syntax", "record=1 invalid-row")]
+    [DataRow("un\"quoted", "orbital.csv-syntax", "record=1 invalid-row")]
+    [DataRow("\"embedded\nnewline\"", "orbital.csv-syntax", "record=1 invalid-row")]
+    [DataRow("bare\rreturn", "orbital.csv-syntax", "record=1 invalid-row")]
+    [DataRow("one,two", "orbital.csv-row-width", "record=1 columns=2 expected=17")]
+    [DataRow("", "orbital.csv-row-width", "record=1 columns=1 expected=17")]
+    public void AWellFormedFirstRowDoesNotRescueAMalformedSecondRow(string row, string reasonCode, string detail) =>
+        AssertRejected([.. Payload(Record()), .. Encoding.UTF8.GetBytes(row + "\n")], reasonCode, detail);
+
+    [TestMethod]
+    public void InvalidUtf8RejectsBeforeNormalization() =>
+        AssertRejected([.. Payload(Record()), 0xC0, 0xAF], "orbital.csv-syntax", "utf8-invalid");
+
+    [TestMethod]
+    public void HeaderAloneIsAnEmptyPayload() =>
+        AssertRejected(Encoding.UTF8.GetBytes(CsvHeader + "\r\n"), "orbital.empty-payload", "records=0");
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("0")]
+    [DataRow("001")]
+    [DataRow("-1")]
+    [DataRow("1000000000")]
+    [DataRow("1.5")]
+    [DataRow("1e3")]
+    public void CatalogNumbersMustBeNonzeroCanonicalDecimal(string number) =>
+        AssertRejected(Payload(Record(), Record(("NORAD_CAT_ID", number))),
+            "orbital.invalid-object-identity", "record=1 member=NORAD_CAT_ID");
+
+    [TestMethod]
+    public void DuplicateRecordsRejectTheWholePayload() =>
+        AssertRejected(Payload(Record(), Record()), "orbital.duplicate-record", "record=1 duplicate-of=0");
+
+    [TestMethod]
+    public void OversizeAndControlTextReject()
     {
-        var record = Record();
-        var payload = shape switch
-        {
-            "bom" => [0xEF, 0xBB, 0xBF, .. Payload(record)],
-            "block-comment" => Encoding.UTF8.GetBytes("[/* HVO */" + record + "]"),
-            "line-comment" => Encoding.UTF8.GetBytes("// HVO\n[" + record + "]"),
-            "trailing-comma-array" => Encoding.UTF8.GetBytes("[" + record + ",]"),
-            "trailing-comma-object" => Encoding.UTF8.GetBytes("[" + record.TrimEnd('}') + ",}]"),
-            "trailing-array" => Encoding.UTF8.GetBytes("[" + record + "][]"),
-            "trailing-text" => Encoding.UTF8.GetBytes("[" + record + "] x"),
-            "unterminated-array" => Encoding.UTF8.GetBytes("[" + record),
-            "unterminated-object" => Encoding.UTF8.GetBytes("[" + record.TrimEnd('}')),
-            "unterminated-string" => Encoding.UTF8.GetBytes("[{\"EPOCH\":\"2026"),
-            "nan" => Payload(Record(("MEAN_MOTION", "NaN"))),
-            "infinity" => Payload(Record(("BSTAR", "Infinity"))),
-            "negative-infinity" => Payload(Record(("BSTAR", "-Infinity"))),
-            "leading-zero" => Payload(Record(("REV_AT_EPOCH", "007"))),
-            "single-quotes" => Payload(Record(("OBJECT_NAME", "'HVO'"))),
-            "raw-tab-in-string" => Payload(Record(("OBJECT_NAME", "\"HVO\tSYNTHETIC\""))),
-            "missing-colon" => Encoding.UTF8.GetBytes("[" + record.Replace("\"EPOCH\":", "\"EPOCH\" ", StringComparison.Ordinal) + "]"),
-            "escaped-lone-surrogate-name" => Payload(record.TrimEnd('}') + ",\"\\uD800\":1}"),
-            "invalid-utf8" => [.. Encoding.UTF8.GetBytes("[" + record.TrimEnd('}') + ",\"COMMENT\":\""), 0xFF, .. "\"}]"u8.ToArray()],
-            "overlong-utf8" => [.. Encoding.UTF8.GetBytes("[" + record.TrimEnd('}') + ",\"COMMENT\":\""), 0xC0, 0xAF, .. "\"}]"u8.ToArray()],
-            "utf16" => Encoding.Unicode.GetBytes("[" + record + "]"),
-            _ => throw new ArgumentOutOfRangeException(nameof(shape))
-        };
-
-        var result = CelesTrakGpNormalizer.CreateCandidate(Retrieved(payload));
-
-        Assert.IsNull(result.Snapshot);
-        Assert.AreEqual("orbital.json-syntax", result.RejectionReasonCode, $"{shape}: {result.RejectionReasonCode} {result.Detail}");
-        Assert.DoesNotContain("HVO", result.Detail, StringComparison.Ordinal);
+        AssertAccepted(Payload(Record(("OBJECT_NAME", new string('\u00c9', 256)))));
+        AssertRejected(Payload(Record(("OBJECT_NAME", new string('A', 257)))), "orbital.invalid-text", "record=0 member=OBJECT_NAME");
+        AssertRejected(Payload(Record(("OBJECT_NAME", "A\tB"))), "orbital.invalid-text", "record=0 member=OBJECT_NAME");
     }
-
-    [TestMethod]
-    public void TrailingWhitespaceIsNotContent() => AssertAccepted(Encoding.UTF8.GetBytes("[" + Record() + "]\r\n\t "));
-
-    [TestMethod]
-    [DataRow("{}")]
-    [DataRow("{\"records\":[]}")]
-    [DataRow("\"[]\"")]
-    [DataRow("42")]
-    [DataRow("null")]
-    [DataRow("true")]
-    public void NonArrayRootRejects(string json) =>
-        AssertRejected(Encoding.UTF8.GetBytes(json), "orbital.json-root", "root-not-array");
-
-    [TestMethod]
-    [DataRow("[]")]
-    [DataRow("[ ]")]
-    [DataRow("\n[\n]\n")]
-    public void EmptyArrayRejects(string json) =>
-        AssertRejected(Encoding.UTF8.GetBytes(json), "orbital.empty-payload", "records=0");
 
     [TestMethod]
     public void EmptyPayloadIsRejectedByTheParserAndTheNormalizer()
@@ -629,19 +498,6 @@ public sealed class CelesTrakGpNormalizerTests
         var result = CelesTrakGpNormalizer.CreateCandidate(Retrieved([]));
         Assert.AreEqual("orbital.raw-bound", result.RejectionReasonCode);
         Assert.AreEqual($"raw-bytes=0 limit={CelesTrakGpSource.MaximumRawBytes}", result.Detail);
-    }
-
-    [TestMethod]
-    [DataRow("1", 0, "Number")]
-    [DataRow("null", 0, "Null")]
-    [DataRow("[]", 0, "StartArray")]
-    [DataRow("\"record\"", 0, "String")]
-    [DataRow("RECORD,true", 1, "True")]
-    public void NonObjectRecordRejects(string elements, int index, string token)
-    {
-        ArgumentNullException.ThrowIfNull(elements);
-        var json = "[" + elements.Replace("RECORD", Record(), StringComparison.Ordinal) + "]";
-        AssertRejected(Encoding.UTF8.GetBytes(json), "orbital.record-shape", $"record={index} token={token}");
     }
 
     [TestMethod]
@@ -660,8 +516,6 @@ public sealed class CelesTrakGpNormalizerTests
 
         Assert.IsNull(parsed.ReasonCode, parsed.Detail);
         Assert.HasCount(OrbitalContract.MaximumRecords, parsed.ElementSets!);
-        Assert.AreEqual("records=100000", parsed.Detail);
-        Assert.AreEqual(OrbitalContract.MaximumRecords - 1, parsed.ElementSets![^1].Index);
     }
 
     [TestMethod]
@@ -684,7 +538,7 @@ public sealed class CelesTrakGpNormalizerTests
     [DataRow("truncated")]
     public void RawBytesThatDoNotMatchTheirHashReject(string shape)
     {
-        var raw = ReadFixture(ValidFixture);
+        var raw = ValidCsv();
         var hash = Sha256(raw);
         var claimed = shape switch
         {
@@ -705,7 +559,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void OnlyARetrievedResultWithBytesCanBecomeACandidate()
     {
-        var retrieved = Retrieved(ReadFixture(ValidFixture));
+        var retrieved = Retrieved(ValidCsv());
 
         Assert.ThrowsExactly<ArgumentNullException>(() => CelesTrakGpNormalizer.CreateCandidate(null!));
         foreach (var disposition in Enum.GetValues<OrbitalFetchDisposition>().Where(static d => d != OrbitalFetchDisposition.Retrieved))
@@ -721,7 +575,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void ValidatorsThatTheContractCannotHoldAreDroppedNotRejected()
     {
-        var raw = ReadFixture(ValidFixture);
+        var raw = ValidCsv();
 
         var nonAscii = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw, entityTag: "\"caf\u00E9\"",
             lastModified: "Mon,\u000B19 Oct 2026"));
@@ -742,7 +596,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void RetrievalTimeIsStoredAsUtcWhateverTheOffset()
     {
-        var raw = ReadFixture(ValidFixture);
+        var raw = ValidCsv();
 
         var local = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw, RetrievedUtc.ToOffset(TimeSpan.FromHours(-7)))).Snapshot!;
         var utc = CelesTrakGpNormalizer.CreateCandidate(Retrieved(raw)).Snapshot!;
@@ -754,7 +608,7 @@ public sealed class CelesTrakGpNormalizerTests
     [TestMethod]
     public void EpochRangeIsMeasuredFromTheRetrievalTime()
     {
-        var payload = Payload(Record(("EPOCH", "\"2026-10-19T06:00:00\"")));
+        var payload = Payload(Record(("EPOCH", "2026-10-19T06:00:00")));
 
         AssertRejected(payload, "orbital.epoch-range", "record=0 member=EPOCH",
             completedUtc: new DateTimeOffset(2026, 9, 19, 5, 59, 59, TimeSpan.Zero));
@@ -780,11 +634,11 @@ public sealed class CelesTrakGpNormalizerTests
     {
         var payloads = new[]
         {
-            Payload(Record(("OBJECT_NAME", "\"SECRET-TEXT\\u0001\""))),
-            Payload(Record(("SECRET_TEXT", "\"SECRET-TEXT\""))),
-            Payload(Record(("EPOCH", "\"SECRET-TEXT\""))),
-            Payload(Record(("CENTER_NAME", "\"SECRET-TEXT\""))),
-            Payload(Record(("CLASSIFICATION_TYPE", "\"SECRET-TEXT\"")))
+            Payload(Record(("OBJECT_NAME", "SECRET-TEXT\u0001"))),
+            Payload(Record(("SECRET_TEXT", "SECRET-TEXT"))),
+            Payload(Record(("EPOCH", "SECRET-TEXT"))),
+            Payload(Record(("CENTER_NAME", "SECRET-TEXT"))),
+            Payload(Record(("CLASSIFICATION_TYPE", "SECRET-TEXT")))
         };
 
         foreach (var payload in payloads)
@@ -815,21 +669,12 @@ public sealed class CelesTrakGpNormalizerTests
 
     private static byte[] RepeatedRecords(int count)
     {
-        var record = Encoding.UTF8.GetBytes(Record(("OBJECT_NAME", null), ("OBJECT_ID", null), ("ELEMENT_SET_NO", null),
-            ("REV_AT_EPOCH", null)));
-        var payload = new byte[2 + (count * (record.Length + 1)) - 1];
-        payload[0] = (byte)'[';
-        var position = 1;
+        var lines = Encoding.UTF8.GetString(Payload(Record())).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var builder = new StringBuilder(lines[0]).Append('\n');
         for (var i = 0; i < count; i++)
         {
-            if (i > 0)
-            {
-                payload[position++] = (byte)',';
-            }
-            record.CopyTo(payload, position);
-            position += record.Length;
+            builder.Append(lines[1]).Append('\n');
         }
-        payload[position] = (byte)']';
-        return payload;
+        return Encoding.UTF8.GetBytes(builder.ToString());
     }
 }

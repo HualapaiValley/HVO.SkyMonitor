@@ -18,8 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed class ProcessingGraphOperationsCoordinator :
     IProcessingGraphOperations,
-    IProcessingGraphDeliveryInbox,
-    Evidence.IExecutionEvidenceSource,
     IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
@@ -40,14 +38,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
     private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
     private readonly Func<IAstrometricCatalogSource?>? _astrometricCatalog;
+    private readonly ICenteredExposureGraphExtension[] _centeredExtensions;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
     /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
     /// the raw-ingress lifecycle lock may acquire this gate (raw-ingress accept and recovery binding call
     /// <see cref="PrepareLiveExecutionAsync"/> under the lifecycle lock), so this gate must never be held while
-    /// waiting for the lifecycle lock. <see cref="StageAsync"/> therefore takes only the lifecycle lock; proposal
-    /// acceptance is made atomic against configured-basic refreshes by the in-transaction active-revision recheck in
-    /// <c>SettleDeliveryProposalAsync</c>, not by this gate.
+    /// waiting for the lifecycle lock.
     /// </summary>
     private readonly SemaphoreSlim _configurationGate = new(1, 1);
     private CameraModuleConfig? _baseConfiguration;
@@ -65,6 +62,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingReplayWakeup replayWakeup,
         ICameraAgentConfigurationAccessor? configurationAccessor = null,
         Func<CameraModuleConfig?>? currentCaptureProfile = null,
+        IEnumerable<ICenteredExposureGraphExtension>? centeredExtensions = null,
         Func<IAstrometricCatalogSource?>? astrometricCatalog = null)
     {
         _pipelineFactory = pipelineFactory;
@@ -75,10 +73,18 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _configurationAccessor = configurationAccessor;
         _currentCaptureProfile = currentCaptureProfile;
         _astrometricCatalog = astrometricCatalog;
+        _centeredExtensions = centeredExtensions?.ToArray() ?? [];
     }
 
-    public ProcessingGraphAgentCapabilities Capabilities =>
-        ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
+    public CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.CenteredExposure is null) return configuration;
+
+        var pipeline = configuration.Pipeline;
+        foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
+        return IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = pipeline });
+    }
 
     internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
@@ -91,11 +97,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        var sourceConfiguration = configuration;
+        if (!retainedCapture) configuration = ExpandConfiguredProfile(sourceConfiguration);
         EnsureExplicitPipeline(configuration.Pipeline);
         await _configurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            Volatile.Write(ref _baseConfiguration, configuration);
+            if (!retainedCapture || sourceConfiguration.CenteredExposure is null)
+                Volatile.Write(ref _baseConfiguration, sourceConfiguration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
             if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
                 _configuredPipelineRetained == retainedCapture &&
@@ -162,14 +171,17 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken,
         string? revisionId = null)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
+        if (revisionId is null || configuration.CenteredExposure is null)
+            _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
         var revision = revisionId is null
             ? await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false)
             : await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
-        if (!retainedCapture && revisionId is null)
+        if (revisionId is null)
+            EnsureMeasurementProfile(revision.Pipeline, configuration);
+        if (!retainedCapture && revisionId is null && configuration.CenteredExposure is null)
         {
             // A successor applies only to new exposures. Recovery and replay use the original bound revision.
             var legacyScene = LegacyVirtualSkySceneGraph.FindLegacyScene(configuration, revision.Pipeline);
@@ -231,7 +243,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             using var graph = new DisposableProcessingGraph(_pipelineFactory.CreateRetainedGraph(configuration));
             return source.MatchesPreviousAstrometryPlan(graph.Value);
         }
-        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception) || exception is InvalidOperationException)
+        catch (Exception exception) when (IsExpectedGraphValidationFailure(exception) || exception is InvalidOperationException)
         {
             // An unrelated compilation failure is still handled by the standard lane after raw admission.
             return false;
@@ -265,12 +277,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphRevisionSnapshot revision)
     {
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
-        var executionId = StableExecutionId(new
-        {
-            Class = ProcessingGraphExecutionClass.Live.ToString(),
-            CaptureId = captureId.ToString("N"),
-            RevisionId = revision.State.RevisionId
-        });
+        var executionId = GetLiveExecutionId(captureId, revision.State.RevisionId);
         var durableConfiguration = effectiveConfiguration with
         {
             Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -411,6 +418,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("A camera profile must be initialized before configuring astrometry.");
+        EnsureReferenceAstrometryPresetMode(profile);
         if (referenceMagnitude is null && !string.Equals(profile.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
         EnsureReferenceAstrometryReadout(profile.Rig);
@@ -423,9 +431,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
             ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
         var committed = await _store.InsertReferenceAstrometryRevisionAsync(
-            snapshot, idempotencyKey, actor, reason, requestSha256, candidate =>
+            snapshot, idempotencyKey, actor, reason, requestSha256, (candidate, durableProfile) =>
             {
-                var current = _currentCaptureProfile?.Invoke() ?? profile;
+                var current = durableProfile?.ApplyTo(profile) ?? _currentCaptureProfile?.Invoke() ?? profile;
+                EnsureReferenceAstrometryPresetMode(current);
                 CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, current.Pipeline);
                 if (current.Rig != profile.Rig)
                     EnsureReferenceAstrometryReadout(current.Rig);
@@ -448,8 +457,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ValidateRevisionName(revision, nameof(revision));
         EnsureExplicitPipeline(pipeline);
         var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
-        var snapshot = CreateRevisionSnapshot(
-            profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
+        var authored = IProcessingGraphOperations.PrepareAuthoredDraft(profile with { Pipeline = pipeline });
+        EnsureMeasurementProfile(authored.Pipeline, profile);
+        var snapshot = CreateRevisionSnapshot(authored, name, revision, _timeProvider.GetUtcNow());
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
                 (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
@@ -463,7 +473,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string? reason,
         CancellationToken cancellationToken)
     {
-        using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.activate");
+        using var activity = ProcessingGraphOperationsTelemetry.ActivitySource.StartActivity("processing-graph.activate");
         activity?.SetTag("processing_graph.revision_id", revisionId);
         EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
@@ -474,7 +484,6 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
                 (revision, preset, token) => EnsureCurrentRevisionPlansAsync(revision, profile, preset, token)).ConfigureAwait(false);
-            await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -492,7 +501,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string? reason,
         CancellationToken cancellationToken)
     {
-        using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.rollback");
+        using var activity = ProcessingGraphOperationsTelemetry.ActivitySource.StartActivity("processing-graph.rollback");
         activity?.SetTag("processing_graph.target_revision_id", revisionId);
         EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
@@ -512,149 +521,6 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
     }
 
-    public async ValueTask StageAsync(
-        ProcessingGraphDeliveryProposalV1 proposal,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(proposal);
-        EnsureProposalEnvelope(proposal);
-        var stored = await _store.UpsertDeliveryProposalAsync(proposal, cancellationToken).ConfigureAwait(false);
-        if (stored is not ProcessingGraphLocalProposalDisposition.Pending)
-        {
-            return;
-        }
-        // Staging is conditioned on the local active revision. Operator activation/rollback run under the raw-ingress
-        // lifecycle lock, so staging takes the same lock to observe a stable registry while it compiles and validates
-        // the delivered revision. Configured-basic refreshes are NOT excluded here: raw-ingress accept and recovery
-        // binding hold the lifecycle lock while acquiring _configurationGate, so taking _configurationGate here (in
-        // either order relative to the lifecycle lock) would invert the lock order and deadlock. Correctness against a
-        // concurrent configured-basic refresh comes from SettleDeliveryProposalAsync, which re-reads the active
-        // revision inside the same immediate SQLite transaction that records acceptance, and every registry mutation
-        // (UpsertConfiguredBasicRevisionAsync, ActivateRevisionAsync, RollbackRevisionAsync) commits inside its own
-        // immediate transaction; a stale expectation settles as Rejected(active-revision-changed).
-        var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
-        await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await StageUnderLifecycleLocksAsync(proposal, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            rawGate.Release();
-        }
-    }
-
-    private async ValueTask StageUnderLifecycleLocksAsync(
-        ProcessingGraphDeliveryProposalV1 proposal,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
-            {
-                await _store.ExpireDeliveryProposalAsync(
-                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
-                return;
-            }
-            EnsureProposalCompatibility(proposal);
-            var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(
-                    registry.ActiveRevisionId,
-                    proposal.ExpectedActiveLocalRevisionId,
-                    StringComparison.Ordinal))
-            {
-                await _store.RejectDeliveryProposalAsync(
-                    proposal.ProposalId, "active-revision-changed", cancellationToken).ConfigureAwait(false);
-                return;
-            }
-            var baseConfiguration = Volatile.Read(ref _baseConfiguration)
-                ?? throw new InvalidOperationException("The CameraAgent configuration has not been initialized.");
-            var pipeline = CreatePipeline(proposal.Definition, baseConfiguration.Pipeline);
-            var localName = string.Concat("central-", proposal.CatalogRevisionId.ToString("N"));
-            var snapshot = CreateRevisionSnapshot(
-                baseConfiguration with { Pipeline = pipeline },
-                localName,
-                proposal.Definition.Revision,
-                _timeProvider.GetUtcNow(),
-                sourceDefinition: proposal.Definition);
-            if (!string.Equals(snapshot.State.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
-                    StringComparison.Ordinal) ||
-                !string.Equals(snapshot.State.SharedPlanIdentitySha256, proposal.SharedPlanIdentitySha256,
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("The locally compiled processing graph identity does not match the proposal.");
-            }
-            var created = await _store.InsertNamedRevisionAsync(
-                snapshot,
-                string.Concat("central-create-", proposal.ProposalId.ToString("N")),
-                "central-delivery",
-                "proposal-staged",
-                cancellationToken).ConfigureAwait(false);
-            var validated = await _store.ValidateRevisionAsync(
-                created.RevisionId,
-                string.Concat("central-validate-", proposal.ProposalId.ToString("N")),
-                "central-delivery",
-                "proposal-validated",
-                cancellationToken).ConfigureAwait(false);
-            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
-            {
-                await _store.ExpireDeliveryProposalAsync(
-                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
-                return;
-            }
-            await _store.AcceptDeliveryProposalAsync(
-                proposal.ProposalId,
-                validated,
-                cancellationToken,
-                proposal.ExpectedActiveLocalRevisionId,
-                enforceExpectedActive: true).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception))
-        {
-            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
-            {
-                await _store.ExpireDeliveryProposalAsync(
-                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _store.RejectDeliveryProposalAsync(
-                    proposal.ProposalId, "local-validation-failed", cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    public async ValueTask ObserveActiveRevisionAsync(CancellationToken cancellationToken)
-    {
-        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
-        await _store.RecordDeliveredActivationAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
-    }
-
-    public ValueTask<int> ExpirePendingProposalsAsync(CancellationToken cancellationToken)
-        => _store.ExpireStalePendingProposalsAsync(cancellationToken);
-
-    public ValueTask<ProcessingGraphDeliveryFactV1?> ReadPendingFactAsync(CancellationToken cancellationToken)
-        => _store.ReadPendingDeliveryFactAsync(cancellationToken);
-
-    public ValueTask AcknowledgeFactAsync(Guid factId, CancellationToken cancellationToken)
-        => _store.AcknowledgeDeliveryFactAsync(factId, cancellationToken);
-
-    public ValueTask SupersedeProposalAsync(Guid proposalId, CancellationToken cancellationToken)
-        => _store.SupersedeDeliveryProposalAsync(proposalId, cancellationToken);
-
-    public ValueTask RetryFactAsync(
-        Guid factId,
-        DateTimeOffset nextAttemptUtc,
-        string reasonCode,
-        CancellationToken cancellationToken)
-        => _store.RetryDeliveryFactAsync(factId, nextAttemptUtc, reasonCode, cancellationToken);
-
-    public ValueTask RejectFactAsync(Guid factId, string reasonCode, CancellationToken cancellationToken)
-        => _store.RejectDeliveryFactAsync(factId, reasonCode, cancellationToken);
-
-    public ValueTask<ProcessingGraphDeliveryBacklog> ReadBacklogAsync(CancellationToken cancellationToken)
-        => _store.ReadDeliveryBacklogAsync(cancellationToken);
-
     public async ValueTask<ProcessingGraphRevisionState> ValidateRevisionAsync(
         string revisionId,
         string idempotencyKey,
@@ -664,8 +530,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     {
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         return await _store.ValidateRevisionAsync(revisionId, idempotencyKey, actor, reason, cancellationToken,
-            revision => CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline,
-                (_currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration))?.Pipeline)).ConfigureAwait(false);
+            revision =>
+            {
+                var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration);
+                CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current?.Pipeline);
+                if (current is not null)
+                    EnsureMeasurementProfile(revision.Pipeline, current);
+            }).ConfigureAwait(false);
     }
 
     public ValueTask<ProcessingGraphRegistryState> RetireRevisionAsync(
@@ -795,29 +666,6 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
         => _store.ReadRevisionAsync(revisionId, cancellationToken);
 
-    /// <summary>Forward, resumable sweep over terminal executions for the durable evidence exporter.</summary>
-    public ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
-        long afterTerminalUnixMs,
-        string afterExecutionId,
-        int maximumCount,
-        CancellationToken cancellationToken)
-        => _store.ReadTerminalExecutionsAsync(
-            afterTerminalUnixMs, afterExecutionId, maximumCount, cancellationToken);
-
-    /// <summary>The lowest terminal ordering key the source still holds, or null when it holds none.</summary>
-    public ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
-        => _store.ReadOldestTerminalExecutionKeyAsync(cancellationToken);
-
-    /// <summary>The barrier the evidence sweep may not advance past; null when nothing is still active.</summary>
-    public ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
-        => _store.ReadOldestActiveExecutionKeyAsync(cancellationToken);
-
-    /// <summary>Central assignment provenance for a revision, or null when the revision was compiled locally.</summary>
-    public ValueTask<ExecutionEvidenceAssignmentProvenanceV1?> ReadAssignmentProvenanceAsync(
-        string revisionId,
-        CancellationToken cancellationToken)
-        => _store.ReadAssignmentProvenanceAsync(revisionId, cancellationToken);
-
     public ValueTask<ProcessingGraphExecutionState> CancelReplayAsync(
         Guid executionId,
         string idempotencyKey,
@@ -892,12 +740,19 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
+        EnsureMeasurementProfile(revision.Pipeline, current);
         if (referenceAstrometryPreset)
             EnsureReferenceAstrometryReadout(current.Rig);
         EnsureCompatibleRevisionPlans(revision, current);
         if (referenceAstrometryPreset)
             await ReferenceAstrometryPreset.VerifySelectionAsync(
                 revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void EnsureReferenceAstrometryPresetMode(CameraModuleConfig profile)
+    {
+        if (profile.CenteredExposure is not null)
+            throw new ReferenceAstrometryPresetModeConflictException();
     }
 
     private static void EnsureReferenceAstrometryReadout(CameraRigConfig rig)
@@ -913,6 +768,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             throw new InvalidOperationException("The configured readout dimensions fall outside the measured astrometry recipe bounds.");
     }
 
+    private void EnsureMeasurementProfile(CapturePipelineConfig pipeline, CameraModuleConfig configuration)
+    {
+        if (_centeredExtensions.Any(static extension => extension is ExposureMeasurementGraphPlan))
+            ExposureMeasurementGraphPlan.EnsureMatchesProfile(pipeline, configuration.CenteredExposure);
+    }
+
     private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)
     {
         CaptureProcessingGraph compiled;
@@ -920,7 +781,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             compiled = _pipelineFactory.CreateRetainedGraph(configuration with { Pipeline = revision.Pipeline });
         }
-        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception) || exception is InvalidOperationException)
+        catch (Exception exception) when (IsExpectedGraphValidationFailure(exception) || exception is InvalidOperationException)
         {
             throw new ProcessingGraphRevisionSupersededException(ProcessingGraphRevisionSupersededException.SafeMessage, exception);
         }
@@ -1065,49 +926,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return new(steps);
     }
 
-    internal static bool IsExpectedProposalValidationFailure(Exception exception)
+    internal static bool IsExpectedGraphValidationFailure(Exception exception)
         => exception is ArgumentException or ValidationException or InvalidDataException or
             ProcessingGraphStoreConflictException or KeyNotFoundException or JsonException or NotSupportedException or
             FormatException or OverflowException or OptionsValidationException;
-
-    private void EnsureProposalEnvelope(ProcessingGraphDeliveryProposalV1 proposal)
-    {
-        if (!string.Equals(proposal.SchemaVersion, ProcessingGraphDeliverySchemaVersions.Current, StringComparison.Ordinal) ||
-            proposal.ProposalId == Guid.Empty || proposal.CatalogRevisionId == Guid.Empty ||
-            proposal.AssignmentId == Guid.Empty || proposal.RegistrationId == Guid.Empty ||
-            proposal.LogicalCameraInstallationId == Guid.Empty || proposal.InstallationPublicId == Guid.Empty ||
-            proposal.IssuedAtUtc.Offset != TimeSpan.Zero || proposal.ExpiresAtUtc.Offset != TimeSpan.Zero ||
-            proposal.ExpiresAtUtc <= proposal.IssuedAtUtc ||
-            !string.Equals(proposal.CapabilitySnapshotSha256, Capabilities.IdentitySha256, StringComparison.Ordinal) ||
-            !IsSha256(proposal.DefinitionIdentitySha256) || !IsSha256(proposal.SharedPlanIdentitySha256) ||
-            proposal.Definition is null)
-        {
-            throw new InvalidDataException("The processing graph delivery proposal is invalid.");
-        }
-        var compiled = ProcessingGraphCompiler.Compile(proposal.Definition);
-        if (!compiled.IsValid ||
-            !string.Equals(compiled.Plan!.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("The processing graph proposal identity is invalid.");
-        }
-    }
-
-    private void EnsureProposalCompatibility(ProcessingGraphDeliveryProposalV1 proposal)
-    {
-        var compiled = ProcessingGraphCompiler.Compile(
-            proposal.Definition,
-            new(ProcessingGraphHosts.CameraAgent, Capabilities.CapabilityLabels));
-        var aliases = Capabilities.StepAliases.ToHashSet(StringComparer.Ordinal);
-        if (!compiled.IsValid || proposal.Definition.Nodes.Any(node => node.Enabled && !aliases.Contains(node.StepAlias)) ||
-            !string.Equals(compiled.Plan!.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
-                StringComparison.Ordinal) ||
-            !string.Equals(compiled.Plan.PlanIdentitySha256, proposal.SharedPlanIdentitySha256,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("The processing graph proposal identity is invalid.");
-        }
-    }
 
     internal static bool IsSha256(string value)
         => value.Length == 64 && value.All(Uri.IsHexDigit);
@@ -1130,6 +952,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     private static string CanonicalText<T>(T value)
         => Encoding.UTF8.GetString(CanonicalBytes(value));
+
+    internal static Guid GetLiveExecutionId(Guid captureId, string revisionId) => StableExecutionId(new
+    {
+        Class = ProcessingGraphExecutionClass.Live.ToString(),
+        CaptureId = captureId.ToString("N"),
+        RevisionId = revisionId
+    });
 
     private static Guid StableExecutionId<T>(T value)
     {

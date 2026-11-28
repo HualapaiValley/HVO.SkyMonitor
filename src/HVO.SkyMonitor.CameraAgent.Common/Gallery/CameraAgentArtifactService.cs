@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -38,12 +39,15 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
     {
         // Explicit comparison policies use the full source histogram, just like the retained recipe.
         // Convert once before resizing; Mono8/RGB and already encoded derivatives are never restretched.
+        var bayerPattern = layout.PixelFormat == CameraPixelFormat.BayerRggb16
+            ? ResolveBayerPattern(layout)
+            : BayerPattern.Rggb;
         if (displayOptions is not null && layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16)
         {
             var mono = layout.PixelFormat == CameraPixelFormat.Mono16;
             payload = mono
                 ? Mono16DisplayStretch.Apply(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions)
-                : BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions);
+                : BayerRggb16Demosaicer.DemosaicToRgb24(layout.Width, layout.Height, payload, cancellationToken, layout.StrideBytes, displayOptions, bayerPattern);
             layout = layout with
             {
                 PixelFormat = mono ? CameraPixelFormat.Mono8 : CameraPixelFormat.Rgb24,
@@ -69,7 +73,7 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
                 CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
                     resized.Width, resized.Height, resized.Payload),
                 CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
-                    resized.Width, resized.Height, resized.Payload),
+                    resized.Width, resized.Height, resized.Payload, pattern: bayerPattern),
                 _ => throw new NotSupportedException()
             };
             if (result.IsFailure)
@@ -85,6 +89,9 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
         }
     }
 
+    internal static BayerPattern ResolveBayerPattern(FrameLayoutDescriptor layout) =>
+        BayerRggb16Demosaicer.ResolvePattern(layout);
+
     internal static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
         FrameLayoutDescriptor layout,
         ReadOnlyMemory<byte> payload,
@@ -99,7 +106,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
+    private readonly SiloArtifactStorage? _silo;
     private readonly string _databasePath;
+    private readonly string _walPath;
+    private readonly string _sharedMemoryPath;
     private readonly int _busyTimeoutSeconds;
     private readonly ArtifactReadOptions _options;
     private readonly SqliteCaptureProcessingStore _processingStore;
@@ -109,27 +119,31 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly Dictionary<PreviewCacheKey, PreviewCacheEntry> _previewCache = [];
     private readonly Dictionary<PreviewCacheKey, PreviewGenerationGate> _previewGenerationGates = [];
     private readonly Dictionary<PreviewRequestKey, PreviewGenerationGate> _previewRequestGates = [];
-    private readonly Dictionary<ArtifactValidationCacheKey, ArtifactValidationCacheEntry> _validationCache = [];
     private long _previewCacheBytes;
     private long _cacheSequence;
-    private long _validationCacheSequence;
     private long _payloadValidationReads;
     private long _evidenceValidationReads;
     private long _jpegValidationReads;
+    private long _journalConnectionOpens;
+    private int _disposed;
 
     public CameraAgentArtifactService(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentPreviewEncoder previewEncoder,
-        Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null)
+        Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null,
+        SiloArtifactStorage? silo = null)
     {
         _logger = logger;
+        _silo = silo;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _previewEncoder = previewEncoder ?? throw new ArgumentNullException(nameof(previewEncoder));
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
+        _walPath = string.Concat(_databasePath, "-wal");
+        _sharedMemoryPath = string.Concat(_databasePath, "-shm");
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
         _options = values.ArtifactRead;
         _previewGate = new SemaphoreSlim(_options.MaximumConcurrentPreviews, _options.MaximumConcurrentPreviews);
@@ -140,6 +154,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         CancellationToken cancellationToken)
         => OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken);
 
+    internal RetainedHistoryRead BeginRetainedHistoryRead() => new(this);
+
     public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
         Guid executionId,
         Guid artifactId,
@@ -148,141 +164,109 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             ? ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound))
             : OpenContentCoreAsync(artifactId, executionId, forPreview: false, cancellationToken);
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated retrieval boundary must fail closed without exposing storage or parser exceptions.")]
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The opened immutable payload handle is intentionally transferred to the returned stream lease.")]
-    [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The payload may be assigned when asynchronous validation fails and must then be disposed by this boundary.")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated retrieval boundary returns a sanitized status.")]
     private async ValueTask<CameraAgentArtifactContentResult> OpenContentCoreAsync(
         Guid artifactId,
         Guid? replayExecutionId,
         bool forPreview,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetainedHistoryRead? history = null)
     {
         if (artifactId == Guid.Empty)
-        {
             return new(CameraAgentArtifactReadStatus.NotFound);
-        }
 
-        var lifecycleGate = StorageLifecycleLock.ForRoot(_root);
-        await StorageLifecycleLock.WaitAsync(lifecycleGate, "artifact-read", _logger, cancellationToken).ConfigureAwait(false);
-        FileStream? payload = null;
         try
         {
-            await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
-            var evidence = replayExecutionId is { } executionId
-                ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken)
-                    .ConfigureAwait(false)
-                : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
-            if (evidence.Status != CameraAgentArtifactReadStatus.Found)
+            ArtifactEvidenceLookup evidence;
+            var lifecycle = StorageLifecycleLock.ForRoot(_root);
+            await StorageLifecycleLock.WaitAsync(lifecycle, "artifact-read", _logger, cancellationToken).ConfigureAwait(false);
+            try
             {
-                return new(evidence.Status);
+                await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                evidence = await ReadJournalEvidenceAsync(artifactId, replayExecutionId, history, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                lifecycle.Release();
             }
 
-            var row = evidence.Row!;
-            var payloadPath = ResolveSafePath(row.PayloadRelativePath);
-            var sidecarPath = ResolveSafePath(row.SidecarRelativePath);
-            ValidatedArtifact validated;
-            var cachedValidation = TryGetValidatedArtifact(row, payloadPath, sidecarPath, out validated);
-            if (!cachedValidation)
-            {
-                validated = await ValidateEvidenceAsync(row, cancellationToken).ConfigureAwait(false);
-            }
-            if (forPreview && PreviewStatus(validated) is { } previewStatus)
-            {
-                return new(previewStatus);
-            }
-            if (!File.Exists(payloadPath))
-            {
-                return new(CameraAgentArtifactReadStatus.Gone);
-            }
-            EnsurePhysicalPath(payloadPath);
-            payload = new FileStream(
-                payloadPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read | FileShare.Delete,
-                bufferSize: 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (payload.Length != validated.ByteLength)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-                payload = null;
-                return new(CameraAgentArtifactReadStatus.Conflict);
-            }
-            Interlocked.Increment(ref _payloadValidationReads);
-            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(checksum, validated.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-                payload = null;
-                return new(CameraAgentArtifactReadStatus.Conflict);
-            }
-            if (!cachedValidation)
-            {
-                AddValidatedArtifact(row, validated, payloadPath, sidecarPath);
-            }
-            payload.Position = 0;
-            var content = new CameraAgentArtifactContentStream(
-                payload,
-                validated.ArtifactId,
-                validated.CaptureId,
-                validated.Role,
-                validated.MediaType,
-                validated.ByteLength,
-                validated.ChecksumSha256.ToUpperInvariant(),
-                CreateFileName(validated.ArtifactId, validated.MediaType),
-                validated.Descriptor,
-                validated.EncodedWidth,
-                validated.EncodedHeight)
-            { ProductManifest = validated.ProductManifest };
-            payload = null;
-            return new(CameraAgentArtifactReadStatus.Found, content);
+            if (evidence.Status != CameraAgentArtifactReadStatus.Found || evidence.Row is not { } row)
+                return new(evidence.Status);
+            if (_silo is null)
+                return new(CameraAgentArtifactReadStatus.Unavailable);
+            return await OpenSiloContentAsync(_silo, row, forPreview, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            if (payload is not null)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-            }
             throw;
         }
-        catch (ArtifactEvidenceException)
+        catch (Exception exception) when (exception is ArtifactEvidenceException or InvalidDataException or FormatException or JsonException or ArgumentException or OverflowException)
         {
-            if (payload is not null)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-            }
             return new(CameraAgentArtifactReadStatus.Conflict);
-        }
-        catch (Exception exception) when (exception is InvalidDataException or FormatException or JsonException or ArgumentException or OverflowException)
-        {
-            if (payload is not null)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-            }
-            return new(CameraAgentArtifactReadStatus.Conflict);
-        }
-        catch (FileNotFoundException)
-        {
-            if (payload is not null)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-            }
-            return new(CameraAgentArtifactReadStatus.Gone);
         }
         catch (Exception)
         {
-            if (payload is not null)
-            {
-                await payload.DisposeAsync().ConfigureAwait(false);
-            }
             return new(CameraAgentArtifactReadStatus.Unavailable);
         }
-        finally
+    }
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The result transfers ownership of the verified stream to the caller.")]
+    private async ValueTask<CameraAgentArtifactContentResult> OpenSiloContentAsync(SiloArtifactStorage silo,
+        ArtifactEvidenceRow row, bool forPreview, CancellationToken cancellationToken)
+    {
+        var raw = row.Kind == ArtifactEvidenceKind.Raw;
+        if (raw && row.RawState != "committed")
+            return new(row.RawState == "missing_evidence" ? CameraAgentArtifactReadStatus.Gone : CameraAgentArtifactReadStatus.Conflict);
+        if (row.EvidenceJson.LongLength is < 1 or > MaximumEvidenceBytes)
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        try
         {
-            lifecycleGate.Release();
+            Interlocked.Increment(ref _evidenceValidationReads);
+            var evidence = await silo.ReadMemberAsync(row.ArtifactId, raw ? SiloArtifactStorage.RawEvidenceRevision : SiloArtifactStorage.ProductEvidenceRevision,
+                row.EvidenceJson.LongLength, SiloHash.Sha256(row.EvidenceJson), cancellationToken).ConfigureAwait(false);
+            if (evidence is null) return await UnreadableSiloContentAsync(silo, row.ArtifactId, cancellationToken).ConfigureAwait(false);
+            var validated = raw ? ValidateRaw(row, evidence) : ValidateProcessing(row, evidence);
+            if (forPreview && PreviewStatus(validated) is { } previewStatus) return new(previewStatus);
+            Interlocked.Increment(ref _payloadValidationReads);
+            var stream = await silo.OpenMemberAsync(row.ArtifactId, row.IdentitySha256,
+                validated.ByteLength, validated.ChecksumSha256, cancellationToken).ConfigureAwait(false);
+            if (stream is null) return await UnreadableSiloContentAsync(silo, row.ArtifactId, cancellationToken).ConfigureAwait(false);
+            var content = new CameraAgentArtifactContentStream(stream, validated.ArtifactId,
+                validated.CaptureId, validated.Role, validated.MediaType, validated.ByteLength, validated.ChecksumSha256.ToUpperInvariant(),
+                CreateFileName(validated.ArtifactId, validated.MediaType), validated.Descriptor, validated.EncodedWidth, validated.EncodedHeight)
+            { ProductManifest = validated.ProductManifest };
+            return new(CameraAgentArtifactReadStatus.Found, content);
+        }
+        catch (SiloStoreUnavailableException)
+        {
+            return new(CameraAgentArtifactReadStatus.Unavailable);
+        }
+        catch (FileNotFoundException)
+        {
+            var disposition = await silo.ReadRetainedEvidenceFailureAsync([row.ArtifactId], cancellationToken).ConfigureAwait(false);
+            return new(disposition switch
+            {
+                SiloAvailabilityState.Quarantined => CameraAgentArtifactReadStatus.Conflict,
+                SiloAvailabilityState.Missing => CameraAgentArtifactReadStatus.Unavailable,
+                _ => CameraAgentArtifactReadStatus.Gone
+            });
+        }
+        catch (InvalidDataException)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new(CameraAgentArtifactReadStatus.Unavailable);
         }
     }
+
+    private static async ValueTask<CameraAgentArtifactContentResult> UnreadableSiloContentAsync(
+        SiloArtifactStorage silo, Guid artifactId, CancellationToken cancellationToken)
+        => new(await silo.IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false)
+            ? CameraAgentArtifactReadStatus.Unavailable
+            : CameraAgentArtifactReadStatus.Gone);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoding failures are converted to a sanitized retrieval status.")]
     public async ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
@@ -496,7 +480,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 layout.Width,
                 layout.Height,
                 layout.PixelFormat,
-                policy?.Identity);
+                policy?.Identity,
+                layout.PixelFormat == CameraPixelFormat.BayerRggb16
+                    ? CameraAgentPreviewEncoder.ResolveBayerPattern(layout)
+                    : null);
             CameraAgentArtifactPreviewResult cached;
             bool cacheHit;
             lock (_cacheGate)
@@ -669,46 +656,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         return result;
     }
 
-    private async ValueTask<ValidatedArtifact> ValidateEvidenceAsync(
-        ArtifactEvidenceRow row,
-        CancellationToken cancellationToken)
-    {
-        if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState == "missing_evidence")
-        {
-            throw new FileNotFoundException();
-        }
-        if (row.Kind == ArtifactEvidenceKind.Raw && row.RawState != "committed")
-        {
-            throw new ArtifactEvidenceException();
-        }
-        var payloadPath = ResolveSafePath(row.PayloadRelativePath);
-        var sidecarPath = ResolveSafePath(row.SidecarRelativePath);
-        if (string.Equals(payloadPath, sidecarPath, PathComparison))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        EnsurePhysicalPath(payloadPath);
-        EnsurePhysicalPath(sidecarPath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-        {
-            throw new FileNotFoundException();
-        }
-        var sidecarLength = new FileInfo(sidecarPath).Length;
-        if (sidecarLength is < 1 or > MaximumEvidenceBytes)
-        {
-            throw new ArtifactEvidenceException();
-        }
-        Interlocked.Increment(ref _evidenceValidationReads);
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-        if (!sidecar.AsSpan().SequenceEqual(row.EvidenceJson))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        return row.Kind == ArtifactEvidenceKind.Raw
-            ? ValidateRaw(row, sidecar)
-            : ValidateProcessing(row, sidecar);
-    }
-
     private static ValidatedArtifact ValidateRaw(ArtifactEvidenceRow row, byte[] sidecar)
     {
         if (!string.Equals(CaptureContractJson.ComputeManifestSha256(sidecar), row.ManifestSha256, StringComparison.Ordinal))
@@ -821,7 +768,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             raw.CommandText = """
                 SELECT capture_id, raw_artifact_id, payload_relative_path, sidecar_relative_path,
-                       manifest_json, manifest_sha256, payload_sha256, payload_length, state
+                       manifest_json, manifest_sha256, payload_sha256, payload_length, state, descriptor_sha256
                 FROM raw_captures WHERE raw_artifact_id = $artifact_id;
                 """;
             raw.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
@@ -841,14 +788,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     descriptor.Artifact.MediaType,
                     reader.GetInt64(7),
                     reader.GetString(6),
-                    reader.GetString(8)));
+                    reader.GetString(8), reader.GetString(9)));
             }
         }
         using (var output = connection.CreateCommand())
         {
             output.CommandText = """
                 SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
-                       output.sidecar_relative_path, output.descriptor_json, output.availability_state
+                       output.sidecar_relative_path, output.descriptor_json, output.availability_state, output.output_identity_sha256
                 FROM processing_outputs AS output
                 INNER JOIN processing_nodes AS node
                     ON node.capture_id = output.capture_id AND node.node_id = output.node_id
@@ -880,7 +827,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     facts.MediaType,
                     facts.ByteLength,
                     facts.ChecksumSha256,
-                    null));
+                    null, reader.GetString(6)));
             }
         }
         return rows.Count switch
@@ -901,7 +848,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
-                   output.sidecar_relative_path, output.descriptor_json, output.availability_state
+                   output.sidecar_relative_path, output.descriptor_json, output.availability_state, output.output_identity_sha256
             FROM processing_executions execution
             JOIN processing_execution_outputs association
               ON association.execution_id = execution.execution_id
@@ -935,7 +882,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 facts.MediaType,
                 facts.ByteLength,
                 facts.ChecksumSha256,
-                null));
+                null, reader.GetString(6)));
         }
         return rows.Count switch
         {
@@ -982,12 +929,66 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
            string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal) ||
            string.Equals(schema, DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, StringComparison.Ordinal);
 
+    private ValueTask<ArtifactEvidenceLookup> ReadJournalEvidenceAsync(
+        Guid artifactId,
+        Guid? replayExecutionId,
+        RetainedHistoryRead? history,
+        CancellationToken cancellationToken) =>
+        ExecuteWithJournalConnectionAsync(
+            history,
+            (connection, token) => replayExecutionId is { } executionId
+                ? FindReplayOutputEvidenceAsync(connection, executionId, artifactId, token)
+                : FindEvidenceAsync(connection, artifactId, token),
+            cancellationToken);
+
+    private async ValueTask<TResult> ExecuteWithJournalConnectionAsync<TResult>(
+        RetainedHistoryRead? history,
+        Func<SqliteConnection, CancellationToken, ValueTask<TResult>> query,
+        CancellationToken cancellationToken)
+    {
+        var (connection, openedIdentity) = history?.Take() ?? default;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsurePhysicalPath(_databasePath);
+            EnsurePhysicalPath(_walPath);
+            EnsurePhysicalPath(_sharedMemoryPath);
+
+            var identity = history is null ? null : ReadJournalIdentity();
+            if (connection is not null && (identity is null || openedIdentity != identity))
+            {
+                connection.Dispose();
+                connection = null;
+            }
+            connection ??= await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+
+            var result = await query(connection, cancellationToken).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (identity is { } generation)
+            {
+                if (generation != ReadJournalIdentity())
+                    throw new IOException("The artifact journal was replaced during lookup.");
+
+                // All commands and readers have ended. File validation and returned streams own no database lease.
+                var returned = connection;
+                connection = null;
+                history!.Return(returned, generation);
+            }
+            return result;
+        }
+        finally
+        {
+            connection?.Dispose();
+        }
+    }
+
+    private ArtifactJournalIdentity? ReadJournalIdentity() =>
+        ArtifactJournalIdentity.Read(_databasePath, _walPath, _sharedMemoryPath);
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
     {
-        EnsurePhysicalPath(_databasePath);
-        EnsurePhysicalPath(string.Concat(_databasePath, "-wal"));
-        EnsurePhysicalPath(string.Concat(_databasePath, "-shm"));
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
@@ -1005,29 +1006,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             command.CommandText = $"PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _journalConnectionOpens);
         return connection;
-    }
-
-    private string ResolveSafePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains('\\', StringComparison.Ordinal) ||
-            Path.IsPathRooted(relativePath) || relativePath.Contains('\0', StringComparison.Ordinal))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        var fullPath = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var normalized = Path.GetRelativePath(_root, fullPath).Replace(Path.DirectorySeparatorChar, '/');
-        if (!string.Equals(relativePath, normalized, StringComparison.Ordinal) ||
-            normalized.Split('/', StringSplitOptions.RemoveEmptyEntries).Any(static part => part is "." or ".."))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!fullPath.StartsWith(prefix, PathComparison))
-        {
-            throw new ArtifactEvidenceException();
-        }
-        return fullPath;
     }
 
     private void EnsurePhysicalPath(string path)
@@ -1073,6 +1053,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         ["application/x-skymonitor-mono8"] = "-raw-mono8.bin",
         ["application/x-skymonitor-mono16"] = "-raw-mono16.bin",
         ["application/x-skymonitor-rgb24"] = "-raw-rgb24.bin",
+        ["application/x-skymonitor-bayer-rggb8"] = "-raw-bayer-rggb8.bin",
         ["application/x-skymonitor-bayer-rggb16"] = "-raw-bayer-rggb16.bin",
         ["application/x-hvo-linear-frame"] = "-linear-frame.bin",
         ["application/x-hvo-packed-image"] = "-packed-image.bin"
@@ -1172,88 +1153,14 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
-    private bool TryGetValidatedArtifact(
-        ArtifactEvidenceRow row,
-        string payloadPath,
-        string sidecarPath,
-        out ValidatedArtifact validated)
-    {
-        var key = new ArtifactValidationCacheKey(row.ArtifactId, row.ChecksumSha256);
-        lock (_cacheGate)
-        {
-            if (_validationCache.TryGetValue(key, out var entry) &&
-                entry.EvidenceIdentity == EvidenceIdentity(row) &&
-                MatchesFileIdentity(payloadPath, entry.PayloadIdentity) &&
-                MatchesFileIdentity(sidecarPath, entry.SidecarIdentity))
-            {
-                entry.Sequence = ++_validationCacheSequence;
-                validated = entry.Validated;
-                return true;
-            }
-            _validationCache.Remove(key);
-        }
-        validated = default!;
-        return false;
-    }
-
-    private void AddValidatedArtifact(
-        ArtifactEvidenceRow row,
-        ValidatedArtifact validated,
-        string payloadPath,
-        string sidecarPath)
-    {
-        var entry = new ArtifactValidationCacheEntry(
-            validated,
-            EvidenceIdentity(row),
-            ReadFileIdentity(payloadPath),
-            ReadFileIdentity(sidecarPath),
-            0);
-        lock (_cacheGate)
-        {
-            var key = new ArtifactValidationCacheKey(row.ArtifactId, row.ChecksumSha256);
-            entry.Sequence = ++_validationCacheSequence;
-            _validationCache[key] = entry;
-            while (_validationCache.Count > _options.ValidationCacheEntries)
-            {
-                var oldest = _validationCache.MinBy(static pair => pair.Value.Sequence);
-                _validationCache.Remove(oldest.Key);
-            }
-        }
-    }
-
-    private static string EvidenceIdentity(ArtifactEvidenceRow row)
-    {
-        var prefix = string.Join('\n',
-            row.Kind, row.CaptureId, row.ArtifactId, row.PayloadRelativePath, row.SidecarRelativePath,
-            row.ManifestSha256, row.MediaType, row.ByteLength, row.ChecksumSha256, row.RawState);
-        var prefixBytes = System.Text.Encoding.UTF8.GetBytes(prefix);
-        var bytes = new byte[prefixBytes.Length + row.EvidenceJson.Length];
-        prefixBytes.CopyTo(bytes, 0);
-        row.EvidenceJson.CopyTo(bytes, prefixBytes.Length);
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
-    }
-
-    private static FileIdentity ReadFileIdentity(string path)
-    {
-        var info = new FileInfo(path);
-        info.Refresh();
-        return new FileIdentity(info.Length, info.CreationTimeUtc.Ticks, info.LastWriteTimeUtc.Ticks);
-    }
-
-    private static bool MatchesFileIdentity(string path, FileIdentity expected)
-    {
-        var info = new FileInfo(path);
-        info.Refresh();
-        return info.Exists && info.Length == expected.Length &&
-            info.CreationTimeUtc.Ticks == expected.CreationUtcTicks &&
-            info.LastWriteTimeUtc.Ticks == expected.LastWriteUtcTicks;
-    }
-
     internal long PayloadValidationReads => Interlocked.Read(ref _payloadValidationReads);
 
     internal long EvidenceValidationReads => Interlocked.Read(ref _evidenceValidationReads);
 
     internal long JpegValidationReads => Interlocked.Read(ref _jpegValidationReads);
+
+    // The provider uses Pooling=false, so each configured connection was physically opened.
+    internal long JournalConnectionOpens => Interlocked.Read(ref _journalConnectionOpens);
 
     internal int PreviewRequestWaiters
     {
@@ -1268,6 +1175,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     public void Dispose()
     {
+        // The concrete and public service registrations share this singleton.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         _previewGate.Dispose();
         lock (_cacheGate)
         {
@@ -1284,8 +1194,52 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
-    private static StringComparison PathComparison =>
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    // The root lifecycle gate serializes artifact lookups, so one private handle is sufficient.
+    // Only the scan owns this slot. A concurrent dispose closes the idle handle or lets the borrower close it.
+    internal sealed class RetainedHistoryRead(CameraAgentArtifactService owner) : IRetainedHistoryArtifactRead
+    {
+        private readonly object _gate = new();
+        private (SqliteConnection? Connection, ArtifactJournalIdentity Identity) _idle;
+        private bool _disposed;
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
+            => owner.OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken, this);
+
+        internal (SqliteConnection? Connection, ArtifactJournalIdentity Identity) Take()
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                var idle = _idle;
+                _idle = default;
+                return idle;
+            }
+        }
+
+        internal void Return(SqliteConnection connection, ArtifactJournalIdentity identity)
+        {
+            SqliteConnection? displaced = connection;
+            lock (_gate)
+            {
+                if (!_disposed)
+                {
+                    displaced = ReferenceEquals(_idle.Connection, connection) ? null : _idle.Connection;
+                    _idle = (connection, identity);
+                }
+            }
+            displaced?.Dispose();
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+                _idle.Connection?.Dispose();
+                _idle = default;
+            }
+        }
+    }
 
     [SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Private control-flow exception never crosses the service boundary.")]
     [SuppressMessage("Design", "CA1064:Exceptions should be public", Justification = "Private control-flow exception never crosses the service boundary.")]
@@ -1318,7 +1272,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         string MediaType,
         long ByteLength,
         string ChecksumSha256,
-        string? RawState);
+        string? RawState,
+        string IdentitySha256);
 
     private sealed record ArtifactEvidenceLookup(
         CameraAgentArtifactReadStatus Status,
@@ -1348,7 +1303,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         int Width,
         int Height,
         CameraPixelFormat PixelFormat,
-        string? PolicyIdentity);
+        string? PolicyIdentity,
+        BayerPattern? DeliveredBayerPattern = null);
 
     private sealed class PreviewCacheEntry(CameraAgentArtifactPreviewResult result, long sequence)
     {
@@ -1364,24 +1320,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         internal CameraAgentArtifactPreviewResult? Result { get; set; }
 
         internal int Waiters { get; set; }
-    }
-
-    private sealed record ArtifactValidationCacheKey(Guid ArtifactId, string ChecksumSha256);
-
-    private sealed record FileIdentity(long Length, long CreationUtcTicks, long LastWriteUtcTicks);
-
-    private sealed class ArtifactValidationCacheEntry(
-        ValidatedArtifact validated,
-        string evidenceIdentity,
-        FileIdentity payloadIdentity,
-        FileIdentity sidecarIdentity,
-        long sequence)
-    {
-        internal ValidatedArtifact Validated { get; } = validated;
-        internal string EvidenceIdentity { get; } = evidenceIdentity;
-        internal FileIdentity PayloadIdentity { get; } = payloadIdentity;
-        internal FileIdentity SidecarIdentity { get; } = sidecarIdentity;
-        internal long Sequence { get; set; } = sequence;
     }
 
 }

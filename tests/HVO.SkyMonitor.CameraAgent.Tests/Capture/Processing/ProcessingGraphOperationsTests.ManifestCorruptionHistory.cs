@@ -40,7 +40,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 foreach (var id in new[] { liveId, replay.Execution.ExecutionId })
                 {
                     originals[id] = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
-                    foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                    foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                         facts[(id, consumer)] = await ReadManifestJournalConsumerAsync(root, operations, id, consumer, false).ConfigureAwait(false);
                     await ReplaceManifestCountsAsync(root, id, originals[id], counts).ConfigureAwait(false);
                     await RunManifestTestAssertions.ResponseAsync(operations, id, corrupt ? CameraAgentRunManifest.CorruptReason : null).ConfigureAwait(false);
@@ -182,11 +182,8 @@ public sealed partial class ProcessingGraphOperationsTests
                         await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", null).ConfigureAwait(false);
                         await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
                     }
-                    var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", output.OutputIdentitySha256,
-                        output.PayloadRelativePath, output.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                    await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    Assert.IsNull(await store.ReadOutputByArtifactIdAsync(live.Nodes.Single().Outputs.Single().ArtifactId, CancellationToken.None).ConfigureAwait(false));
+                    await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, output.ArtifactId,
+                        output.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
                     await RunManifestTestAssertions.ResponseAsync(operations, id,
                         legacy ? CameraAgentRunManifest.UnrecordedOutputReason : CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
                 }

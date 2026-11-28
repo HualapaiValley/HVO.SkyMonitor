@@ -8,17 +8,20 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.OpticalCalibration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "OpticalCalibration")]
 public sealed class VirtualOpticalCalibrationReviewServiceTests
 {
     private const int Size = 512;
@@ -223,6 +226,7 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
             var service = new VirtualOpticalCalibrationReviewService(physical.Named);
             var review = await service.ReviewAsync(Accepted.Value, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual("physical-rig", review.Blocker);
+            Assert.IsNotNull(review.ProposedOptics, "Physical observations can be compared in read-only review.");
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => service.AcceptAsync(review, Accepted.Value, CancellationToken.None))
                 .ConfigureAwait(false);
             await AssertUnchangedAsync(physical, before).ConfigureAwait(false);
@@ -233,6 +237,117 @@ public sealed class VirtualOpticalCalibrationReviewServiceTests
             .ReviewAsync(Accepted.Value, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual("nominal-mismatch", foreignReview.Blocker);
         Assert.IsNull(foreignReview.ProposedOptics);
+    }
+
+    [TestMethod]
+    public async Task MockedPhysicalQualificationBindsTheExactFitAndStillRequiresExplicitStaging()
+    {
+        using var harness = await Harness.CreateAsync("ZwoAsi").ConfigureAwait(false);
+        var before = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var revision = before.Selection.ActiveRevisionId!;
+        var fit = Accepted.Value;
+        var qualification = new Mock<IOpticalAlignmentQualification>(MockBehavior.Strict);
+        var authorized = qualification.Setup(policy => policy.IsQualifiedAsync(revision, fit.IdentitySha256, It.IsAny<CancellationToken>()));
+        authorized.ReturnsAsync(true);
+        var reviewService = new VirtualOpticalCalibrationReviewService(harness.Named, qualification.Object);
+        var review = await reviewService.ReviewAsync(fit, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(review.CanAccept, review.Blocker);
+        authorized.ReturnsAsync(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => reviewService.AcceptAsync(review, fit, CancellationToken.None)).ConfigureAwait(false);
+        await AssertUnchangedAsync(harness, before).ConfigureAwait(false);
+        authorized.ReturnsAsync(true);
+        var accepted = await reviewService.AcceptAsync(review, fit, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(accepted.CandidateRigRevisionId);
+        var saved = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(before.Selection, saved.Selection);
+        var preview = await harness.Named.PreviewAsync(accepted.CandidateRigRevisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(preview.Valid, preview.Failure);
+        qualification.Verify(policy => policy.IsQualifiedAsync(revision, fit.IdentitySha256, It.IsAny<CancellationToken>()), Times.Exactly(3));
+    }
+
+    [TestMethod]
+    public async Task OpticalAlignmentFitsSelectedArchiveCapturesAndRechecksPublicationBeforeAccept()
+    {
+        using var harness = await Harness.CreateAsync("VirtualSky").ConfigureAwait(false);
+        var active = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        var rig = active.Revisions.Single(r => r.RevisionId == active.Selection.ActiveRevisionId).Rig;
+        var rigIdentity = Convert.ToHexStringLower(Convert.FromHexString(CameraRigProfileIdentity.ComputeSha256(rig)));
+        var truth = RigProjectionContextFactory.CreateNative(rig) with
+        {
+            FocalLengthXPixels = NominalFocal * 1.012,
+            FocalLengthYPixels = NominalFocal * 1.012,
+            PrincipalPointX = 259.5,
+            PrincipalPointY = 253,
+            RadialDistortionK1 = -.006,
+            BoresightAltitudeDegrees = 72,
+            BoresightAzimuthDegrees = 243,
+            RollDegrees = 17
+        };
+        var evidence = new[] { Frame(truth, 0), Frame(truth, 1.5), Frame(truth, 3), Frame(truth, 2.2) }
+            .Select(frame => new OpticalAlignmentCaptureEvidence(new(frame.Frame.CaptureId, frame.Frame.SourceArtifactId,
+                frame.Frame.SourcePayloadSha256), rigIdentity, frame, Catalog, AstrometricClockFacts.NotSupplied,
+                Search, AstrometricAssessmentStatus.Accepted, .1)).ToArray();
+        var archive = new Mock<ICameraAgentRetainedAstrometryService>(MockBehavior.Strict);
+        foreach (var capture in evidence)
+        {
+            archive.Setup(service => service.GetOpticalAlignmentInputAsync(capture.Assessment.CaptureId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(capture);
+            archive.Setup(service => service.ReadPublicationStateAsync(capture.Assessment, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(CameraAgentAstrometryPublicationState.Available);
+        }
+        using var workflow = new OpticalAlignmentWorkflow(harness.Named, archive.Object, new VirtualOpticalCalibrationReviewService(harness.Named));
+        var training = evidence[..3].Select(capture => capture.Assessment.CaptureId).ToArray();
+        var validation = evidence[3].Assessment.CaptureId;
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() => workflow.FitAsync(training, [training[0]], true, CancellationToken.None)).ConfigureAwait(false);
+        var proposal = await workflow.FitAsync(training, [validation], true, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(proposal.Review.CanAccept, proposal.Result.Reason);
+        Assert.HasCount(4, proposal.Captures);
+        Assert.HasCount(1, proposal.Result.Validations);
+        Assert.AreEqual(validation, proposal.Result.Validations.Single().CaptureId);
+        await AssertUnchangedAsync(harness, active).ConfigureAwait(false);
+
+        archive.Setup(service => service.ReadPublicationStateAsync(evidence[3].Assessment, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CameraAgentAstrometryPublicationState.Invalidated);
+        await Assert.ThrowsExactlyAsync<CaptureScheduleStoreConflictException>(() => workflow.AcceptAsync(proposal, CancellationToken.None)).ConfigureAwait(false);
+        await AssertUnchangedAsync(harness, active).ConfigureAwait(false);
+        archive.Setup(service => service.ReadPublicationStateAsync(evidence[3].Assessment, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CameraAgentAstrometryPublicationState.Available);
+        var decision = await workflow.AcceptAsync(proposal, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(decision.CandidateRigRevisionId);
+        var after = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(active.Selection, after.Selection);
+        Assert.HasCount(active.Revisions.Count + 1, after.Revisions);
+        var saved = after.Revisions.Single(revision => revision.RevisionId == decision.CandidateRigRevisionId).OpticalAlignment!;
+        Assert.AreEqual(proposal.Result.IdentitySha256, saved.FitIdentitySha256);
+        Assert.AreEqual(proposal.Result.InputIdentitySha256, saved.InputIdentitySha256);
+        CollectionAssert.AreEqual(evidence.Select(capture => capture.Assessment).ToArray(),
+            saved.Captures.Select(capture => capture.Assessment).ToArray());
+        Assert.AreEqual(decision, await workflow.AcceptAsync(proposal, CancellationToken.None).ConfigureAwait(false));
+
+        var candidateId = decision.CandidateRigRevisionId!;
+        var previousId = after.Selection.ActiveRevisionId!;
+        var preview = await harness.Named.PreviewAsync(candidateId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(preview.Valid, preview.Failure);
+        _ = await harness.Named.StageAsync(candidateId, after.Selection.Version, "stage-alignment", "owner", true,
+            preview.ScheduleRevisionId, preview.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+        var pending = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(previousId, pending.Selection.ActiveRevisionId);
+        Assert.AreEqual(candidateId, pending.Selection.PendingRevisionId);
+        var configuration = Configuration("VirtualSky");
+        var staged = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision!;
+        var restartedStore = harness.CreateRestartedNamedStore();
+        await restartedStore.CommitInitializedAsync(candidateId, staged.Profile.ApplyTo(configuration), CancellationToken.None).ConfigureAwait(false);
+        var activated = await restartedStore.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(candidateId, activated.Selection.ActiveRevisionId);
+        var rollback = await restartedStore.PreviewAsync(previousId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(rollback.Valid, rollback.Failure);
+        _ = await restartedStore.StageAsync(previousId, activated.Selection.Version, "rollback-alignment", "owner", true,
+            rollback.ScheduleRevisionId, rollback.ScheduleProfileSha256, CancellationToken.None).ConfigureAwait(false);
+        staged = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).PendingRevision!;
+        await restartedStore.CommitInitializedAsync(previousId, staged.Profile.ApplyTo(configuration), CancellationToken.None).ConfigureAwait(false);
+        var restored = await restartedStore.GetAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(previousId, restored.Selection.ActiveRevisionId);
+        Assert.AreEqual(saved.FitIdentitySha256, restored.Revisions.Single(revision => revision.RevisionId == candidateId).OpticalAlignment!.FitIdentitySha256);
     }
 
     [TestMethod]

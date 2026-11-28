@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -23,29 +22,24 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var step = new MetadataProducingStep();
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Item,
                 new CaptureProcessingGraph([CreateMetadataNode(step)]), persistence, telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
             Assert.IsNotNull(step.Product);
-            var destination = Path.Combine(root, "retry");
             async Task CopyAsync(int _)
             {
-                var copied = await CaptureProcessingPersistence.CopyMetadataProductAsync(destination,
+                var copied = await SiloInfrastructureFixture.PublishMetadataFixtureAsync(persistence.Silo,
                     fixture.Manifest.Descriptor, "metadata", step.Product, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(step.Product.OutputIdentitySha256, copied.OutputIdentitySha256);
             }
             await CopyAsync(0).ConfigureAwait(false);
-            var before = Issue587RetryCostEvidence.Hashes(destination);
             var metrics = await Issue587RetryCostEvidence.MeasureAsync(CopyAsync).ConfigureAwait(false);
-            CollectionAssert.AreEqual(before, Issue587RetryCostEvidence.Hashes(destination));
             await Issue587RetryCostEvidence.SaveAsync(output, new
             {
                 metrics,
-                hashes = before,
                 step.Product.OutputIdentitySha256,
                 step.Product.ChecksumSha256
             }).ConfigureAwait(false);
@@ -83,6 +77,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests
 
     [TestClass]
     [TestCategory("Manual")]
+    [TestProperty("Area", "Modules.VirtualSky")]
     public sealed class Issue587StagingCostTests
     {
         [TestMethod]

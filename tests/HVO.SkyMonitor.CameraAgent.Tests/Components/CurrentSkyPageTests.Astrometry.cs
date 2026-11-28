@@ -339,7 +339,6 @@ public sealed partial class CurrentSkyPageTests
         var capture = image.DisplayCapture! with { CaptureId = accepted.CaptureId, ExposureStartedUtc = accepted.Solution!.Assessment.Frame.ExposureStartUtc };
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
             image with { DisplayCapture = capture, LatestCapture = capture }));
-        // Complete on the renderer, allowing the awaiting continuation to finish synchronously before assertions.
         var pending = new DeferredAstrometryRead<CameraAgentRetainedAstrometry>();
         var standaloneReads = 0;
         service.AstrometryHandler = (_, _) => { standaloneReads++; return pending.Read(); };
@@ -359,12 +358,14 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
         await cut.InvokeAsync(() =>
         {
-            if (completion == "failure") pending.Complete(error: new IOException("private-path"));
-            else if (completion == "timeout") pending.Complete(error: new OperationCanceledException("read deadline"));
+            if (completion == "failure") pending.Complete(new IOException("private-path"));
+            else if (completion == "timeout") pending.Complete(new OperationCanceledException("read deadline"));
             else pending.Complete(completion == "denied"
                 ? OperatorUiResult<CameraAgentRetainedAstrometry>.Failure(OperatorUiResultKind.Unauthorized, "Denied")
                 : OperatorUiResult<CameraAgentRetainedAstrometry>.Success(accepted));
         }).ConfigureAwait(false);
+        // Drain any continuation queued to the renderer by the deferred completion.
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
         if (completion == "denied")
         {
             cut.WaitForAssertion(() => Assert.IsTrue(context.Services.GetRequiredService<NavigationManager>().Uri.EndsWith("/Account/AccessDenied", StringComparison.Ordinal)));
@@ -489,28 +490,40 @@ public sealed partial class CurrentSkyPageTests
     // lets the test observe its final state without sleeps or a race against a detached read task.
     private sealed class DeferredAstrometryRead<T> : IValueTaskSource<OperatorUiResult<T>>
     {
-        private Action<object?>? _continuation;
-        private object? _state;
-        private OperatorUiResult<T>? _result;
-        private Exception? _error;
-        private bool _completed;
+        private ManualResetValueTaskSourceCore<OperatorUiResult<T>> _source;
+        private int _completionStarted;
+
         internal TaskCompletionSource Awaiting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ValueTask<OperatorUiResult<T>> Read() => new(this, 0);
-        public ValueTaskSourceStatus GetStatus(short token) => _completed ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
-        public OperatorUiResult<T> GetResult(short token) => _error is { } error ? throw error : _result!;
+        public ValueTask<OperatorUiResult<T>> Read() => new(this, _source.Version);
+        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+        public OperatorUiResult<T> GetResult(short token) => _source.GetResult(token);
+
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         {
-            _continuation = continuation;
-            _state = state;
+            _source.OnCompleted(continuation, state, token, flags);
             Awaiting.TrySetResult();
         }
-        public void Complete(OperatorUiResult<T>? result = null, Exception? error = null)
+
+        public void Complete(OperatorUiResult<T> result)
         {
-            Assert.IsNotNull(_continuation, "The pending read must be awaiting delivery.");
-            _result = result;
-            _error = error;
-            _completed = true;
-            _continuation(_state);
+            Assert.IsTrue(Awaiting.Task.IsCompletedSuccessfully, "The pending read must be awaiting delivery.");
+            Assert.IsTrue(TryComplete(result), "The pending read was already completed.");
+        }
+
+        public void Complete(Exception error)
+        {
+            Assert.IsTrue(Awaiting.Task.IsCompletedSuccessfully, "The pending read must be awaiting delivery.");
+            Assert.AreEqual(0, Interlocked.Exchange(ref _completionStarted, 1), "The pending read was already completed.");
+            _source.SetException(error);
+        }
+
+        public bool TryComplete(OperatorUiResult<T> result)
+        {
+            if (Interlocked.Exchange(ref _completionStarted, 1) != 0)
+                return false;
+
+            _source.SetResult(result);
+            return true;
         }
     }
 

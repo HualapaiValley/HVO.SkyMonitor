@@ -2,12 +2,12 @@
 
 This stack provisions the shared SkyMonitor Redis and Mailpit services on `hvo-docker.hvo.lan`. It is separate from application stacks and retains data in named Docker volumes.
 
-LogicHost object storage is not a shared service. It is a dedicated filesystem root on the LogicHost host itself, qualified by `./scripts/qualify:filesystem-object-store`; see `docs/runbooks/infra-operations.md`.
+Standalone CameraAgent uses its own storage and local Identity. This shared stack serves separate consumers.
 
 ## Prerequisites
 
 - A Docker context or SSH account with Docker access to `hvo-docker.hvo.lan`.
-- A root repository `.env` file created from `.env.template`, containing the shared-service credentials. Do not commit that file.
+- An owner-only `.env` file containing `REDIS_PASSWORD`. Do not commit that file.
 
 ## Deploy
 

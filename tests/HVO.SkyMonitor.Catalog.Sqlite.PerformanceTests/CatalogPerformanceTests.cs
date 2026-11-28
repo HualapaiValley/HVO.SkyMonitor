@@ -36,7 +36,7 @@ public sealed partial class CatalogPerformanceTests
         var allocated = GC.GetAllocatedBytesForCurrentThread() - allocationBefore;
         process.Refresh();
         var memory = GC.GetGCMemoryInfo();
-        Assert.AreEqual(119_625, snapshot.Catalog.ObjectCount);
+        Assert.AreEqual(119_613, snapshot.Catalog.ObjectCount);
         await WriteEvidenceAsync("startup", new
         {
             latencyMilliseconds = elapsed,
@@ -144,7 +144,7 @@ public sealed partial class CatalogPerformanceTests
         {
             throw new InvalidOperationException("HVO_CATALOG_PERF_ROOT must identify a verified production installation.");
         }
-        return CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(root, "hyg-v42-production"));
+        return CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(root, "hyg-v44-production"));
     }
 
     private static async Task<QueryMeasurement> MeasureQueryAsync(

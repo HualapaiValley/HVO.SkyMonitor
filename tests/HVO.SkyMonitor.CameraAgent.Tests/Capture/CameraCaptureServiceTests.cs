@@ -1,12 +1,12 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Logging.Abstractions;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
@@ -27,6 +27,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Capture")]
 public sealed class CameraCaptureServiceTests
 {
     [TestMethod]
@@ -46,7 +47,7 @@ public sealed class CameraCaptureServiceTests
             var module = new GatedCameraModule();
             using var service = new CameraCaptureService(new ConfigurationAccessor(CreateConfig()), new ModuleFactory(module),
                 ingress, new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(), telemetry,
-                admission, new FleetRuntimeState(TimeProvider.System), lifetime, NullLogger<CameraCaptureService>.Instance,
+                admission, new CaptureRuntimeState(TimeProvider.System), lifetime, NullLogger<CameraCaptureService>.Instance,
                 moduleOwnership: ownership)
             { ModuleLeaseDrainTimeout = TimeSpan.FromMilliseconds(50) };
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -492,7 +493,7 @@ public sealed class CameraCaptureServiceTests
         CaptureAdmissionCoordinator admission, CaptureScheduleRuntimeCoordinator runtime,
         SqliteNamedRigProfileStore named, TestHostApplicationLifetime lifetime, TimeProvider clock)
         => new(accessor, new ModuleFactory(module), ingress, new RecordingDistributor(), clock,
-            new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+            new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
             NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
 
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
@@ -537,6 +538,7 @@ public sealed class CameraCaptureServiceTests
     private sealed class RigRecordingModule(TimeProvider clock) : ICameraModule
     {
         private int _captures;
+        public int CaptureCalls => Volatile.Read(ref _captures);
         public CameraModuleConfig? InitializedConfig { get; private set; }
         public string Id => "test";
         public string DisplayName => "Test";
@@ -626,7 +628,7 @@ public sealed class CameraCaptureServiceTests
             var fresh = new RigRecordingModule(clock);
             var factory = new SequenceModuleFactory(stale, fresh);
             var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
-                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -672,6 +674,244 @@ public sealed class CameraCaptureServiceTests
     }
 
     [TestMethod]
+    public async Task PendingRig_InterveningScheduleActivationRevokesPreparedAttachmentBeforeCapture()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-prepared-revision-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = deadline.Token;
+        try
+        {
+            var clock = new FixedClock(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            var config = CreateConfig() with
+            {
+                AgentId = "prepared-before-c",
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new("capture-schedule-v1",
+                    [new("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new("monday", DayOfWeek.Monday,
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            using var ingress = CreateDurableIngress(options, clock);
+            using var store = new SqliteCaptureScheduleStore(ingress, options, clock);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry);
+            var pipeline = new EmptyPipelineFactory();
+            using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+            using var ownership = new CameraModuleOwnership();
+            var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+            var accessor = new CameraAgentConfigurationAccessor();
+            await new CameraAgentConfigurationInitializer(new StaticLoader(config), accessor, pipeline,
+                NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                .StartAsync(token).ConfigureAwait(false);
+            await runtime.InitializeAsync(config, token).ConfigureAwait(false);
+            var active = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+            var selection = (await named.GetAsync(token).ConfigureAwait(false)).Selection;
+            var profile = await named.SaveProfileNameAsync(null, "Prepared B", token).ConfigureAwait(false);
+            var camera = await named.SaveEquipmentAsync(null, "camera", "Camera",
+                JsonSerializer.SerializeToElement(new NamedCameraEquipment(config.Module, config.Rig.Sensor, config.Rig.Readout)),
+                token).ConfigureAwait(false);
+            var optics = await named.SaveEquipmentAsync(null, "optics", "Optics B",
+                JsonSerializer.SerializeToElement(config.Rig.Optics with { FocalLengthMillimeters = 1 }), token).ConfigureAwait(false);
+            var mount = await named.SaveEquipmentAsync(null, "mount", "Mount",
+                JsonSerializer.SerializeToElement(config.Rig.Orientation), token).ConfigureAwait(false);
+            var rigB = await named.ComposeAsync(profile.ProfileId, camera.RevisionId, optics.RevisionId,
+                mount.RevisionId, token).ConfigureAwait(false);
+            var pending = await named.StageAsync(rigB.RevisionId, selection.Version, "prepare-b", "owner", true,
+                active.ActiveRevision.RevisionId, active.ActiveRevision.ProfileSha256, token).ConfigureAwait(false);
+            named.SnapshotStartupPendingSelection((await named.GetAsync(token).ConfigureAwait(false)).Selection);
+
+            var preparedModule = new RigRecordingModule(clock);
+            var nextModule = new RigRecordingModule(clock);
+            var factory = new SequenceModuleFactory(preparedModule, nextModule);
+            string? nextRevisionId = null;
+            CaptureScheduleCaptureContext committed = default;
+            var activationFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
+                NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named,
+                moduleOwnership: ownership)
+            {
+                PreparedAttachmentCommitted = async (attachment, ct) =>
+                {
+                    committed = attachment;
+                    try
+                    {
+                        var current = attachment.Snapshot.Revision.Profile;
+                        var profileC = current.Schedule.SetpointProfiles.Single() with { CaptureInterval = TimeSpan.FromSeconds(2) };
+                        var next = current with { Schedule = current.Schedule with { SetpointProfiles = [profileC] } };
+                        var currentState = await store.GetSnapshotAsync(ct).ConfigureAwait(false);
+                        var staged = await runtime.StageAsync(next, "stage-c", currentState.Version, "owner", null, ct)
+                            .ConfigureAwait(false);
+                        nextRevisionId = staged.PendingRevision!.RevisionId;
+                        await runtime.ActivateAsync(nextRevisionId, "activate-c", staged.Version, "owner", null, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException)
+                    {
+                        activationFailure.TrySetResult(ex);
+                        throw;
+                    }
+                }
+            };
+            await service.StartAsync(token).ConfigureAwait(false);
+            await lifetime.ApplicationStartedObserved.Task.WaitAsync(token).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            try
+            {
+                var result = await Task.WhenAny(ingress.Captured.Task, activationFailure.Task,
+                    Task.Delay(Timeout.InfiniteTimeSpan, token)).ConfigureAwait(false);
+                var diagnostics = activationFailure.Task.IsCompletedSuccessfully
+                    ? (await activationFailure.Task.ConfigureAwait(false)).ToString()
+                    : $"{named.PendingRuntimeFailure}; {named.ActiveRuntimeFailure}; factory calls {factory.CreateCalls}";
+                Assert.AreSame(ingress.Captured.Task, result, diagnostics);
+                var capture = await ingress.Captured.Task.ConfigureAwait(false);
+                Assert.AreEqual(pending.ScheduleRevisionId, committed.Snapshot.Revision.RevisionId);
+                Assert.IsTrue(committed.RevisionChanged.IsCancellationRequested);
+                Assert.IsNotNull(nextRevisionId);
+                Assert.AreEqual(nextRevisionId, capture.Manifest.Descriptor.CycleEvidence!.ScheduleAdmission!.ScheduleRevisionId);
+                Assert.AreEqual(0, preparedModule.CaptureCalls);
+                Assert.AreEqual(2, factory.CreateCalls);
+                Assert.IsTrue(ownership.TryAcquire(out var lease));
+                using var activeLease = lease!;
+                Assert.AreSame(nextModule, activeLease.Module);
+            }
+            finally { await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task RunnerFaultWithdrawsHeldFocusBeforeRetryAndThenPublishesTheNewRevision()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-faulted-focus-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var token = deadline.Token;
+        try
+        {
+            var clock = new ExposureTestTimeProvider(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            var original = CreateConfig() with
+            {
+                AgentId = "focus-b-to-c",
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new("capture-schedule-v1",
+                    [new("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new("monday", DayOfWeek.Monday,
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(21, 0)),
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            using var ingress = CreateDurableIngress(options, clock);
+            using var store = new SqliteCaptureScheduleStore(ingress, options, clock);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry);
+            using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), new EmptyPipelineFactory(), clock);
+            await runtime.InitializeAsync(original, token).ConfigureAwait(false);
+            using var lifetime = new TestHostApplicationLifetime();
+            using var ownership = new CameraModuleOwnership();
+            var before = new HeldFocusModule();
+            var after = new RigRecordingModule(clock);
+            var factory = new SequenceModuleFactory(before, after);
+            using var service = new CameraCaptureService(new ConfigurationAccessor(original), factory,
+                ingress, new RecordingDistributor(), clock, new AstronomyEnginePlanetEphemeris(), telemetry,
+                admission, new CaptureRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance,
+                scheduleRuntimeCoordinator: runtime, moduleOwnership: ownership);
+            await service.StartAsync(token).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            try
+            {
+                await clock.TimerCreated.Task.WaitAsync(token).ConfigureAwait(false);
+                var focus = new CameraModuleManualFocusPreviewSource(ownership, admission, clock);
+                var settings = new ManualFocusPreviewSettings(TimeSpan.FromMilliseconds(1), 0);
+                var preview = focus.AcquireAsync(settings, null, token);
+                await before.Entered.Task.WaitAsync(token).ConfigureAwait(false);
+                clock.FailNextUtcRead();
+                clock.Advance(TimeSpan.FromMinutes(2));
+                await before.Revoked.Task.WaitAsync(TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
+                Assert.IsFalse(before.Disposed.Task.IsCompleted);
+                Assert.IsFalse(ownership.TryAcquire(out _));
+                await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(
+                    () => focus.AcquireAsync(settings, null, token)).ConfigureAwait(false);
+
+                before.Release.TrySetResult();
+                await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(
+                    async () => await preview.ConfigureAwait(false)).ConfigureAwait(false);
+                await before.Disposed.Task.WaitAsync(token).ConfigureAwait(false);
+                var current = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+                var profile = current.ActiveRevision.Profile;
+                var window = profile.Schedule.WeeklyWindows.Single();
+                var next = profile with
+                {
+                    Schedule = profile.Schedule with
+                    {
+                        WeeklyWindows = [window with { Start = new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue) }]
+                    }
+                };
+                var staged = await runtime.StageAsync(next, "stage-focus-c", current.Version, "fixture", null, token)
+                    .ConfigureAwait(false);
+                var revision = staged.PendingRevision!.RevisionId;
+                await runtime.ActivateAsync(revision, "activate-focus-c", staged.Version, "fixture", null, token)
+                    .ConfigureAwait(false);
+                Assert.IsFalse(ownership.TryAcquire(out _), "B cannot be leased during the restart delay.");
+                while (clock.ActiveTimers == 0)
+                    await Task.Delay(10, token).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromSeconds(5));
+                var raw = await ingress.Captured.Task.WaitAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(revision, raw.Manifest.Descriptor.CycleEvidence!.ScheduleAdmission!.ScheduleRevisionId);
+                Assert.IsTrue(ownership.TryAcquire(out var lease));
+                using var currentLease = lease!;
+                Assert.AreSame(after, currentLease.Module);
+            }
+            finally
+            {
+                before.Release.TrySetResult();
+                await service.StopAsync(CancellationToken.None).WaitAsync(token).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    private sealed class HeldFocusModule : ICameraModule, ICameraFocusPreviewCapture
+    {
+        public string Id => "focus-b";
+        public string DisplayName => "Focus B";
+        public string ModuleType => "FocusFixture";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+        public CameraFocusPreviewFidelity FocusPreviewFidelity { get; } = new("fixture", false, "Test preview");
+        public CameraSimulatedFocusModel? SimulatedFocus => null;
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The closed grant must prevent B from capturing.");
+        public async Task<CaptureResult> CaptureFocusPreviewAsync(CameraFocusPreviewRequest request, CancellationToken cancellationToken)
+        {
+            using var revoked = cancellationToken.Register(() => Revoked.TrySetResult());
+            Entered.TrySetResult();
+            await Release.Task.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("The focus lease must be revoked before release.");
+        }
+        public ValueTask DisposeAsync()
+        {
+            Disposed.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [TestMethod]
     public async Task PendingRig_CancelAndRestageSameRigInProcessWaitsForAnotherRestart()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-restage-startup-{Guid.NewGuid():N}");
@@ -714,7 +954,7 @@ public sealed class CameraCaptureServiceTests
             var activeModule = new RigRecordingModule(clock);
             var factory = new SequenceModuleFactory(stale, activeModule);
             var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
-                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new CaptureRuntimeState(clock), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -903,7 +1143,7 @@ public sealed class CameraCaptureServiceTests
             using var lifetime = new TestHostApplicationLifetime();
             var service = new CameraCaptureService(new ConfigurationAccessor(config), factory, ingress,
                 new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(),
-                telemetry, admission, new FleetRuntimeState(TimeProvider.System), lifetime,
+                telemetry, admission, new CaptureRuntimeState(TimeProvider.System), lifetime,
                 NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             await lifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -976,7 +1216,7 @@ public sealed class CameraCaptureServiceTests
                 new AstronomyEnginePlanetEphemeris(),
                 telemetry,
                 coordinator,
-                new FleetRuntimeState(TimeProvider.System),
+                new CaptureRuntimeState(TimeProvider.System),
                 applicationLifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
@@ -1028,7 +1268,7 @@ public sealed class CameraCaptureServiceTests
                 stagingStore: staging);
             using var service = new CameraCaptureService(new ConfigurationAccessor(config), new ModuleFactory(module),
                 ingress, distributor, clock, new AstronomyEnginePlanetEphemeris(), telemetry, admission,
-                new FleetRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance);
+                new CaptureRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             lifetime.NotifyStarted();
             await clock.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1075,7 +1315,7 @@ public sealed class CameraCaptureServiceTests
                     new AstronomyEnginePlanetEphemeris(),
                     telemetry,
                     coordinator,
-                    new FleetRuntimeState(TimeProvider.System),
+                    new CaptureRuntimeState(TimeProvider.System),
                     waitingLifetime,
                     NullLogger<CameraCaptureService>.Instance);
 
@@ -1099,7 +1339,7 @@ public sealed class CameraCaptureServiceTests
                 new AstronomyEnginePlanetEphemeris(),
                 telemetry,
                 coordinator,
-                new FleetRuntimeState(TimeProvider.System),
+                new CaptureRuntimeState(TimeProvider.System),
                 applicationLifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
@@ -1140,7 +1380,7 @@ public sealed class CameraCaptureServiceTests
             using var lifetime = new TestHostApplicationLifetime();
             var service = new CameraCaptureService(new CameraAgentConfigurationAccessor(), factory, ingress,
                 new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(),
-                telemetry, coordinator, new FleetRuntimeState(TimeProvider.System), lifetime,
+                telemetry, coordinator, new CaptureRuntimeState(TimeProvider.System), lifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);

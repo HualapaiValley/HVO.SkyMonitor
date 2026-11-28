@@ -1,7 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -9,6 +8,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -55,7 +55,6 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
 {
     internal const string DirectoryName = ".nightly-products";
     internal const string FileName = "nightly-products.db";
-    internal const string ProductDirectoryName = "nightly-products";
     internal const string RenditionMediaType = "image/jpeg";
     private const int ExpectedSchemaObjectCount = 11;
 
@@ -175,25 +174,26 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
 
     private readonly CameraAgentHostOptions _options;
     private readonly TimeProvider _timeProvider;
+    private readonly SiloArtifactStorage? _silo;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _connectionString;
     private string? _databasePath;
     private bool _schemaReady;
 
-    public SqliteNightlyProductStore(IOptions<CameraAgentHostOptions> options, TimeProvider timeProvider)
+    public SqliteNightlyProductStore(IOptions<CameraAgentHostOptions> options, TimeProvider timeProvider, SiloArtifactStorage? silo = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
         _options = options.Value;
         _timeProvider = timeProvider;
+        _silo = silo;
     }
 
     public void Dispose() => _gate.Dispose();
 
     /// <summary>
-    /// Publishes a product, or returns the already-published product with the same output identity. Files are written
-    /// and synchronized before the row commits; a file left by an interrupted earlier attempt has no row, so it is
-    /// staging and is replaced rather than trusted.
+    /// Publishes exact Silo versions before exposing the SQLite row. A retry reuses the same Silo publication
+    /// identity and checks any committed catalogue row against its payload.
     /// </summary>
     internal async ValueTask<NightlyProductDetail> PublishAsync(
         NightlyProductPublication publication,
@@ -202,6 +202,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         ArgumentNullException.ThrowIfNull(publication);
         var product = publication.Product;
         Validate(publication);
+        var storage = _silo ?? throw new InvalidOperationException("Nightly product publication requires Silo storage.");
         var productId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -227,29 +228,28 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             var payloadSha256 = product.ChecksumSha256.ToUpperInvariant();
             var (first, last) = await ObservationSpanAsync(connection, publication.Sources, cancellationToken)
                 .ConfigureAwait(false);
-            var relativeDirectory = Path.Combine(
-                ProductDirectoryName,
-                publication.ObservingDate.Year.ToString("D4", CultureInfo.InvariantCulture),
-                publication.ObservingDate.Month.ToString("D2", CultureInfo.InvariantCulture),
-                publication.ObservingDate.Day.ToString("D2", CultureInfo.InvariantCulture),
-                NightlyProductContract.TargetFor(publication.Kind));
             var stem = productId.ToString("N", CultureInfo.InvariantCulture);
-            var payloadPath = Path.Combine(relativeDirectory, stem + ".bin");
-            var renditionPath = Path.Combine(relativeDirectory, stem + ".jpg");
-            var provenancePath = Path.Combine(relativeDirectory, stem + ".provenance.json");
+            var reference = $"silo/nightly-products/{stem}";
             var provenance = CreateProvenance(
                 publication, productId, payloadSha256, renditionSha256, rendition.LongLength, first, last);
             if (provenance.Length > 8 * 1024 * 1024) throw new InvalidDataException("Still product provenance exceeds its byte bound.");
             var provenanceSha256 = ProcessingIdentity.ComputePayloadSha256(provenance);
 
-            var root = ResolveRoot();
-            var directory = ResolveConfinedPath(root, relativeDirectory);
-            Directory.CreateDirectory(directory);
-            RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
-            WriteDurably(root, ResolveConfinedPath(root, payloadPath), product.Payload.Span);
-            WriteDurably(root, ResolveConfinedPath(root, renditionPath), rendition);
-            WriteDurably(root, ResolveConfinedPath(root, provenancePath), provenance);
-            RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
+            var draft = new SiloGroupDraft("nightly-product", stem, product.OutputIdentitySha256, publication.WindowEndUtc.ToUniversalTime(),
+                publication.WindowStartUtc.ToUniversalTime(), publication.WindowEndUtc.ToUniversalTime(),
+                [SiloArtifactStorage.Member(productId, product.OutputIdentitySha256, "still", SiloRetentionClass.Full,
+                    product.MediaType, product.Payload.Length, payloadSha256),
+                 SiloArtifactStorage.Member(productId, "rendition-1", "rendition", SiloRetentionClass.Display,
+                     RenditionMediaType, rendition.LongLength, renditionSha256),
+                 SiloArtifactStorage.Member(productId, "provenance-1", "provenance", SiloRetentionClass.Metadata,
+                     "application/json", provenance.LongLength, provenanceSha256)], [],
+                new(publication.Sources.Select(static source => source.OutputIdentitySha256).ToArray()));
+            await storage.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(member.Role switch
+            {
+                "still" => product.Payload,
+                "rendition" => rendition,
+                _ => provenance
+            }, token), cancellationToken).ConfigureAwait(false);
 
             var createdUtc = Truncate(_timeProvider.GetUtcNow());
             using (var transaction = BeginImmediate(connection))
@@ -289,13 +289,13 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                     ("$pixel_format", layout.PixelFormat.ToString()),
                     ("$width", layout.Width),
                     ("$height", layout.Height),
-                    ("$payload_path", ToStoredPath(payloadPath)),
+                    ("$payload_path", reference + ".bin"),
                     ("$payload_sha256", payloadSha256),
                     ("$payload_bytes", (long)product.Payload.Length),
-                    ("$rendition_path", ToStoredPath(renditionPath)),
+                    ("$rendition_path", reference + ".jpg"),
                     ("$rendition_sha256", renditionSha256),
                     ("$rendition_bytes", rendition.LongLength),
-                    ("$provenance_path", ToStoredPath(provenancePath)),
+                    ("$provenance_path", reference + ".provenance.json"),
                     ("$provenance_sha256", provenanceSha256),
                     ("$provenance_bytes", provenance.LongLength),
                     ("$source_count", publication.Sources.Count),
@@ -357,11 +357,10 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT payload_relative_path, layout_json, compatibility_json FROM nightly_products
+                SELECT layout_json, compatibility_json FROM nightly_products
                 WHERE product_id = $product_id;
                 """;
             command.Parameters.AddWithValue("$product_id", productId.ToString("N", CultureInfo.InvariantCulture));
-            string payloadPath;
             FrameLayoutDescriptor layout;
             ProcessingCompatibilityIdentity compatibility;
             using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -370,14 +369,13 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 {
                     throw new InvalidDataException("A nightly product source is not published.");
                 }
-                payloadPath = reader.GetString(0);
-                layout = Deserialize<FrameLayoutDescriptor>(reader.GetString(1));
-                compatibility = Deserialize<ProcessingCompatibilityIdentity>(reader.GetString(2));
+                layout = Deserialize<FrameLayoutDescriptor>(reader.GetString(0));
+                compatibility = Deserialize<ProcessingCompatibilityIdentity>(reader.GetString(1));
             }
             var detail = await ReadDetailAsync(connection, null, productId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("A nightly product source is not published.");
-            var payload = await ReadVerifiedAsync(
-                payloadPath, detail.PayloadBytes, detail.PayloadSha256, cancellationToken).ConfigureAwait(false);
+            var payload = await ReadProductMemberAsync(productId, detail.OutputIdentitySha256,
+                detail.PayloadBytes, detail.PayloadSha256, cancellationToken).ConfigureAwait(false);
             return new NightlyStoredProduct(detail, layout, compatibility, payload);
         }
         finally
@@ -596,7 +594,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT rendition_relative_path, rendition_bytes, rendition_sha256 FROM nightly_products
+                SELECT rendition_bytes, rendition_sha256 FROM nightly_products
                 WHERE product_id = $product_id;
                 """;
             command.Parameters.AddWithValue("$product_id", productId.ToString("N", CultureInfo.InvariantCulture));
@@ -605,9 +603,9 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             {
                 return null;
             }
-            var content = await ReadVerifiedAsync(
-                reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken).ConfigureAwait(false);
-            return new NightlyProductRendition(productId, RenditionMediaType, content, reader.GetString(2));
+            var content = await ReadProductMemberAsync(productId, "rendition-1", reader.GetInt64(0), reader.GetString(1),
+                cancellationToken).ConfigureAwait(false);
+            return new NightlyProductRendition(productId, RenditionMediaType, content, reader.GetString(1));
         }
         finally
         {
@@ -623,15 +621,23 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT provenance_relative_path, provenance_bytes, provenance_sha256 FROM nightly_products WHERE product_id = $id;";
+            command.CommandText = "SELECT provenance_bytes, provenance_sha256 FROM nightly_products WHERE product_id = $id;";
             command.Parameters.AddWithValue("$id", productId.ToString("N", CultureInfo.InvariantCulture));
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
-            var content = await ReadVerifiedAsync(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), cancellationToken)
+            var content = await ReadProductMemberAsync(productId, "provenance-1", reader.GetInt64(0), reader.GetString(1), cancellationToken)
                 .ConfigureAwait(false);
-            return new(productId, content, reader.GetString(2));
+            return new(productId, content, reader.GetString(1));
         }
         finally { _gate.Release(); }
+    }
+
+    private async ValueTask<byte[]> ReadProductMemberAsync(Guid id, string revision, long length, string checksum,
+        CancellationToken cancellationToken)
+    {
+        var storage = _silo ?? throw new InvalidOperationException("Nightly product retrieval requires Silo storage.");
+        return await storage.ReadMemberAsync(id, revision, length, checksum, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The nightly product has no settled Silo publication.");
     }
 
     internal async ValueTask VerifyPublicationAsync(Guid productId, CancellationToken cancellationToken)
@@ -931,56 +937,6 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         return windows;
     }
 
-    private async ValueTask<byte[]> ReadVerifiedAsync(
-        string storedRelativePath,
-        long expectedBytes,
-        string expectedSha256,
-        CancellationToken cancellationToken)
-    {
-        var root = ResolveRoot();
-        var path = ResolveConfinedPath(root, FromStoredPath(storedRelativePath));
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length != expectedBytes || expectedBytes > int.MaxValue)
-        {
-            throw new InvalidDataException("A published nightly product file is missing or has the wrong length.");
-        }
-        var content = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(
-                Convert.ToHexString(SHA256.HashData(content)), expectedSha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException("A published nightly product file failed checksum verification.");
-        }
-        return content;
-    }
-
-    private static void WriteDurably(string root, string path, ReadOnlySpan<byte> content)
-    {
-        var temporary = string.Concat(path, ".", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture), ".tmp");
-        try
-        {
-            using (var stream = new FileStream(
-                temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            {
-                stream.Write(content);
-                CameraAgentFileSystem.FlushFile(stream);
-            }
-            RawIngressFileStore.EnsureNoSymbolicLinks(root, temporary);
-            if (new FileInfo(path).LinkTarget is not null)
-            {
-                throw new IOException("A nightly product file must not be a symbolic link.");
-            }
-            CameraAgentFileSystem.PublishPrepared(root, temporary, path, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporary))
-            {
-                RetainedFileMutations.Delete(temporary);
-            }
-        }
-    }
-
     /// <summary>
     /// Extends the schema-2 product-kind constraints atomically, preserving the existing files and references.
     /// </summary>
@@ -1166,10 +1122,6 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             ? path
             : throw new InvalidOperationException("A nightly product path escapes the CameraAgent data root.");
     }
-
-    private static string ToStoredPath(string relativePath) => relativePath.Replace(Path.DirectorySeparatorChar, '/');
-
-    private static string FromStoredPath(string storedPath) => storedPath.Replace('/', Path.DirectorySeparatorChar);
 
     private static string FormatDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 

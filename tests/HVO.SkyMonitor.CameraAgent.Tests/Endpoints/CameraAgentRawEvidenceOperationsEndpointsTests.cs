@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Endpoints")]
 public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
 {
     [TestMethod]
@@ -56,7 +57,7 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
     {
         var operations = new RecordingOperations();
         using var app = CreateApp(operations);
-        var tokens = app.Services.GetRequiredService<OutboxOperationsTokenService>();
+        var tokens = app.Services.GetRequiredService<LocalOperationsTokenService>();
         var token = tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, RecordingOperations.Target);
         foreach (var antiforgeryValid in new bool?[] { false, null })
         {
@@ -83,13 +84,12 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
     [TestMethod]
     public void RawEvidenceTokens_CannotCrossActionKindOrCursorPurposes()
     {
-        var tokens = new OutboxOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5));
+        var tokens = new LocalOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5));
         var token = tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, RecordingOperations.Target);
         Assert.IsTrue(tokens.TryReadRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, token, out var target));
         Assert.AreEqual(RecordingOperations.Target, target);
         Assert.IsFalse(tokens.TryReadRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, token, out _));
         Assert.IsFalse(tokens.TryReadRawEvidenceCursor(token, out _));
-        Assert.IsFalse(tokens.TryReadEnvironmentalAction(HVO.SkyMonitor.CameraAgent.Common.Operations.OutboxOperationAction.Replay, token, out _));
         Assert.IsFalse(tokens.TryReadRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, token + "tamper", out _));
     }
 
@@ -97,7 +97,7 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddSingleton<IRawEvidenceOperations>(operations);
-        builder.Services.AddSingleton(new OutboxOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5)));
+        builder.Services.AddSingleton(new LocalOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5)));
         var app = builder.Build();
         app.MapCameraAgentRawEvidenceOperationsEndpoints();
         return app;

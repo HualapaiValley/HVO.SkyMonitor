@@ -269,7 +269,8 @@ public sealed partial class SqliteLocalAutomationStore
         SqliteTransaction transaction, LocalAutomationBackfillRequest request, CancellationToken token)
     {
         if (!ValidOccurrenceCommand(request.DefinitionId, request.ExpectedVersion, request.IdempotencyKey,
-                request.Actor, request.Reason) || request.HourStartUtc is { Offset: var offset } && offset != TimeSpan.Zero)
+                request.Actor, request.Reason) || request.HourStartUtc is { Offset: var offset } && offset != TimeSpan.Zero ||
+            request.ExpectedWindowIdentitySha256 is { } identity && (identity.Length != 64 || !identity.All(char.IsAsciiHexDigit)))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 LocalAutomationContract.InvalidCommandReasonCode, token).ConfigureAwait(false);
@@ -320,13 +321,19 @@ public sealed partial class SqliteLocalAutomationStore
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 "automation.source-window-not-found", token).ConfigureAwait(false);
         }
+        if (request.ExpectedWindowIdentitySha256 is { } expected &&
+            !string.Equals(window.IdentitySha256, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                "automation.source-window-changed", token).ConfigureAwait(false);
+        }
         var now = Now();
         if (!window.IsEligibleForFinal(now))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
                 "automation.finality-not-reached", token).ConfigureAwait(false);
         }
-        if (window.EndUtc < LocalAutomationWindowPlanner.LookbackStart(now))
+        if (!LocalAutomationWindowPlanner.IsWithinBackfillLookback(window.EndUtc, now))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 "automation.backfill-outside-lookback", token).ConfigureAwait(false);
@@ -414,15 +421,12 @@ public sealed partial class SqliteLocalAutomationStore
                 "automation.run-not-found", token).ConfigureAwait(false);
         }
         if (!definition.Definition.Enabled || previous.Occurrence is not { } occurrence ||
-            previous.Outcome is not (LocalAutomationRunOutcome.Failed or LocalAutomationRunOutcome.Interrupted) ||
-            _registry.Validate(occurrence.Definition) is not null || occurrence.ScheduledForUtc > Now())
+            !CanRetryRun(previous, occurrence, Now()))
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
                 "automation.run-not-retryable", token).ConfigureAwait(false);
         }
-        var latest = await ScalarLongAsync(connection, transaction,
-            "SELECT MAX(attempt) FROM automation_runs WHERE occurrence_id = $identity;", token,
-            ("$identity", occurrence.IdentitySha256)).ConfigureAwait(false);
+        var latest = await ReadLatestAttemptAsync(connection, transaction, occurrence, token).ConfigureAwait(false);
         if (latest != previous.Attempt || latest >= MaximumOccurrenceAttempts)
         {
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
@@ -437,6 +441,39 @@ public sealed partial class SqliteLocalAutomationStore
         }
         return await QueueOccurrenceAsync(connection, transaction, occurrence, checked((int)latest + 1),
             request.IdempotencyKey, payload, "retry", request.Actor, request.Reason, token).ConfigureAwait(false);
+    }
+
+    private bool CanRetryRun(LocalAutomationRun run, LocalAutomationOccurrence occurrence, DateTimeOffset now)
+        => run.Outcome is LocalAutomationRunOutcome.Failed or LocalAutomationRunOutcome.Interrupted &&
+            occurrence.ScheduledForUtc <= now && _registry.Validate(occurrence.Definition) is null;
+
+    private static ValueTask<long> ReadLatestAttemptAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LocalAutomationOccurrence occurrence, CancellationToken token)
+        => ScalarLongAsync(connection, transaction,
+            "SELECT MAX(attempt) FROM automation_runs WHERE definition_id = $id AND occurrence_id = $identity;", token,
+            ("$id", occurrence.Definition.DefinitionId), ("$identity", occurrence.IdentitySha256));
+
+    private async ValueTask<List<string>> ProjectRetryableSourceWindowRunsAsync(SqliteConnection connection,
+        SqliteTransaction transaction, IReadOnlyList<DefinitionRecord> definitions, IReadOnlyList<LocalAutomationRun> runs,
+        IReadOnlyList<LocalAutomationRun> activeRuns, DateTimeOffset now, CancellationToken token)
+    {
+        var enabled = definitions.Where(static item => item.Definition.Enabled)
+            .Select(static item => item.Definition.DefinitionId).ToHashSet(StringComparer.Ordinal);
+        var queued = activeRuns.Where(static run => run.Outcome == LocalAutomationRunOutcome.Queued)
+            .ToLookup(static run => run.DefinitionId, StringComparer.Ordinal);
+        var retryable = new List<string>();
+        foreach (var run in runs)
+        {
+            if (run.Occurrence is { SourceWindow: not null } occurrence &&
+                run.Attempt < MaximumOccurrenceAttempts && enabled.Contains(run.DefinitionId) &&
+                queued[run.DefinitionId].Count() < MaximumQueuedOccurrencesPerDefinition &&
+                CanRetryRun(run, occurrence, now) &&
+                run.Attempt == await ReadLatestAttemptAsync(connection, transaction, occurrence, token).ConfigureAwait(false))
+            {
+                retryable.Add(run.RunKey);
+            }
+        }
+        return retryable;
     }
 
     public async ValueTask<LocalAutomationCommandResult> RunNowAsync(

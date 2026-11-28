@@ -50,7 +50,7 @@
 
             <fieldset class="editor-group" disabled="@_busy">
                 <legend>Nodes in execution order</legend>
-                <p class="editor-note">Each node names the raw capture or nodes above it as inputs. Reorder with the move buttons; nothing depends on drag, pointer precision, or colour.</p>
+                <p class="editor-note">Choose inputs from the raw capture, preceding nodes, and system-managed steps. Use the move buttons to reorder editable nodes.</p>
                 @if (_model.Nodes.Count == 0)
                 {
                     <p class="editor-note">No nodes yet. Add the first node below.</p>
@@ -59,45 +59,82 @@
                     @foreach (var node in _model.Nodes)
                     {
                         var index = _model.Nodes.IndexOf(node);
-                        <li class="node-row" id="@RowId(node)" tabindex="-1" @key="node">
-                            <div class="node-row__head">
-                                <label>Identifier<input class="form-control" aria-label="Node identifier" @bind="node.Id" @bind:after="FormChanged" /></label>
-                                <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="FormChanged">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
-                                <label class="check"><input type="checkbox" @bind="node.Required" @bind:after="FormChanged" /> Required</label>
-                                <label class="check"><input type="checkbox" @bind="node.Enabled" @bind:after="FormChanged" /> Enabled</label>
-                                <span class="node-row__actions">
-                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id up" disabled="@(index == 0)" @onclick="() => Move(node, -1)">Move up</button>
-                                    <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id down" disabled="@(index == _model.Nodes.Count - 1)" @onclick="() => Move(node, 1)">Move down</button>
-                                    <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove @node.Id" @onclick="() => Remove(node)">Remove</button>
-                                </span>
-                            </div>
-                            <fieldset class="node-row__dependencies">
-                                <legend>Inputs of @node.Id</legend>
-                                @{ var eligible = _model.EligibleDependencies(node); }
-                                @foreach (var candidate in _model.RenderableDependencies(node))
-                                {
-                                    var selected = node.DependsOn.Contains(candidate);
-                                    var stale = selected && !eligible.Contains(candidate, StringComparer.Ordinal);
-                                    <label class="@(stale ? "check check--stale" : "check")"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)@(stale ? " (no longer above this node; clear it)" : "")</label>
-                                }
-                            </fieldset>
-                            @if (node.OptionsForm is { } optionsForm)
+                        <li class="node-row" id="@RowId(node)" data-node-alias="@node.Type" tabindex="-1" @key="node">
+                            @if (node.IsSystemManaged)
                             {
-                                <section class="node-options-section" id="@OptionsSection(node)" aria-label="@optionsForm.Descriptor.Title">
-                                    <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
-                                    @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
+                                var builtIn = ProcessingNodeSectionRegistry.DescribeBuiltInStage(node.Type);
+                                <div class="node-row--builtin">
+                                    <strong>@node.Id</strong>
+                                    <span>System-managed step</span>
+                                    <p>@builtIn.RoleSummary</p>
+                                    <p>Fixed settings: @builtIn.FixedSettingsSummary</p>
+                                    <p>Inputs: @string.Join(", ", node.DependsOn.Select(static input => input == ProcessingGraphDraftModel.RawInput ? "raw capture" : input))</p>
+                                    @if (_model.SourceRevisionId is { } sourceId)
                                     {
-                                        <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" />
+                                        @if (CanLinkToSourceRevision(node))
+                                        {
+                                            <p><a href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id.Trim())">Inspect built-in stage</a></p>
+                                        }
+                                        else if (_savedRevisionId is not null)
+                                        {
+                                            <p class="editor-note">Added in the saved draft — open the saved draft above to inspect this built-in stage.</p>
+                                        }
+                                        else
+                                        {
+                                            <p class="editor-note">Added in this unsaved draft. Save the draft before inspecting this built-in stage on its own page.</p>
+                                        }
                                     }
-                                    else
-                                    {
-                                        <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
-                                            NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
-                                            NodeEnabledChanged="value => node.Enabled = value" />
-                                    }
-                                </section>
+                                </div>
                             }
-                            else if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision. This step has no supported option editor; no version upgrade is applied.</p> }
+                            else
+                            {
+                                <div class="node-row__head">
+                                    <label>Identifier<input class="form-control" aria-label="Node identifier" @bind="node.Id" @bind:after="FormChanged" /></label>
+                                    <label>Type<select class="form-select" aria-label="Node type" @bind="node.Type" @bind:after="() => NodeConfigurationChanged(node)">@if (!GraphService.StepAliases.Contains(node.Type, StringComparer.Ordinal)) { <option value="@node.Type">@node.Type</option> }@foreach (var alias in GraphService.StepAliases) { <option value="@alias">@alias</option> }</select></label>
+                                    <label class="check"><input type="checkbox" @bind="node.Required" @bind:after="FormChanged" /> Required</label>
+                                    <label class="check"><input type="checkbox" checked="@node.Enabled" @onchange="args => NodeEnabledChanged(node, args.Value is true)" /> Enabled</label>
+                                    <span class="node-row__actions">
+                                        <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id up" disabled="@(index == 0)" @onclick="() => Move(node, -1)">Move up</button>
+                                        <button type="button" class="btn btn-sm btn-outline-light" aria-label="Move @node.Id down" disabled="@(index == _model.Nodes.Count - 1)" @onclick="() => Move(node, 1)">Move down</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove @node.Id" @onclick="() => Remove(node)">Remove</button>
+                                    </span>
+                                </div>
+                                <fieldset class="node-row__dependencies">
+                                    <legend>Inputs of @node.Id</legend>
+                                    @{ var eligible = _model.EligibleDependencies(node); }
+                                    @foreach (var candidate in _model.RenderableDependencies(node))
+                                    {
+                                        var selected = node.DependsOn.Contains(candidate);
+                                        var stale = selected && !eligible.Contains(candidate, StringComparer.Ordinal);
+                                        <label class="@(stale ? "check check--stale" : "check")"><input type="checkbox" checked="@selected" @onchange="args => ToggleDependency(node, candidate, args.Value is true)" /> @(candidate == ProcessingGraphDraftModel.RawInput ? "raw capture" : candidate)@(stale ? " (no longer above this node; clear it)" : "")</label>
+                                    }
+                                </fieldset>
+                                @if (node.OptionsForm is { } optionsForm)
+                                {
+                                    <section class="node-options-section" id="@OptionsSection(node)" aria-label="@optionsForm.Descriptor.Title">
+                                        <div class="node-options-section__head">
+                                            <h3 id="@SceneOptionsAnchor(node)">@optionsForm.Descriptor.Title</h3>
+                                            @if (_model.SourceRevisionId is { } sourceId && CanLinkToSourceRevision(node))
+                                            {
+                                                <a class="node-options-page-link" href="@ProcessingNodeConfigPage.NodeConfigHref(sourceId, node.Id.Trim())">Configure on its own page</a>
+                                            }
+                                        </div>
+                                        @if (optionsForm.Descriptor.StepAlias == FrameFactsPresentation.StepAlias)
+                                        {
+                                            <FrameFactsOptionsEditor @key="optionsForm" IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged" ShowResetToDefaults="true" />
+                                        }
+                                        else
+                                        {
+                                            <ProcessingNodeOptionsEditor IdPrefix="@($"node-options-{index}")" Form="optionsForm" Changed="FormChanged"
+                                                NodeEnabled="@(_model.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2 ? node.Enabled : null)"
+                                                NodeEnabledChanged="value => NodeEnabledChanged(node, value)"
+                                                ShowResetToDefaults="true"
+                                                DeepSkyAnchorId="@DeepSkyOptionsAnchor(node)" />
+                                        }
+                                    </section>
+                                }
+                                else if (node.HasOptions) { <p class="editor-note">Carries opaque options from the source revision. This step has no supported option editor; no version upgrade is applied.</p> }
+                            }
                         </li>
                     }
                 </ol>
@@ -107,9 +144,9 @@
                 </div>
             </fieldset>
 
-            @if (_model.Nodes.Any(node => FrameFactsDraftConversion.IsLegacy(node.Type)))
+            @if (HasLegacyFrameFactsConversionNode)
             {
-                <section id="@(_model.Nodes.Any(node => node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias) ? "frame-facts-conversion" : "frame-facts")" class="editor-group" aria-label="Frame Facts conversion">
+                <section id="@(HasRichFrameFactsNode ? "frame-facts-conversion" : "frame-facts")" class="editor-group" aria-label="Frame Facts conversion">
                     <h2>Frame Facts corner presets</h2>
                     <p>The legacy presets remain in this draft. Converting selects the rich version for every legacy preset node and opts manifest/materializer consumers in together. Token templates, pinned fonts and dark panels replace automatic legacy typography. Existing variants, dependencies and unknown options are retained.</p>
                     <button type="button" class="btn btn-outline-light" disabled="@_busy" @ref="_conversionTrigger" @onclick="ReviewConversionAsync">Review whole-draft Frame Facts conversion</button>
@@ -143,57 +180,16 @@
                 @if (_plan is null) { <span class="editor-note">Preview the plan before saving.</span> }
             </div>
         </form>
-        @if (Section is "scene-overlay" or "constellations" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias is "ScenePresentationLayer" or SceneStylePresentation.StepAlias))
+        @if (MissingSectionNotice() is { } missingNotice)
         {
-            <p role="status">This graph has no supported scene overlay node. Add ScenePresentationLayer with its ProjectedScene input to configure visibility, sizes and constellation style.</p>
-        }
-
-        @if (Section == "overlay-manifest" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "OverlayManifest"))
-        {
-            <p role="status">This graph has no supported Overlay manifest node. Existing layer producers and required dependencies must be configured explicitly.</p>
-        }
-        @if (Section == "cloud-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudPresentationLayer"))
-        {
-            <p role="status">This graph has no supported cloud layer node. Select a retained graph with CloudPresentationLayer to edit labels and line thickness. Dimensions and assessment bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "environment-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "EnvironmentPresentationLayer"))
-        {
-            <p role="status">This graph has no supported environment layer node. Select a retained graph with EnvironmentPresentationLayer to edit scale, inset and line spacing. Dimensions and source/stack bindings must already be configured; missing or unsupported nodes are not created or upgraded. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "legacy-annotation" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Annotation"))
-        {
-            <p role="status">This graph has no supported legacy Annotation node. Select a retained graph with Annotation to edit its existing styling. Missing or unsupported nodes are not replaced or upgraded; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "predicted-satellite-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CaptureSatelliteLayer"))
-        {
-            <p role="status">This graph has no supported predicted satellite layer node. Select a saved graph with CaptureSatelliteLayer and its capture-bound prediction inputs. Saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "projected-scene" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ProjectedScene"))
-        {
-            <p role="status">This graph has no supported projected scene node. Add ProjectedScene with an explicit raw dependency to configure physical predicted-scene queries. VirtualSky keeps its separate module settings and authoritative rendered scene; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "calibration" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "Calibration"))
-        {
-            <p role="note">This graph has no calibration node. Add Calibration with an explicit raw dependency to configure it. Existing models and master provisioning stay unchanged; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "cloud-assessment" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CloudAssessment"))
-        {
-            <p role="note">This graph has no cloud assessment node. Add CloudAssessment with an explicit raw or calibrated image dependency to configure it. Clear-reference provisioning stays unchanged; saving, validation and activation remain separate.</p>
-        }
-        @if (Section == "weather-cloud-overlay" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "WeatherCloudOverlay"))
-        {
-            <p role="note">This graph has no weather and cloud overlay node. Add WeatherCloudOverlay with an explicit preview and CloudAssessment dependency to configure it; saving and activation remain separate.</p>
-        }
-        @if (Section == "frame-facts" && !_model.Nodes.Any(static node => FrameFactsDraftConversion.IsLegacy(node.Type) || node.OptionsForm?.Descriptor.StepAlias == FrameFactsPresentation.StepAlias))
-        {
-            <p role="status">This graph has no Frame Facts node. Add FrameFactsPresentationLayerV1 with its ProjectedScene and combined-preview inputs, and explicitly opt manifest/materializer consumers in before previewing the plan.</p>
+            <p role="@missingNotice.Role">@missingNotice.Message</p>
         }
 
         @if (_plan is not null)
         {
             <section class="editor-preview" aria-labelledby="editor-preview-heading">
                 <h2 id="editor-preview-heading">Compiled preview</h2>
-                <p class="editor-note">The diagram is a projection of the compiled plan; the list above is the editable source of truth and the diagram's text alternative.</p>
+                <p class="editor-note">The diagram shows the compiled plan. Select a step to inspect its row above.</p>
                 <GraphDependencyDiagram Nodes="_plan.DesiredNodes" NodeSelected="FocusRowAsync" />
                 <GraphPlanView Plan="_plan" />
             </section>

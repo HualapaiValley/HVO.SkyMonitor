@@ -1,5 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
 using Bunit;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
+using HVO.SkyMonitor.Video.FFmpeg;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -18,9 +22,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "TimeLapses")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class SqliteTimeLapseStoreTests
 {
+    private static readonly System.Text.Json.JsonSerializerOptions ProductJson = new(System.Text.Json.JsonSerializerDefaults.Web)
+    { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+
     [TestMethod]
     [DataRow(CameraAgentTimeLapseState.NoSources)]
     [DataRow(CameraAgentTimeLapseState.Failed)]
@@ -682,6 +690,90 @@ public sealed class SqliteTimeLapseStoreTests
     }
 
     [TestMethod]
+    public async Task DailySiloRetentionHoldsReusedStandaloneHourlyExactVersionUntilTerminal()
+    {
+        var token = CancellationToken.None;
+        using var silo = await SiloHarness.CreateAsync();
+        var root = silo.RootPath;
+        var options = Options(root);
+        var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+        using var store = new SqliteTimeLapseStore(options, clock);
+        using var worker = await store.AcquireWorkerAsync(token);
+        var daily = Occurrence(options.Value.TimeLapses, LocalAutomationSourceWindowKind.SunriseDay);
+        var planner = new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar));
+        var hours = planner.ResolveWindows(daily.SourceWindow!.ReportingPeriod,
+            daily.SourceWindow.Policy with { Kind = LocalAutomationSourceWindowKind.CompletedCivilHour });
+        var hourly = Occurrence(options.Value.TimeLapses, hours[0], "standalone-hour");
+        var preset = options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration());
+        await store.EnqueueAsync(hourly, preset, [], token);
+        var job = await store.ClaimAsync(token);
+        Assert.IsNotNull(job);
+        var bytes = "verified encoded fixture"u8.ToArray();
+        var checksum = PayloadChecksum.ComputeSha256(bytes);
+        var timeline = TimeLapseTimelinePlanner.Create(job.Window.StartUtc, job.Window.EndUtc, [], preset.Timing);
+        var packets = timeline.Intervals.Select(interval => new TimeLapsePacket(interval.StartTick, interval.StartTick,
+            interval.DurationTicks, "SHA256:" + checksum)).ToArray();
+        var encoding = new TimeLapseEncodingEvidence(FFmpegTimeLapseEncoder.ProfileVersion, TimeLapseEncoderProfile.Software,
+            new(true, null, "fixture", checksum, checksum), timeline.IdentitySha256, checksum, new Dictionary<int, string>(), checksum,
+            bytes.LongLength, new(16, 16, timeline.DurationTicks, checksum, packets));
+        var product = new CameraAgentTimeLapseProduct(Guid.Empty, string.Empty, job.JobId, job.Window.ReportingPeriod.ReportDate,
+            job.Window.ReportingPeriod.IdentitySha256, job.Window.IdentitySha256, job.Window.StartUtc, job.Window.EndUtc,
+            false, preset.IdentitySha256, timeline, [], [], new Dictionary<string, int>(), encoding, clock.GetUtcNow())
+        { IsGapFiller = true, HasGaps = true };
+        var identity = CameraAgentTimeLapseProductIdentity.Compute(product);
+        product = product with { OutputIdentitySha256 = identity, ProductId = ProcessingIdentity.CreateArtifactId(identity) };
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, ".time-lapses", "time-lapses.db")};Pooling=False");
+        await connection.OpenAsync(token);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE jobs SET state = 'Produced', product_id = $product WHERE job_id = $standalone;
+            INSERT INTO products(product_id,output_sha256,job_id,report_date,period_sha256,window_sha256,start_ticks,end_ticks,
+                preset_sha256,is_daily,document_json,document_sha256,payload_path,payload_bytes,created_ticks,width,height,has_gaps)
+            SELECT $product,$output,job_id,report_date,$period,$window,$start,$end,$preset,0,$json,$sha,
+                $product || '.mp4',$bytes,updated_ticks,16,16,1 FROM jobs WHERE job_id = $standalone;
+            """;
+        var json = System.Text.Json.JsonSerializer.Serialize(product, ProductJson);
+        command.Parameters.AddWithValue("$product", product.ProductId.ToString("N"));
+        command.Parameters.AddWithValue("$standalone", job.JobId.ToString("N"));
+        command.Parameters.AddWithValue("$output", identity);
+        command.Parameters.AddWithValue("$period", product.ReportingPeriodIdentitySha256);
+        command.Parameters.AddWithValue("$window", product.WindowIdentitySha256);
+        command.Parameters.AddWithValue("$start", product.StartUtc.UtcTicks);
+        command.Parameters.AddWithValue("$end", product.EndUtc.UtcTicks);
+        command.Parameters.AddWithValue("$preset", product.PresetIdentitySha256);
+        command.Parameters.AddWithValue("$json", json);
+        command.Parameters.AddWithValue("$sha", PayloadChecksum.ComputeSha256(System.Text.Encoding.UTF8.GetBytes(json)));
+        command.Parameters.AddWithValue("$bytes", bytes.LongLength);
+        Assert.AreEqual(2, await command.ExecuteNonQueryAsync(token));
+        await store.EnqueueAsync(daily, preset, hours, token);
+
+        var now = silo.Clock.GetUtcNow();
+        var member = SiloDrafts.Member(silo.Payloads, product.ProductId.ToString("D"), "video", SiloRetentionClass.Display,
+            "video/mp4", bytes, revision: identity);
+        var draft = new SiloGroupDraft("time-lapse", "reused-hour", "r1", now, now, now, [member], [], new([]));
+        await silo.PublishAsync(draft);
+        var exact = silo.MemberLocator(draft.GroupId, member.ArtifactId);
+        var retention = SiloRetentionTests.OpenForFixture(silo);
+        await retention.SetPolicyAsync(new(false, [new("video", TimeSpan.Zero, false, true)]), token);
+
+        command.CommandText = """
+            UPDATE jobs SET state = 'Produced', product_id = $product
+            WHERE job_id = (SELECT job_id FROM jobs WHERE parent_job_id IS NOT NULL ORDER BY job_id LIMIT 1);
+            """;
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token));
+        Assert.AreEqual("no-eligible-versions", await retention.SweepAsync(true, store.ReadSiloTimeLapseHoldsAsync, null, token));
+        using (var retained = await silo.Local.OpenVersionAsync(exact.Key, exact.VersionId, token))
+            Assert.AreEqual(SiloOpenStatus.Found, retained.Status);
+
+        command.CommandText = """
+            UPDATE jobs SET state = 'Failed', reason = 'terminal-test'
+            WHERE parent_job_id IS NULL AND job_id <> $standalone;
+            """;
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token));
+        Assert.AreEqual("deleted", await retention.SweepAsync(true, store.ReadSiloTimeLapseHoldsAsync, null, token));
+    }
+
+    [TestMethod]
     public async Task Retry_IsAuditedIdempotentAndRevisionBoundWithoutChangingFrozenInputs()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-retry");
@@ -713,7 +805,7 @@ public sealed class SqliteTimeLapseStoreTests
     }
 
     [TestMethod]
-    public async Task RestartRemovesOnlyRecordedUnpublishedFiles()
+    public async Task RestartClearsInterruptedPublicationIntentWithoutCreatingAProduct()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-publication-recovery");
         try
@@ -722,14 +814,6 @@ public sealed class SqliteTimeLapseStoreTests
             using var store = new SqliteTimeLapseStore(options, new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
             await store.InitializeAsync(CancellationToken.None);
             var id = Guid.NewGuid().ToString("N");
-            var directory = Path.Combine(root, ".time-lapses", "products");
-            Directory.CreateDirectory(directory);
-            var interrupted = Path.Combine(directory, id + ".mp4");
-            var temporary = Path.Combine(directory, id + ".json." + Guid.NewGuid().ToString("N") + ".tmp");
-            var unrelated = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".mp4");
-            await File.WriteAllTextAsync(interrupted, "interrupted");
-            await File.WriteAllTextAsync(temporary, "interrupted");
-            await File.WriteAllTextAsync(unrelated, "retained");
             using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString()))
             {
@@ -740,9 +824,13 @@ public sealed class SqliteTimeLapseStoreTests
                 await command.ExecuteNonQueryAsync();
             }
             using var worker = await store.AcquireWorkerAsync(CancellationToken.None);
-            Assert.IsFalse(File.Exists(interrupted));
-            Assert.IsFalse(File.Exists(temporary));
-            Assert.AreEqual("retained", await File.ReadAllTextAsync(unrelated));
+            Assert.IsNull(await store.GetAsync(Guid.ParseExact(id, "N"), CancellationToken.None));
+            using var recovered = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString());
+            await recovered.OpenAsync();
+            using var verify = recovered.CreateCommand();
+            verify.CommandText = "SELECT COUNT(*) FROM publications;";
+            Assert.AreEqual(0L, await verify.ExecuteScalarAsync());
         }
         finally { Directory.Delete(root, true); }
     }

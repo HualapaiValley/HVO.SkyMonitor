@@ -39,6 +39,7 @@ public sealed partial class CurrentSkyPageTests
         StringAssert.Contains(label.TextContent, "population Partial", StringComparison.Ordinal);
         StringAssert.Contains(label.TextContent, "configured geometry", StringComparison.Ordinal);
         StringAssert.Contains(label.TextContent, "source retrieved unknown", StringComparison.Ordinal);
+        StringAssert.Contains(label.TextContent, "optical visibility Unknown", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -55,6 +56,18 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsTrue(satellite.QuerySelector("input")!.HasAttribute("disabled"));
         StringAssert.Contains(satellite.TextContent, "No compatible prediction retained", StringComparison.Ordinal);
         Assert.IsFalse(satellite.QuerySelector("input")!.HasAttribute("data-layer-identity"));
+    }
+
+    [TestMethod]
+    public void SatelliteLabelVisibilityLinksToCaptureSatelliteTracksSettings()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var cut = context.Render<CurrentSkyPage>();
+
+        var link = cut.Find("a[href='/operations/pipeline/graphs/new?section=capture-satellite-tracks#capture-satellite-tracks']");
+        Assert.AreEqual("Edit satellite object labels", link.TextContent);
+        Assert.AreEqual("Diagnostics layers", link.ParentElement!.GetAttribute("aria-label"));
     }
 
     [TestMethod]
@@ -112,6 +125,8 @@ public sealed partial class CurrentSkyPageTests
         var predictedGroup = cut.FindAll(".overlay-group[aria-label='Diagnostics layers'] label")
             .Where(label => label.QuerySelector("strong")?.TextContent == "Predicted satellite tracks").ToArray();
         Assert.HasCount(1, predictedGroup);
+        Assert.Contains("US Space Force / Space-Track public GP data via CelesTrak",
+            cut.Find(".satellite-source-credit").TextContent, StringComparison.Ordinal);
         StringAssert.Contains(predictedGroup[0].TextContent, "exact exposure segment", StringComparison.Ordinal);
         StringAssert.Contains(predictedGroup[0].TextContent, "not a detection or visibility claim", StringComparison.Ordinal);
         Assert.HasCount(1, cut.FindAll(".overlay-group[aria-label='Measured layers'] input[data-layer-identity]"));

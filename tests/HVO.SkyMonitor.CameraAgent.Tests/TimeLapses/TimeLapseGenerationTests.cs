@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using HVO.SkyMonitor.Processing;
@@ -20,6 +21,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 
 [TestClass]
+[TestProperty("Area", "TimeLapses")]
 [DoNotParallelize]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments", Justification = "Focused expected values.")]
@@ -98,10 +100,17 @@ public sealed class TimeLapseGenerationTests
             Assert.IsNotNull(dailyBytes);
             Assert.AreEqual(daily.Encoding.PayloadBytes, dailyBytes.Length);
             await dailyBytes.DisposeAsync();
-            var path = Path.Combine(root, ".time-lapses", "products", daily.ProductId.ToString("N") + ".mp4");
-            var corrupted = await File.ReadAllBytesAsync(path);
+            var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, daily.ProductId,
+                daily.OutputIdentitySha256, CancellationToken.None);
+            using var stored = await provider.GetRequiredService<SiloTestStore>()
+                .OpenVersionAsync(locator.Key, locator.VersionId, CancellationToken.None);
+            Assert.AreEqual(SiloOpenStatus.Found, stored.Status);
+            using var buffer = new MemoryStream();
+            await stored.Content!.CopyToAsync(buffer);
+            var corrupted = buffer.ToArray();
             corrupted[100] ^= 1;
-            await File.WriteAllBytesAsync(path, corrupted);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            objects.ReadContentOverride = version => version == locator ? new MemoryStream(corrupted, writable: false) : null;
             await TimeLapseAccessTests.VerifyCorruptMediaAsync(store, daily);
         }
         finally { Directory.Delete(root, true); }
@@ -211,11 +220,10 @@ public sealed class TimeLapseGenerationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:TimeLapses:Enabled"] = "true",
             ["CameraAgent:TimeLapses:Timing:Compression"] = compression.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:RigProfileSha256"] = RigProjectionContextFactory.CreateProfileHashSha256(Rig()),
@@ -263,6 +271,7 @@ public sealed class TimeLapseGenerationTests
                 { AcquisitionTiming = new(utc, utc.Add(exposure), utc.Add(exposure)) }, utc, exposure, exposure), CancellationToken.None))!;
             Assert.IsNotNull(receipts[index]);
         }
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None);
         return (occurrence, receipts);
     }
 

@@ -22,6 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Distribution")]
 [DoNotParallelize]
 public sealed partial class DurableCaptureDistributionTests
 {
@@ -41,9 +42,8 @@ public sealed partial class DurableCaptureDistributionTests
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions
         {
-            UploadEnabled = true,
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
-        });
+        }, transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
         using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
 
@@ -59,9 +59,9 @@ public sealed partial class DurableCaptureDistributionTests
         await fixture.Store.CompleteAsync(standard, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
 
-        var upload = await fixture.ClaimAsync("upload").ConfigureAwait(false);
-        Assert.IsNotNull(upload);
-        await fixture.Store.CompleteAsync(upload, CancellationToken.None).ConfigureAwait(false);
+        var transient = await fixture.ClaimAsync("transient").ConfigureAwait(false);
+        Assert.IsNotNull(transient);
+        await fixture.Store.CompleteAsync(transient, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0L, await ScalarLongAsync(connection, "SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
 
         var optional = await fixture.ClaimAsync("secondary").ConfigureAwait(false);
@@ -74,7 +74,7 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task AcceptAsync_UsesInjectedClockForLaneDefinitionAndWorkTimestamps()
     {
-        using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
+        using var fixture = CreateFixture(new CaptureDistributionOptions { });
         var expectedUnixMilliseconds = fixture.Time.GetUtcNow().ToUnixTimeMilliseconds();
 
         await fixture.AcceptAsync(0).ConfigureAwait(false);
@@ -234,7 +234,8 @@ public sealed partial class DurableCaptureDistributionTests
     [TestMethod]
     public async Task DuplicateAccept_DoesNotDuplicateLaneWorkOrContext()
     {
-        using var fixture = CreateFixture(new CaptureDistributionOptions { UploadEnabled = true });
+        using var fixture = CreateFixture(new CaptureDistributionOptions(),
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         var submission = fixture.CreateSubmission(0);
         var first = await fixture.Ingress.AcceptAsync(
             fixture.Configuration, submission, CancellationToken.None).ConfigureAwait(false);
@@ -298,10 +299,7 @@ public sealed partial class DurableCaptureDistributionTests
         Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
         Assert.AreEqual(receipt.CommittedManifestSha256, lease.Context.RawCapture.CommittedManifestSha256);
         var pipelineFactory = new RecordingLegacyAutoIncludePipelineFactory();
-        using var handler = new StandardCaptureLaneHandler(
-            pipelineFactory,
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var handler = fixture.CreateStandardHandler(pipelineFactory);
 
         var result = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
 
@@ -517,22 +515,18 @@ public sealed partial class DurableCaptureDistributionTests
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions
         {
-            UploadEnabled = true,
             ShutdownDrainSeconds = 1,
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
-        });
+        }, transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         var secondary = new GatedLaneHandler("secondary");
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration),
             fixture.Ingress,
             fixture.Store,
             fixture.Policy,
-            [standard, new SuccessfulLaneHandler("upload"), secondary],
+            [standard, new SuccessfulLaneHandler("transient"), secondary],
             standard,
             fixture.Options,
             fixture.Time,
@@ -545,14 +539,14 @@ public sealed partial class DurableCaptureDistributionTests
         await secondary.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await WaitForCountAsync(
             fixture.Root,
-            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'upload') AND state = 'completed';",
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'transient') AND state = 'completed';",
             2).ConfigureAwait(false);
 
         await fixture.AcceptAsync(1).ConfigureAwait(false);
         service.NotifyCommittedCapture();
         await WaitForCountAsync(
             fixture.Root,
-            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'upload') AND state = 'completed';",
+            "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name IN ('standard', 'transient') AND state = 'completed';",
             4).ConfigureAwait(false);
         await fixture.Store.EnsureCanAcceptAsync(4, CancellationToken.None).ConfigureAwait(false);
 
@@ -566,9 +560,9 @@ public sealed partial class DurableCaptureDistributionTests
             "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'pending';").ConfigureAwait(false));
         await Phase14ScenarioEvidence.RecordAsync(
             "optional-lane-backlog",
-            "secondary-blocked-standard-and-upload-drained",
+            "secondary-blocked-standard-and-transient-drained",
             null,
-            ["optional-lane-remained-pending", "standard-lane-drained", "upload-lane-drained", "leased-work-released-on-shutdown"])
+            ["optional-lane-remained-pending", "standard-lane-drained", "transient-lane-drained", "leased-work-released-on-shutdown"])
             .ConfigureAwait(false);
     }
 
@@ -583,10 +577,7 @@ public sealed partial class DurableCaptureDistributionTests
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var fault = new OneShotLaneFaultInjector(CaptureLaneFaultPoint.BeforeHandler);
         var logger = new EventIdLogger<CaptureDistributionService>();
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration),
             fixture.Ingress,
@@ -726,22 +717,22 @@ public sealed partial class DurableCaptureDistributionTests
         {
             var baseline = await RunCadenceScenarioAsync(cadenceMode, blockedLane: null).ConfigureAwait(false);
             var optionalOutage = await RunCadenceScenarioAsync(cadenceMode, "secondary").ConfigureAwait(false);
-            var uploadOutage = await RunCadenceScenarioAsync(cadenceMode, "upload").ConfigureAwait(false);
+            var transientOutage = await RunCadenceScenarioAsync(cadenceMode, "transient").ConfigureAwait(false);
 
             CollectionAssert.AreEqual(baseline.RequestedStarts, optionalOutage.RequestedStarts, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.RequestedStarts, uploadOutage.RequestedStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.RequestedStarts, transientOutage.RequestedStarts, cadenceMode.ToString());
             CollectionAssert.AreEqual(baseline.ActualStarts, optionalOutage.ActualStarts, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.ActualStarts, uploadOutage.ActualStarts, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.ActualStarts, transientOutage.ActualStarts, cadenceMode.ToString());
             CollectionAssert.AreEqual(baseline.MonotonicJitter, optionalOutage.MonotonicJitter, cadenceMode.ToString());
-            CollectionAssert.AreEqual(baseline.MonotonicJitter, uploadOutage.MonotonicJitter, cadenceMode.ToString());
+            CollectionAssert.AreEqual(baseline.MonotonicJitter, transientOutage.MonotonicJitter, cadenceMode.ToString());
             Assert.IsTrue(baseline.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
             Assert.IsTrue(optionalOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
-            Assert.IsTrue(uploadOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
+            Assert.IsTrue(transientOutage.MonotonicJitter.All(static jitter => jitter >= TimeSpan.Zero), cadenceMode.ToString());
 
             var expectedTimerCount = cadenceMode == CaptureCadenceMode.Continuous ? 0 : 3;
             Assert.AreEqual(expectedTimerCount, baseline.TimerCreationCount, cadenceMode.ToString());
             Assert.AreEqual(expectedTimerCount, optionalOutage.TimerCreationCount, cadenceMode.ToString());
-            Assert.AreEqual(expectedTimerCount, uploadOutage.TimerCreationCount, cadenceMode.ToString());
+            Assert.AreEqual(expectedTimerCount, transientOutage.TimerCreationCount, cadenceMode.ToString());
         }
     }
 
@@ -816,7 +807,6 @@ public sealed partial class DurableCaptureDistributionTests
             }
             var distribution = new CaptureDistributionOptions
             {
-                UploadEnabled = true,
                 OptionalMaximumPendingCount = 1,
                 SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
             };
@@ -1063,8 +1053,7 @@ public sealed partial class DurableCaptureDistributionTests
         });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var store = new OneShotRenewalFailureStore(fixture.Store);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         var handler = new CancellationThenSuccessHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, store, fixture.Policy,
@@ -1095,8 +1084,7 @@ public sealed partial class DurableCaptureDistributionTests
         });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var store = new FailingClaimStore(fixture.Store);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, store, fixture.Policy,
             [standard], standard, fixture.Options, TimeProvider.System,
@@ -1158,11 +1146,10 @@ public sealed partial class DurableCaptureDistributionTests
         using var fixture = CreateFixture(new CaptureDistributionOptions(), fault);
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         await fixture.AcceptAsync(1).ConfigureAwait(false);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
-            [standard, new SuccessfulLaneHandler("upload")], standard, fixture.Options, fixture.Time,
+            [standard], standard, fixture.Options, fixture.Time,
             fault, fixture.LaneTelemetry, fixture.LaneState, NullLogger<CaptureDistributionService>.Instance);
 
         await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1291,11 +1278,10 @@ public sealed partial class DurableCaptureDistributionTests
             var fault = new OneShotLaneFaultInjector(point);
             using var fixture = CreateFixture(new CaptureDistributionOptions(), fault);
             await fixture.AcceptAsync(0).ConfigureAwait(false);
-            using var standard = new StandardCaptureLaneHandler(
-                new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+            using var standard = fixture.CreateStandardHandler();
             using var service = new CaptureDistributionService(
                 new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
-                [standard, new SuccessfulLaneHandler("upload")], standard, fixture.Options, fixture.Time,
+                [standard], standard, fixture.Options, fixture.Time,
                 fault, fixture.LaneTelemetry, fixture.LaneState, NullLogger<CaptureDistributionService>.Instance);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1371,26 +1357,23 @@ public sealed partial class DurableCaptureDistributionTests
         using var fixture = CreateFixture(
             new CaptureDistributionOptions
             {
-                UploadEnabled = true,
                 ShutdownDrainSeconds = 1,
                 RequiredMaximumPendingCount = 16,
                 OptionalMaximumPendingCount = 16,
                 SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
             },
-            configuration: configuration);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+            configuration: configuration,
+            transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
+        using var standard = fixture.CreateStandardHandler();
         var gate = blockedLane is null ? null : new GatedLaneHandler(blockedLane);
-        ICaptureLaneHandler upload = blockedLane == "upload" ? gate! : new SuccessfulLaneHandler("upload");
+        ICaptureLaneHandler transient = blockedLane == "transient" ? gate! : new SuccessfulLaneHandler("transient");
         ICaptureLaneHandler secondary = blockedLane == "secondary" ? gate! : new SuccessfulLaneHandler("secondary");
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(configuration),
             fixture.Ingress,
             fixture.Store,
             fixture.Policy,
-            [standard, upload, secondary],
+            [standard, transient, secondary],
             standard,
             fixture.Options,
             fixture.Time,
@@ -1470,11 +1453,11 @@ public sealed partial class DurableCaptureDistributionTests
                 .Single(item => item.Lane == blockedLane);
             Assert.AreEqual(captureCount, backlog.PendingCount);
             Assert.AreEqual(1L, backlog.LeasedCount);
-            Assert.AreEqual(blockedLane == "upload", backlog.Required);
+            Assert.AreEqual(blockedLane == "transient", backlog.Required);
             await WaitForCountAsync(
                 fixture.Root,
                 "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;",
-                blockedLane == "upload" ? captureCount : backlog.LeasedCount).ConfigureAwait(false);
+                blockedLane == "transient" ? captureCount : backlog.LeasedCount).ConfigureAwait(false);
             gate.Release();
         }
 
@@ -1499,7 +1482,7 @@ public sealed partial class DurableCaptureDistributionTests
             runnerTime.TimerCreationCount);
     }
 
-    private static async Task<SqliteConnection> OpenAsync(string root)
+    internal static async Task<SqliteConnection> OpenAsync(string root)
     {
         var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
         await connection.OpenAsync().ConfigureAwait(false);
@@ -1507,7 +1490,7 @@ public sealed partial class DurableCaptureDistributionTests
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only test-owned constant SQL is passed to this helper.")]
-    private static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
+    internal static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -1548,6 +1531,8 @@ public sealed partial class DurableCaptureDistributionTests
     internal sealed class Fixture : IDisposable
     {
         private bool _ingressDisposed;
+        private SqliteCaptureProcessingStore? _processingStore;
+        private CaptureProcessingTelemetry? _processingTelemetry;
 
         internal Fixture(
             string root,
@@ -1582,6 +1567,17 @@ public sealed partial class DurableCaptureDistributionTests
         internal CaptureLaneState LaneState { get; }
         internal CaptureLaneTelemetry LaneTelemetry { get; }
         internal CameraModuleConfig Configuration { get; }
+
+        internal StandardCaptureLaneHandler CreateStandardHandler(ICaptureProcessingPipelineFactory? factory = null,
+            RawCaptureIngress? ingress = null)
+        {
+            _processingStore ??= new SqliteCaptureProcessingStore(Options, Time);
+            _processingTelemetry ??= new CaptureProcessingTelemetry();
+            var persistence = new CaptureProcessingPersistence(Options, _processingStore, _processingTelemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(Root));
+            return new StandardCaptureLaneHandler(factory ?? new EmptyPipelineFactory(), persistence, _processingTelemetry,
+                NullLogger<StandardCaptureLaneHandler>.Instance, ingress ?? Ingress, timeProvider: Time);
+        }
 
         internal async Task<RawCaptureReceipt> AcceptAsync(int index)
         {
@@ -1669,6 +1665,8 @@ public sealed partial class DurableCaptureDistributionTests
             }
             Telemetry.Dispose();
             LaneTelemetry.Dispose();
+            _processingStore?.Dispose();
+            _processingTelemetry?.Dispose();
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))
             {
@@ -1729,12 +1727,12 @@ public sealed partial class DurableCaptureDistributionTests
         internal void Advance(TimeSpan duration) => _now += duration;
     }
 
-    private sealed class FixedCapacityProvider : IStorageCapacityProvider
+    internal sealed class FixedCapacityProvider : IStorageCapacityProvider
     {
         public StorageCapacity GetCapacity(string root) => new(long.MaxValue, long.MaxValue);
     }
 
-    private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
+    internal sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
         public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
 
@@ -1752,7 +1750,7 @@ public sealed partial class DurableCaptureDistributionTests
             Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, config.Pipeline.DependencyPolicy);
             Assert.IsEmpty(config.Pipeline.Steps);
             return new CaptureProcessingGraph([
-                new CaptureProcessingGraphNode("auto-included", Step, [], true, null, null, null)
+                new CaptureProcessingGraphNode("auto-included", Step, [], true, null, null, null, new string('A', 64))
             ]);
         }
 

@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class ProcessingGraphExecutionPerformanceTests
 {
@@ -756,12 +757,11 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingBytes"] = (8L * 1024 * 1024 * 1024).ToString(
                     System.Globalization.CultureInfo.InvariantCulture)

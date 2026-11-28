@@ -23,6 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
 {
     private static readonly TimeSpan Floor = OrbitalElementsStoreTestData.Interval;
@@ -172,7 +173,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
         await fixture.SaveDefinitionAsync().ConfigureAwait(false);
         var oldElements = CelesTrakGpTestData.Payload(
-            CelesTrakGpTestData.RecordFor(60001, ("EPOCH", "\"2026-10-01T06:00:00.000000\"")));
+            CelesTrakGpTestData.RecordFor(60001, ("EPOCH", "2026-10-01T06:00:00.000000")));
         fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(oldElements));
         await fixture.Orbital.RunAsync().ConfigureAwait(false);
         var service = CreateService(fixture, read: true, mutate: true, out _);
@@ -596,6 +597,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
 /// <summary>Operator text covers every reason code an orbital surface can show, and never echoes free text.</summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 public sealed class OrbitalOperatorTextTests
 {
     private static readonly string[] Tones = ["success", "warning", "pending", "neutral", "failure"];
@@ -633,6 +635,9 @@ public sealed class OrbitalOperatorTextTests
     [DataRow("orbital.invalid-number")]
     [DataRow("orbital.invalid-object-identity")]
     [DataRow("orbital.invalid-text")]
+    [DataRow("orbital.csv-header")]
+    [DataRow("orbital.csv-row-width")]
+    [DataRow("orbital.csv-syntax")]
     [DataRow("orbital.json-root")]
     [DataRow("orbital.json-syntax")]
     [DataRow("orbital.length-mismatch")]

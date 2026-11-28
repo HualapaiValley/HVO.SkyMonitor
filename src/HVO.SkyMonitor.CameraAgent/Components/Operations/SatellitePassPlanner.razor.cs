@@ -38,6 +38,7 @@ public sealed partial class SatellitePassPlanner : ComponentBase, IAsyncDisposab
     private bool _showPath = true;
     private bool _showLabels = true;
     private bool _showRigPreview;
+    private bool _applySiteHorizon = true;
 
     [Inject] internal IServiceProvider Services { get; set; } = default!;
 

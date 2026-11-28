@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -11,7 +12,8 @@ internal sealed partial class RetainedIntegrityScrubService(
     CameraAgentConfigurationInitializer? initializer = null,
     ICameraAgentConfigurationAccessor? accessor = null,
     DeploymentLocation.IDeploymentLocationStore? locations = null,
-    IHostApplicationLifetime? hostLifetime = null, CaptureLaneState? captureState = null) : BackgroundService
+    IHostApplicationLifetime? hostLifetime = null, CaptureLaneState? captureState = null,
+    ICameraAgentSiloVerification? silo = null) : BackgroundService
 {
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An independent scrub failure must keep the host/recovery UI alive while protected verification remains refused.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -29,6 +31,7 @@ internal sealed partial class RetainedIntegrityScrubService(
             {
                 await loader.RequestRetainedIntegrityScrubAsync(force, stoppingToken).ConfigureAwait(false);
                 await InitializeCaptureAsync(stoppingToken).ConfigureAwait(false);
+                if (silo is not null && accessor is { IsConfigured: true }) return;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception) { ScrubFailed(logger); }

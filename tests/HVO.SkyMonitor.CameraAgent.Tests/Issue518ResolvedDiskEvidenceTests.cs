@@ -18,6 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 [DoNotParallelize]
 public sealed class Issue518ResolvedDiskEvidenceTests
 {
@@ -132,7 +133,6 @@ public sealed class Issue518ResolvedDiskEvidenceTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
             AgentId = "issue518-evidence",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

@@ -27,6 +27,7 @@ public sealed class CommandLineTests
         Assert.AreEqual(5130, request.Port);
         Assert.AreEqual(InstallRequest.DefaultProductRoot, request.ProductRoot);
         Assert.AreEqual(CameraAgentReplayProfile.InProcess, request.ReplayProfile);
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, request.StorageLayout);
     }
 
     [TestMethod]
@@ -43,10 +44,10 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void Parse_LocalReplayRunnerProfile_IsExplicitlySelectable()
+    public void Parse_LocalReplayRunnerProfile_RequiresAnExplicitFilesystemLayout()
     {
         var request = CommandLine.Parse(ValidArguments.Concat([
-            "--replay-profile", "local-runner"
+            "--storage-layout", "filesystem", "--replay-profile", "local-runner"
         ]).ToArray());
 
         Assert.AreEqual(CameraAgentReplayProfile.LocalRunner, request.ReplayProfile);
@@ -262,7 +263,7 @@ public sealed class CommandLineTests
     [DataRow("--image-version", "1.2.0")]
     [DataRow("--catalog-manifest", "/srv/hvo/catalog-manifest.json")]
     [DataRow("--catalog-index", "https://downloads.example/catalog-index.json")]
-    [DataRow("--catalog-version", "hyg-v4.2-p3-s2-r1")]
+    [DataRow("--catalog-version", "hyg-v4.4-p4-s3-r1")]
     [DataRow("--asset-base-url", "https://mirror.example/releases")]
     [DataRow("--channel", "stable")]
     public void Parse_RetiredSignedReleaseOption_IsUnknown(string option, string value)
@@ -433,18 +434,16 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void ParseCommand_Upgrade_RequiresImmutableImageAndCompatibilityAcknowledgement()
+    public void ParseCommand_Upgrade_RequiresImmutableImage()
     {
         var request = (LifecycleRequest)CommandLine.ParseCommand([
             "cameraagent", "upgrade",
             "--instance-id", Guid.NewGuid().ToString("D"),
             "--image-ref", $"cameraagent@sha256:{new string('a', 64)}",
-            "--migration-backward-compatible",
             "--no-download"
         ]);
 
         Assert.AreEqual(LifecycleOperationKind.Upgrade, request.Operation);
-        Assert.IsTrue(request.MigrationBackwardCompatible);
         Assert.IsTrue(request.NoDownload);
     }
 
@@ -455,50 +454,6 @@ public sealed class CommandLineTests
             "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
             "--image-ref", "cameraagent:latest"
         ]));
-    }
-
-    [TestMethod]
-    public void ParseCommand_RestoreOnlyBindsRecoveryWithoutChangingOriginalRequestHash()
-    {
-        string[] original = ["cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--image-ref", $"sha256:{new string('a', 64)}", "--no-download", "--migration-backward-compatible"];
-        var operationId = Guid.NewGuid();
-        var request = (LifecycleRequest)CommandLine.ParseCommand(original);
-        var recovery = (LifecycleRequest)CommandLine.ParseCommand([.. original, "--resume", "--restore-only", "--operation-id", operationId.ToString("D")]);
-
-        Assert.IsTrue(recovery.RestoreOnly);
-        Assert.IsTrue(recovery.Resume);
-        Assert.AreEqual(operationId, recovery.RecoveryOperationId);
-        Assert.AreEqual(request.ComputeRequestSha256(), recovery.ComputeRequestSha256());
-    }
-
-    [TestMethod]
-    [DataRow("missing-resume")]
-    [DataRow("missing-operation")]
-    [DataRow("missing-restore")]
-    [DataRow("dry-run")]
-    [DataRow("rollback")]
-    [DataRow("signed")]
-    public void ParseCommand_RestoreOnlyRejectsUnsupportedOptions(string fault)
-    {
-        var request = new LifecycleRequest(LifecycleOperationKind.Upgrade, Guid.NewGuid(), InstallRequest.DefaultProductRoot,
-            dryRun: false, resume: true, json: false)
-        {
-            ImageReference = $"sha256:{new string('a', 64)}",
-            RestoreOnly = true,
-            RecoveryOperationId = Guid.NewGuid()
-        };
-        request = fault switch
-        {
-            "missing-resume" => request with { Resume = false },
-            "missing-operation" => request with { RecoveryOperationId = null },
-            "missing-restore" => request with { RestoreOnly = false },
-            "dry-run" => request with { DryRun = true },
-            "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
-            "signed" => request with { ImageReference = null, Release = "/srv/release" },
-            _ => throw new InvalidOperationException()
-        };
-        Assert.ThrowsExactly<InstallUsageException>(request.Validate);
     }
 
     [TestMethod]
@@ -624,7 +579,7 @@ public sealed class CommandLineTests
         ]);
         var select = (LifecycleRequest)CommandLine.ParseCommand([
             "catalog", "select", "--instance-id", Guid.NewGuid().ToString("D"),
-            "--catalog-version", "hyg-v4.2-p3-s2-r2"
+            "--catalog-version", "hyg-v4.4-p4-s3-r2"
         ]);
 
         Assert.AreEqual(LifecycleOperationKind.CatalogInstall, install.Operation);
@@ -650,7 +605,7 @@ public sealed class CommandLineTests
         {
             null => ["catalog", "install"],
             "relative" => ["catalog", "install", "--catalog-bundle", "relative/catalog.bundle"],
-            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.2-p3-s2-r1"]
+            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.4-p4-s3-r1"]
         };
 
         var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
@@ -780,7 +735,7 @@ public sealed class CommandLineTests
         var rollback = UsageFor(["cameraagent", "rollback", "--help"]);
         Assert.DoesNotContain("--release", rollback, StringComparison.Ordinal);
         Assert.DoesNotContain("--migration-backward-compatible", rollback, StringComparison.Ordinal);
-        StringAssert.Contains(UsageFor(["cameraagent", "upgrade", "--help"]), "--migration-backward-compatible", StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", UsageFor(["cameraagent", "upgrade", "--help"]), StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed partial class VirtualSkyCloudPerformanceTests
 {
     private const int WarmupCount = 5;
@@ -122,10 +123,10 @@ public sealed partial class VirtualSkyCloudPerformanceTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cloud-observation-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        SqliteEnvironmentalObservationOutbox? outbox = null;
+        SqliteEnvironmentalObservationStore? outbox = null;
         try
         {
-            outbox = new SqliteEnvironmentalObservationOutbox();
+            outbox = new SqliteEnvironmentalObservationStore();
             var publisher = new PerformanceObservationPublisher(outbox, root);
             var step = new VirtualSkyCloudObservationProcessingStep(
                 new CaptureProcessingStepMetadata(
@@ -173,8 +174,8 @@ public sealed partial class VirtualSkyCloudPerformanceTests
             var cpu = process.TotalProcessorTime - cpuStart;
             var allocated = GC.GetTotalAllocatedBytes(false) - allocatedStart;
             var workingSetEnd = process.WorkingSet64;
-            var snapshot = await outbox.GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(WarmupCount + durations.Length, snapshot.PendingCount);
+            var snapshot = await outbox.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(WarmupCount + durations.Length, snapshot.StoredCount);
             Assert.AreEqual(WarmupCount + durations.Length, publisher.EnqueuedCount);
             Array.Sort(durations);
             var p95 = durations[(int)Math.Ceiling(durations.Length * 0.95) - 1];
@@ -196,8 +197,8 @@ public sealed partial class VirtualSkyCloudPerformanceTests
                 Gen0Collections = GC.CollectionCount(0) - gen0Start,
                 Gen1Collections = GC.CollectionCount(1) - gen1Start,
                 Gen2Collections = GC.CollectionCount(2) - gen2Start,
-                PendingCount = snapshot.PendingCount,
-                PendingBytes = snapshot.PendingBytes,
+                PendingCount = snapshot.StoredCount,
+                PendingBytes = snapshot.StoredBytes,
                 PublisherPayloadBytes = publisher.PayloadBytes,
                 SqliteFileBytes = Directory.EnumerateFiles(Path.Combine(root, ".environment"))
                     .Sum(static path => new FileInfo(path).Length)
@@ -473,7 +474,7 @@ public sealed partial class VirtualSkyCloudPerformanceTests
             "projection-v1",
             "astronomy-v1",
             "sensor-v1",
-            CloudScenario: cloud);
+            CloudScenario: cloud, CatalogId: "test-catalog");
         var setpoint = new CaptureSetpoint(exposure, 0, null, null);
         var frame = new CameraFrame(
             startUtc,
@@ -593,13 +594,9 @@ public sealed partial class VirtualSkyCloudPerformanceTests
     private sealed record OutputChecksums(string Complete, string RenderOnly);
 
     private sealed class PerformanceObservationPublisher(
-        IEnvironmentalObservationOutbox outbox,
+        ILocalEnvironmentalObservationStore store,
         string root) : IEnvironmentalObservationPublisher
     {
-        private static readonly EnvironmentalObservationTarget Target = new(
-            Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            Guid.Parse("22222222-2222-2222-2222-222222222222"));
-
         public int EnqueuedCount { get; private set; }
         public long PayloadBytes { get; private set; }
 
@@ -607,16 +604,13 @@ public sealed partial class VirtualSkyCloudPerformanceTests
             EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
         {
-            var observation = fact.Enrich(Target);
-            var payload = EnvironmentalObservationJson.Serialize(observation);
-            var disposition = await outbox.EnqueueAsync(root, observation, cancellationToken).ConfigureAwait(false);
-            PayloadBytes += payload.Length;
+            var committed = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
+            PayloadBytes += committed.Record.PayloadBytes;
             EnqueuedCount++;
             return new EnvironmentalObservationPublishResult(
-                disposition == EnvironmentalObservationEnqueueDisposition.Enqueued
-                    ? EnvironmentalObservationPublishDisposition.Enqueued
-                    : EnvironmentalObservationPublishDisposition.Duplicate,
-                observation);
+                committed.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
+                    ? EnvironmentalObservationPublishDisposition.Committed
+                    : EnvironmentalObservationPublishDisposition.Duplicate);
         }
     }
 

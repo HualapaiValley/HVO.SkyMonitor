@@ -10,16 +10,16 @@ using System.Threading.Tasks;
 using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
-using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Notifications;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
-using HVO.SkyMonitor.CameraAgent.Extensions;
 using HVO.SkyMonitor.CameraAgent.Components;
 using HVO.SkyMonitor.CameraAgent.Components.Account;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -47,7 +47,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Scalar.AspNetCore;
 using Microsoft.Extensions.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -72,8 +72,56 @@ public class Program
         "/Account/Manage/SetPassword"
     };
 
+    /// <summary>
+    /// The one-shot mode the installer runs before a Silo-layout instance's capture service first starts (#1966): read
+    /// the same configuration the service reads, persist the first-boot pause with the raw-ingress schema, print its
+    /// durable status as one JSON line and exit, without a web host, camera module or capture loop.
+    /// </summary>
+    private static readonly System.Text.Json.JsonSerializerOptions FirstBootJson = new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The one-shot initializer reports every failure as a refusal line and a non-zero exit.")]
+    private static async Task<int> InitializeFirstBootStateAsync(string[] args)
+    {
+        try
+        {
+            var builder = WebApplication.CreateBuilder(args);
+            DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
+            DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+            var options = builder.Configuration.GetSection("CameraAgent").Get<HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions>() ?? new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions();
+            var seed = options.FirstBootPause.Identity
+                ?? throw new InvalidOperationException("No first-boot pause is configured.");
+            var status = await HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.InitializeAsync(
+                options.RawIngressRoot, options.RawIngressSqliteBusyTimeoutSeconds, seed, CancellationToken.None).ConfigureAwait(false);
+            await Console.Out.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                outcome = "seeded",
+                id = status.Id,
+                status.Seeded,
+                status.InForce,
+                status.Resumed,
+                status.State,
+                status.Version
+            }, FirstBootJson)).ConfigureAwait(false);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            await Console.Out.WriteLineAsync(
+                "{\"outcome\":\"refused\",\"reason\":\"first-boot-state-" +
+                (exception is InvalidDataException ? "conflict" : "unavailable") + "\"}").ConfigureAwait(false);
+            return 2;
+        }
+    }
+
     public static async Task Main(string[] args)
     {
+        ArgumentNullException.ThrowIfNull(args);
+        if (args.Contains(HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.Argument, StringComparer.Ordinal))
+        {
+            Environment.ExitCode = await InitializeFirstBootStateAsync(
+                args.Where(static argument => argument != HVO.SkyMonitor.CameraAgent.Common.Capture.FirstBootStateInitializer.Argument).ToArray()).ConfigureAwait(false);
+            return;
+        }
         var builder = WebApplication.CreateBuilder(args);
         var localSettings = DeploymentLocalSettings.AddConfiguredFile(builder.Configuration, builder.Environment.ContentRootPath);
         DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
@@ -111,8 +159,10 @@ public class Program
         }
 
         // The Software page reads the same informational version, so telemetry and the UI name one build identity.
+        var profiling = ProductionProfiling.ReadMode(builder.Configuration[ProductionProfiling.ConfigurationKey]);
         builder.AddSkyMonitorObservability(
-            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            enableCollection: profiling != ProductionProfilingMode.Disabled);
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
@@ -149,11 +199,7 @@ public class Program
             .Bind(builder.Configuration.GetSection("DeviceProvisioning"))
             .ValidateOnStart();
         builder.Services.AddSingleton<IDeviceIdentityStore, DeviceIdentityStore>();
-        builder.Services.AddSingleton<IDeviceSecretStore, DeviceSecretStore>();
-        builder.Services.AddSingleton<ICaptureAgentIdentityProvider, ProvisionedCaptureAgentIdentityProvider>();
-        builder.Services.AddSingleton<IDeviceRigProfileSeeder, DeviceRigProfileSeeder>();
-        builder.Services.AddHostedService<DeviceRigProfileSynchronizationService>();
-        builder.Services.AddScoped<IDeviceBootstrapWorkflow, DeviceBootstrapWorkflow>();
+        builder.Services.AddSingleton<ICaptureAgentIdentityProvider, LocalCaptureAgentIdentityProvider>();
 
         ApplyLocalIdentityPasswordFile(builder.Configuration);
         var localIdentitySection = builder.Configuration.GetSection("LocalIdentity");
@@ -237,62 +283,53 @@ public class Program
         healthChecks.AddCheck<OwnerBootstrapHealthCheck>("owner-bootstrap", tags: ["dependency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
         healthChecks.AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["dependency"]);
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(metrics =>
-            {
-                metrics.AddPrometheusExporter();
-                metrics.AddRuntimeInstrumentation();
-                metrics.AddMeter(FleetHeartbeatTelemetry.MeterName);
-                metrics.AddMeter(EnvironmentalObservationDeliveryTelemetry.MeterName);
-                metrics.AddMeter(EnvironmentalAcquisitionTelemetry.InstrumentationName);
-                metrics.AddMeter(TransientWorkerTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
-                metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
-                metrics.AddMeter(LocalAutomationTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
-                metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
-                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.MeterName);
-            })
-            .WithTracing(tracing =>
-            {
-                if (builder.Environment.IsEnvironment("StandaloneW6"))
+        if (profiling != ProductionProfilingMode.Disabled)
+        {
+            builder.Services.AddOpenTelemetry()
+                .WithMetrics(metrics =>
                 {
-                    tracing.SetSampler(new AlwaysOnSampler());
-                }
-                tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
-                    .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
-                    .AddSource(LocalAutomationTelemetry.ActivitySourceName)
-                    .AddSource(EnvironmentalObservationDeliveryTelemetry.ActivitySourceName)
-                    .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
-                    .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.ActivitySourceName)
-                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName);
-            });
-
-        builder.Services.AddCentralIdentityAuthentication(builder.Configuration);
-        builder.Services.AddSingleton<IConfigureOptions<CentralIdentityOptions>, DeviceSecretsCentralIdentityConfigurator>();
-        builder.Services.AddSkyMonitorApiClient(builder.Configuration);
-        RegisterAcceptanceCentralAttemptRecorder(builder);
-        builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
-        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.IProcessingGraphDeliveryTransport,
-            CameraAgentProcessingGraphDeliveryTransport>();
-        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Evidence.IExecutionEvidenceTransport,
-            CameraAgentExecutionEvidenceTransport>();
-        builder.Services.AddSingleton<ITransientCandidateTransport, CameraAgentTransientCandidateTransport>();
-        builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
-        builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
-        builder.Services.AddSingleton<CameraAgentEnvironmentalObservationBridge>();
-        builder.Services.AddSingleton<IEnvironmentalObservationTargetResolver>(provider =>
-            provider.GetRequiredService<CameraAgentEnvironmentalObservationBridge>());
-        builder.Services.AddSingleton<IEnvironmentalObservationTransport>(provider =>
-            provider.GetRequiredService<CameraAgentEnvironmentalObservationBridge>());
+                    metrics.AddPrometheusExporter();
+                    metrics.AddRuntimeInstrumentation();
+                    if (profiling == ProductionProfilingMode.Enabled)
+                    {
+                        ProductionProfiling.ConfigureMetrics(metrics);
+                    }
+                    metrics.AddMeter(EnvironmentalAcquisitionTelemetry.InstrumentationName);
+                    metrics.AddMeter(TransientWorkerTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.MeterName);
+                    metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
+                    metrics.AddMeter(LocalAutomationTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Orbital.OrbitalElementsTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.SpaceWeatherTelemetry.MeterName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
+                    metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
+                    metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
+                    metrics.AddMeter(OperatorNotificationTelemetry.MeterName);
+                })
+                .WithTracing(tracing =>
+                {
+                    if (profiling == ProductionProfilingMode.Enabled)
+                    {
+                        tracing.SetSampler(ProductionProfiling.CreateSampler());
+                    }
+                    else if (builder.Environment.IsEnvironment("StandaloneW6"))
+                    {
+                        tracing.SetSampler(new AlwaysOnSampler());
+                    }
+                    tracing.AddSource(TransientWorkerTelemetry.ActivitySourceName)
+                        .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
+                        .AddSource(LocalAutomationTelemetry.ActivitySourceName)
+                        .AddSource(EnvironmentalAcquisitionTelemetry.InstrumentationName)
+                        .AddSource(CameraAgentOperatorTelemetry.InstrumentationName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphOperationsTelemetry.ActivitySourceName)
+                        .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName)
+                        .AddSource(OperatorNotificationTelemetry.ActivitySourceName);
+                });
+        }
 
         var authenticationBuilder = builder.Services.AddAuthentication(options =>
         {
@@ -308,10 +345,12 @@ public class Program
         builder.Services.AddScoped<CameraAgentApiKeyStore>();
         builder.Services.AddScoped<CameraAgentSettingsService>();
         builder.Services.AddScoped<ICameraAgentSatelliteSetupUiService, CameraAgentSatelliteSetupUiService>();
-        builder.Services.AddCameraAgentOutboxOperations();
+        builder.Services.AddSingleton<LocalOperationsTokenService>();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration.VirtualOpticalCalibrationReviewService>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration.OpticalAlignmentWorkflow>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
         builder.Services.AddScoped<ICameraAgentFocusUiService, CameraAgentFocusUiService>();
         builder.Services.AddScoped<CircuitConnectionState>();
@@ -326,14 +365,25 @@ public class Program
         builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddScoped<CenteredPipelineUiService>();
         builder.Services.AddSingleton<ICameraAgentControlRestartWindow, CameraAgentControlRestartWindow>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
         builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
         builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
         builder.Services.AddSingleton<SpaceWeatherUiProjectionSource>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
-        builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
+        builder.Services.AddScoped<ICameraAgentNotificationsUiService, CameraAgentNotificationsUiService>();
         builder.Services.AddCameraAgentReplayFlow();
+
+        builder.Services.AddSingleton(new OperatorNotificationNetworkPolicy(builder.Environment.IsDevelopment()));
+        builder.Services.AddSingleton<OperatorNotificationStore>();
+        builder.Services.AddSingleton<IOperatorNotificationSecretStore>(provider =>
+            provider.GetRequiredService<OperatorNotificationStore>());
+        builder.Services.AddSingleton<IOperatorNotificationConfigProvider>(provider =>
+            provider.GetRequiredService<OperatorNotificationStore>());
+        builder.Services.AddSingleton<IOperatorNotificationHeartbeatStore>(provider =>
+            new FileOperatorNotificationHeartbeatStore(
+                provider.GetRequiredService<IOptions<DeviceProvisioningOptions>>().Value.StateDirectory));
 
         builder.Services.AddOptions<CapturePreviewOptions>()
             .Bind(builder.Configuration.GetSection("CapturePreview"))
@@ -350,24 +400,18 @@ public class Program
         healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureLanesHealthCheck>("capture-lanes", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
-        healthChecks.AddCheck<ProcessingGraphDeliveryHealthCheck>("processing-graph-delivery", tags: ["dependency"]);
-        healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
-        healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
-        healthChecks.AddCheck<DeploymentLocationReconciliationHealthCheck>(
-            "deployment-location-reconciliation", tags: ["dependency"]);
-        healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
         healthChecks.AddCheck<OrbitalElementsHealthCheck>("orbital-elements", tags: ["dependency"]);
         healthChecks.AddCheck<SpaceWeatherHealthCheck>("space-weather", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
-        healthChecks.AddCheck<TransientCandidateDeliveryHealthCheck>(
-            "transient-candidate-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
         healthChecks.AddCheck<ClockHealthCheck>("clock", tags: ["dependency"]);
+        healthChecks.AddCheck<OperatorNotificationsHealthCheck>("operator-notifications", tags: ["dependency"]);
         AddCameraModules(builder.Services);
 
         var app = builder.Build();
+        app.Configuration.ValidateCameraAgentStorageConfiguration();
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
         if (reverseProxy.Enabled)
@@ -423,12 +467,14 @@ public class Program
 
         app.MapControllers();
         app.MapCameraAgentGalleryEndpoints();
+        app.MapCameraAgentCenteredViewEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentStillProductEndpoints();
         app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSystemOperationsEndpoints();
+        app.MapCameraAgentNotificationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
@@ -442,7 +488,6 @@ public class Program
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentFocusSessionEndpoints();
-        app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();
         app.MapCameraAgentLifecycleEndpoints();
@@ -528,7 +573,10 @@ public class Program
                 });
             })
             .AllowAnonymous();
-        CameraAgentMetricsEndpoint.Map(app);
+        if (profiling != ProductionProfilingMode.Disabled)
+        {
+            CameraAgentMetricsEndpoint.Map(app);
+        }
 
         app.MapSkyMonitorHealthEndpoints();
 
@@ -553,35 +601,6 @@ public class Program
         services.AddCameraModule<RandomImageCameraModule>("RandomImage");
         services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
         services.AddCameraModule<ZwoAsiCameraModule>("ZwoAsi");
-    }
-
-    private static void RegisterAcceptanceCentralAttemptRecorder(WebApplicationBuilder builder)
-    {
-        var configuredPath = builder.Configuration["CameraAgent:AcceptanceCentralAttemptLogPath"];
-        if (string.IsNullOrWhiteSpace(configuredPath))
-        {
-            return;
-        }
-        if (!builder.Environment.IsEnvironment("StandaloneW6") || !string.Equals(
-                builder.Configuration["CameraAgent:CentralIntegration:Mode"],
-                "Disabled",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "Central-attempt recording is permitted only in StandaloneW6 with central integration disabled.");
-        }
-        var root = Path.GetFullPath(builder.Configuration["CameraAgent:RawIngressRoot"]
-            ?? throw new InvalidOperationException("CameraAgent:RawIngressRoot is required."));
-        var path = Path.GetFullPath(configuredPath);
-        var relative = Path.GetRelativePath(root, path);
-        if (relative == ".." || relative.StartsWith(string.Concat("..", Path.DirectorySeparatorChar), StringComparison.Ordinal) ||
-            Path.IsPathRooted(relative))
-        {
-            throw new InvalidOperationException("The central-attempt log must remain beneath the raw-ingress root.");
-        }
-        builder.Services.AddSingleton(new CameraAgentCentralHttpAttemptRecorder(path));
-        builder.Services.AddSingleton<Microsoft.Extensions.Http.IHttpMessageHandlerBuilderFilter,
-            CameraAgentCentralHttpAttemptFilter>();
     }
 
     internal static void ConfigureApplicationCookie(

@@ -24,7 +24,7 @@ public sealed partial class InstallationVerificationReadTests
         await using var fixture = await InstallationReadAttributionFixture.CreateAsync(
             Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR") ?? Path.GetTempPath(), solar: false,
             completeOwner: true, startupServices: true, clock: new StartupClock(now)).ConfigureAwait(false);
-        _ = await fixture.SeedProductionStartupAsync(1, now).ConfigureAwait(false);
+        _ = await fixture.SeedProductionStartupAsync(1, now, stageRawAdmission: true).ConfigureAwait(false);
         await fixture.Host.RunWithHostStoppedAsync(async stoppedRoot =>
         {
             if (fault == "journal-type")
@@ -44,8 +44,7 @@ public sealed partial class InstallationVerificationReadTests
             else
             {
                 var path = fault == "raw-torn"
-                    ? Directory.EnumerateFiles(Path.Combine(fixture.IngressRoot, "frames"), "*.json", SearchOption.AllDirectories)
-                        .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Raw")
+                    ? Directory.EnumerateFiles(Path.Combine(fixture.IngressRoot, ".silo", "raw-admissions"), "*.json").Single()
                     : Path.Combine(fixture.IngressRoot, "quarantine", "evidence.json");
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 await File.WriteAllTextAsync(path, fault == "quarantine-schema" ? "{\"schemaVersion\":\"v2\"}" : "{").ConfigureAwait(false);

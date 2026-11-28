@@ -13,6 +13,8 @@ public sealed class ProcessingNodeOptionsForm
     private readonly Dictionary<string, ProcessingOptionSelection> _collections = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ProcessingNodeOptionsForm>> _rows = new(StringComparer.Ordinal);
     private readonly HashSet<string> _edited = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _invalidSourceKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _invalidSourceValues = new(StringComparer.Ordinal);
 
     public ProcessingNodeOptionsForm(ProcessingNodeOptionsDescriptor descriptor, JsonElement? source)
     {
@@ -25,20 +27,55 @@ public sealed class ProcessingNodeOptionsForm
             var single = new ProcessingNodeOptionsDescriptor(descriptor.DescriptorId, descriptor.StepAlias + ".field",
                 descriptor.StepVersion, descriptor.Title, descriptor.Help, [option]);
             var decoded = ProcessingNodeOptionsCodec.Decode(single, Source);
-            var value = decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue;
+            if (!decoded.IsValid)
+            {
+                _invalidSourceKeys.Add(option.Key);
+                if (option.Kind is ProcessingOptionKind.Choice or ProcessingOptionKind.Font or ProcessingOptionKind.Glyph &&
+                    TryReadRawStringInput(option, Source, out var rawChoice))
+                {
+                    _invalidSourceValues[option.Key] = rawChoice;
+                }
+            }
             if (option.Kind == ProcessingOptionKind.RowCollection)
-                _rows[option.Key] = value.AsCollection().Items.Select(row => new ProcessingNodeOptionsForm(option.RowDescriptor!, JsonSerializer.Deserialize<JsonElement>(row))).ToList();
+            {
+                _rows[option.Key] = LoadRows(option, decoded);
+            }
             else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+            {
+                var value = decoded.IsValid ? decoded.Get(option.Key).Value : option.DefaultValue;
                 _collections[option.Key] = value.AsCollection();
+            }
+            else if (decoded.IsValid)
+            {
+                _inputs[option.Key] = Format(decoded.Get(option.Key).Value);
+            }
+            else if (TryReadTolerantScalarInput(option, Source, out var tolerantInput))
+            {
+                _inputs[option.Key] = tolerantInput;
+            }
             else
-                _inputs[option.Key] = Format(value);
+            {
+                _inputs[option.Key] = Format(option.DefaultValue);
+            }
         }
         TryBuild(out _, out _);
     }
 
     public ProcessingNodeOptionsDescriptor Descriptor { get; }
     public IReadOnlyList<ProcessingGraphDiagnostic> Diagnostics { get; private set; } = [];
+    public bool HasEdits => _edited.Count > 0;
     private JsonElement Source => _source ?? JsonSerializer.SerializeToElement(new { });
+
+    public string? InvalidSourceNotice(string key)
+    {
+        if (!_invalidSourceKeys.Contains(key) || _edited.Contains(key))
+        {
+            return null;
+        }
+        return _invalidSourceValues.TryGetValue(key, out var raw)
+            ? $"Saved value '{raw}' is no longer supported; choose a supported option or click Reset to code defaults."
+            : null;
+    }
 
     // The descriptor is bound to the actual producer version. A future producer cannot silently reuse this panel.
     public static ProcessingNodeOptionsDescriptor? DescriptorFor(string alias, JsonElement? options = null)
@@ -52,6 +89,10 @@ public sealed class ProcessingNodeOptionsForm
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
         }
+        if (string.Equals(alias, ExposureAssociationProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+            return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, ExposureAssociationProducts.ImplementationVersion).Descriptor;
+        if (string.Equals(alias, CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, StringComparison.OrdinalIgnoreCase))
+            return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, CaptureAnalysisOptionDescriptors.CenteredAstrometry.StepVersion).Descriptor;
         var version = alias.ToUpperInvariant() switch
         {
             "SCENESTYLEPRESENTATIONLAYERV1" => SceneStylePresentation.ProducerVersion,
@@ -60,7 +101,8 @@ public sealed class ProcessingNodeOptionsForm
             "VIRTUALSKYCLOUDOBSERVATION" => CaptureScalarOptionDescriptors.VirtualSkyCloudObservation.StepVersion,
             "WEATHERCLOUDOVERLAY" => WeatherCloudOverlayOptionDescriptors.Descriptor.StepVersion,
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
-            "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
+            "REGIONALSTELLARVISIBILITY" => RegionalStellarVisibilityOptionDescriptors.Descriptor.StepVersion,
+            "CALIBRATION" => CalibrationVersionFor(options),
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
             "ASTROMETRYPREDICTION" => CaptureAnalysisOptionDescriptors.Prediction.StepVersion,
             "MEASUREDSTELLARASSOCIATIONS" => CaptureAnalysisOptionDescriptors.StellarAssociations.StepVersion,
@@ -68,7 +110,7 @@ public sealed class ProcessingNodeOptionsForm
             "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,
             "CAPTURESATELLITELAYER" => CaptureSatelliteOptionDescriptors.Layer.StepVersion,
             "STORAGE" => StorageOptionDescriptors.Descriptor.StepVersion,
-            "ANNOTATION" => "projected-annotation-v4",
+            "ANNOTATION" => AnnotationOptionDescriptors.Descriptor.StepVersion,
             "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,
             "CLOUDPRESENTATIONLAYER" => PresentationLayerProducers.CloudProducerVersion,
@@ -81,6 +123,272 @@ public sealed class ProcessingNodeOptionsForm
     }
 
     public string Get(string key) => _inputs[key];
+
+    /// <summary>Valid #rrggbb value for HTML color pickers; falls back to code default while invalid text is being repaired.</summary>
+    public string ColorPickerValue(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        var current = _inputs[key];
+        return Parse(ProcessingOptionKind.Color, current) is { } parsed
+            ? Format(parsed)
+            : Format(EffectiveDefault(option));
+    }
+
+    /// <summary>Human-readable code default for display alongside option help and bounds.</summary>
+    public string DefaultDisplay(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        var value = EffectiveDefault(option);
+        return option.Kind switch
+        {
+            ProcessingOptionKind.Toggle => value.AsToggle() ? "On" : "Off",
+            ProcessingOptionKind.NullableWholeNumber => value.AsNullableWholeNumber() is { } whole
+                ? WithUnit(whole.ToString(CultureInfo.InvariantCulture), option.Unit)
+                : option.NullValueLabel ?? "None",
+            ProcessingOptionKind.NullableRealNumber => value.AsNullableRealNumber() is { } real
+                ? WithUnit(real.ToString("R", CultureInfo.InvariantCulture), option.Unit)
+                : option.NullValueLabel ?? "None",
+            ProcessingOptionKind.WholeNumber => WithUnit(value.AsWholeNumber().ToString(CultureInfo.InvariantCulture), option.Unit),
+            ProcessingOptionKind.RealNumber => WithUnit(value.AsRealNumber().ToString("R", CultureInfo.InvariantCulture), option.Unit),
+            ProcessingOptionKind.Color => Format(value),
+            ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection
+                => value.AsCollection().Items is { Length: > 0 } items
+                    ? string.Join(", ", items)
+                    : option.EmptyCollectionLabel ?? "Empty",
+            ProcessingOptionKind.RowCollection => option.EmptyCollectionLabel ?? "Producer defaults",
+            _ => string.IsNullOrEmpty(value.AsText()) ? "Empty" : value.AsText()
+        };
+
+        static string WithUnit(string text, string? unit)
+            => string.IsNullOrWhiteSpace(unit) ? text : $"{text} {unit}";
+    }
+
+    /// <summary>Whether the option's current form state equals its code default.</summary>
+    public bool IsAtDefault(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        if (_invalidSourceKeys.Contains(key) && !_edited.Contains(key))
+        {
+            return false;
+        }
+        var defaultValue = EffectiveDefault(option);
+        return option.Kind switch
+        {
+            ProcessingOptionKind.RowCollection => _rows[key].Count == 0
+                ? defaultValue.AsCollection().Items.Length == 0
+                : _rows[key].All(row => row.AreOptionsAtDefault(option.RowIdentityKey)),
+            ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection
+                => _collections[key].Items.SequenceEqual(defaultValue.AsCollection().Items, StringComparer.Ordinal),
+            _ => Parse(option.Kind, _inputs[key]) is { } parsed && parsed.Equals(defaultValue)
+        };
+    }
+
+    /// <summary>True when any option in this form currently differs from its code default.</summary>
+    public bool HasNonDefaultValues => !AreOptionsAtDefault();
+
+    /// <summary>True when any option outside <paramref name="excludedKeys"/> differs from its code default.</summary>
+    public bool HasNonDefaultValuesExcluding(IReadOnlySet<string> excludedKeys)
+    {
+        ArgumentNullException.ThrowIfNull(excludedKeys);
+        return Descriptor.Options.Any(option => !excludedKeys.Contains(option.Key) && !IsAtDefault(option.Key));
+    }
+
+    /// <summary>Resets a single option back to its code default without disturbing unknown JSON fields.</summary>
+    public void ResetOptionToDefault(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        ApplyDefault(option);
+        _edited.Add(key);
+        TryBuild(out _, out _);
+    }
+
+    /// <summary>Resets every option described by this form back to its code default while keeping unknown JSON fields untouched.</summary>
+    public void ResetAllToDefaults() => ResetOptionsToDefaults(excludedKey: null, excludedKeys: null);
+
+    /// <summary>Resets every option outside <paramref name="excludedKeys"/> back to its code default while keeping unknown JSON fields untouched.</summary>
+    public void ResetAllToDefaultsExcluding(IReadOnlySet<string> excludedKeys)
+    {
+        ArgumentNullException.ThrowIfNull(excludedKeys);
+        ResetOptionsToDefaults(excludedKey: null, excludedKeys: excludedKeys);
+    }
+
+    private bool AreOptionsAtDefault(string? excludedKey = null)
+        => Descriptor.Options.All(option =>
+            (excludedKey is not null && string.Equals(option.Key, excludedKey, StringComparison.Ordinal)) ||
+            IsAtDefault(option.Key));
+
+    private void ResetOptionsToDefaults(string? excludedKey, IReadOnlySet<string>? excludedKeys)
+    {
+        foreach (var option in Descriptor.Options)
+        {
+            if (excludedKey is not null && string.Equals(option.Key, excludedKey, StringComparison.Ordinal))
+                continue;
+            if (excludedKeys is not null && excludedKeys.Contains(option.Key))
+                continue;
+            ApplyDefault(option);
+            _edited.Add(option.Key);
+        }
+        TryBuild(out _, out _);
+    }
+
+    private void ApplyDefault(ProcessingOptionDescriptor option)
+    {
+        var defaultValue = EffectiveDefault(option);
+        if (option.Kind == ProcessingOptionKind.RowCollection)
+        {
+            // Reserve row deletion for explicit RemoveRow/ClearRows actions so unknown members inside
+            // existing rows (such as OverlayManifest layer overrides) survive reset losslessly.
+            foreach (var row in _rows[option.Key])
+            {
+                row.ResetOptionsToDefaults(option.RowIdentityKey, excludedKeys: null);
+            }
+        }
+        else if (option.Kind is ProcessingOptionKind.TextCollection or ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection)
+        {
+            _collections[option.Key] = defaultValue.AsCollection();
+        }
+        else
+        {
+            _inputs[option.Key] = Format(defaultValue);
+        }
+    }
+
+    private ProcessingOptionValue EffectiveDefault(ProcessingOptionDescriptor option)
+    {
+        if (string.Equals(Descriptor.DescriptorId, OverlayManifestOptionDescriptors.Layer.DescriptorId, StringComparison.Ordinal) &&
+            string.Equals(option.Key, "enabled", StringComparison.Ordinal) &&
+            _inputs.TryGetValue("kind", out var kind) &&
+            PresentationLayerKindSelection.Canonicalize(kind) is OrbitalTrackPresentation.LayerKind or MeasuredAssociationPresentation.ExpectedNotDetectedLayerKind)
+        {
+            return ProcessingOptionValue.FromToggle(false);
+        }
+        return option.DefaultValue;
+    }
+
+    private List<ProcessingNodeOptionsForm> LoadRows(ProcessingOptionDescriptor option, ProcessingNodeOptionsDecodeResult decoded)
+    {
+        if (decoded.IsValid)
+        {
+            return decoded.Get(option.Key).Value.AsCollection().Items
+                .Select(row => new ProcessingNodeOptionsForm(option.RowDescriptor!, JsonSerializer.Deserialize<JsonElement>(row)))
+                .ToList();
+        }
+
+        // Runtime deserialization accepts quoted numbers (AllowReadingFromString) inside row objects.
+        // Retain every object row from the source array so editing or resetting repairs fields losslessly
+        // without discarding rows or unknown JSON members.
+        if (Source.ValueKind == JsonValueKind.Object &&
+            TryGetMemberIgnoreCase(Source, option.Members[0], out var member) &&
+            member.ValueKind == JsonValueKind.Array)
+        {
+            var rows = new List<ProcessingNodeOptionsForm>();
+            foreach (var item in member.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object)
+                {
+                    rows.Add(new ProcessingNodeOptionsForm(option.RowDescriptor!, item.Clone()));
+                }
+            }
+            return rows;
+        }
+
+        return [];
+    }
+
+    private static bool TryReadRawStringInput(ProcessingOptionDescriptor option, JsonElement source, out string text)
+    {
+        text = string.Empty;
+        if (option.Members.Length != 1 || source.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+        var container = source;
+        if (option.ParentMember is not null &&
+            (!TryGetMemberIgnoreCase(source, option.ParentMember, out container) || container.ValueKind != JsonValueKind.Object))
+        {
+            return false;
+        }
+        if (!TryGetMemberIgnoreCase(container, option.Members[0], out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        text = value.GetString() ?? string.Empty;
+        return text.Length > 0;
+    }
+
+    private static bool TryReadTolerantScalarInput(ProcessingOptionDescriptor option, JsonElement source, out string input)
+    {
+        input = string.Empty;
+        if (option.Members.Length != 1 || source.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var container = source;
+        if (option.ParentMember is not null &&
+            (!TryGetMemberIgnoreCase(source, option.ParentMember, out container) || container.ValueKind != JsonValueKind.Object))
+        {
+            return false;
+        }
+
+        if (!TryGetMemberIgnoreCase(container, option.Members[0], out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var text = value.GetString();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        if (option.Kind is ProcessingOptionKind.WholeNumber or ProcessingOptionKind.NullableWholeNumber &&
+            long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var whole))
+        {
+            input = whole.ToString(CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        if (option.Kind is ProcessingOptionKind.RealNumber or ProcessingOptionKind.NullableRealNumber &&
+            double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var real) &&
+            double.IsFinite(real))
+        {
+            input = real.ToString("R", CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetMemberIgnoreCase(JsonElement obj, string memberName, out JsonElement value)
+    {
+        var found = false;
+        value = default;
+        foreach (var property in obj.EnumerateObject())
+        {
+            if (string.Equals(property.Name, memberName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                found = true;
+            }
+        }
+        return found;
+    }
+
+    private static string CalibrationVersionFor(JsonElement? options)
+    {
+        if (options is { ValueKind: JsonValueKind.Object } source)
+        {
+            var strategy = source.EnumerateObject()
+                .LastOrDefault(static member => string.Equals(member.Name, "strategy", StringComparison.OrdinalIgnoreCase));
+            if (strategy.Value.ValueKind == JsonValueKind.String &&
+                strategy.Value.GetString() is "SyntheticReferences" or "CalibrationLibrary")
+            {
+                return CalibrationOptionDescriptors.References.StepVersion;
+            }
+        }
+        return CalibrationOptionDescriptors.Normalization.StepVersion;
+    }
 
     public ProcessingOptionSelection Collection(string key) => _collections[key];
 

@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
@@ -18,7 +19,7 @@ internal sealed record CaptureSatelliteWork(string Key, string Holder, string No
 /// the first completed result. Existing retention sweeps reclaim the intent and release its idempotent reference.
 /// </summary>
 internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions> options,
-    SqliteCaptureProcessingStore processing, IOrbitalElementsStore orbital, TimeProvider? timeProvider = null)
+    SqliteCaptureProcessingStore processing, IOrbitalElementsStore orbital, TimeProvider? timeProvider = null, SiloArtifactStorage? silo = null)
 {
     private readonly string root = StorageRootIdentity.CanonicalPath(options.Value.RawIngressRoot);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
@@ -28,7 +29,6 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal Action? BeforeHeaderPublicationForTest { get; set; }
     internal int WorkEntryLimit { get; set; } = MaximumWorkEntries;
-    internal Func<ProjectedSceneRetentionGuard>? RetentionGuardFactory { get; set; }
     private sealed record Header(string Key, string NodeId, string Variant, string RawPayloadPath, string RawSidecarPath,
         Guid CaptureId, Guid RawArtifactId, string InputSha256, string? ManifestSha256);
 
@@ -112,7 +112,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             !await orbital.AddReferenceAsync(manifest.ManifestSha256, work.Holder, cancellationToken).ConfigureAwait(false))
         {
             if (frozen) throw new InvalidDataException("A previously pinned satellite snapshot is no longer retained.");
-            input = input with { Plan = null, UnavailableReason = "SnapshotRetiredBeforePin" };
+            input = input with { Plan = null, UnavailableReason = nameof(CaptureSatelliteReason.SnapshotRetiredBeforePin) };
         }
         await CaptureProcessingPersistence.WriteAtomicallyAsync(root, path, CaptureSatelliteProducts.SerializeInput(input),
             null, cancellationToken).ConfigureAwait(false);
@@ -132,7 +132,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         if (!Directory.Exists(directory)) return [];
         var holds = new List<ProcessingRetentionHold>();
-        var discovery = new ArchiveDiscovery(this);
+        var discovery = new ArchiveDiscovery(silo);
         foreach (var entry in Directory.EnumerateDirectories(directory))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -141,27 +141,60 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             if (!File.Exists(path)) continue; // Interrupted pre-intent preparation acquired no reference.
             var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
             var inventory = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken).ConfigureAwait(false);
-            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.CaptureId, cancellationToken).ConfigureAwait(false);
-            var support = inventory.Where(static p => p.Satellite).Where(p => p.Unavailable || Exists(p.PayloadRelativePath)).ToArray();
-            // A canonical scene is independent support, and its existing guard waits for raw to expire.
-            // Treating it as a satellite consumer would form scene -> raw -> satellite -> scene holds.
-            var external = inventory.Any(p => !p.Satellite && !p.ProjectedScene && (p.Unavailable || Exists(p.PayloadRelativePath)));
-            if (support.Length > 0 || archiveHeld)
-                holds.Add(new(header.RawArtifactId, header.RawPayloadPath, header.RawSidecarPath));
+            var archiveHeld = await discovery.HasArchivedCaptureAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false);
+            var support = new List<SqliteCaptureProcessingStore.SatelliteConsumer>();
+            var hasSupport = false;
+            var external = false;
+            foreach (var product in inventory)
+            {
+                var retained = silo is null || await silo.IsArtifactRetainedAsync(product.ArtifactId, cancellationToken).ConfigureAwait(false);
+                if (product.Satellite)
+                {
+                    hasSupport |= product.Unavailable || retained;
+                    if (retained) support.Add(product);
+                }
+                // The canonical scene already waits for raw. Holding satellites for the scene would form a cycle.
+                else if (!product.ProjectedScene)
+                {
+                    external |= product.Unavailable || retained;
+                }
+            }
+            if (hasSupport || archiveHeld)
+                holds.Add(new(header.RawArtifactId));
             if (external || archiveHeld)
-                holds.AddRange(support.Where(p => Exists(p.PayloadRelativePath)).Select(static p =>
-                    new ProcessingRetentionHold(p.ArtifactId, p.PayloadRelativePath, p.SidecarRelativePath)));
+                holds.AddRange(support.Select(static p =>
+                    new ProcessingRetentionHold(p.ArtifactId)));
+        }
+        return holds;
+    }
+
+    // The local work header survives an interrupted prediction even when no support product was published.
+    internal async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSiloArchiveHoldsAsync(CancellationToken cancellationToken)
+    {
+        if (silo is null) return [];
+        var directory = Path.Combine(root, "journal", "capture-satellites");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        if (!Directory.Exists(directory)) return [];
+        var holds = new List<SiloRetentionHold>();
+        foreach (var entry in Directory.EnumerateDirectories(directory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = Path.Combine(entry, "header.json");
+            RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+            if (!File.Exists(path)) continue;
+            var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
+            holds.Add(new(SiloHoldKind.SatelliteArchiveReference, header.RawArtifactId.ToString("D")));
         }
         return holds;
     }
 
     internal async ValueTask ReconcileAsync(string storageRoot, CancellationToken cancellationToken)
     {
-        if (!StorageRootIdentity.AreEqual(storageRoot, root)) return;
+        if (!StorageRootIdentity.AreEqual(storageRoot, root) || silo is not { BindingVerified: true }) return;
         var directory = Path.Combine(root, "journal", "capture-satellites");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         if (!Directory.Exists(directory)) return;
-        var discovery = new ArchiveDiscovery(this);
+        var discovery = new ArchiveDiscovery(silo);
         var cursorPath = Path.Combine(root, "journal", "capture-satellite-orphan-cursor.json");
         var cursor = File.Exists(cursorPath)
             ? JsonSerializer.Deserialize<string>(await ReadBoundedAsync(cursorPath, MaximumHeaderBytes, cancellationToken).ConfigureAwait(false))
@@ -193,10 +226,12 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 continue;
             }
             var header = await ReadHeaderAsync(path, cancellationToken).ConfigureAwait(false);
-            if (Exists(header.RawPayloadPath) ||
-                (await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken).ConfigureAwait(false))
-                    .Any(p => p.Unavailable || Exists(p.PayloadRelativePath)) ||
-                await discovery.HasArchivedCaptureAsync(header.CaptureId, cancellationToken).ConfigureAwait(false)) continue;
+            if (await silo.IsArtifactRetainedAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
+            var headerConsumers = await processing.ReadSatelliteConsumersAsync(header.CaptureId, header.NodeId, cancellationToken)
+                .ConfigureAwait(false);
+            if (headerConsumers.Any(static product => product.Unavailable) ||
+                await AnyRetainedAsync(silo, headerConsumers.Select(static item => item.ArtifactId), cancellationToken).ConfigureAwait(false) ||
+                await discovery.HasArchivedCaptureAsync(header.RawArtifactId, cancellationToken).ConfigureAwait(false)) continue;
             if (header.ManifestSha256 is { } manifest)
                 await orbital.RemoveReferenceAsync(manifest, Holder(header.Key), cancellationToken).ConfigureAwait(false);
             // Removal is idempotent. A crash before directory removal repeats it; no referenced product remains.
@@ -235,8 +270,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                     CaptureSatelliteProducts.MaximumInputBytes, cancellationToken).ConfigureAwait(false));
                 var inventory = await processing.ReadSceneConsumersAsync(orphan.Descriptor.Capture.CaptureId, Guid.Empty,
                     AccountOrphanBytes, cancellationToken).ConfigureAwait(false);
-                if (inventory is null || inventory.CanonicalPayloadPaths.Any(Exists) ||
-                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false)) reclaim = false;
+                if (inventory is null || await AnyRetainedAsync(silo, inventory, cancellationToken).ConfigureAwait(false) ||
+                    await discovery.HasArchivedCaptureAsync(orphan.Descriptor.Artifact.ArtifactId,
+                        cancellationToken).ConfigureAwait(false)) reclaim = false;
                 var consumers = await processing.ReadSatelliteConsumersAsync(orphan.Descriptor.Capture.CaptureId,
                     string.Empty, cancellationToken).ConfigureAwait(false);
                 if (consumers.Any(static p => p.Unavailable)) reclaim = false;
@@ -284,25 +320,22 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
         finally { if (File.Exists(temporary)) RetainedFileMutations.Delete(temporary); }
     }
 
-    private sealed class ArchiveDiscovery(CaptureSatelliteWorkStore owner)
+    private sealed class ArchiveDiscovery(SiloArtifactStorage? storage)
     {
-        private ProjectedSceneRetentionGuard guard = owner.CreateRetentionGuard();
+        private bool readSilo;
+        private IReadOnlySet<string>? siloReferences;
 
-        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+        internal async ValueTask<bool> HasArchivedCaptureAsync(Guid rawArtifactId, CancellationToken cancellationToken)
         {
-            try { return await guard.HasArchivedCaptureAsync(captureId, cancellationToken).ConfigureAwait(false); }
-            catch (InvalidDataException) when (guard.DiscoveryBudgetExhausted)
+            if (storage is null) return true;
+            if (!readSilo)
             {
-                // No absence decision from the exhausted scan is reused. A single capture must still fit
-                // a fresh complete budget; an uncertain/oversized archive continues to fail closed.
-                guard = owner.CreateRetentionGuard();
-                return await guard.HasArchivedCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
+                siloReferences = await storage.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false);
+                readSilo = true;
             }
+            return siloReferences is null || siloReferences.Contains(rawArtifactId.ToString("D"));
         }
     }
-
-    private ProjectedSceneRetentionGuard CreateRetentionGuard()
-        => RetentionGuardFactory?.Invoke() ?? new(root, processing);
 
     private async ValueTask<CaptureSatelliteWork> ReadAsync(string path, CancellationToken cancellationToken)
     {
@@ -331,7 +364,6 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             !await processing.VerifySatelliteRawAsync(header.CaptureId, header.RawArtifactId, header.RawPayloadPath,
                 header.RawSidecarPath, cancellationToken).ConfigureAwait(false))
             throw new InvalidDataException("Satellite retention intent differs from its durable raw identity.");
-        _ = Resolve(header.RawPayloadPath); _ = Resolve(header.RawSidecarPath);
         return header;
     }
 
@@ -341,22 +373,16 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private static string WorkKey(Guid captureId, string nodeId) => ProcessingIdentity.ComputePayloadSha256(
         Encoding.UTF8.GetBytes($"capture-satellite-work-v1\0{captureId:N}\0{nodeId}"));
     private string DirectoryFor(string key) => Path.Combine(root, "journal", "capture-satellites", key);
-    private string Resolve(string relative)
+    private static async ValueTask<bool> AnyRetainedAsync(SiloArtifactStorage storage,
+        IEnumerable<Guid> artifactIds, CancellationToken cancellationToken)
     {
-        var path = Path.GetFullPath(Path.Combine(root, relative));
-        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
-        if (Path.IsPathRooted(relative) || !path.StartsWith(prefix,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            throw new InvalidDataException("Satellite intent path escapes its storage root.");
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-        return path;
+        foreach (var artifactId in artifactIds)
+        {
+            if (await storage.IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false)) return true;
+        }
+        return false;
     }
-    private bool Exists(string relative)
-    {
-        try { return (File.GetAttributes(Resolve(relative)) & FileAttributes.Directory) == 0; }
-        catch (FileNotFoundException) { return false; }
-        catch (DirectoryNotFoundException) { return false; }
-    }
+
     private async ValueTask<byte[]> ReadBoundedAsync(string path, int maximum, CancellationToken cancellationToken)
     {
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);

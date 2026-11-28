@@ -4,10 +4,10 @@ namespace HVO.SkyMonitor.Deployment.Contracts;
 
 public static class DeploymentSchemaVersions
 {
-    public const int InstanceManifest = 1;
-    public const int InstallationState = 1;
-    public const int InstallationResult = 1;
-    public const int LifecycleOperation = 1;
+    public const int InstanceManifest = 2;
+    public const int InstallationState = 2;
+    public const int InstallationResult = 2;
+    public const int LifecycleOperation = 4;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
     public const int LifecycleEvent = 1;
@@ -95,6 +95,8 @@ public enum LifecycleOperationKind
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1027:Mark enums with FlagsAttribute",
+    Justification = "Lifecycle phases are exclusive. The retired numeric value stays reserved for persisted journals.")]
 public enum LifecycleOperationPhase
 {
     Planned,
@@ -108,11 +110,8 @@ public enum LifecycleOperationPhase
     Committed,
     Restoring,
     Completed,
-    Restored,
     /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
-    StateSnapshotRecorded,
-    /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
-    RetainedStateApplied
+    StateSnapshotRecorded = 12
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -139,17 +138,16 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    string? UpgradeCompatibility = null,
+    string? StateContract = null,
     string? SourceRevision = null,
     string? Component = null,
     string? ConfigurationContract = null,
     string? CatalogContract = null,
     string? ReplayRunnerContract = null,
-    string? MinimumCompatibleRevision = null,
     string? IdentityMigration = null,
     string? RawIngressSchema = null,
     string? CatalogManifestVersion = null,
-    string? RawIngressMigration = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FirstBootContract = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,
@@ -206,7 +204,7 @@ public sealed record InstanceManifest(
     ImageInstallationIdentity Image,
     ImageInstallationIdentity? PreviousImage,
     DockerDaemonIdentity DockerDaemon,
-    string UpgradeCompatibility,
+    string StateContract,
     DateTimeOffset CreatedUtc,
     CatalogInstallationIdentity? PreviousCatalog = null,
     InstanceLifecycleCondition LifecycleCondition = InstanceLifecycleCondition.Installed,
@@ -221,7 +219,51 @@ public sealed record InstanceManifest(
     LifecycleStateSnapshot? PreviousStateSnapshot = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? DeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? PreviousDeepSkyCatalog = null,
-    bool HasPreviousDeepSkySelection = false);
+    bool HasPreviousDeepSkySelection = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SiloInstallationIdentity? Silo = null);
+
+/// <summary>
+/// The stock Silo runtime a Silo-layout CameraAgent instance was installed with (#1966; CameraAgent Silo cutover
+/// contract sections 2, 4.2, 4.3 and 8.1). Present only on an instance whose manifest declares the Silo component
+/// schema; a filesystem-layout manifest never carries it. Holds no secret: the writer credential is named by its access
+/// key ID only, and the root credential is never recorded.
+/// </summary>
+public sealed record SiloInstallationIdentity(
+    string StateContract,
+    string ImageReference,
+    string ImageRelease,
+    string ImageIndexDigest,
+    string ImagePlatformDigest,
+    string ImageId,
+    string ImageRevision,
+    string DataRoot,
+    string DataRootFileSystem,
+    string DataRootDevice,
+    string StoreId,
+    string Bucket,
+    string StorageBindingId,
+    int WriterGeneration,
+    string WriterAccessKeyId,
+    string MarkerVersionId,
+    string MarkerSha256,
+    string FenceVersionId,
+    string FenceSha256,
+    Guid FirstBootPauseId,
+    bool DiskSyncOnWrite,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SiloArchiveIdentity? Archive = null);
+
+/// <summary>
+/// The optional archive Silo a Silo-layout instance was configured with and verified read-only at install (#1966): its
+/// HTTPS endpoint and versioned bucket, the SHA-256 of the certificate-authority file it must chain to, the access key
+/// ID of its credential, and the server certificate seen. The credential secret is never recorded. Replication is #1969.
+/// </summary>
+public sealed record SiloArchiveIdentity(
+    string Endpoint,
+    string Bucket,
+    string AuthoritySha256,
+    string AccessKeyId,
+    string ServerCertificateSha256,
+    DateTimeOffset VerifiedUtc);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -245,18 +287,15 @@ public sealed record LifecycleOperationState(
     LifecycleContinuityBoundary? PostMutationContinuity = null,
     [property: JsonPropertyName("originalOwnerBootstrapState")]
     string? ExpectedOwnerBootstrapState = null,
-    Guid? RestoreResumeCommandId = null,
-    LifecycleResumeReceipt? RestoreResumeReceipt = null,
     bool StateSnapshotRequired = false,
-    string? StateMigration = null,
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
-    LifecycleStateSnapshot? RetainedStateSnapshot = null,
     IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
     StateRestorePlan? StateRestorePlan = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
-    bool DeepSkyTransition = false);
+    bool DeepSkyTransition = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null);
 
 /// <summary>
 /// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
@@ -384,6 +423,14 @@ public sealed record LifecycleResult(
     string? ResumeCommand,
     DateTimeOffset CompletedUtc)
 {
+    /// <summary>The latest Docker liveness observation for the CameraAgent process, when available.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Alive { get; init; }
+
+    /// <summary>The HTTP response from the CameraAgent application's readiness endpoint, when observed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HealthStatusCode { get; init; }
+
     /// <summary>
     /// The upgrade notes an upgrade showed before it started, when its source provided a release.json. Omitted
     /// otherwise, so every other lifecycle result is unchanged.

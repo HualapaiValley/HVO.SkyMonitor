@@ -1,5 +1,8 @@
 # Standalone CameraAgent Course Correction
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 > Historical decision record. Issues #205 through #211 delivered this course
 > correction and its standalone acceptance gate. Imperative and future-tense
 > language below records the executed contract; it does not describe open work.
@@ -184,7 +187,7 @@ mistaken for an impossible ASI174 native region.
   container, a versioned provisional 2.5 mm fisheye rig, five-second calibrated
   light exposures, and a separately declared cadence.
 - Use the complete installed production catalog and exact catalog provenance.
-  This means the verified 119,625-row production snapshot is installed and
+  This means the verified 119,613-row production snapshot is installed and
   identified; each scene query remains bounded by declared magnitude and result
   limits rather than attempting to render every catalog row.
 - Run pseudo calibration, rolling combination, previews, object/cardinal/corner

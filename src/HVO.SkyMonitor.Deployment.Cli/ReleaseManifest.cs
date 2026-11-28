@@ -81,11 +81,14 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     /// </summary>
     public ReleaseImage? CameraAgent { get; init; }
 
-    public const string LogicHostImageKey = "logicHost";
-    public const string LogicHostImageName = "skymonitor-logichost";
+    /// <summary>
+    /// Whether the release names a stock Silo image (<c>images.silo</c>, #1966), and whether that entry is exactly the pin
+    /// this installer qualifies (<see cref="SiloImagePin"/>). Reading never fails on the entry, so an installer reads a
+    /// later release that pins another Silo; only a Silo-layout install acts on the answer.
+    /// </summary>
+    public bool NamesSiloImage { get; init; }
 
-    /// <summary>The central image, populated only by the explicit LogicHost reader.</summary>
-    public ReleaseImage? LogicHost { get; init; }
+    public bool SiloImageMatchesPin { get; init; }
 
     /// <summary>The release's files besides release.json and SHA256SUMS, each with its size and SHA-256.</summary>
     public IReadOnlyList<ReleaseAsset> Assets { get; init; } = [];
@@ -98,13 +101,6 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     /// only values this reader has already validated, never raw text from the document.
     /// </summary>
     public static ReleaseManifest Parse(ReadOnlyMemory<byte> utf8Json)
-        => ParseComponent(utf8Json, CameraAgentImageKey, CameraAgentImageName);
-
-    /// <summary>Reader-first support for offline LogicHost preparation; does not enable installation.</summary>
-    public static ReleaseManifest ParseLogicHost(ReadOnlyMemory<byte> utf8Json)
-        => ParseComponent(utf8Json, LogicHostImageKey, LogicHostImageName);
-
-    private static ReleaseManifest ParseComponent(ReadOnlyMemory<byte> utf8Json, string imageKey, string imageName)
     {
         if (utf8Json.Length > MaximumLength)
         {
@@ -177,15 +173,20 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
                 throw Invalid($"it is not a release of {RepositoryUrl}");
             }
             var assets = ReadAssets(root);
-            var image = ReadComponentImage(root, version, assets, imageKey, imageName);
+            var image = ReadCameraAgentImage(root, version, assets);
+            var silo = root.TryGetProperty("images", out var allImages) && allImages.ValueKind == JsonValueKind.Object &&
+                       allImages.TryGetProperty(SiloImagePin.ImageKey, out var siloEntry)
+                ? siloEntry
+                : (JsonElement?)null;
             return new ReleaseManifest(version, ReadUpgradeNotes(root))
             {
                 Tag = $"v{version}",
                 Prerelease = prerelease.GetBoolean(),
                 Commit = commit,
                 Created = created,
-                CameraAgent = imageKey == CameraAgentImageKey ? image : null,
-                LogicHost = imageKey == LogicHostImageKey ? image : null,
+                CameraAgent = image,
+                NamesSiloImage = silo is not null,
+                SiloImageMatchesPin = silo is { } entry && SiloImagePin.Matches(entry),
                 Assets = assets
             };
         }
@@ -200,38 +201,38 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         }
     }
 
-    private static ReleaseImage ReadComponentImage(
-        JsonElement root, string version, IReadOnlyList<ReleaseAsset> assets, string imageKey, string imageName)
+    private static ReleaseImage ReadCameraAgentImage(
+        JsonElement root, string version, IReadOnlyList<ReleaseAsset> assets)
     {
         if (!root.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Object)
         {
             throw Invalid("it lists no images");
         }
-        if (!images.TryGetProperty(imageKey, out var image) || image.ValueKind != JsonValueKind.Object)
+        if (!images.TryGetProperty(CameraAgentImageKey, out var image) || image.ValueKind != JsonValueKind.Object)
         {
-            throw Invalid($"it has no {imageKey} image");
+            throw Invalid($"it has no {CameraAgentImageKey} image");
         }
         var repository = Text(image, "repository");
         if (repository is null || !RepositoryPattern().IsMatch(repository) || !NamesRegistry(repository) ||
-            !repository.EndsWith("/" + imageName, StringComparison.Ordinal))
+            !repository.EndsWith("/" + CameraAgentImageName, StringComparison.Ordinal))
         {
-            throw Invalid($"the {imageName} image's repository is not a <registry>/<path>/{imageName} repository");
+            throw Invalid($"the {CameraAgentImageName} image's repository is not a <registry>/<path>/{CameraAgentImageName} repository");
         }
         if (Text(image, "tag") != version || !DockerTagPattern().IsMatch(version))
         {
-            throw Invalid($"the {imageName} image's tag is not {version}");
+            throw Invalid($"the {CameraAgentImageName} image's tag is not {version}");
         }
         var digest = Text(image, "digest");
         if (digest is null || !DigestPattern().IsMatch(digest))
         {
-            throw Invalid($"the {imageName} image's digest is not sha256:<64 lowercase hex digits>");
+            throw Invalid($"the {CameraAgentImageName} image's digest is not sha256:<64 lowercase hex digits>");
         }
         if (Text(image, "reference") != $"{repository}:{version}@{digest}")
         {
-            throw Invalid($"the {imageName} image's reference is not its repository, its tag and its digest");
+            throw Invalid($"the {CameraAgentImageName} image's reference is not its repository, its tag and its digest");
         }
-        var platforms = ReadPlatforms(image, imageName);
-        var archives = ReadOfflineArchives(image, version, platforms, imageName);
+        var platforms = ReadPlatforms(image);
+        var archives = ReadOfflineArchives(image, version, platforms);
         foreach (var archive in archives)
         {
             // Every offline archive is also one of the release's files, so SHA256SUMS covers it and the asset list and
@@ -246,12 +247,12 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         return new ReleaseImage(repository, version, digest, platforms, archives);
     }
 
-    private static string[] ReadPlatforms(JsonElement image, string imageName)
+    private static string[] ReadPlatforms(JsonElement image)
     {
         if (!image.TryGetProperty("platforms", out var platforms) || platforms.ValueKind != JsonValueKind.Array ||
             platforms.GetArrayLength() is 0 or > 2)
         {
-            throw Invalid($"the {imageName} image's platforms are not a list of linux/amd64 and linux/arm64");
+            throw Invalid($"the {CameraAgentImageName} image's platforms are not a list of linux/amd64 and linux/arm64");
         }
         var read = new List<string>();
         foreach (var platform in platforms.EnumerateArray())
@@ -259,7 +260,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             if (platform.ValueKind != JsonValueKind.String || platform.GetString() is not { } name ||
                 !ImagePlatforms.Contains(name, StringComparer.Ordinal) || read.Contains(name, StringComparer.Ordinal))
             {
-                throw Invalid($"the {imageName} image's platforms are not a list of linux/amd64 and linux/arm64");
+                throw Invalid($"the {CameraAgentImageName} image's platforms are not a list of linux/amd64 and linux/arm64");
             }
             read.Add(name);
         }
@@ -267,7 +268,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     }
 
     // images.<name>.offlineArchives, which a release that publishes no archives leaves out or null.
-    private static OfflineArchive[] ReadOfflineArchives(JsonElement image, string version, string[] platforms, string imageName)
+    private static OfflineArchive[] ReadOfflineArchives(JsonElement image, string version, string[] platforms)
     {
         if (!image.TryGetProperty("offlineArchives", out var archives) || archives.ValueKind == JsonValueKind.Null)
         {
@@ -275,7 +276,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         }
         if (archives.ValueKind != JsonValueKind.Array || archives.GetArrayLength() > platforms.Length)
         {
-            throw Invalid($"the {imageName} image's offline archives are not a list of at most one per platform");
+            throw Invalid($"the {CameraAgentImageName} image's offline archives are not a list of at most one per platform");
         }
         var read = new List<OfflineArchive>();
         var index = 0;
@@ -287,7 +288,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             {
                 throw Invalid($"offline archive {index} is not for one of the image's platforms, once");
             }
-            var name = OfflineArchive.NameFor(version, platform, imageName);
+            var name = OfflineArchive.NameFor(version, platform);
             if (Text(archive, "name") != name)
             {
                 throw Invalid($"offline archive {index} for {platform} is not named {name}");
@@ -475,7 +476,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
 }
 
 /// <summary>
-/// The component image a release names (<c>images.cameraAgent</c> or <c>images.logicHost</c>): its repository, the release's version
+/// The CameraAgent image a release names (<c>images.cameraAgent</c>): its repository, the release's version
 /// as its tag, and the digest of the image index over its platforms, which is what Docker pulls.
 /// </summary>
 internal sealed record ReleaseImage(
@@ -507,9 +508,9 @@ internal sealed record OfflineArchive(
     string ManifestDigest,
     string ConfigDigest)
 {
-    /// <summary>The archive's name for a component, version and platform; existing callers default to CameraAgent.</summary>
-    public static string NameFor(string version, string platform, string imageName = ReleaseManifest.CameraAgentImageName)
-        => $"{imageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
+    /// <summary>The CameraAgent archive's name for a version and platform.</summary>
+    public static string NameFor(string version, string platform)
+        => $"{ReleaseManifest.CameraAgentImageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
 }
 
 /// <summary>A file a release has besides release.json and SHA256SUMS, with its size and SHA-256.</summary>

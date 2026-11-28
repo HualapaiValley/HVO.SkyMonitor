@@ -87,7 +87,7 @@ internal static class TransientDeliveryTestData
             createdUtc ?? DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddMinutes(10),
             submission.Candidate.ContextSources,
-            TransientOperatingMode.Hybrid,
+            TransientOperatingMode.Edge,
             true,
             TransientCandidateWorkflowPhase.HandoffPending,
             new string('F', 64),

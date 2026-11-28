@@ -70,20 +70,20 @@ records that exact intra-exposure timing and saturated photometry are unrecovera
 ## Detector Inputs
 
 `TransientDetectorInputFactory.Create` accepts the same `ProcessingArtifact` boundary
-used by in-memory CameraAgent execution and centrally reconstructed artifacts. It
+used by CameraAgent and retained capture reconstruction. It
 requires a Raw or Calibrated artifact, versioned source evidence, and explicit
 `TransientLinearLevelsV1` black, white, and saturation levels in inclusive 16-bit ADU.
 It verifies source identity, role, variant, recipe identity, and exact ordered UTC
 start/end against the artifact's explicit observation bounds. Artifact creation and
 aggregate integration are not used to infer sensor timing. CameraAgent uses reported
 acquisition start/end when available and otherwise falls back to frame timestamp plus
-exposure; committed CameraAgent timing is canonically millisecond-aligned and LogicHost
-uses those same reconstruction-descriptor bounds. The factory also
+exposure. Committed CameraAgent timing follows the millisecond-aligned bounds
+in the reconstruction descriptor. The factory also
 verifies compatibility profiles, exact byte length, SHA-256, format, CFA, depth,
 packing, byte order, and levels before conversion.
 
 When an accelerated capture reports identical acquisition start/end with positive
-effective integration, both host adapters preserve the acquisition timestamp but use
+effective integration, CameraAgent preserves the acquisition timestamp and uses
 `start + integration` as the observation end. Durable-ingress time remains the actual
 post-publication instant and is never replaced by modeled observation time.
 

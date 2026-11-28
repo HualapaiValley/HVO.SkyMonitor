@@ -63,6 +63,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         .ToArray();
 
     public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.Proposal);
+
+    public CaptureProcessingPlanPreview PreviewRetainedPlan(CameraModuleConfig config)
+        => PreviewPlan(config, CaptureProcessingGraphCompilation.RetainedCapture);
+
+    private CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config, CaptureProcessingGraphCompilation compilation)
     {
         ArgumentNullException.ThrowIfNull(config);
         var pipeline = config.Pipeline;
@@ -79,7 +85,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             null,
             null,
             step.Publication)).ToArray();
-        var graph = CreateGraph(config);
+        var graph = CreateGraph(config, "cameraagent-capture-processing", schemaVersion, compilation);
         try
         {
             var configuredById = desired.ToDictionary(static node => node.Id, StringComparer.OrdinalIgnoreCase);
@@ -216,7 +222,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             foreach (var stepConfig in pipelineConfig)
             {
-                var step = CreateStep(stepConfig, identifiers, explicitV2, out var effectiveConfig);
+                var step = CreateStep(stepConfig, identifiers, explicitV2, compilation, out var effectiveConfig);
                 if (explicitV2 && effectiveConfig.Publication is not null &&
                     step is not ICaptureProcessingGraphStep)
                 {
@@ -283,8 +289,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
                 var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
                     .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
-                if (measurement.Config.DependsOn is not { Count: 1 } measuredInputs ||
-                    !string.Equals(measuredInputs[0], sceneId, StringComparison.OrdinalIgnoreCase))
+                var measuredInputs = measurement.Config.DependsOn ?? [];
+                var measuredScenes = measurement.Step is ICenteredRawPrimaryCaptureProcessingStep
+                    ? measuredInputs.Where(id => nodesById.TryGetValue(id, out var producer) &&
+                        producer.Step is ProjectedSceneCaptureProcessingStep).ToArray()
+                    : measuredInputs;
+                if (measuredScenes is not [var measuredScene] ||
+                    !string.Equals(measuredScene, sceneId, StringComparison.OrdinalIgnoreCase))
                 {
                     if (compilation == CaptureProcessingGraphCompilation.Proposal)
                     {
@@ -311,7 +322,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
             }
             ValidateAstrometryPrediction(configured, explicitV2);
-            ValidateStoragePolicies(configured, nodesById, explicitV2);
+            ValidateStoragePublication(configured, explicitV2);
             if (compilation != CaptureProcessingGraphCompilation.RetainedCapture) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
                 ? CompileSharedPlan(configuredSteps, configured, nodesById, definitionName, definitionRevision)
@@ -377,7 +388,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may consume its analysis inputs.");
             // A terminal, retained assessment may still have local Storage or outcome consumers. Existing
             // storage-policy validation disallows upload of the layoutless fit and context.
-            if (consumerDependencies.Any(fits.Contains) && consumer.Step is not (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep))
+            if (consumerDependencies.Any(fits.Contains) && consumer.Step is not (SiloCaptureProcessingStep or TelemetryCaptureProcessingStep))
                 throw new InvalidOperationException("Only Storage and Telemetry may consume an independent astrometry assessment.");
         }
     }
@@ -386,7 +397,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
     {
-        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false }).ToArray();
+        var scenes = configured.Where(static item =>
+            item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false }).ToArray();
         var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
         var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
             annotations.Any(static item =>
@@ -406,20 +418,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 annotation.Config.DependsOn?.Contains(sceneId, StringComparer.OrdinalIgnoreCase) != true)
                 throw new InvalidOperationException(
                     $"Annotation step '{annotation.Step.Name}' must require and explicitly depend on ProjectedScene step '{sceneId}'.");
-        }
-        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
-        {
-            var step = (FileStorageCaptureProcessingStep)storage.Step;
-            var dependencies = storage.Config.DependsOn ?? [];
-            var uploadsImages = dependencies.Any(IsRawDependency) && step.QueuesUpload(null, FrameArtifactRole.Raw, null, null) ||
-                configured.Where(item => item.Step is ICaptureProcessingGraphStep &&
-                        dependencies.Contains(item.Step.Name, StringComparer.OrdinalIgnoreCase))
-                    .Any(item => GetOutputs((ICaptureProcessingGraphStep)item.Step).Any(output =>
-                        output.Role != FrameArtifactRole.Metadata &&
-                        step.QueuesUpload(item.Step.Name, output.Role, output.Variant, output.RecipeName)));
-            if (uploadsImages && !dependencies.Contains(sceneId, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    $"Storage step '{step.Name}' uploading scene-bearing images must explicitly depend on ProjectedScene step '{sceneId}'.");
         }
     }
 
@@ -488,73 +486,14 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    private static void ValidateStoragePolicies(
+    private static void ValidateStoragePublication(
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
         bool explicitV2)
     {
-        if (!explicitV2)
-        {
-            return;
-        }
-        if (configured.Any(static item =>
+        if (explicitV2 && configured.Any(static item =>
                 item.Config.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal) &&
-            !configured.Any(static item => item.Step is FileStorageCaptureProcessingStep))
-        {
-            throw new InvalidOperationException(
-                "Durable processing outputs require an enabled Storage step to define retention ownership.");
-        }
-        foreach (var storage in configured.Where(static item => item.Step is FileStorageCaptureProcessingStep))
-        {
-            var options = ((FileStorageCaptureProcessingStep)storage.Step).ConfiguredOptions;
-            var dependencyIds = storage.Config.DependsOn ?? [];
-            var producerDependencies = dependencyIds
-                .Where(nodesById.ContainsKey)
-                .Select(id => (Id: id, Step: nodesById[id].Step as ICaptureProcessingGraphStep))
-                .Where(static target => target.Step is not null)
-                .ToArray();
-            var producerOutputs = producerDependencies
-                .SelectMany(static target => GetOutputs(target.Step!)
-                    .Select(output => (target.Id, Step: target.Step!, Output: output)))
-                .ToArray();
-            foreach (var policy in options.Policies ?? [])
-            {
-                var targets = producerOutputs
-                    .Where(target => policy.StepId is null || string.Equals(policy.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
-                    .Where(target => policy.Role is null || policy.Role == target.Output.Role)
-                    .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Output.Variant, StringComparison.Ordinal))
-                    .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
-                    .ToArray();
-                var selectsRaw = dependencyIds.Any(IsRawDependency) &&
-                    policy.StepId is null &&
-                    (policy.Role is null or FrameArtifactRole.Raw) &&
-                    policy.Variant is null && policy.RecipeName is null;
-                if (targets.Length == 0 && !selectsRaw)
-                {
-                    throw new InvalidOperationException(
-                        $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
-                }
-            }
-            foreach (var target in producerOutputs.Where(target =>
-                         target.Output.Role == FrameArtifactRole.Metadata && target.Step is not ProjectedSceneCaptureProcessingStep ||
-                         target.Step is JpegEncodingCaptureProcessingStep))
-            {
-                var policy = (options.Policies ?? [])
-                    .Where(candidate => candidate.StepId is null || string.Equals(candidate.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
-                    .Where(candidate => candidate.Role is null || candidate.Role == target.Output.Role)
-                    .Where(candidate => candidate.Variant is null || string.Equals(candidate.Variant, target.Output.Variant, StringComparison.Ordinal))
-                    .Where(candidate => candidate.RecipeName is null || string.Equals(candidate.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
-                    .OrderByDescending(static candidate =>
-                        (candidate.StepId is null ? 0 : 1) + (candidate.Role is null ? 0 : 1) +
-                        (candidate.Variant is null ? 0 : 1) + (candidate.RecipeName is null ? 0 : 1))
-                    .FirstOrDefault();
-                if (policy?.QueueForUpload ?? options.QueueForUpload)
-                {
-                    throw new InvalidOperationException(
-                        $"Storage upload policy for step '{target.Id}' output '{target.Output.Variant}' cannot target a layoutless metadata or JPEG product.");
-                }
-            }
-        }
+            !configured.Any(static item => item.Step is SiloCaptureProcessingStep))
+            throw new InvalidOperationException("Durable processing outputs require an enabled Storage step.");
     }
 
     private static void InferLegacyDependencies(
@@ -638,6 +577,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             var dependencies = explicitV2
                 ? declaredDependencies.Where(static dependency => !IsRawDependency(dependency)).ToArray()
                 : declaredDependencies.ToArray();
+            var centeredRawPrimary = item.Step is ICenteredRawPrimaryCaptureProcessingStep;
+            if (centeredRawPrimary &&
+                (!explicitV2 || config.CenteredExposure is not { } centered || !centered.IsValid() ||
+                 declaredDependencies.Count(IsRawDependency) != 1 || !graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw) ||
+                 ((ICenteredRawPrimaryCaptureProcessingStep)item.Step).DependencyRequirements.Any(requirement =>
+                     requirement.Roles is null || requirement.Roles.Contains(FrameArtifactRole.Raw) ||
+                     !requirement.Roles.IsSubsetOf(graphStep.AcceptedInputRoles))))
+            {
+                throw new InvalidOperationException(
+                    $"Capture processing step '{item.Step.Name}' requires a centered raw primary and produced-only dependency requirements.");
+            }
+
             var effectiveFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
             if (RequiresLinear16(graphStep.RecipeName) &&
                 effectiveFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
@@ -645,8 +596,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Capture processing step '{item.Step.Name}' requires a linear 16-bit input, but the configured readout emits {effectiveFormat}.");
             }
+            var centeredHandlesDeclaredLayout = config.CenteredExposure is { } centeredProfile && centeredProfile.IsValid() &&
+                (centeredRawPrimary || item.Step is CalibrationCaptureProcessingStep or ProjectedSceneCaptureProcessingStep) &&
+                (effectiveLayout?.StoredCodeTransform == FrameStoredCodeTransform.OpaqueContainerV1 ||
+                 CenteredLinearQualification.TryResolveLevels(effectiveLayout, out _, out _, out _));
             if (effectiveLayout is not null && dependencies.Length == 0 &&
-                (!ProcessingStoredCodeIsSupported(effectiveLayout) ||
+                ((!centeredHandlesDeclaredLayout && !ProcessingStoredCodeIsSupported(effectiveLayout)) ||
                  effectiveLayout.ContainerDepthBits > 8 && effectiveLayout.ByteOrder != FrameByteOrder.LittleEndian))
             {
                 throw new InvalidOperationException(
@@ -656,7 +611,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 continue;
             }
-            if (usesRaw)
+            if (usesRaw && !centeredRawPrimary)
             {
                 if (dependencies.Length != 0 || !graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
                 {
@@ -665,7 +620,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
                 continue;
             }
-            if (dependencies.Length == 0)
+            if (dependencies.Length == 0 && !centeredRawPrimary)
             {
                 if (!graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
                 {
@@ -686,7 +641,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .ToArray();
             if (item.Step is IRequiredCaptureProcessingDependencies required)
             {
-                if (!TryAssignRequiredDependencies(matching, required.DependencyRequirements, out _))
+                if (!TryAssignRequiredDependencies(centeredRawPrimary
+                    ? producers.Cast<ICaptureProcessingGraphStep>().ToArray() : matching,
+                    required.DependencyRequirements, out _))
                 {
                     throw new InvalidOperationException(
                         $"Capture processing step '{item.Step.Name}' does not have its required dependency inputs.");
@@ -938,7 +895,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 windowStep.Timeout.Ticks,
                 windowStep.MissingInputOutcome)
             : null;
-        // Publication, storage, upload, and telemetry options stay in the CameraAgent plan identity.
+        // Publication, storage and telemetry options stay in the CameraAgent plan identity.
         var effectiveSharedOptions = graphStep is null
             ? CaptureContractJson.SerializeToElement(new { })
             : item.Config.Options ?? CaptureContractJson.SerializeToElement(new { });
@@ -976,17 +933,26 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     {
         if (step is IRequiredCaptureProcessingDependencies required)
         {
-            return required.DependencyRequirements.Select((requirement, index) => new ProcessingGraphInputContract(
-                requirement.Roles.ToImmutableArray(),
-                [],
-                requirement.Variant is null ? [] : [requirement.Variant],
-                requirement.RecipeNames?.Select(ResolveSharedInputRecipeName).ToImmutableArray() ?? [],
-                requirement.SchemaVersions?.ToImmutableArray() ?? [],
-                requirement.Required,
-                index == 0 ? "input" : $"input-{index}",
-                index == 0
-                    ? ProcessingGraphInputBindingKind.PrimaryArtifact
-                    : ProcessingGraphInputBindingKind.AuxiliaryArtifact)).ToImmutableArray();
+            var centeredRaw = step is ICenteredRawPrimaryCaptureProcessingStep;
+            var producedPorts = required.DependencyRequirements.Select((requirement, index) =>
+            {
+                var port = centeredRaw ? index + 1 : index;
+                return new ProcessingGraphInputContract(
+                    requirement.Roles.ToImmutableArray(),
+                    [],
+                    requirement.Variant is null ? [] : [requirement.Variant],
+                    requirement.RecipeNames?.Select(ResolveSharedInputRecipeName).ToImmutableArray() ?? [],
+                    requirement.SchemaVersions?.ToImmutableArray() ?? [],
+                    requirement.Required,
+                    port == 0 ? "input" : $"input-{port}",
+                    port == 0
+                        ? ProcessingGraphInputBindingKind.PrimaryArtifact
+                        : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+            });
+            return centeredRaw
+                ? [new([FrameArtifactRole.Raw], [ProcessingProductKind.PixelData], ["source"], [], [], true,
+                    "input", ProcessingGraphInputBindingKind.PrimaryArtifact), .. producedPorts]
+                : producedPorts.ToImmutableArray();
         }
         if (step is ICompoundCaptureProcessingGraphStep compound)
         {
@@ -1053,7 +1019,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         ICaptureProcessingStep step,
         string dependency,
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
-        => step is (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep) &&
+        => step is (SiloCaptureProcessingStep or TelemetryCaptureProcessingStep) &&
            nodesById.TryGetValue(dependency, out var producer) &&
            producer is { Config.Required: false, Step: MeasuredAstrometryCaptureProcessingStep };
 
@@ -1063,14 +1029,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
     {
         if (step is not IRequiredCaptureProcessingDependencies required ||
-            dependencies.Any(IsRawDependency))
+            step is not ICenteredRawPrimaryCaptureProcessingStep && dependencies.Any(IsRawDependency))
         {
             return new(StringComparer.Ordinal);
         }
-        var producerSteps = dependencies.Select(dependency =>
+        var producers = step is ICenteredRawPrimaryCaptureProcessingStep
+            ? dependencies.Where(static dependency => !IsRawDependency(dependency)).ToArray()
+            : dependencies;
+        var producerSteps = producers.Select(dependency =>
             (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
         return TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes)
-            ? optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.Ordinal)
+            ? optionalIndexes.Select(index => producers[index]).ToHashSet(StringComparer.Ordinal)
             : new(StringComparer.Ordinal);
     }
 
@@ -1223,6 +1192,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 optionalDependencies,
                 planNode.IdentitySha256));
         }
+        if (ordered.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep) is { } measurement)
+        {
+            // Keep the shared graph's order for all other nodes. Its ready-batch ordering would otherwise
+            // put unrelated raw consumers (including Storage and scene construction) ahead of step 4,
+            // merely because step 4 waits for its own step-three settlement.
+            var prerequisites = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { measurement.Id };
+            for (var index = ordered.Count - 1; index >= 0; index--)
+            {
+                if (prerequisites.Contains(ordered[index].Id))
+                    prerequisites.UnionWith(ordered[index].Dependencies);
+            }
+            return ordered.Where(node => prerequisites.Contains(node.Id))
+                .Concat(ordered.Where(node => !prerequisites.Contains(node.Id))).ToList();
+        }
         return ordered;
     }
 
@@ -1363,6 +1346,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CaptureProcessingStepConfig config,
         HashSet<string> identifiers,
         bool aliasesOnly,
+        CaptureProcessingGraphCompilation compilation,
         out CaptureProcessingStepConfig effectiveConfig)
     {
         var registration = ResolveRegistration(config.Type, aliasesOnly);
@@ -1377,13 +1361,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             id,
             registration.ImplementationType.FullName ?? registration.ImplementationType.Name,
             order);
+        var allowRetainedLegacyDeepSkyFont = compilation != CaptureProcessingGraphCompilation.Proposal;
         if (registration.Alias == SceneStylePresentation.StepAlias)
         {
-            var decoded = ProcessingNodeOptionsCodec.Decode(SceneStylePresentation.Descriptor,
-                config.Options ?? JsonSerializer.SerializeToElement(new { }));
+            var decoded = ProcessingNodeOptionsCodec.Decode(
+                SceneStylePresentation.Descriptor,
+                config.Options ?? JsonSerializer.SerializeToElement(new { }),
+                ProcessingNodeOptionsCodec.DefaultPath,
+                allowQuotedNumbers: false,
+                allowRetainedLegacyDeepSkyFont: allowRetainedLegacyDeepSkyFont);
             if (!decoded.IsValid) throw new ValidationException(string.Join(' ', decoded.Diagnostics.Select(item => item.Message)));
         }
-        var options = CreateOptionsInstance(config.Options, registration.OptionsType);
+        var options = CreateOptionsInstance(config.Options, registration.OptionsType, allowRetainedLegacyDeepSkyFont);
         if (options is EnvironmentPresentationLayerProcessingStepOptions environment)
         {
             var acquisition = _serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.EnvironmentalAcquisition;
@@ -1415,14 +1404,15 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static JsonElement SerializeEffectiveOptions(object options, bool omitLegacyEnabled)
     {
         var serialized = CaptureContractJson.SerializeToElement(options);
+        var sceneLayer = options as ScenePresentationLayerProcessingStepOptions;
         // New optional query/layer controls must not invalidate retained graphs that never enabled them.
         var omitDeepSky = options switch
         {
             ProjectedSceneCaptureProcessingStepOptions query => !query.DeepSkyEnabled,
-            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer,
+            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer && !layer.ApplyInlineDeepSkyStyle,
             _ => false
         };
-        if ((!omitLegacyEnabled && !omitDeepSky) || serialized.ValueKind is not JsonValueKind.Object)
+        if ((!omitLegacyEnabled && !omitDeepSky && sceneLayer is null) || serialized.ValueKind is not JsonValueKind.Object)
         {
             return serialized;
         }
@@ -1435,7 +1425,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 if (omitLegacyEnabled && string.Equals(property.Name, "enabled", StringComparison.OrdinalIgnoreCase) ||
                     omitDeepSky && (property.Name.StartsWith("deepSky", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(property.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase)))
+                        string.Equals(property.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "applyInlineDeepSkyStyle", StringComparison.OrdinalIgnoreCase)) ||
+                    !omitDeepSky && sceneLayer is not null && IsDefaultExtendedDeepSkyProperty(sceneLayer, property.Name))
                     continue;
                 property.WriteTo(writer);
             }
@@ -1443,6 +1435,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
         using var document = JsonDocument.Parse(stream.ToArray());
         return document.RootElement.Clone();
+
+        static bool IsDefaultExtendedDeepSkyProperty(ScenePresentationLayerProcessingStepOptions layer, string name) =>
+            string.Equals(name, "deepSkyMaximumLabels", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMaximumLabels == 24 ||
+            string.Equals(name, "deepSkyMaximumLabelCharacters", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMaximumLabelCharacters == 24 ||
+            string.Equals(name, "deepSkyLabelCatalogObjects", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyLabelCatalogObjects ||
+            string.Equals(name, "deepSkyMinimumGlyphRadius", StringComparison.OrdinalIgnoreCase) && layer.DeepSkyMinimumGlyphRadius == 7;
     }
 
     private static JsonElement? RedactOptions(JsonElement? options)
@@ -1580,7 +1578,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType)
+    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType, bool allowRetainedLegacyDeepSkyFont = false)
     {
         if (optionsType == typeof(EmptyProcessingStepOptions))
         {
@@ -1600,6 +1598,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         options ??= Activator.CreateInstance(optionsType)
             ?? throw new InvalidOperationException($"Unable to create options type '{optionsType.Name}'.");
 
+        if (allowRetainedLegacyDeepSkyFont && options is ScenePresentationLayerProcessingStepOptions sceneOptions)
+        {
+            sceneOptions.AllowRetainedLegacyDeepSkyFont = true;
+        }
         Validator.ValidateObject(options, new ValidationContext(options), validateAllProperties: true);
         return options;
     }

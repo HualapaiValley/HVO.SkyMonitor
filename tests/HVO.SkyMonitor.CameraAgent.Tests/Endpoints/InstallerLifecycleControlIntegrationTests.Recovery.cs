@@ -31,6 +31,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Endpoints")]
 [OSCondition(OperatingSystems.Linux)]
 [SupportedOSPlatform("linux")]
 public sealed partial class InstallerLifecycleRecoveryIntegrationTests
@@ -514,7 +515,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root.FullName, RawIngressSqliteBusyTimeoutSeconds = 1 });
         using var schedule = new SqliteCaptureScheduleStore(new Mock<IRawCaptureIngress>().Object, options, TimeProvider.System);
         var service = new CameraAgentSystemUiService(authentication.Object, authorization.Object, new Mock<HealthCheckService>().Object,
-            fixture.Capture, schedule, null!, options, TimeProvider.System, NullLogger<CameraAgentSystemUiService>.Instance,
+            fixture.Capture, schedule, null!, TimeProvider.System, NullLogger<CameraAgentSystemUiService>.Instance,
             controls: fixture.Controls, automations: fixture.Automations);
         using (var connection = new SqliteConnection($"Data Source={Path.Combine(fixture.Root.FullName, ".automation", "local-automations.db")};Pooling=False"))
         {

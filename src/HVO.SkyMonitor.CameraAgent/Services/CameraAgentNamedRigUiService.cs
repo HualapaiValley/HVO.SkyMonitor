@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Common.OpticalCalibration;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Authorization;
@@ -35,6 +36,14 @@ internal interface ICameraAgentNamedRigUiService
         => ValueTask.FromResult(OperatorUiResult<HorizonObstructionPreview>.Failure(OperatorUiResultKind.Invalid, "Horizon editing is unavailable."));
     ValueTask<OperatorUiResult<NamedRigRevision>> SaveHorizonAsync(HorizonObstructionPreview preview, CancellationToken token)
         => ValueTask.FromResult(OperatorUiResult<NamedRigRevision>.Failure(OperatorUiResultKind.Invalid, "Horizon editing is unavailable."));
+
+    ValueTask<OperatorUiResult<OpticalAlignmentProposal>> FitOpticalAlignmentAsync(IReadOnlyList<Guid> training,
+        IReadOnlyList<Guid> validation, bool fitRadialDistortion, CancellationToken token)
+        => ValueTask.FromResult(OperatorUiResult<OpticalAlignmentProposal>.Failure(OperatorUiResultKind.Unavailable, "Optical alignment is unavailable."));
+
+    ValueTask<OperatorUiResult<VirtualOpticalCalibrationDecision>> DecideOpticalAlignmentAsync(OpticalAlignmentProposal proposal,
+        bool accept, CancellationToken token)
+        => ValueTask.FromResult(OperatorUiResult<VirtualOpticalCalibrationDecision>.Failure(OperatorUiResultKind.Unavailable, "Optical alignment is unavailable."));
 
     /// <summary>
     /// Saves the changed optics/mount equipment, composes a new revision of the active named rig, previews it
@@ -93,7 +102,7 @@ internal sealed partial class CameraAgentNamedRigUiService(
     AuthenticationStateProvider authentication, IAuthorizationService authorization,
     SqliteNamedRigProfileStore store, CaptureScheduleRuntimeCoordinator runtime,
     IHostApplicationLifetime lifetime, IConfiguration configuration, TimeProvider timeProvider,
-    ILogger<CameraAgentNamedRigUiService> logger) : ICameraAgentNamedRigUiService
+    ILogger<CameraAgentNamedRigUiService> logger, OpticalAlignmentWorkflow? opticalAlignment = null) : ICameraAgentNamedRigUiService
 {
     internal const string SupervisedRestartKey = CameraAgentRestart.SupervisedKey;
 
@@ -112,6 +121,16 @@ internal sealed partial class CameraAgentNamedRigUiService(
     private ValueTask<OperatorUiResult<T>> MutateAsync<T>(Func<string, Task<T>> operation)
         => ExecuteAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1, true, operation);
 
+    public ValueTask<OperatorUiResult<OpticalAlignmentProposal>> FitOpticalAlignmentAsync(IReadOnlyList<Guid> training,
+        IReadOnlyList<Guid> validation, bool fitRadialDistortion, CancellationToken token)
+        => MutateAsync(_ => opticalAlignment?.FitAsync(training, validation, fitRadialDistortion, token) ??
+            throw new InvalidOperationException("Optical alignment is unavailable."));
+
+    public ValueTask<OperatorUiResult<VirtualOpticalCalibrationDecision>> DecideOpticalAlignmentAsync(OpticalAlignmentProposal proposal,
+        bool accept, CancellationToken token) => MutateAsync(_ => accept
+            ? opticalAlignment?.AcceptAsync(proposal, token) ?? throw new InvalidOperationException("Optical alignment is unavailable.")
+            : Task.FromResult(VirtualOpticalCalibrationReviewService.Reject(proposal.Review)));
+
     private ValueTask<OperatorUiResult<T>> ExecuteAsync<T>(string policy, bool requireOwner, Func<Task<T>> operation)
         => ExecuteAsync(policy, requireOwner, _ => operation());
 
@@ -129,6 +148,10 @@ internal sealed partial class CameraAgentNamedRigUiService(
         }
         catch (ArgumentException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, "The rig command is invalid."); }
         catch (KeyNotFoundException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The revision was not found."); }
+        catch (OpticalAlignmentFitInProgressException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "An optical alignment fit is already running. Wait for it to finish before retrying.");
+        }
         catch (CaptureScheduleStoreConflictException) { return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "Rig state changed. Refresh before retrying."); }
         catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
         {

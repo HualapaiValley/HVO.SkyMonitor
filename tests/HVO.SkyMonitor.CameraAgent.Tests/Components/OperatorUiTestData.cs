@@ -2,7 +2,6 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -12,11 +11,8 @@ internal static class OperatorUiTestData
 
     internal static CameraAgentOperationsView Operations(
         int samples = 1,
-        string heartbeat = "Available",
-        string centralIntegration = "Enabled",
         int lanePressure = 0,
-        bool storagePressure = false,
-        IReadOnlyList<OperatorOutboxItem>? artifactQuarantine = null)
+        bool storagePressure = false)
     {
         var queue = new OperationsQueueState("Healthy", 0, 0, 0, 0, 0, 0, null);
         var lanes = new OperationsCaptureLanesState(
@@ -34,16 +30,10 @@ internal static class OperatorUiTestData
             Section(queue with { Availability = "Accepting" }),
             Section(lanes),
             Section(queue),
-            Section(queue),
             Section<IReadOnlyList<OperationsStorageState>>([
                 new OperationsStorageState("raw-ingress", 1_000_000, 500_000, storagePressure, 3, true)
             ]),
             Section(new OperationsCaptureRuntimeState("Available", Now.AddSeconds(-1), null, null, [])),
-            Section(new OperationsHeartbeatState(heartbeat, Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, null)),
-            Section(new OperationsEnvironmentalDeliveryState("Available", Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, 0, 0, null)),
-            Section(new OperationsExecutionEvidenceExportState(
-                "Healthy", "export.drained", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, null, null,
-                null)),
             Section(new OperationsTransientWorkerState("Available", 0, 0, 32)),
             Section(new OperationsCaptureTelemetryState(
                 samples,
@@ -57,11 +47,10 @@ internal static class OperatorUiTestData
                 1200,
                 samples == 0 ? 0 : 12,
                 .2,
-                samples,
-                0)),
-            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration, "Off")),
+                samples)),
+            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", "Off")),
             Section(new OperationsArchivedReplayState("Healthy", 0, 0, 0, 0, 0, 0, null, 0)));
-        return new CameraAgentOperationsView(summary, artifactQuarantine ?? [], [], DisplayName: "North Camera");
+        return new CameraAgentOperationsView(summary, DisplayName: "North Camera");
     }
 
     internal static CameraAgentGalleryCapture Capture(
@@ -90,8 +79,8 @@ internal static class OperatorUiTestData
             new CameraAgentGalleryControls(1000, 1000, 2, 2, null, null, null, 8.5),
             true,
             [
-                new CameraAgentGalleryArtifactState(rawId, "Held", "Available", [new("raw-ingress", "Pending")]),
-                new CameraAgentGalleryArtifactState(previewId, "Retained", "Available", [new("raw-ingress", "Acknowledged")])
+                new CameraAgentGalleryArtifactState(rawId, "Held"),
+                new CameraAgentGalleryArtifactState(previewId, "Retained")
             ],
             [new CameraAgentGalleryProcessingNodeDetail(
                 "preview-node", ["source"], 1, nodeCompleted, null, new string('F', 64),
@@ -167,14 +156,11 @@ internal static class OperatorUiTestData
         "Validated at startup",
         "agent-test",
         "VirtualSky",
-        "Enabled",
         new CameraAgentSensorStatus("Virtual sensor", 640, 480, 5.86, "Mono", "Mono16", "Monochrome", "unversioned", "test-v1"),
         new CameraAgentOpticsStatus("Fisheye", "Equidistant", 3, 180, 140, "cal-v1", false, "Full sensor"),
         new CameraAgentCapturePolicyStatus("MinimumStartInterval", 5, 10, 1000, 1, 2, 1, 2000, 0, 10, "ExposureFirst"),
         [new CameraAgentPipelineNodeStatus("preview", "Preview", true, ["calibrate"])],
-        new CameraAgentRetentionStatus(30, 10, 15, 1, 1024, true, 31, 100_000, 256L * 1024 * 1024),
-        new CameraAgentUploadStatus(true, 10, 10, 10, 300, 0, 100, 1000, 50, 500),
-        new CameraAgentEnvironmentalPolicyStatus(true, 100, 10, 10, 1000, 4096),
+        new CameraAgentRetentionStatus(1024, true, 31, 100_000, 256L * 1024 * 1024),
         new CameraAgentTransientPolicyStatus("Edge", true, 10, 1000, 5, 30, 2000));
 
     private static OperationsSection<T> Section<T>(T value) => new("test-source", Now, "fresh", value);
@@ -208,21 +194,19 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         (captureId, _, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
             captureId, Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('F', 64),
             new string('A', 64), 1024, false)));
-    internal Func<string, string?, string?, int, CancellationToken, ValueTask<OperatorUiResult<OperatorOutboxPage>>> QuarantineHandler { get; set; } =
-        (kind, alias, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
+    internal Func<string, string?, string?, int, CancellationToken, ValueTask<OperatorUiResult<OperatorQuarantinePage>>> QuarantineHandler { get; set; } =
+        (kind, alias, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorQuarantinePage>.Success(new(
             kind, alias is null ? [] : [alias], alias, [], null)));
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentSystemStatus>>> SystemHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<CameraAgentSystemStatus>.Success(OperatorUiTestData.SystemStatus()));
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>>> ReconciliationHandler { get; set; } =
-        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(null, null)));
-    internal Func<CancellationToken, ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>>> DeliveryHandler { get; set; } =
-        _ => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>.Success([]));
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentStorageReconciliation>.Success(new CameraAgentStorageReconciliation(null)));
     internal Func<bool, long, string, CancellationToken, Task<OperatorUiResult<OperatorCommandReceipt>>> CaptureHandler { get; set; } =
         (paused, _, _, _) => Task.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
             paused ? "Pause capture" : "Resume capture", "Applied", paused ? "Paused" : "Running", 8, OperatorUiTestData.Now)));
-    internal Func<string, OutboxOperationAction, string, string, string, CancellationToken, ValueTask<OperatorUiResult<OperatorCommandReceipt>>> OutboxHandler { get; set; } =
+    internal Func<string, QuarantineOperationAction, string, string, string, CancellationToken, ValueTask<OperatorUiResult<OperatorCommandReceipt>>> OutboxHandler { get; set; } =
         (kind, action, _, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
-            $"{action} {kind}", "Applied", action == OutboxOperationAction.Replay ? "Pending" : "Abandoned", null, OperatorUiTestData.Now)));
+            $"{action} {kind}", "Applied", action == QuarantineOperationAction.Replay ? "Pending" : "Abandoned", null, OperatorUiTestData.Now)));
     internal Func<string, string, string, bool, CancellationToken, ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>>> OwnershipHandler { get; set; } =
         (_, run, hash, acknowledged, _) => ValueTask.FromResult(
             acknowledged
@@ -288,6 +272,10 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         return new CameraAgentCapturePresentation(hasSelected ? selected : null, stages);
     }
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CurrentSkyHandler { get; set; }
+    internal Func<CenteredLiveMode, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>>>? CenteredCurrentSkyHandler { get; set; }
+    internal Func<string, string, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>>>? CenteredPresentationHandler { get; set; }
+    internal Func<Guid, CameraAgentCenteredArchiveRequest?, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>>>? CenteredDetailViewHandler { get; set; }
+    internal Func<Guid, string, string, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CenteredViewSavedSelection>>>? SaveCenteredSelectionHandler { get; set; }
     internal Func<CameraAgentGalleryCalendarQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCalendar>>> CalendarHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCalendar>.Success(new(TimeZoneInfo.Utc.Id, true, [])));
     internal Func<Guid, CameraAgentGalleryQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryNeighbours>>> NeighboursHandler { get; set; } =
@@ -296,6 +284,41 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductPage>.Success(new([], null)));
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentProductDetail>>> ProductDetailHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentProductDetail>.Failure(OperatorUiResultKind.NotFound, "The requested product was not found."));
+
+    public ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(
+        CenteredLiveMode mode,
+        CancellationToken cancellationToken)
+        => CenteredCurrentSkyHandler is not null
+            ? CenteredCurrentSkyHandler(mode, cancellationToken)
+            : GetCurrentSkyViewAsync(cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentCenteredPresentationRead>> GetCenteredPresentationAsync(
+        string baseId,
+        string revisionId,
+        CancellationToken cancellationToken)
+        => CenteredPresentationHandler is not null
+            ? CenteredPresentationHandler(baseId, revisionId, cancellationToken)
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentCenteredPresentationRead>.Success(
+                new(CameraAgentLayeredPresentationStatus.NotRetained, null, null)));
+
+    public ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CameraAgentCenteredArchiveRequest? centeredRequest,
+        CancellationToken cancellationToken)
+        => CenteredDetailViewHandler is not null
+            ? CenteredDetailViewHandler(captureId, centeredRequest, cancellationToken)
+            : GetCaptureDetailViewAsync(captureId, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CenteredViewSavedSelection>> SaveCenteredViewSelectionAsync(
+        Guid referenceCaptureId,
+        string baseId,
+        string revisionId,
+        IReadOnlyList<string> enabledLayerIds,
+        CancellationToken cancellationToken)
+        => SaveCenteredSelectionHandler is not null
+            ? SaveCenteredSelectionHandler(referenceCaptureId, baseId, revisionId, enabledLayerIds, cancellationToken)
+            : ValueTask.FromResult(OperatorUiResult<CenteredViewSavedSelection>.Success(
+                new CenteredViewSavedSelection(Guid.NewGuid(), baseId, revisionId, enabledLayerIds.ToArray(), OperatorUiTestData.Now)));
 
     public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken)
     {
@@ -323,8 +346,14 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         => AstrometryPublicationHandler(identity, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>> AstrometryHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
+    internal Func<Guid, CenteredViewArtifact?, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>>? ExactAstrometryHandler { get; set; }
     public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => AstrometryHandler(captureId, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(
+        Guid captureId, CenteredViewArtifact? evidence, CancellationToken cancellationToken)
+        => ExactAstrometryHandler is not null
+            ? ExactAstrometryHandler(captureId, evidence, cancellationToken)
+            : AstrometryHandler(captureId, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>>> TransientHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentCaptureTransientView>.Success(new(
             id, HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off, null)));
@@ -347,10 +376,8 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         Guid captureId, string manifestIdentitySha256, IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken)
         => FrozenMaterializationHandler(captureId, manifestIdentitySha256, enabledLayerIdentitySha256, cancellationToken);
-    public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
+    public ValueTask<OperatorUiResult<OperatorQuarantinePage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
-    public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken) => DeliveryHandler(cancellationToken);
-
     public ValueTask<OperatorUiResult<CameraAgentStorageReconciliation>> GetStorageReconciliationAsync(CancellationToken cancellationToken) => ReconciliationHandler(cancellationToken);
     public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, string? reason, CancellationToken cancellationToken)
     {
@@ -360,7 +387,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
 
     public List<string?> CaptureReasons { get; } = [];
     public ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(string referenceToken, string deploymentRunId, string inventorySha256, bool legacyOwnershipExternallyEstablished, CancellationToken cancellationToken) => OwnershipHandler(referenceToken, deploymentRunId, inventorySha256, legacyOwnershipExternallyEstablished, cancellationToken);
-    public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
+    public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveQuarantineAsync(string kind, QuarantineOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
 
     private static CameraAgentPresentationSlot TestSlot(
         CameraAgentGalleryCapture capture,

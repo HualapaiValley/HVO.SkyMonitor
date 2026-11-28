@@ -105,7 +105,8 @@ Options, before the installer's arguments:
 
 The first argument that is not one of these, and everything after it (or after --), goes to hvo-sky-install:
 cameraagent install, cameraagent upgrade, status, --help and the rest; with none, it runs cameraagent install, which
-asks on the terminal for what it needs. Without --from, cameraagent install and
+asks on the terminal for what it needs. Instances from before 0.10.0-beta.1 require a fresh install on empty storage.
+Without --from, cameraagent install and
 cameraagent upgrade are given the release's release.json and SHA256SUMS (--release, a private folder) and
 --image-source registry: Docker pulls CameraAgent's image from ghcr.io by the digest release.json names. cameraagent
 install is also given the release's catalog (--catalog-bundle), unpacked in ${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs

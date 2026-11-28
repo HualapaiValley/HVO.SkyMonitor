@@ -6,19 +6,22 @@ the observed and modeled before/after results, and the rollout and rollback
 procedure. `docs/design/ci-deployment-target-architecture.md` section 3.5 holds
 the design decision; this file holds the numbers and the operations.
 
-## Current Build and Unit allocation (2026-11-12)
+## Build and Unit allocation
 
-Atlas completed Roy's approved capacity work at 9:04–9:05 AM PST. The reserved
-pair `gh-runner-05` and `gh-runner-06` has 8 vCPU per runner; only that pair carries
-`hvo-skymonitor-build`. SkyMonitor Build and Unit now selects exactly
-`[self-hosted, linux, x64, hvo-skymonitor-build]`. Runners 01–04 and every other
-job's selector are unchanged. Keep the 22-minute hard timeout and 1,080 s soft
-budget while measuring this allocation. Refs #1747.
+Atlas completed Roy's approved capacity work on 2026-11-12 at 9:04–9:05 AM
+PST. The initial pair `gh-runner-05` and `gh-runner-06` had 8 vCPU per runner.
+The full SkyMonitor Build and Unit workload selects
+`[self-hosted, linux, x64, hvo-skymonitor-build]`. The read-only organization
+runner inventory on 2026-11-25 UTC showed five online runners with that label
+(`gh-runner-01`, `gh-runner-04`, and `gh-runner-05` through `gh-runner-07`).
+Runners 01 and 04 also carried `hvo-qualification`. See the
+[recent workload timings](ci-pipeline.md#development-v1-per-file-coverage)
+against the 1,080 s workload budget and 22-minute hard job timeout. Refs #1747.
 
 Workflow rollback restores only Build and Unit's prior selector,
 `[self-hosted, linux, x64, hvo-skymonitor]`. Atlas holds `ROLLBACK.md` for the
 runner-side rollback. The dated inventory and measurements below describe the
-earlier pool and are not timing evidence for the new pair.
+earlier pool.
 
 ## 1. Inventory (2026-10-15)
 
@@ -36,7 +39,7 @@ Pool consumers:
 
 | Workflow | Selector | Notes |
 | --- | --- | --- |
-| SkyMonitor `development-v1.yml` Build and Unit (ready PRs, v1 pushes, queue groups) | `[self-hosted, linux, x64, hvo-skymonitor-build]` | reserved gh-runner-05/06 pair, 8 vCPU each; new duration measurement pending |
+| SkyMonitor `development-v1.yml` Build and Unit (ready PRs, pushes without exact queue evidence, queue groups) | `[self-hosted, linux, x64, hvo-skymonitor-build]` | The hosted proof job for verified queue pushes uses `ubuntu-24.04`. |
 | SkyMonitor `ci.yml` (14 self-hosted jobs: promotion PRs, `main` pushes, dispatch) | `[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]` after #849 | one run fans out to seven or more concurrent jobs for 20-23 minutes |
 | HVO.AgentControl | `hvo-agentcontrol` | low volume; can use any of the six runners |
 | HVO.WebSite | GitHub-hosted (`ubuntu-latest`) on 2026-10-15 | the `hvo-website` label is currently unused |

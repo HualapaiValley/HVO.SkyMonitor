@@ -4,6 +4,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "RawIngress")]
 public sealed class RawIngressStateCompositionTests
 {
     [TestMethod]
@@ -26,13 +27,13 @@ public sealed class RawIngressStateCompositionTests
     public void IndexFailureAndBacklog_DrainPreservesIndexFailure()
     {
         var state = new RawIngressState(TimeProvider.System);
-        state.Set(RawIngressAvailability.Degraded, "index-projection-failed");
+        state.Set(RawIngressAvailability.Degraded, "reconciliation-held");
 
         state.SetProjectedSceneBacklog(2);
         state.SetProjectedSceneBacklog(0);
 
         Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
-        Assert.AreEqual("index-projection-failed", state.Snapshot.Reason);
+        Assert.AreEqual("reconciliation-held", state.Snapshot.Reason);
     }
 
     [TestMethod]

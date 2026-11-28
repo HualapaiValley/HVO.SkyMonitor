@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
+[TestProperty("Area", "Capture.Processing")]
 [DoNotParallelize]
 public sealed class EdgeUpgradeActiveRevisionTests
 {
@@ -69,7 +70,6 @@ public sealed class EdgeUpgradeActiveRevisionTests
             var abandoned = await fixture.ProcessStandardAsync().ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Abandoned, abandoned.Acknowledged, abandoned.Handled.Reason);
             Assert.AreEqual("plan-superseded", abandoned.Handled.Reason);
-            await fixture.UploadAndAssertCompletedAsync(first).ConfigureAwait(false);
 
             if (recovery == "activate")
             {

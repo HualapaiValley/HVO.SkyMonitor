@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Environmental")]
 public sealed class EnvironmentalAcquisitionCoordinatorTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
@@ -114,7 +115,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Directory.CreateDirectory(root);
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            using var store = new SqliteEnvironmentalObservationStore(busyTimeoutSeconds: 1);
             _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
             var stateStore = new SignalingStateStore(store);
             using var coordinator = CreateCoordinator(
@@ -122,7 +123,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 stateStore: stateStore,
                 root: root);
             using var lockingConnection = new SqliteConnection(
-                $"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+                $"Data Source={Path.Combine(root, ".environment", "environmental-observations.db")}");
             await lockingConnection.OpenAsync().ConfigureAwait(false);
             using (var lockCommand = lockingConnection.CreateCommand())
             {
@@ -220,7 +221,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Directory.CreateDirectory(root);
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            using var store = new SqliteEnvironmentalObservationStore(busyTimeoutSeconds: 1);
             _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
             var stateStore = new SignalingStateStore(store);
             using var coordinator = CreateCoordinator(
@@ -228,7 +229,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
                 stateStore: stateStore,
                 root: root);
             using var lockingConnection = new SqliteConnection(
-                $"Data Source={Path.Combine(root, ".environment", "environmental-observation-outbox.db")}");
+                $"Data Source={Path.Combine(root, ".environment", "environmental-observations.db")}");
             await lockingConnection.OpenAsync().ConfigureAwait(false);
             using (var lockCommand = lockingConnection.CreateCommand())
             {
@@ -283,7 +284,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Directory.CreateDirectory(root);
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox(busyTimeoutSeconds: 1);
+            using var store = new SqliteEnvironmentalObservationStore(busyTimeoutSeconds: 1);
             _ = await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);
             var stateStore = new SignalingStateStore(store);
             using var coordinator = CreateCoordinator(
@@ -339,7 +340,7 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         Directory.CreateDirectory(root);
         try
         {
-            using var store = new SqliteEnvironmentalObservationOutbox();
+            using var store = new SqliteEnvironmentalObservationStore();
             using var services = new ServiceCollection().BuildServiceProvider();
             var configurations = StartupKinds.Select((kind, index) => StartupSource(kind, index)).ToArray();
             var factory = new EnvironmentalSourceFactory(
@@ -512,12 +513,11 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
         {
             _facts.Add(fact);
             return ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued,
-                null));
+                EnvironmentalObservationPublishDisposition.Committed));
         }
     }
 
-    private sealed class StorePublisher(SqliteEnvironmentalObservationOutbox store, string root)
+    private sealed class StorePublisher(SqliteEnvironmentalObservationStore store, string root)
         : IEnvironmentalObservationPublisher
     {
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
@@ -527,9 +527,8 @@ public sealed class EnvironmentalAcquisitionCoordinatorTests
             var result = await store.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
             return new EnvironmentalObservationPublishResult(
                 result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
-                    ? EnvironmentalObservationPublishDisposition.Enqueued
-                    : EnvironmentalObservationPublishDisposition.Duplicate,
-                null);
+                    ? EnvironmentalObservationPublishDisposition.Committed
+                    : EnvironmentalObservationPublishDisposition.Duplicate);
         }
     }
 

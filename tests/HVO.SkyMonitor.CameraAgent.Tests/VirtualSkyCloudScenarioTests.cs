@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Modules.VirtualSky")]
 public sealed partial class VirtualSkyCloudScenarioTests
 {
     private static readonly DateTimeOffset FixtureUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
@@ -28,7 +29,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
         var publisher = new RecordingPublisher();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(Path.GetTempPath(), "hvo-cloud-graph", Guid.NewGuid().ToString("N"))
@@ -368,7 +369,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
             new VirtualSkyCloudObservationProcessingStepOptions(),
             new FailingPublisher());
 
-        await Assert.ThrowsAsync<EnvironmentalObservationOutboxCapacityException>(() =>
+        await Assert.ThrowsAsync<LocalEnvironmentalObservationCapacityException>(() =>
             failing.ProcessAsync(Context(config, request, result), CancellationToken.None).AsTask()).ConfigureAwait(false);
 
         var recording = new RecordingPublisher();
@@ -482,8 +483,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
                 Guid.Parse("22222222-2222-2222-2222-222222222222")));
             Observations.Add(observation);
             return ValueTask.FromResult(new EnvironmentalObservationPublishResult(
-                EnvironmentalObservationPublishDisposition.Enqueued,
-                observation));
+                EnvironmentalObservationPublishDisposition.Committed));
         }
     }
 
@@ -493,7 +493,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
             EnvironmentalObservationFactV1 fact,
             CancellationToken cancellationToken = default)
             => ValueTask.FromException<EnvironmentalObservationPublishResult>(
-                new EnvironmentalObservationOutboxCapacityException("test capacity failure"));
+                new LocalEnvironmentalObservationCapacityException("test capacity failure"));
     }
 
     [SuppressMessage("Performance", "CA1812", Justification = "Instantiated by System.Text.Json fixture deserialization.")]

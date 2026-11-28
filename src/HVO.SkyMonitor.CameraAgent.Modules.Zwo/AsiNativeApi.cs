@@ -40,9 +40,14 @@ internal sealed class AsiException : Exception
         : base($"{operation} failed with ASI error {(int)errorCode} ({errorCode}).")
     {
         ErrorCode = errorCode;
+        Data["AsiErrorCode"] = errorCode.ToString();
+        Data["IsCameraDisconnected"] = IsDisconnectError(errorCode);
     }
 
     internal AsiErrorCode ErrorCode { get; }
+
+    internal static bool IsDisconnectError(AsiErrorCode errorCode) =>
+        errorCode is AsiErrorCode.CameraRemoved or AsiErrorCode.CameraClosed;
 }
 
 internal enum AsiBool

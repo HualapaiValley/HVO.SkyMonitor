@@ -28,6 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 
 [TestClass]
 [TestCategory("Manual")]
+[TestProperty("Area", "Transients")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TransientWorkerAcceptancePerformanceTests
@@ -478,7 +479,6 @@ public sealed class TransientWorkerAcceptancePerformanceTests
         var cases = new[]
         {
             (Mode: TransientOperatingMode.Edge, Workload: Workload.W1),
-            (Mode: TransientOperatingMode.Hybrid, Workload: Workload.W2)
         };
         var output = new List<PositiveModeEvidence>();
         foreach (var scenario in cases)
@@ -917,7 +917,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
             ["CameraAgent:TransientDetection:Required"] = required.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] =
-                (mode == TransientOperatingMode.Hybrid).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "false",
             ["CameraAgent:CaptureDistribution:RequiredMaximumPendingCount"] = "20000",
             ["CameraAgent:CaptureDistribution:RequiredMaximumPendingBytes"] = "200000000000",
             ["CameraAgent:CaptureDistribution:OptionalMaximumPendingBytes"] = "20000000000"
@@ -931,7 +931,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
             }
         });
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         if (faultInjector is not null)
         {
             services.AddSingleton(faultInjector);

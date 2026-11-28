@@ -5,10 +5,8 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 internal sealed partial class ApprovedCatalogSpecificationsTests
 {
     [TestMethod]
-    [DataRow("scripts/catalog/build-hyg-v42.sh", 1)]
     [DataRow("scripts/catalog/hyg-v44-common.sh", 1)]
     [DataRow("scripts/catalog/hyg-v44-openngc-common.sh", 2)]
-    [DataRow("tests/fixtures/catalog/build-fixture.sql", 1)]
     [DataRow("tests/fixtures/catalog/build-fixture-v44.sql", 1)]
     [DataRow("tests/fixtures/catalog/build-fixture-v44-openngc.sql", 1)]
     public void EverySerializerConnectionPinsSecureDeletionBeforeWrites(string relativePath, int connectionCount)

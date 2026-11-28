@@ -36,15 +36,30 @@ contracts. Add both node IDs to the existing `OverlayManifest` dependencies
 and set its options `satelliteVariant` to `capture-satellites-v1-layer` and
 `satelliteStatusVariant` to `capture-satellites-v1-status`. Preserve its existing
 scene, environment and base-image dependencies. Existing `Storage` dependencies
-may include both new nodes, with `queueForUpload: false` for their layoutless
-metadata. Durable-local publication already owns their canonical copy; `Storage`
-does not create a second local copy of those outputs. Current Sky and the archive
+may include both new nodes. Durable-local publication writes their canonical
+Silo versions. Current Sky and the archive
 view consume the canonical retained products. Retention also protects copies in
 recorded historical archive roots made through existing publication primitives.
-The optional central reconstruction boundary is the portable typed products;
-this slice adds no upload policy or automatic secondary archive publication.
 
 Installed orbital storage and the existing local time source supply the inputs.
+Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained
+GP JSON snapshots. The manifest carries the source format and credits the
+US Space Force / Space-Track for public GP data distributed by CelesTrak.
+Software & Catalog displays the source credit for the installed snapshot.
+Observatory & location shows that credit alongside the retained pass provenance.
+Current Sky includes the credit in Diagnostics for ordinary and centered
+predictions. The capture input retains its own manifest independently of the
+currently installed source.
+The refresh client requests `FORMAT=CSV` and publishes `celestrak-gp-csv-v1`
+snapshots. Previously retained `celestrak-gp-json-v1` snapshots remain available
+for byte-identical replay. [Orbital refresh](orbital-elements-refresh.md#provider-policy)
+allows at most one attempt per two hours, halts on non-200 HTTP responses until
+an operator resumes, and waits at least 15 minutes after a 5xx response before
+another attempt. Prediction makes no provider requests. A supplemental
+Space-Track acquisition would require the site operator's own account and
+at most one poll per hour at a randomized minute. CameraAgent has no
+Space-Track client or shared HVO account.
+
 The source/time loader's ordinary startup/refresh warmup remains authoritative.
 This node performs any remaining local work after raw admission, on the existing
 standard lane. It never fetches a provider or starts a scheduler. Refresh may be
@@ -81,6 +96,53 @@ The projection uses readout-view coordinates and the identity image transform,
 so crop/bin/flip are not applied twice. Timing is reported command/status
 evidence; clock and physical uncertainty remain unknown when not supplied.
 
+### Named VirtualSky pass inputs
+
+Build a [named VirtualSky pass package](../validation/virtualsky-named-pass-1927.md)
+from the exact snapshot this CameraAgent retrieved through its configured
+CelesTrak refresh and still retains. The package's snapshot and time files feed
+the virtual renderer. After admission, `CaptureSatelliteTracks` resolves the
+snapshot from CameraAgent's orbital store and the time pair from its local time
+source. Any explicit graph `pinnedInputs` must agree with the package.
+
+Open the capture's satellite Diagnostics status in Current Sky or the archive
+view and read the retained reason. An unavailable prediction has zero renderable
+tracks. A no-candidate result from the independent trail detector describes the
+image assessment.
+
+- **`PinnedSnapshotUnavailable`** means the exact pinned manifest could not be
+  read from the local orbital store. Compare the `manifestSha256` field inside
+  the manifest file named by `snapshotManifest.path` (also retained on the
+  capture as `namedPassPredictionV1.inputs.snapshotManifestSha256`), or any
+  explicit `pinnedInputs.snapshotManifestSha256`, with `currentManifestSha256`
+  in [orbital status](orbital-elements-refresh.md#status-refresh-and-resume).
+  `currentManifestSha256` identifies only the currently active snapshot, so a
+  mismatch does not by itself indicate failure: an older manifest remains usable
+  while retained in the local store, whereas a missing, retired, or unreadable
+  manifest produces `PinnedSnapshotUnavailable`. Follow the reported
+  `recoveryAction` for store or provider problems. If the pin is missing or
+  retired, prepare a new package from a snapshot retained on this instance. If
+  you need a new retrieval, use **Software & Catalog → Refresh now** after
+  `nextPermittedAttemptUtc` and after resolving any provider halt. Verify the
+  activated identity before rebuilding the package.
+- **`PinnedTimeInputsUnavailable`** means CameraAgent resolved time data but the
+  Earth-orientation or leap-second hash differs from the pin. In
+  **Observatory & location → Orbital refresh & satellite setup**, expand
+  **Read-only time-data configuration and resolved status**. Compare both hashes
+  to the package and check coverage for the observed shutter interval. To
+  restore the exact approved pair, configure the
+  [four `CameraAgent:SatellitePlanning` time override settings](../astronomy/satellite-planning-v1.md#local-time-inputs)
+  and set `overrideTimeDataAvailableUtc` in the `CaptureSatelliteTracks` node's
+  `options` to the explicit UTC (`Z` / `+00:00`) timestamp when those exact
+  bytes were available, at or before raw admission (omitting it or setting a
+  later timestamp yields `TimeAvailabilityUnknown` or
+  `TimeNotOriginallyAvailable`). You can also prepare a new package from the
+  verified pair that covers the planned exposure.
+
+When you rebuild the package, update `namedOrbitalPass.packageSha256` and any
+explicit graph pins together. These settings apply to future captures. Archived
+replay preserves the original decision and its inputs.
+
 ## Products and presentation
 
 The two enabled nodes publish ordinary typed Metadata V3 artifacts:
@@ -110,10 +172,17 @@ does not establish absence outside the requested population/exposure. Source
 retrieval/epoch age and configured geometry remain visible. Exports use the
 existing immutable manifest and selected layer identities.
 
+In **Capture satellite predictions**, turn on **Hide satellite object labels**
+and activate a new graph revision to omit optional names and catalog numbers
+from future captures. The geometry and required diagnostic caption are kept.
+Replay uses the recorded label setting from the original capture.
+
 Only samples inside each declared exposure segment are connected. The existing
 1px stroke, 2px endpoints, bounded labels and prediction/unknown/partial/stale
 captions remain. A partial query qualifies even a prefix containing complete
-child tracks. No full-pass arc is introduced into capture imagery.
+child tracks. Centered views retain one segment per eligible contributing
+exposure with its direct-to-reference transform, highlight the reference and
+leave temporal gaps. The full planning arc lives in Observatory & location.
 
 ## Restart, replay and retention
 

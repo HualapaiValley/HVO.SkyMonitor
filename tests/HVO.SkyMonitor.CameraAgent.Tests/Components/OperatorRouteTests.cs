@@ -12,6 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class OperatorRouteTests
 {
     [TestMethod]
@@ -34,14 +35,13 @@ public sealed class OperatorRouteTests
             typeof(ProductDetail),
             typeof(NightlyProductDetailPage),
             typeof(HealthPage),
+            typeof(NotificationsPage),
             typeof(ControlPage),
             typeof(SoftwarePage),
             typeof(SpaceWeatherPage),
-            typeof(RegistrationPage),
             typeof(PipelineSummaryPage),
             typeof(AutomationsPage),
             typeof(CameraRigPage),
-            typeof(DeliveryPage),
             typeof(StoragePage),
             typeof(ObservatoryLocationPage),
             typeof(ProcessingExecutionsPage),
@@ -49,6 +49,7 @@ public sealed class OperatorRouteTests
             typeof(ProcessingGraphsPage),
             typeof(ProcessingGraphDetailPage),
             typeof(ProcessingGraphEditorPage),
+            typeof(ProcessingNodeConfigPage),
             typeof(FramesController)
         })
         {
@@ -103,22 +104,20 @@ public sealed class OperatorRouteTests
             ("/transients", "Events"),
             ("/transients/candidate-id", "Events"),
             ("/transients?from=2026-09-23", "Events"),
-            ("/devices", "Operations"),
             ("/operations/pipeline", "Operations"),
             ("/operations/automations", "Operations"),
             ("/operations/schedule", "Operations"),
             ("/operations/camera", "Operations"),
             ("/operations/data", "Operations"),
-            ("/operations/delivery", "Operations"),
             ("/operations/storage", "Operations"),
             ("/operations/site", "Operations"),
             ("/operations/sky-map", "Operations"),
             ("/operations/pipeline/executions", "Operations"),
             ("/operations/health", "Operations"),
+            ("/operations/notifications", "Operations"),
             ("/operations/control", "Operations"),
             ("/operations/software", "Operations"),
-            ("/operations/space-weather", "Operations"),
-            ("/operations/registration", "Operations")
+            ("/operations/space-weather", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -144,6 +143,7 @@ public sealed class OperatorRouteTests
             (typeof(EnvironmentalPage), ["/environmental", "/operations/environment"]),
             (typeof(TransientOperationsPage), ["/operations/transients"]),
             (typeof(HealthPage), ["/operations/health", "/operations/system", "/system"]),
+            (typeof(NotificationsPage), ["/operations/notifications"]),
             (typeof(ControlPage), ["/operations/control"]),
             (typeof(SoftwarePage), ["/operations/software"]),
             (typeof(SpaceWeatherPage), ["/operations/space-weather"]),
@@ -151,14 +151,18 @@ public sealed class OperatorRouteTests
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
             (typeof(AutomationsPage), ["/operations/automations"]),
             (typeof(CameraRigPage), ["/operations/camera"]),
-            (typeof(DeliveryPage), ["/operations/delivery"]),
             (typeof(StoragePage), ["/operations/storage", "/operations/data"]),
             (typeof(ObservatoryLocationPage), ["/operations/site", "/operations/sky-map"]),
             (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),
             (typeof(ProcessingGraphEditorPage), ["/operations/pipeline/graphs/new"]),
-            (typeof(RegistrationPage), ["/operations/registration", "/devices/bootstrap", "/devices"])
+            (typeof(ProcessingNodeConfigPage), [
+                "/operations/pipeline/graphs/{RevisionId}/node",
+                "/operations/pipeline/configure",
+                "/operations/pipeline/graphs/{RevisionId}/nodes/{NodeId}",
+                "/operations/pipeline/configure/{NodeId}"
+            ]),
         })
         {
             var layout = type.GetCustomAttribute<LayoutAttribute>();

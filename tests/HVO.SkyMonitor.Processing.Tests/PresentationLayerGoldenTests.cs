@@ -9,16 +9,12 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class PresentationLayerGoldenTests
 {
-    // Captured for projected-scene-presentation-v12-plain-circle-markers (#1415), which draws star markers as the
-    // plain circle outline again, after #1383 restored the overlay colours #1035 replaced, and moved once by the #1187
-    // base sync (projected-scene-presentation-v13), whose label policy suppresses every star label that has no measured
-    // association. A scene without resolved footprints keeps producing these payload bytes; a change to them must also
-    // bump PresentationLayerProducers.SceneProducerVersion, so retained layers stay distinguishable.
-    private const string ExpectedPayloadsSha256 = "3A7AAE8D9AF21B3EF8ED25D7E608D20C81196EFC0B731D1206333FC417D9D43D";
+    // The footprint-free presentation uses plain circle markers and suppresses unmeasured star labels (#1415, #1187).
+    // These payload hashes include the scene identity with its required catalog ID (#2181).
+    private const string ExpectedPayloadsSha256 = "D47FD70400DE3193D97234DFFE29AD71CD13CDE57693C8174664E1E326D66D7F";
 
-    // With every star measured the label policy keeps every label, so the bytes are exactly the v12 plain-circle
-    // payloads: the #526 gate removes star labels and changes nothing else.
-    private const string AllMeasuredPayloadsSha256 = "BD810160A4B84168CF445D4B86DFCC74630B443BD11A7491606CA7A3E258265E";
+    // The label policy keeps every star label when all associations are measured.
+    private const string AllMeasuredPayloadsSha256 = "B9AD6401BF4158502A1E3E7EE203DDF7D69EFCC5F20786DBACA512F58FA18B99";
 
     [TestMethod]
     public async Task FootprintFreeScenesProduceThePinnedPayloadBytes()

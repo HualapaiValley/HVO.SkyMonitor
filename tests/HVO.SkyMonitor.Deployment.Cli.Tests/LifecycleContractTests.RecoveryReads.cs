@@ -32,7 +32,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
+            UpgradeRequest(fixture), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -45,19 +45,15 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("text", false)]
-    [DataRow("null", false)]
-    [DataRow("non-utf8", false)]
-    [DataRow("malformed-json", false)]
-    [DataRow("text", true)]
-    [DataRow("null", true)]
-    [DataRow("non-utf8", true)]
-    [DataRow("malformed-json", true)]
-    public async Task InterruptedUpgradeWhoseCandidateRewroteAScheduleProfile_RecoversOntoItsSnapshot(string shape, bool restoreOnly)
+    [DataRow("text")]
+    [DataRow("null")]
+    [DataRow("non-utf8")]
+    [DataRow("malformed-json")]
+    public async Task InterruptedUpgradeWhoseCandidateRewroteAScheduleProfile_RecoversOntoItsSnapshot(string shape)
     {
         using var fixture = await CanonicalProfileFixtureAsync();
         RewriteProfileOnFirstCandidateStart(fixture, shape);
-        var request = UpgradeRequest(fixture, assertMigration: false);
+        var request = UpgradeRequest(fixture);
         using var captured = new TemporaryDirectory();
         var images = new List<CrashImage>();
         CaptureCrashImages(fixture, captured.Path, images);
@@ -74,7 +70,6 @@ public sealed partial class LifecycleContractTests
         // The installer loses power once the candidate is verified on its rewritten journal.
         RestoreCrashImage(fixture, images.First(static image => image.Step == "journal:CandidateVerified"));
         Assert.IsFalse(ColumnExists(RawIngressPath(fixture.Paths), "capture_schedule_revisions", "profile_sha256"));
-        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         var restoredJournalOnResume = false;
         CameraAgentStateSnapshot.StepCompleted = step =>
         {
@@ -85,9 +80,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             result = await CameraAgentLifecycleManager.ExecuteAsync(
-                restoreOnly
-                    ? request with { Resume = true, RestoreOnly = true, RecoveryOperationId = interrupted.OperationId }
-                    : request with { Resume = true },
+                request with { Resume = true },
                 fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
                 fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
         }
@@ -98,52 +91,10 @@ public sealed partial class LifecycleContractTests
 
         Assert.IsTrue(restoredJournalOnResume, "The recovery did not put the snapshot's journal back.");
         AssertSaidItCouldNotReadTheProfile(error.ToString(), shape);
-        if (restoreOnly)
-        {
-            Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
-            Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-            var settled = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-            Assert.AreEqual(LifecycleOperationPhase.Restored, settled.Phase);
-            Assert.IsNotNull(settled.StateSnapshotRestoredUtc);
-        }
-        else
-        {
-            // The retry runs the candidate again on the restored stores, and this time it leaves the profile alone.
-            Assert.AreEqual("completed", result.Outcome);
-            Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        }
+        // The retry runs the candidate again on the restored stores, and this time it leaves the profile alone.
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
         AssertRecoveredOntoTheSnapshotsProfile(fixture.Paths, canonical: true);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("text")]
-    [DataRow("null")]
-    [DataRow("non-utf8")]
-    [DataRow("malformed-json")]
-    public async Task RollbackAsync_AfterTheUpgradedReleaseRewroteAScheduleProfile_RestoresTheRetainedSnapshotAndSaysWhatItCouldNotRead(string shape)
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        SeedProductsRevision(fixture.Paths);
-        await UpgradeAndCommitAsync(fixture);
-        // The upgraded release migrated the profile's storage, which the release it rolls back to never reads.
-        ExecuteSql(RawIngressPath(fixture.Paths), RewriteProfileSql(shape));
-        using var error = new StringWriter();
-
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-
-        Assert.AreEqual("completed", rolledBack.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        AssertRecoveredOntoTheSnapshotsProfile(fixture.Paths, canonical: false);
-        AssertSaidItCouldNotReadTheProfile(error.ToString(), shape);
-        // The rollback could not read the roots, but its own snapshot still holds every store it replaced, so rolling
-        // forward again brings the upgraded release's products outbox back.
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        var own = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, journal.StateSnapshot!, CancellationToken.None);
-        CollectionAssert.Contains(own.Databases.Where(static database => database.Present).Select(static database => database.RelativePath).ToArray(), ProductsOutbox);
     }
 
     [TestMethod]
@@ -168,7 +119,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -208,7 +159,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 
@@ -240,7 +191,7 @@ public sealed partial class LifecycleContractTests
         using var error = new StringWriter();
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
             fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
 

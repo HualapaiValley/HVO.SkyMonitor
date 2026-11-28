@@ -68,6 +68,20 @@ public static class ProcessingNodeOptionsCodec
         ProcessingNodeOptionsDescriptor descriptor,
         JsonElement options,
         string path = DefaultPath)
+        => Decode(descriptor, options, path, allowQuotedNumbers: false, allowRetainedLegacyDeepSkyFont: false);
+
+    /// <summary>
+    /// Decodes a node's effective options with explicit retention tolerances for previously saved graphs:
+    /// <paramref name="allowQuotedNumbers"/> permits quoted numeric tokens matching runtime
+    /// <c>JsonNumberHandling.AllowReadingFromString</c>; <paramref name="allowRetainedLegacyDeepSkyFont"/>
+    /// permits a previously saved legacy <c>deepSkyFont</c> value even when deep-sky styling is active.
+    /// </summary>
+    public static ProcessingNodeOptionsDecodeResult Decode(
+        ProcessingNodeOptionsDescriptor descriptor,
+        JsonElement options,
+        string path,
+        bool allowQuotedNumbers,
+        bool allowRetainedLegacyDeepSkyFont = false)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(path);
@@ -104,13 +118,13 @@ public static class ProcessingNodeOptionsCodec
                     continue;
                 }
                 isExplicit = true;
-                if (ReadMember(option, member, optionPath) is { } failure)
+                if (ReadMember(option, member, optionPath, allowQuotedNumbers) is { } failure)
                 {
                     diagnostics.Add(failure);
                     valid = false;
                     continue;
                 }
-                values[index] = ReadOptionToken(option, member.Value, out _)!.Value;
+                values[index] = ReadOptionToken(option, member.Value, out _, allowQuotedNumbers)!.Value;
             }
             if (!valid)
             {
@@ -120,7 +134,8 @@ public static class ProcessingNodeOptionsCodec
                 ? ProcessingOptionValue.FromColor(new(
                     (byte)values[0].AsWholeNumber(), (byte)values[1].AsWholeNumber(), (byte)values[2].AsWholeNumber()))
                 : values[0];
-            if (option.Check(value) is { } invalid)
+            if (option.Check(value, allowQuotedNumbers) is { } invalid &&
+                !IsAllowedLegacyDeepSkyFont(descriptor, scopes, option, value, allowRetainedLegacyDeepSkyFont))
             {
                 diagnostics.Add(new(invalid.Code, MemberPath(optionPath, members[option.Members[0]].Name), invalid.Message));
                 continue;
@@ -153,6 +168,14 @@ public static class ProcessingNodeOptionsCodec
         {
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
                 $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
+        }
+        if (diagnostics.Count == 0 && descriptor.StepAlias.Equals("ProjectedScene", StringComparison.OrdinalIgnoreCase) &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "deepSkyMinimumSizeArcminutes") is { } minSize &&
+            decoded.FirstOrDefault(static option => option.Descriptor.Key == "deepSkyMaximumSizeArcminutes") is { } maxSize &&
+            minSize.Value.AsRealNumber() > maxSize.Value.AsRealNumber())
+        {
+            diagnostics.Add(new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, "deepSkyMinimumSizeArcminutes"),
+                "Deep-sky minimum size must be less than or equal to maximum size."));
         }
         if (diagnostics.Count == 0)
             diagnostics.AddRange(AnnotationOptionDescriptors.ValidateSelections(descriptor, decoded, path));
@@ -348,9 +371,43 @@ public static class ProcessingNodeOptionsCodec
         return WriteValue(ProcessingOptionValue.FromCollection(value.Kind, new(edited.Items, tokens)));
     }
 
+    private static bool IsAllowedLegacyDeepSkyFont(
+        ProcessingNodeOptionsDescriptor descriptor,
+        Dictionary<string, Dictionary<string, JsonProperty>> scopes,
+        ProcessingOptionDescriptor option,
+        ProcessingOptionValue value,
+        bool allowRetainedLegacyDeepSkyFont)
+    {
+        if (!string.Equals(option.Key, "deepSkyFont", StringComparison.Ordinal) ||
+            value.Kind != ProcessingOptionKind.Font ||
+            !string.Equals(value.AsText(), DeepSkyOptionDescriptors.LegacyDeepSkyFont, StringComparison.Ordinal) ||
+            descriptor.Find("includeDeepSkyLayer") is null ||
+            descriptor.Find("applyInlineDeepSkyStyle") is null)
+        {
+            return false;
+        }
+        if (allowRetainedLegacyDeepSkyFont)
+        {
+            return true;
+        }
+        if (!scopes.TryGetValue(string.Empty, out var rootMembers))
+        {
+            return false;
+        }
+        var separateLayerInactive = !rootMembers.TryGetValue("includeDeepSkyLayer", out var includeLayer) ||
+            includeLayer.Value.ValueKind == JsonValueKind.False;
+        var inlineStyleInactive = !rootMembers.TryGetValue("applyInlineDeepSkyStyle", out var inlineStyle) ||
+            inlineStyle.Value.ValueKind == JsonValueKind.False;
+        return separateLayerInactive && inlineStyleInactive;
+    }
+
     // WindowKind already accepts both enum numbers and names. Read its effective choice without rewriting
     // an untouched numeric token or its casing when the operator opens and saves an existing graph.
-    private static ProcessingOptionValue? ReadOptionToken(ProcessingOptionDescriptor option, JsonElement token, out bool outOfRange)
+    private static ProcessingOptionValue? ReadOptionToken(
+        ProcessingOptionDescriptor option,
+        JsonElement token,
+        out bool outOfRange,
+        bool allowQuotedNumbers = false)
     {
         if (option.Kind == ProcessingOptionKind.RowCollection)
         {
@@ -389,13 +446,17 @@ public static class ProcessingNodeOptionsCodec
                 return ProcessingOptionValue.FromChoice(kind.ToString());
             return null;
         }
-        return ReadToken(MemberKind(option), token, out outOfRange);
+        return ReadToken(MemberKind(option), token, out outOfRange, allowQuotedNumbers);
     }
 
-    private static ProcessingGraphDiagnostic? ReadMember(ProcessingOptionDescriptor option, JsonProperty member, string path)
+    private static ProcessingGraphDiagnostic? ReadMember(
+        ProcessingOptionDescriptor option,
+        JsonProperty member,
+        string path,
+        bool allowQuotedNumbers = false)
     {
         var kind = MemberKind(option);
-        if (ReadOptionToken(option, member.Value, out var outOfRange) is not { } value)
+        if (ReadOptionToken(option, member.Value, out var outOfRange, allowQuotedNumbers) is not { } value)
         {
             return outOfRange
                 ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name),
@@ -408,15 +469,29 @@ public static class ProcessingNodeOptionsCodec
         }
         // Channels and nullable byte overrides must use the producer's unsigned token spelling. Null stays valid
         // for a nullable byte; a signed zero must be rejected and rewritten by an explicit zero edit.
-        return (option.Kind == ProcessingOptionKind.Color || option.IsUnsignedByte && member.Value.ValueKind != JsonValueKind.Null) &&
-            !member.Value.TryGetByte(out _)
-            ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name), string.Create(
-                CultureInfo.InvariantCulture,
-                $"Option '{option.Key}' member '{member.Name}' must be an unsigned whole number between 0 and {MaximumChannel}."))
-            : null;
+        if (option.Kind == ProcessingOptionKind.Color || option.IsUnsignedByte && member.Value.ValueKind != JsonValueKind.Null)
+        {
+            var validByte = member.Value.ValueKind == JsonValueKind.Number
+                ? member.Value.TryGetByte(out _)
+                : allowQuotedNumbers && member.Value.ValueKind == JsonValueKind.String &&
+                  member.Value.GetString() is { Length: > 0 } byteText &&
+                  !byteText.AsSpan().ContainsAnyExceptInRange('0', '9') &&
+                  byte.TryParse(byteText, NumberStyles.None, CultureInfo.InvariantCulture, out _);
+            if (!validByte)
+            {
+                return new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name), string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Option '{option.Key}' member '{member.Name}' must be an unsigned whole number between 0 and {MaximumChannel}."));
+            }
+        }
+        return null;
     }
 
-    private static ProcessingOptionValue? ReadToken(ProcessingOptionKind kind, JsonElement token, out bool outOfRange)
+    private static ProcessingOptionValue? ReadToken(
+        ProcessingOptionKind kind,
+        JsonElement token,
+        out bool outOfRange,
+        bool allowQuotedNumbers = false)
     {
         outOfRange = false;
         switch (kind)
@@ -432,6 +507,22 @@ public static class ProcessingNodeOptionsCodec
                 return ProcessingOptionValue.FromNullableWholeNumber(null);
             case ProcessingOptionKind.NullableWholeNumber:
             case ProcessingOptionKind.WholeNumber:
+                if (allowQuotedNumbers && token.ValueKind == JsonValueKind.String)
+                {
+                    var text = token.GetString();
+                    if (!IsIntegerString(text))
+                    {
+                        return null;
+                    }
+                    if (long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var quotedWhole))
+                    {
+                        return kind == ProcessingOptionKind.NullableWholeNumber
+                            ? ProcessingOptionValue.FromNullableWholeNumber(quotedWhole)
+                            : ProcessingOptionValue.FromWholeNumber(quotedWhole);
+                    }
+                    outOfRange = true;
+                    return null;
+                }
                 if (!IsIntegerToken(token))
                 {
                     return null;
@@ -448,6 +539,28 @@ public static class ProcessingNodeOptionsCodec
                 return ProcessingOptionValue.FromNullableRealNumber(null);
             case ProcessingOptionKind.NullableRealNumber:
             case ProcessingOptionKind.RealNumber:
+                if (allowQuotedNumbers && token.ValueKind == JsonValueKind.String)
+                {
+                    var text = token.GetString();
+                    if (string.IsNullOrEmpty(text) || text.AsSpan().IndexOf('\0') >= 0 ||
+                        char.IsWhiteSpace(text[0]) || char.IsWhiteSpace(text[^1]))
+                    {
+                        return null;
+                    }
+                    if (!double.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent,
+                        CultureInfo.InvariantCulture, out var quotedReal))
+                    {
+                        return null;
+                    }
+                    if (double.IsFinite(quotedReal))
+                    {
+                        return kind == ProcessingOptionKind.NullableRealNumber
+                            ? ProcessingOptionValue.FromNullableRealNumber(quotedReal)
+                            : ProcessingOptionValue.FromRealNumber(quotedReal);
+                    }
+                    outOfRange = true;
+                    return null;
+                }
                 if (token.ValueKind != JsonValueKind.Number)
                 {
                     return null;
@@ -471,6 +584,16 @@ public static class ProcessingNodeOptionsCodec
             default:
                 throw new ArgumentOutOfRangeException(nameof(kind), kind, "A colour is read one channel at a time.");
         }
+    }
+
+    private static bool IsIntegerString(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+        var span = text[0] is '-' or '+' ? text.AsSpan(1) : text.AsSpan();
+        return !span.IsEmpty && !span.ContainsAnyExceptInRange('0', '9');
     }
 
     private static bool IsIntegerToken(JsonElement token)

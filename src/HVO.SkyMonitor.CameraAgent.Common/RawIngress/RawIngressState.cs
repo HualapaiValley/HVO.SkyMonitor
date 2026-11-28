@@ -37,8 +37,7 @@ public sealed record RawIngressReconciliationReport(
     int Recovered,
     int Cleaned,
     int Quarantined,
-    int MissingEvidence,
-    int IndexProjectionFailures);
+    int MissingEvidence);
 
 public sealed class RawIngressState(TimeProvider timeProvider)
 {
@@ -63,16 +62,21 @@ public sealed class RawIngressState(TimeProvider timeProvider)
         timeProvider.GetUtcNow());
 
     private RawIngressReconciliationReport? _lastReconciliation;
+    private long _lastCapturePayloadBytes;
 
     public RawIngressSnapshot Snapshot => Volatile.Read(ref _snapshot);
 
     public RawIngressReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
 
+    internal long LastCapturePayloadBytes => Volatile.Read(ref _lastCapturePayloadBytes);
+
+    internal void RecordCapturePayloadBytes(long bytes) => Volatile.Write(ref _lastCapturePayloadBytes, bytes);
+
     internal void RecordReconciliation(RawIngressReconciliationSummary summary) => Volatile.Write(
         ref _lastReconciliation,
         new RawIngressReconciliationReport(
             _timeProvider.GetUtcNow(), summary.Inspected, summary.Recovered, summary.Cleaned,
-            summary.Quarantined, summary.MissingEvidence, summary.IndexProjectionFailures));
+            summary.Quarantined, summary.MissingEvidence));
 
     internal void Set(
         RawIngressAvailability availability,

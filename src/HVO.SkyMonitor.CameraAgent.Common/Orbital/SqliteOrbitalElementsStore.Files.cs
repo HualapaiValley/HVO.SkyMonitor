@@ -3,13 +3,20 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 public sealed partial class SqliteOrbitalElementsStore
 {
+    private const string JsonExtension = ".json";
+    internal const string CsvExtension = ".csv";
+    private const string QuarantineExtension = ".raw";
+
+    private static string ContentRelativePath(string directory, string sha256, string extension)
+        => Path.Combine(directory, sha256 + extension);
+
     private enum DeleteOutcome { Deleted, Absent, Refused }
 
     private static readonly string[] ContentDirectories =
@@ -24,8 +31,9 @@ public sealed partial class SqliteOrbitalElementsStore
     /// </summary>
     private async ValueTask WriteIntentAsync(string attemptId, PreparedPublication prepared, CancellationToken cancellationToken)
     {
+        var rawKind = prepared.RawExtension == CsvExtension ? "raw-csv" : "raw";
         var bytes = Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture,
-            $"{IntentHeader} {attemptId}\nraw {prepared.RawSha256}\npayload {prepared.PayloadSha256}\nmanifest {prepared.ManifestSha256}\n"));
+            $"{IntentHeader} {attemptId}\n{rawKind} {prepared.RawSha256}\npayload {prepared.PayloadSha256}\nmanifest {prepared.ManifestSha256}\n"));
         await AtomicPublisher.PublishAsync(RequireRoot(), Path.Combine(StagingDirectoryName, attemptId + IntentExtension),
             PublishMode.CreateNew, (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken)
             .ConfigureAwait(false);
@@ -42,10 +50,11 @@ public sealed partial class SqliteOrbitalElementsStore
         string name,
         ReadOnlyMemory<byte> content,
         string contentSha256,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string extension = JsonExtension)
     {
         var root = RequireRoot();
-        var relative = Path.Combine(directory, name + ".json");
+        var relative = ContentRelativePath(directory, name, extension);
         var path = root.Resolve(relative);
         if (Directory.Exists(path))
         {
@@ -84,6 +93,24 @@ public sealed partial class SqliteOrbitalElementsStore
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (stream.Length != length)
+        {
+            return false;
+        }
+        var digest = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        return string.Equals(Convert.ToHexString(digest), sha256, StringComparison.Ordinal);
+    }
+
+    private async ValueTask<bool> FileMatchesSha256Async(string path, string sha256, CancellationToken cancellationToken)
+    {
+        RequireRoot().Verify(path, "orbital-verify");
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length is 0 or > MaximumRawBytes)
+        {
+            return false;
+        }
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.Length is 0 or > MaximumRawBytes)
         {
             return false;
         }
@@ -139,13 +166,13 @@ public sealed partial class SqliteOrbitalElementsStore
         }
         else
         {
-            foreach (var (directory, sha256) in entries)
+            foreach (var (directory, sha256, extension) in entries)
             {
                 if (await IsUsedByPublishedAsync(connection, directory, sha256, cancellationToken).ConfigureAwait(false))
                 {
                     continue;
                 }
-                switch (TryDeleteRegular(FilePath(directory, sha256)))
+                switch (TryDeleteRegular(FilePath(directory, sha256, extension)))
                 {
                     case DeleteOutcome.Deleted:
                         deleted++;
@@ -163,7 +190,7 @@ public sealed partial class SqliteOrbitalElementsStore
         return deleted;
     }
 
-    private static async ValueTask<IReadOnlyList<(string Directory, string Sha256)>?> ReadIntentAsync(
+    private static async ValueTask<IReadOnlyList<(string Directory, string Sha256, string Extension)>?> ReadIntentAsync(
         string intentPath,
         CancellationToken cancellationToken)
     {
@@ -178,7 +205,7 @@ public sealed partial class SqliteOrbitalElementsStore
         {
             return null;
         }
-        var entries = new List<(string, string)>(3);
+        var entries = new List<(string, string, string)>(3);
         foreach (var line in lines.Skip(1))
         {
             var parts = line.Split(' ');
@@ -188,7 +215,7 @@ public sealed partial class SqliteOrbitalElementsStore
             }
             var directory = parts[0] switch
             {
-                "raw" => RawDirectoryName,
+                "raw" or "raw-csv" => RawDirectoryName,
                 "payload" => PayloadDirectoryName,
                 "manifest" => ManifestDirectoryName,
                 _ => null
@@ -197,7 +224,7 @@ public sealed partial class SqliteOrbitalElementsStore
             {
                 return null;
             }
-            entries.Add((directory, parts[1]));
+            entries.Add((directory, parts[1], parts[0] == "raw-csv" ? CsvExtension : JsonExtension));
         }
         return entries;
     }
@@ -249,8 +276,137 @@ public sealed partial class SqliteOrbitalElementsStore
             AtomicPublisher.CleanupTemporaries(root, root.Resolve(directory), MaximumReconciledEntries);
         }
         removed += await PruneQuarantineAsync(connection, cancellationToken).ConfigureAwait(false);
+        await MigrateLegacyQuarantineFilesAsync(connection, cancellationToken).ConfigureAwait(false);
         SyncDirectories(ContentDirectories);
         return removed;
+    }
+
+    /// <summary>
+    /// Migrates retained legacy <c>quarantine/&lt;sha256&gt;.json</c> bodies to <c>.raw</c> through the ledger-aware
+    /// move so malformed JSON payloads from older releases stay outside the installation's <c>*.json</c> manifest scan.
+    /// </summary>
+    private async ValueTask MigrateLegacyQuarantineFilesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var root = RequireRoot();
+        var quarantineDirectory = root.Resolve(QuarantineDirectoryName);
+        foreach (var source in EnumerateBounded(quarantineDirectory, "*" + JsonExtension))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var name = Path.GetFileNameWithoutExtension(source);
+            if (!OrbitalContract.IsSha256(name))
+            {
+                continue;
+            }
+            if (!await IsQuarantineRetainedAsync(connection, name, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+            var destination = FilePath(QuarantineDirectoryName, name, QuarantineExtension);
+            try
+            {
+                root.Verify(source, "orbital-quarantine-migrate");
+                root.Verify(destination, "orbital-quarantine-migrate");
+                if (Directory.Exists(source) || Directory.Exists(destination))
+                {
+                    AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    continue;
+                }
+                if (!File.Exists(source))
+                {
+                    continue;
+                }
+                DurableSync.RequireRegularFile(source);
+                if (!await TryVerifyFileMatchesSha256Async(source, name, cancellationToken).ConfigureAwait(false))
+                {
+                    AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    continue;
+                }
+                if (File.Exists(destination))
+                {
+                    DurableSync.RequireRegularFile(destination);
+                    if (await TryVerifyFileMatchesSha256Async(destination, name, cancellationToken).ConfigureAwait(false))
+                    {
+                        DurableSync.File(destination);
+                        DeleteAndSyncQuarantineFile(source, quarantineDirectory);
+                    }
+                    else
+                    {
+                        AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+                    }
+                    continue;
+                }
+                MoveAndSyncQuarantineFile(source, destination, quarantineDirectory);
+            }
+            catch (FileSystemFaultException fault) when (fault.Kind == FileSystemFaultKind.Containment)
+            {
+                AmbiguousEntryLeft(_logger, QuarantineDirectoryName);
+            }
+        }
+    }
+
+    private async ValueTask<bool> TryVerifyFileMatchesSha256Async(string path, string sha256, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await FileMatchesSha256Async(path, sha256, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private void DeleteAndSyncQuarantineFile(string source, string quarantineDirectory)
+    {
+        // Defer legacy quarantine migration if an established retained-integrity ledger cannot record the intent.
+        // Keep the ledger delete intent pending until the directory entry removal is durable.
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.TryBeginDelete(source);
+        if (integrity is null)
+        {
+            return;
+        }
+        var synced = false;
+        try
+        {
+            File.Delete(source);
+            _faults.Inject(OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync);
+            DurableSync.Directory(quarantineDirectory);
+            synced = true;
+        }
+        finally
+        {
+            if (!synced)
+            {
+                DeploymentLocation.RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+        }
+    }
+
+    private void MoveAndSyncQuarantineFile(string source, string destination, string quarantineDirectory)
+    {
+        // Defer legacy quarantine migration if an established retained-integrity ledger cannot record the intent.
+        // Keep the ledger publication intent pending until the renamed file and directory entry are durable.
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.TryBeginPublication(source, destination);
+        if (integrity is null)
+        {
+            return;
+        }
+        var synced = false;
+        try
+        {
+            File.Move(source, destination, overwrite: false);
+            DurableSync.File(destination);
+            _faults.Inject(OrbitalStorageFaultPoint.BeforeQuarantineDirectorySync);
+            DurableSync.Directory(quarantineDirectory);
+            synced = true;
+        }
+        finally
+        {
+            if (!synced)
+            {
+                DeploymentLocation.RetainedIntegrityLedger.AbandonCurrentMutation();
+            }
+        }
     }
 
     private async ValueTask<bool> RetainQuarantineFileAsync(
@@ -260,7 +416,8 @@ public sealed partial class SqliteOrbitalElementsStore
         CancellationToken cancellationToken)
     {
         var root = RequireRoot();
-        var relative = Path.Combine(QuarantineDirectoryName, sha256 + ".json");
+        // Rejected bodies may use any format. Keep them outside the installation's JSON manifest scan.
+        var relative = ContentRelativePath(QuarantineDirectoryName, sha256, QuarantineExtension);
         var path = root.Resolve(relative);
         if (Directory.Exists(path))
         {
@@ -291,7 +448,11 @@ public sealed partial class SqliteOrbitalElementsStore
     private async ValueTask<int> PruneQuarantineAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         var removed = 0;
-        foreach (var path in EnumerateBounded(Path.Combine(_rootPath, QuarantineDirectoryName), "*.json"))
+        var paths = Directory.EnumerateFiles(Path.Combine(_rootPath, QuarantineDirectoryName))
+            .Where(static path => Path.GetExtension(path) is QuarantineExtension or JsonExtension)
+            .Take(MaximumReconciledEntries)
+            .ToList();
+        foreach (var path in paths)
         {
             var name = Path.GetFileNameWithoutExtension(path);
             if (!OrbitalContract.IsSha256(name))

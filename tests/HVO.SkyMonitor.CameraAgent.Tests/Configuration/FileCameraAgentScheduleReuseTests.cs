@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Configuration")]
 public sealed class FileCameraAgentScheduleReuseTests
 {
     [TestMethod]
@@ -280,8 +281,7 @@ public sealed class FileCameraAgentScheduleReuseTests
         {
             ConfigFilePath = _path,
             AgentId = "schedule-reuse-test",
-            Observatory = Observer,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            Observatory = Observer
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, Store);
         internal async Task EditAsync(Action<JsonNode> edit)
         {

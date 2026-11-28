@@ -79,8 +79,8 @@ cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /outside/repository/diagnosti
 cp /usr/share/doc/fonts-dejavu-core/copyright /outside/repository/diagnostic.ttf.license
 ```
 
-The catalog root must resolve verified `hyg-v42-production`, package
-`hyg-v4.2-p3-s2-r1`. Input files are bounded to 16 MiB each. New empty output
+The catalog root must resolve verified `hyg-v44-production`, package
+`hyg-v4.4-p4-s3-r1`. Input files are bounded to 16 MiB each. New empty output
 directories are mandatory. Initial limits are five equal contiguous exposures,
 0 < exposure <= 20 seconds, at most 640x640 output, tight little-endian RGGB16
 native12 codes, black 64, white 4095. The current presentation/detector converter
@@ -96,7 +96,7 @@ products, not an array or `OrbitalPredictionResult` wrapper. A single group:
 
 ```bash
 dotnet "$poc" satellite-tracks /outside/repository/new-engine-run \
-  /path/to/hyg-v42-production /outside/repository/settings.json \
+  /path/to/hyg-v44-production /outside/repository/settings.json \
   /outside/repository/optical.json /outside/repository/diagnostic.ttf \
   /outside/repository/track-01.json /outside/repository/track-02.json \
   /outside/repository/track-03.json /outside/repository/track-04.json \
@@ -107,7 +107,7 @@ For two objects, append the second object's entire five-file group:
 
 ```bash
 dotnet "$poc" satellite-tracks /outside/repository/new-two-object-run \
-  /path/to/hyg-v42-production /outside/repository/settings.json \
+  /path/to/hyg-v44-production /outside/repository/settings.json \
   /outside/repository/optical.json /outside/repository/diagnostic.ttf \
   /outside/repository/object-a/track-01.json /outside/repository/object-a/track-02.json \
   /outside/repository/object-a/track-03.json /outside/repository/object-a/track-04.json \
@@ -167,9 +167,9 @@ arc. This does not support accepted-measured astrometry or #530 association.
 
 ```bash
 dotnet "$poc" satellite-reference /outside/repository/new-reference-run \
-  /path/to/hyg-v42-production /outside/repository/seattle-settings.json \
+  /path/to/hyg-v44-production /outside/repository/seattle-settings.json \
   /outside/repository/optical.json /outside/repository/diagnostic.ttf \
-  /home/roys/.codex/artifacts/satellite-research-2026-10-19/iss-seattle-fixture.json
+  /outside/repository/iss-seattle-fixture.json
 ```
 
 At five seconds, this selects the first 25 seconds of the retained 100-second

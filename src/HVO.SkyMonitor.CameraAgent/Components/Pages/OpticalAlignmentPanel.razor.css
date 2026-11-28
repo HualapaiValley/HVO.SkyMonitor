@@ -1,0 +1,6 @@
+.optical-alignment { padding: 1rem; overflow-wrap: anywhere; }
+.optical-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 1rem; }
+.optical-inputs label { display: grid; gap: .25rem; }
+.optical-inputs textarea { background: var(--surface, #171c25); color: inherit; font: inherit; padding: .5rem; }
+.optical-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .75rem; }
+.optical-alignment th, .optical-alignment td { text-align: start; padding: .3rem .75rem .3rem 0; }

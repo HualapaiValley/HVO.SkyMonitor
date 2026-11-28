@@ -19,6 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Services")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class CameraAgentNightlyProductLibraryReadTests
 {
@@ -169,7 +170,8 @@ public sealed class CameraAgentNightlyProductLibraryReadTests
             var started = clock.UtcNow;
             var reader = new InMemoryNightlySourceReader();
             reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(10)));
-            using var catalog = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var catalog = silo.OpenStore(options, clock);
             using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
                 reader, catalog, new HVO.SkyMonitor.Astronomy.AstronomyEnginePlanetEphemeris(), static () => null, clock);
             var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);

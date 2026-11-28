@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
@@ -50,7 +50,8 @@ public sealed record ManualFocusSessionRecordSummary(
     bool QualifiesPhysicalFocus,
     ManualFocusPreviewSettings? BestSettings = null,
     ManualFocusTargetSource? BestTargetSource = null,
-    double? BestSimulatedFocusPosition = null);
+    double? BestSimulatedFocusPosition = null,
+    MotorFocusEvidence? Motor = null);
 
 /// <summary>A verified record and its exact stored bytes, for authorized export.</summary>
 public sealed record ManualFocusSessionRecordContent(ManualFocusSessionRecordSummary Summary, ManualFocusSessionRecord Record, ReadOnlyMemory<byte> Utf8Json);
@@ -238,7 +239,7 @@ public sealed class ManualFocusSessionStore : IManualFocusSessionStore, IDisposa
         return new(record.RecordId, true, sha256, bytes, record.SavedUtc, record.SavedBy, session.State,
             session.TotalSamples, session.Best?.Measurement.HalfFluxDiameterPixels, session.ModuleType,
             session.Fidelity?.Kind, session.Fidelity?.QualifiesPhysicalFocus ?? false, session.Best?.Settings,
-            session.Best?.TargetSource, session.Best?.SimulatedFocusPosition);
+            session.Best?.TargetSource, session.Best?.SimulatedFocusPosition, session.Motor);
     }
 
     private void Prune(PhysicalRoot root, string directory)

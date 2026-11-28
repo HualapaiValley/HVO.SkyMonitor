@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -12,12 +13,20 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 // A process epoch authenticates complete expectations before incremental or full qualification.
 internal sealed partial class RetainedIntegrityLedger : IDisposable
 {
+    internal const string LocationDirectoryName = ".location";
     internal const string DatabaseName = "retained-integrity.v1.db";
     internal const string CheckpointName = "retained-integrity.v1.protected";
+    internal const string LockFileName = "retained-integrity.v1.lock";
+    internal const string HistoryFileName = "deployment-location.v1.protected";
+    internal const string ManualFileName = "manual-deployment-location.v1.protected";
+    internal const string IdentityMarkerName = ".deployment-location.v1.identity";
+    internal const int BoundedAuthorityEntryLimit = 64;
     private static readonly ConcurrentDictionary<string, RetainedIntegrityLedger> Roots = new(StringComparer.Ordinal);
     private static readonly AsyncLocal<Mutation?> Current = new();
     internal static Action? BeforeNestedMutationForTest { get; set; }
     internal static Action? RegistrationBlockedForTest { get; set; }
+    internal static Action<string>? BeforePendingDirectorySyncForTest { get; set; }
+    internal static Action<string>? BeforeAuthorityScanEntryForTest { get; set; }
     private readonly string _root;
     private readonly string _directory;
     private readonly string _checkpoint;
@@ -54,7 +63,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         internal FileStamp? Stamp { get; set; }
         internal bool Observed { get; set; }
     }
-    private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false);
+    private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false,
+        string? ReclaimedStagingSha256 = null);
     private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified,
         DateTimeOffset VerifiedUntilUtc = default, bool CleanShutdown = false);
 
@@ -62,7 +72,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         Func<string, Entry?> readCurrent, Action unqualifiedWarning, TimeProvider timeProvider, string? requiredNonce = null)
     {
         _root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
-        _directory = Path.Combine(_root, ".location");
+        _directory = Path.Combine(_root, LocationDirectoryName);
         _checkpoint = Path.Combine(_directory, CheckpointName);
         _protector = protector;
         _readCurrent = readCurrent;
@@ -79,7 +89,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             Mode = SqliteOpenMode.ReadWriteCreate,
             DefaultTimeout = 1
         }.ToString());
-        var ownershipPath = Path.Combine(_directory, "retained-integrity.v1.lock");
+        var ownershipPath = Path.Combine(_directory, LockFileName);
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, ownershipPath);
         try { _ownership = new FileStream(ownershipPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException exception)
@@ -313,12 +323,12 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         {
             if (!_locked) throw new InvalidOperationException("A scrub must finish before publication.");
             if (_drift) return; // Startup/recovery stays available, but unexplained changes never replace expected evidence.
+            owner.SyncPendingIntents();
             using var transaction = owner._database.BeginTransaction();
             var verified = owner.ComputeEntriesRoot("scan_entries", transaction);
             if (!verified.AsSpan().SequenceEqual(_scanChain))
                 throw new InvalidDataException("Retained verification staging authentication failed.");
             owner.Execute("DELETE FROM entries; INSERT INTO entries SELECT * FROM scan_entries; DELETE FROM scan_entries; DELETE FROM pending;", transaction);
-            owner._pending.Clear();
             owner._generation++;
             owner._binding = binding;
             owner._count = owner.Scalar("SELECT COUNT(*) FROM entries WHERE kind<>0;", transaction);
@@ -326,6 +336,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             owner._established = true;
             owner.WriteMetadata(transaction);
             transaction.Commit();
+            owner._pending.Clear();
             owner.ValidatePathMetadata();
             owner._qualified = !_invalid;
             if (owner._qualified) owner._warned = false;
@@ -354,10 +365,28 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null));
         return plans.Count == 0 ? Empty.Instance : Begin(plans);
     }
+
+    internal static IDisposable? TryBeginPublication(string source, string destination)
+        => TryBeginPublication(source, destination, Tracked(destination) ? File.ReadAllBytes(source) : []);
+
+    internal static IDisposable? TryBeginPublication(string source, string destination, ReadOnlyMemory<byte> bytes)
+    {
+        var plans = new List<(string Path, bool Tree, string? Planned, string? Source)>();
+        if (Tracked(source)) plans.Add((source, false, null, null));
+        if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null));
+        return plans.Count == 0 ? Empty.Instance : TryBegin(plans);
+    }
+
     internal static IDisposable BeginWrite(string path, ReadOnlyMemory<byte> bytes)
         => Tracked(path) ? Begin([(path, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null)]) : Empty.Instance;
     internal static IDisposable BeginDelete(string path) => Tracked(path) ? Begin([(path, false, null, null)]) : Empty.Instance;
+
+    internal static IDisposable? TryBeginDelete(string path)
+        => Tracked(path) ? TryBegin([(path, false, null, null)]) : Empty.Instance;
+    internal static IDisposable BeginSiloStagingDelete(string sidecarPath, string manifestSha256) =>
+        Begin([(sidecarPath, false, null, null)], reclaimedStagingSha256: manifestSha256);
     internal static IDisposable BeginTrees(params string[] paths) => Begin(paths.Select(path => (path, true, (string?)null, (string?)null)));
+    internal static IDisposable BeginJournalMetadataWrite() => RegistrationLease.Enter();
     internal static IDisposable BeginTreeMove(string source, string destination)
         => Begin([(source, true, null, null), (destination, true, null, Path.GetFullPath(source))]);
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned composite owns the registration lease and mutation; it disposes both in reverse order, including on a disposal failure.")]
@@ -377,7 +406,19 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     }
     private static bool Tracked(string path) => path.EndsWith(".json", StringComparison.Ordinal);
 
-    private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans)
+    private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        string? reclaimedStagingSha256 = null)
+        => TryBeginCore(plans, requireAvailableLedger: false, reclaimedStagingSha256)!;
+
+    private static Multiple? TryBegin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        string? reclaimedStagingSha256 = null)
+        => TryBeginCore(plans, requireAvailableLedger: true, reclaimedStagingSha256);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned composite owns the registration lease and root scopes and disposes them in reverse order.")]
+    private static Multiple? TryBeginCore(
+        IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans,
+        bool requireAvailableLedger,
+        string? reclaimedStagingSha256 = null)
     {
         if (Current.Value is { Active: true }) BeforeNestedMutationForTest?.Invoke();
         var registration = RegistrationLease.Enter();
@@ -389,7 +430,15 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                 var full = Path.GetFullPath(plan.Path);
                 var current = full;
                 while (current is not null && !Roots.ContainsKey(current)) current = Path.GetDirectoryName(current);
-                if (current is null || !Roots.TryGetValue(current, out var owner)) continue;
+                if (current is null || !Roots.TryGetValue(current, out var owner))
+                {
+                    if (requireAvailableLedger && (plan.Tree || Tracked(full)) && HasEstablishedLedgerOnDisk(full))
+                    {
+                        registration.Dispose();
+                        return null;
+                    }
+                    continue;
+                }
                 var relative = Path.GetRelativePath(owner._root, full);
                 if (relative == "." && plan.Tree) throw new InvalidOperationException("A running retained integrity root cannot be removed.");
                 if (!plan.Tree && !Tracked(relative)) continue;
@@ -401,13 +450,16 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                     sourceKey = FileKey(owner._root, plan.Source) + Path.DirectorySeparatorChar;
                 }
                 var intent = new Intent(FileKey(owner._root, full) + (plan.Tree ? Path.DirectorySeparatorChar : string.Empty),
-                    plan.Tree, 0, plan.Planned, sourceKey);
+                    plan.Tree, 0, plan.Planned, sourceKey, ReclaimedStagingSha256: reclaimedStagingSha256);
                 if (!grouped.TryGetValue(owner, out var list)) grouped[owner] = list = [];
                 list.Add(intent);
             }
         }
         catch { registration.Dispose(); throw; }
-        if (grouped.Count == 0) return new Multiple([registration]);
+        if (grouped.Count == 0)
+        {
+            return new Multiple([registration]);
+        }
         // Retain the ambient registration lease until every root scope completes.
         // Releasing it while holding a root barrier lets another writer own the
         // global gate while waiting for that root, deadlocking a nested write.
@@ -417,11 +469,155 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             foreach (var (owner, intents) in grouped.OrderBy(pair => pair.Key._root, StringComparer.Ordinal)) scopes.Add(owner.Enter(intents));
             return new Multiple(scopes);
         }
+        catch (Exception exception) when (requireAvailableLedger && OptionalIo(exception))
+        {
+            new Multiple(scopes).Dispose();
+            return null;
+        }
         catch
         {
             new Multiple(scopes).Dispose();
             throw;
         }
+    }
+
+    private static readonly string[] EstablishedLedgerMarkerNames =
+    [
+        DatabaseName,
+        DatabaseName + "-journal",
+        DatabaseName + "-wal",
+        DatabaseName + "-shm",
+        CheckpointName,
+        LockFileName,
+        HistoryFileName,
+        ManualFileName
+    ];
+
+    private static bool IsEstablishedLedgerMarkerName(string name)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var marker in EstablishedLedgerMarkerNames)
+        {
+            if (string.Equals(name, marker, comparison))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    internal static bool PathExistsOrInaccessible(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+    }
+
+    internal static bool HasEstablishedAuthorityAtRoot(string rootDirectory, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Detect the durable root-level deployment-location identity marker even if .location
+        // is offline, missing, or recreated empty during recovery startup.
+        if (PathExistsOrInaccessible(Path.Combine(rootDirectory, IdentityMarkerName)))
+        {
+            return true;
+        }
+
+        var locationDirectory = Path.Combine(rootDirectory, LocationDirectoryName);
+        FileAttributes locationAttributes;
+        try
+        {
+            locationAttributes = File.GetAttributes(locationDirectory);
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+
+        if ((locationAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return true;
+        }
+
+        if ((locationAttributes & FileAttributes.Directory) == 0)
+        {
+            return false;
+        }
+
+        foreach (var marker in EstablishedLedgerMarkerNames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (PathExistsOrInaccessible(Path.Combine(locationDirectory, marker)))
+            {
+                return true;
+            }
+        }
+
+        try
+        {
+            var count = 0;
+            foreach (var entry in Directory.EnumerateFileSystemEntries(locationDirectory))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (++count > BoundedAuthorityEntryLimit)
+                {
+                    return true;
+                }
+                BeforeAuthorityScanEntryForTest?.Invoke(entry);
+                if (IsEstablishedLedgerMarkerName(Path.GetFileName(entry)))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasEstablishedLedgerOnDisk(string fullPath)
+    {
+        var current = Path.GetDirectoryName(fullPath);
+        while (!string.IsNullOrEmpty(current))
+        {
+            if (HasEstablishedAuthorityAtRoot(current))
+            {
+                return true;
+            }
+            var parent = Path.GetDirectoryName(current);
+            if (string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+            current = parent;
+        }
+        return false;
     }
 
     private IDisposable Enter(IEnumerable<Intent> intents)
@@ -452,12 +648,20 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
     }
 
+    internal static void AbandonCurrentMutation() => Current.Value?.Abandon();
+
     private sealed class Mutation(RetainedIntegrityLedger owner, Mutation? parent) : IDisposable
     {
         private readonly Dictionary<string, Intent> _intents = new(StringComparer.Ordinal);
         private int _depth = 1;
+        private bool _abandoned;
         internal RetainedIntegrityLedger Owner => owner;
         internal bool Active => _depth > 0;
+        internal void Abandon()
+        {
+            _abandoned = true;
+            owner.Invalidate();
+        }
         internal Mutation? Find(RetainedIntegrityLedger candidate)
             => Active && Owner == candidate ? this : parent?.Find(candidate);
         internal void Add(IEnumerable<Intent> intents)
@@ -488,14 +692,21 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             if (Interlocked.Decrement(ref _depth) != 0) return;
             try
             {
-                using var transaction = owner._database.BeginTransaction();
-                owner.ValidateLiveMetadata(transaction);
-                foreach (var intent in _intents.Values) owner.Apply(intent, transaction);
-                foreach (var intent in _intents.Values) owner.RemoveIntent(intent, transaction);
-                owner.WriteMetadata(transaction);
-                transaction.Commit();
-                owner.ValidatePathMetadata();
-                owner.WriteCheckpoint();
+                if (_abandoned)
+                {
+                    owner.Invalidate();
+                }
+                else
+                {
+                    using var transaction = owner._database.BeginTransaction();
+                    owner.ValidateLiveMetadata(transaction);
+                    foreach (var intent in _intents.Values) owner.Apply(intent, transaction);
+                    foreach (var intent in _intents.Values) owner.RemoveIntent(intent, transaction);
+                    owner.WriteMetadata(transaction);
+                    transaction.Commit();
+                    owner.ValidatePathMetadata();
+                    owner.WriteCheckpoint();
+                }
             }
             catch (Exception exception) when (OptionalIo(exception))
             {
@@ -598,6 +809,163 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         return false;
     }
 
+    // Reconciling an interrupted managed mutation commits the observed filesystem outcome and clears
+    // its pending intent. Durably sync any present target file and every existing parent/ancestor
+    // directory first so power loss after clearing the pending row cannot revert directory entries.
+    private void SyncPendingIntents()
+    {
+        if (_pending.Count == 0) return;
+        var directories = new List<string>();
+        var seenDirectories = new HashSet<string>(StringComparer.Ordinal);
+        var syncedFiles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var intent in _pending)
+        {
+            CollectPendingSyncTargets(intent, syncedFiles, directories, seenDirectories);
+        }
+        directories.Sort((left, right) =>
+        {
+            var depthComparison = RelativeDirectoryDepth(right).CompareTo(RelativeDirectoryDepth(left));
+            return depthComparison != 0 ? depthComparison : StringComparer.Ordinal.Compare(left, right);
+        });
+        foreach (var directory in directories)
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, directory);
+            BeforePendingDirectorySyncForTest?.Invoke(directory);
+            DurableSync.Directory(directory);
+        }
+    }
+
+    private int RelativeDirectoryDepth(string normalizedPath)
+    {
+        if (IsRootDirectory(normalizedPath)) return 0;
+        var depth = 0;
+        for (var index = _root.Length; index < normalizedPath.Length; index++)
+        {
+            var ch = normalizedPath[index];
+            if (ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar)
+            {
+                depth++;
+            }
+        }
+        return depth;
+    }
+
+    private void CollectPendingSyncTargets(
+        Intent intent,
+        HashSet<string> syncedFiles,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        if (intent.Key.StartsWith("J|", StringComparison.Ordinal))
+        {
+            var journalDirectory = Path.Combine(_root, "journal");
+            var journalDatabase = Path.Combine(journalDirectory, "raw-ingress.db");
+            SyncPendingFileIfPresent(journalDatabase, syncedFiles);
+            AddPendingDirectoryHierarchy(journalDirectory, directories, seenDirectories);
+            return;
+        }
+        if (!intent.Key.StartsWith("F|", StringComparison.Ordinal)) return;
+        if (intent.Tree)
+        {
+            var treeDirectory = Path.Combine(_root, intent.Key[2..].TrimEnd(Path.DirectorySeparatorChar));
+            CollectPendingTreeSyncTargets(treeDirectory, syncedFiles, directories, seenDirectories);
+            if (intent.Source is not null && intent.Source.StartsWith("F|", StringComparison.Ordinal))
+            {
+                var sourceDirectory = Path.Combine(_root, intent.Source[2..].TrimEnd(Path.DirectorySeparatorChar));
+                var normalizedSource = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sourceDirectory));
+                if (!IsRootDirectory(normalizedSource))
+                    AddPendingDirectoryHierarchy(Path.GetDirectoryName(normalizedSource), directories, seenDirectories);
+            }
+            return;
+        }
+        var path = Path.Combine(_root, intent.Key[2..]);
+        SyncPendingFileIfPresent(path, syncedFiles);
+        AddPendingDirectoryHierarchy(Path.GetDirectoryName(path), directories, seenDirectories);
+    }
+
+    private void CollectPendingTreeSyncTargets(
+        string treeDirectory,
+        HashSet<string> syncedFiles,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        var fullTree = Path.TrimEndingDirectorySeparator(Path.GetFullPath(treeDirectory));
+        if (!IsRootOrDescendant(fullTree))
+            throw new InvalidDataException("Pending integrity tree path escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, fullTree);
+        if (Directory.Exists(fullTree))
+        {
+            var subdirectories = new List<string>();
+            var stack = new Stack<string>();
+            stack.Push(fullTree);
+            while (stack.TryPop(out var current))
+            {
+                subdirectories.Add(current);
+                foreach (var entry in Directory.EnumerateFileSystemEntries(current))
+                {
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, entry);
+                    if (Directory.Exists(entry))
+                    {
+                        stack.Push(Path.TrimEndingDirectorySeparator(Path.GetFullPath(entry)));
+                    }
+                    else if (Tracked(entry))
+                    {
+                        SyncPendingFileIfPresent(entry, syncedFiles);
+                    }
+                }
+            }
+            for (var index = subdirectories.Count - 1; index >= 0; index--)
+            {
+                if (seenDirectories.Add(subdirectories[index]))
+                    directories.Add(subdirectories[index]);
+            }
+        }
+        if (!IsRootDirectory(fullTree))
+            AddPendingDirectoryHierarchy(Path.GetDirectoryName(fullTree), directories, seenDirectories);
+    }
+
+    private void SyncPendingFileIfPresent(string path, HashSet<string> syncedFiles)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!IsRootOrDescendant(fullPath))
+            throw new InvalidDataException("Pending integrity path escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, fullPath);
+        if (!File.Exists(fullPath) || !syncedFiles.Add(fullPath)) return;
+        DurableSync.File(fullPath);
+    }
+
+    private void AddPendingDirectoryHierarchy(
+        string? directory,
+        List<string> directories,
+        HashSet<string> seenDirectories)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return;
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (!IsRootOrDescendant(current))
+            throw new InvalidDataException("Pending integrity directory escaped the retained root.");
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, current);
+        while (IsRootOrDescendant(current))
+        {
+            if (Directory.Exists(current) && seenDirectories.Add(current))
+                directories.Add(current);
+            if (IsRootDirectory(current)) break;
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrWhiteSpace(parent)) break;
+            current = Path.TrimEndingDirectorySeparator(parent);
+        }
+    }
+
+    private bool IsRootDirectory(string normalizedPath)
+        => string.Equals(normalizedPath, _root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private bool IsRootOrDescendant(string fullPath)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(fullPath));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(normalized, _root, comparison) ||
+            normalized.StartsWith(_root + Path.DirectorySeparatorChar, comparison);
+    }
+
     private bool UnexpectedBefore(Intent intent)
     {
         if (!_established) return false;
@@ -618,6 +986,12 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             foreach (var key in keys) denied |= UnexpectedBefore(new Intent(key, false, intent.Generation));
             return denied;
         }
+        // A qualified Silo publication or write-off owns this local staging deletion. The supplied
+        // digest must match any retained expectation before we can discard missing or damaged staging.
+        if (intent.ReclaimedStagingSha256 is { } reclaimed &&
+            (ReadEntry(intent.Key) is not { Kind: not 0 } staging ||
+                string.Equals(reclaimed, Convert.ToHexString(staging.Digest), StringComparison.Ordinal)))
+            return false;
         var current = _readCurrent(intent.Key);
         var expected = ReadEntry(intent.Key);
         // A nested prune may delete the file just published by its still-open

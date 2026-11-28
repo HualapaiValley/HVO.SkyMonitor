@@ -137,7 +137,7 @@ public sealed partial class LifecycleContractTests
             return Task.FromResult(new CameraAgentControlSnapshot(_current, false, Guid.NewGuid(), Drains > 0 ? "Paused" : "Running", 0, true, true, true));
         }
         public Task<LifecycleContinuity> DrainAsync(CameraAgentControlRequest request, CancellationToken token)
-        { Drains++; return Task.FromResult(new LifecycleContinuity("Paused", 1, 42, 0, 0, 0, 0, 0, 0, 0, 0)); }
+        { Drains++; return Task.FromResult(new LifecycleContinuity("Paused", 1, 42, 0, 0, 0, 0, 0, 0)); }
         public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken token) => throw new InvalidOperationException();
         public Task<LifecycleContinuity> ConfirmDrainedAsync(CancellationToken token) => throw new InvalidOperationException();
         public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken token) => throw new InvalidOperationException();

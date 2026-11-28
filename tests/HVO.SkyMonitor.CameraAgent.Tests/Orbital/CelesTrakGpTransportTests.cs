@@ -17,6 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Orbital")]
 public sealed class CelesTrakGpTransportTests
 {
     private static readonly TimeSpan ServerDeadline = TimeSpan.FromSeconds(30);
@@ -42,11 +43,11 @@ public sealed class CelesTrakGpTransportTests
     [TestMethod]
     public async Task RedirectIsAHaltAndItsCookieIsNeverReturned()
     {
-        var gzip = Gzip(ReadFixture(ValidFixture));
+        var gzip = Gzip(ValidCsv());
         using var server = new InMemoryHttpsServer(index => index == 0
             ? Encoding.ASCII.GetBytes("HTTP/1.1 301 Moved Permanently\r\nLocation: https://celestrak.org/elsewhere\r\n" +
                 "Set-Cookie: hvo=synthetic; Path=/; Secure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            : [.. Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\n" +
+            : [.. Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Encoding: gzip\r\n" +
                 $"Content-Length: {gzip.Length}\r\nETag: \"synthetic-wire\"\r\nConnection: close\r\n\r\n"), .. gzip]);
         var client = server.CreateClient(pinCertificate: true);
 
@@ -60,20 +61,20 @@ public sealed class CelesTrakGpTransportTests
         var retrieved = await client.FetchAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalFetchDisposition.Retrieved, retrieved.Disposition, retrieved.Detail);
-        CollectionAssert.AreEqual(ReadFixture(ValidFixture), retrieved.RawBytes);
+        CollectionAssert.AreEqual(ValidCsv(), retrieved.RawBytes);
         Assert.AreEqual("gzip", retrieved.ContentEncoding);
         Assert.AreEqual(gzip.LongLength, retrieved.WireLengthBytes);
         Assert.AreEqual("\"synthetic-wire\"", retrieved.EntityTag);
         Assert.HasCount(2, server.Requests);
         foreach (var request in server.Requests)
         {
-            Assert.AreEqual("GET /NORAD/elements/gp.php?GROUP=active&FORMAT=JSON HTTP/1.1", request.RequestLine);
+            Assert.AreEqual("GET /NORAD/elements/gp.php?GROUP=active&FORMAT=CSV HTTP/1.1", request.RequestLine);
             CollectionAssert.AreEquivalent(ExpectedRequestHeaders,
                 request.Headers.Select(static h => h.Name.ToUpperInvariant()).ToArray(),
                 string.Join(" | ", request.Headers.Select(static h => h.Name)));
             Assert.AreEqual("celestrak.org", request.Header("Host"));
             Assert.AreEqual(UserAgent, request.Header("User-Agent"));
-            Assert.AreEqual("application/json", request.Header("Accept"));
+            Assert.AreEqual("text/csv, text/plain; q=0.9", request.Header("Accept"));
             Assert.AreEqual("gzip", request.Header("Accept-Encoding"));
         }
         await server.DrainAsync().ConfigureAwait(false);
@@ -83,7 +84,7 @@ public sealed class CelesTrakGpTransportTests
     public async Task OversizedResponseHeadersAreATransportLimit()
     {
         using var server = new InMemoryHttpsServer(_ => Encoding.ASCII.GetBytes(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Pad: " + new string('a', 40 * 1024) +
+            "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nX-Pad: " + new string('a', 40 * 1024) +
             "\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"));
         var client = server.CreateClient(pinCertificate: true);
 

@@ -31,7 +31,7 @@ internal sealed record CameraAgentStateResetResult(
 
 /// <summary>
 /// Deletes only CameraAgent-owned local runtime state so an instance whose persisted state predates the image's
-/// minimum compatible revision can be redeployed. Deployment configuration, secrets, credentials, installation
+/// supported image can be redeployed. Deployment configuration, secrets, credentials, installation
 /// identity, catalogs, and every other instance's state stay outside the reset boundary.
 /// </summary>
 internal static class CameraAgentStateResetManager
@@ -332,15 +332,6 @@ internal static class CameraAgentStateResetManager
         NativeLinux.FlushDirectory(paths.DeploymentStateRoot);
     }
 
-    private static async Task<InstanceManifest> ReadManifestAsync(string path, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(path))
-        {
-            throw new InstallerException("The selected instance has no retained manifest.");
-        }
-        await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
-        return await System.Text.Json.JsonSerializer.DeserializeAsync(
-                   stream, DeploymentJsonContext.Default.InstanceManifest, cancellationToken).ConfigureAwait(false)
-               ?? throw new InstallerException("The selected instance manifest is empty.");
-    }
+    private static Task<InstanceManifest> ReadManifestAsync(string path, CancellationToken cancellationToken)
+        => CameraAgentLifecycleManager.ReadManifestAsync(path, cancellationToken);
 }

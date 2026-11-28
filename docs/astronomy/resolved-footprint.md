@@ -58,9 +58,28 @@ when it does not.
 - Each limb direction goes through the scene pipeline, **one sample at a time**: geometric horizon test, refraction,
   projection, lens distortion. The outline is then clipped to the aperture or sensor. Near the horizon, refraction
   therefore lifts the lower limb more than the upper limb, and the disc flattens as it would in the sky.
-- Sampling starts from 64 equal parameter steps. It subdivides any chord whose midpoint deviates more than
-  0.25 px from the straight chord, or whose midpoint fails to project, up to depth 7. It then bisects the
-  horizon or aperture boundary for 32 iterations.
+- Sampling for legacy `projected-scene-v2` footprints (`ResolvedFootprintSampler.Sample`,
+  `resolved-footprint-limb-adaptive-v1`) starts from 64 equal parameter steps, subdivides any chord whose
+  midpoint deviates more than 0.25 px from the straight chord or fails to project up to depth 7, and bisects
+  projection discontinuities for 32 iterations before clipping chords to the projection. This algorithm stays
+  byte-frozen for `projected-scene-v2`.
+- Versioned boundary-safe sampling (`ResolvedFootprintSampler.SampleBoundarySafe`,
+  `resolved-footprint-limb-adaptive-v2`) is used for `projected-scene-v3` deep-sky extents and shared with
+  `DeepSkyOutlineSampler`. It isolates geometric horizon (`Up >= 0`), the Bennett refraction altitude floor
+  (`MinimumAltitudeDegrees`, pinning above-floor and below-floor pieces to their smooth one-sided limits and
+  never stitching across branch breaks), optical projection domain (`cz >= minDomainCosine`), and
+  sensor/aperture boundaries sequentially via Lipschitz exclusion, 60-iteration golden-section extremum search
+  (including curved sensor/aperture boundary excursion splitting between adjacent inside samples), and 52-bit
+  inside-bracket bisection so arbitrarily narrow horizon/domain grazes remain visible without fabricating
+  exterior connecting chords or bridging refraction jumps. If a chord cannot satisfy `MaximumChordErrorPixels`
+  within the subdivision budget, `SampleBoundarySafe` fails explicitly via `InvalidOperationException` (degrading
+  only that single extent to `FootprintLimit` inside `DeepSkySceneProjector`), and `DeepSkyOutlineSampler.Sample`
+  returns `InvalidGeometry` without aborting sibling objects.
+- Great-circle catalog outlines share `AppendBoundarySafeCurve` through `DeepSkyOutlineSampler`, rejecting
+  antipodal or near-antipodal edges (`>= π - 1e-5 rad`) honestly without inventing ambiguous great-circle
+  routes or aborting sibling objects in a scene. See
+  [`docs/astronomy/deep-sky-rendering-v1.md`](deep-sky-rendering-v1.md) for the independent analytic clipping
+  reference, numerical error budget, and parametric extended deep-sky rendering specification.
 - A footprint with no visible part is omitted. A footprint can therefore exist while its centre is off-frame or below
   the horizon. In that case `centerPixel` is `null`.
 
@@ -91,9 +110,9 @@ Structural limits per footprint: at most 256 parts and 16,384 points. Per scene:
 
 ## Projected-scene schema
 
-- A projected scene is `projected-scene-v2` **only when it carries at least one footprint**. Every other scene is
-  still `projected-scene-v1`, byte for byte, and its identity is unchanged.
-  - The v1 golden identity test pins this.
+- For star-only scenes, the presence of at least one resolved footprint selects `projected-scene-v2`.
+  A star-only scene without footprints uses `projected-scene-v1`. Both schemas require the
+  catalog ID and SHA-256 checksum.
   - `resolvedFootprints` is omitted from v1 JSON and required, and non-empty, in v2.
 - Readers accept both versions through `ProjectedSceneV1.IsSupportedSchemaVersion` and
   `SceneProvenance.IsRetainedProjectedSceneSchemaVersion`. Producers never choose the version themselves. It

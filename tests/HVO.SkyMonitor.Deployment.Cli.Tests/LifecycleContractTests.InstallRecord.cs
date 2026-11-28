@@ -13,7 +13,7 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeThenRollback_SettleTheInstallRecordEntryEachTime()
+    public async Task RollbackSettlesTheCommittedInstallRecord()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
@@ -21,14 +21,16 @@ public sealed partial class LifecycleContractTests
         var location = InstallRecordLocation.For(fixture.Root, InstallRequest.DefaultProductRoot);
 
         await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         var upgraded = (await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances.Single();
-        await CameraAgentLifecycleManager.ExecuteAsync(
+        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
-            error: TextWriter.Null);
-        var rolledBack = (await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances.Single();
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", rolledBack.Outcome);
+        var settled = (await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances.Single();
+        Assert.AreEqual(InstallRecordImageChange.Rollback, settled.LastImageChange);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, settled.ImageId);
 
         Assert.AreEqual(Path.Combine(fixture.Root, "operations", "install.json"), location.Path);
         Assert.AreEqual(fixture.InstanceId, upgraded.InstanceId);
@@ -37,9 +39,6 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(InstanceLifecycleCondition.Installed, upgraded.Condition);
         // An image given by --image-ref names no release, so no version is recorded for it.
         Assert.IsNull(upgraded.Version);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, rolledBack.ImageId);
-        Assert.AreEqual(CandidateImageId, rolledBack.PreviousImageId);
-        Assert.IsNull(rolledBack.PreviousVersion);
     }
 
     [TestMethod]
@@ -56,7 +55,7 @@ public sealed partial class LifecycleContractTests
         var lifecycle = new FakeLifecycleClient();
 
         var interrupted = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
 
         StringAssert.Contains(interrupted.Message, "--resume", StringComparison.Ordinal);
@@ -69,7 +68,7 @@ public sealed partial class LifecycleContractTests
 
         File.Delete(location.Path);
         var resumed = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("completed", resumed.Outcome);
@@ -108,7 +107,7 @@ public sealed partial class LifecycleContractTests
         var manifest = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
 
         var planned = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { DryRun = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            UpgradeRequest(fixture) with { DryRun = true }, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
         Assert.AreEqual("planned", planned.Outcome);
@@ -116,7 +115,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(DeploymentPlanAction.Change, container.Action);
         StringAssert.Contains(container.Detail!, $"to {CandidateImageId}", StringComparison.Ordinal);
         Assert.AreEqual(DeploymentPlanAction.Unchanged, planned.Plan.Items.Single(static item => item.Kind == "folder").Action);
-        Assert.IsFalse(planned.Plan.Items.Any(static item => item.Kind == "snapshot"), "an unchanged state contract takes no snapshot");
+        Assert.AreEqual(DeploymentPlanAction.Create, planned.Plan.Items.Single(static item => item.Kind == "snapshot").Action);
         Assert.AreEqual(manifest, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.IsFalse(File.Exists(InstallRecordLocation.For(fixture.Root, InstallRequest.DefaultProductRoot).Path));
@@ -158,7 +157,7 @@ public sealed partial class LifecycleContractTests
             installed.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = installed.InstanceId }, installed.Runner,
             null, null, installed.Uid, installed.Gid, CancellationToken.None));
         var uninstalledUpgrade = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(uninstalled, assertMigration: false), uninstalled.Runner, null, null, uninstalled.Uid, uninstalled.Gid,
+            UpgradeRequest(uninstalled), uninstalled.Runner, null, null, uninstalled.Uid, uninstalled.Gid,
             CancellationToken.None));
         var asRoot = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             installed.Request(LifecycleOperationKind.Uninstall), installed.Runner, null, null, 0, 0, CancellationToken.None));

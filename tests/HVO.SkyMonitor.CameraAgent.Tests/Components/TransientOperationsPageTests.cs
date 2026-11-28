@@ -11,17 +11,18 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[TestProperty("Area", "Ui")]
 public sealed class TransientOperationsPageTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 30, 4, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
-    public void HybridLaneRendersEachOutcomeHonestlyAndLinksTheEventRun()
+    public void EdgeLaneRendersEachOutcomeHonestlyAndLinksTheEventRun()
     {
         var candidateCapture = Guid.NewGuid();
         var executionId = Guid.NewGuid();
         var candidate = Candidate("Validated");
-        var view = View(TransientOperatingMode.Hybrid) with
+        var view = View(TransientOperatingMode.Edge) with
         {
             RecentOutcomes =
             [
@@ -41,7 +42,7 @@ public sealed class TransientOperationsPageTests
 
         var cut = context.Render<TransientOperationsPage>();
 
-        cut.WaitForAssertion(() => Assert.AreEqual("Hybrid detector healthy", cut.Find("#transients-state-title").TextContent));
+        cut.WaitForAssertion(() => Assert.AreEqual("Edge detector healthy", cut.Find("#transients-state-title").TextContent));
         var rows = cut.FindAll(".transients-outcome-table tbody tr");
         Assert.HasCount(6, rows);
         StringAssert.Contains(rows[0].TextContent, "Waiting for detector", StringComparison.Ordinal);
@@ -60,31 +61,10 @@ public sealed class TransientOperationsPageTests
         Assert.AreEqual($"/operations/pipeline/executions/{executionId:D}", cut.Find("a#transients-event-run").GetAttribute("href"));
         Assert.AreEqual($"/transients/{candidate.CandidateId:D}", cut.Find(".transients-latest dd a").GetAttribute("href"));
         Assert.AreEqual("state-chip success", cut.Find(".transients-latest .state-chip").GetAttribute("class"));
-        Assert.AreEqual("Delivering", cut.Find(".transients-handoff .state-chip").TextContent);
-        StringAssert.Contains(cut.Find(".transients-handoff").TextContent, "Last acknowledged", StringComparison.Ordinal);
     }
 
     [TestMethod]
-    public void UnavailableDeliveryIsNeverShownAsNothingToDeliver()
-    {
-        var delivery = new TransientCandidateDeliverySnapshot(
-            TransientCandidateDeliveryAvailability.Unhealthy, "logic-host-unreachable", 4, 4, 0, 0,
-            Now.AddMinutes(-12), null, Now.AddSeconds(-5), Now, Now);
-        using var context = CreateContext(new TestTransientOperationsUiService(
-            View(TransientOperatingMode.Hybrid) with { Delivery = delivery }));
-
-        var cut = context.Render<TransientOperationsPage>();
-
-        cut.WaitForAssertion(() => Assert.AreEqual("Unavailable", cut.Find(".transients-handoff .state-chip").TextContent));
-        var handoff = cut.Find(".transients-handoff").TextContent;
-        StringAssert.Contains(handoff, "Candidates wait durably; none are lost.", StringComparison.Ordinal);
-        StringAssert.Contains(handoff, "12m ago", StringComparison.Ordinal);
-        StringAssert.Contains(handoff, "Never", StringComparison.Ordinal);
-        Assert.DoesNotContain("Not exported", handoff);
-    }
-
-    [TestMethod]
-    public void OffAndCentralModesSayThisAgentExtractsNothing()
+    public void OffModeLeavesRetainedResultsAvailable()
     {
         var off = View(TransientOperatingMode.Off) with
         {
@@ -97,7 +77,6 @@ public sealed class TransientOperationsPageTests
             var cut = context.Render<TransientOperationsPage>();
 
             cut.WaitForAssertion(() => Assert.AreEqual("Transient detection is off", cut.Find("#transients-state-title").TextContent));
-            Assert.AreEqual("Not exported", cut.Find(".transients-handoff .state-chip").TextContent);
             StringAssert.Contains(cut.Find(".transients-outcomes").TextContent, "Detection is off.", StringComparison.Ordinal);
             var eventRun = cut.Find("button#transients-event-run");
             Assert.IsTrue(eventRun.HasAttribute("disabled"));
@@ -105,14 +84,7 @@ public sealed class TransientOperationsPageTests
             Assert.AreEqual("transients-event-run-reason", eventRun.GetAttribute("aria-describedby"));
         }
 
-        using (var context = CreateContext(new TestTransientOperationsUiService(off with { Mode = TransientOperatingMode.Central })))
-        {
-            var cut = context.Render<TransientOperationsPage>();
 
-            cut.WaitForAssertion(() => Assert.AreEqual("Central detection", cut.Find("#transients-state-title").TextContent));
-            StringAssert.Contains(cut.Find(".transients-handoff").TextContent, "This agent delivers captures, not candidates.", StringComparison.Ordinal);
-            Assert.IsEmpty(cut.FindAll(".status-icon.failure"));
-        }
     }
 
     [TestMethod]
@@ -127,7 +99,6 @@ public sealed class TransientOperationsPageTests
 
         cut.WaitForAssertion(() => Assert.AreEqual("Edge detector degraded", cut.Find("#transients-state-title").TextContent));
         Assert.AreEqual("/operations/quarantine?kind=TransientRuntime", cut.Find(".transients-state small a").GetAttribute("href"));
-        StringAssert.Contains(cut.Find(".transients-handoff").TextContent, "assesses them locally", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -214,7 +185,6 @@ public sealed class TransientOperationsPageTests
             Now,
             mode,
             false,
-            true,
             new TransientDetectorProfileView(
                 CameraAgentTransientOperationsUiService.ExtractionProfileName,
                 TransientCandidateExtractionProfiles.EdgeV1,
@@ -230,8 +200,6 @@ public sealed class TransientOperationsPageTests
                 detection.Association.MaximumEndpointGapPixels,
                 detection.Association.MinimumAbsolutePrincipalAxisAlignment),
             new TransientWorkerSnapshot(TransientWorkerAvailability.Healthy, "ready", 0, 0, Now),
-            new TransientCandidateDeliverySnapshot(
-                TransientCandidateDeliveryAvailability.Healthy, "ready", 0, 0, 0, 0, null, Now.AddSeconds(-4), Now, Now, Now),
             [],
             null,
             [],

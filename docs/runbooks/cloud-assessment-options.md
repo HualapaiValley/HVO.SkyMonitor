@@ -33,9 +33,7 @@ old product reconstruction stay intact.
 
 `ClearReferenceManifestPath` remains opaque retained provisioning. This panel
 does not display or edit its path, discover references or replace their identity.
-CameraAgent continues loading the already configured storage-relative manifest;
-LogicHost retains its own explicit designation and frozen job inputs. Both use
-the existing [reference compatibility and evidence contract](../contracts/cloud-assessment-v1.md).
+CameraAgent loads the configured storage-relative manifest using the [reference compatibility and evidence contract](../contracts/cloud-assessment-v1.md).
 Matching linear Mono16/RGGB16 layouts, levels, integration/setpoints and capture
 compatibility identities are still required. Missing, unavailable or incompatible
 references produce explicit insufficient evidence and null coverage, never a
