@@ -434,10 +434,18 @@ internal sealed partial class CaptureProcessingPersistence(
             {
                 break;
             }
-            var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            var payload = silo is null
-                ? File.Exists(payloadPath) ? await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false) : null
-                : await silo.ReadLiveRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false);
+            byte[]? payload;
+            if (silo is null)
+            {
+                var path = ResolveSafePath(entry.PayloadRelativePath);
+                payload = File.Exists(path)
+                    ? await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)
+                    : null;
+            }
+            else
+            {
+                payload = await silo.ReadLiveRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false);
+            }
             if (payload is null) break;
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
@@ -758,10 +766,9 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             ValidateLayoutlessOutputFacts(output, committedManifest);
         }
-        var payloadPath = ResolveSafePath(output.PayloadRelativePath);
-        var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
         var sidecar = silo is null
-            ? await ReadCommittedFileAsync(sidecarPath, output.EvidenceJson.LongLength, cancellationToken).ConfigureAwait(false)
+            ? await ReadCommittedFileAsync(ResolveSafePath(output.SidecarRelativePath), output.EvidenceJson.LongLength, cancellationToken)
+                .ConfigureAwait(false)
             : await silo.ReadMemberAsync(output.ArtifactId, SiloArtifactStorage.ProductEvidenceRevision, output.EvidenceJson.LongLength,
                 SiloHash.Sha256(output.EvidenceJson), cancellationToken).ConfigureAwait(false)
                 ?? throw new FileNotFoundException("The processing evidence has no settled Silo publication.");
@@ -772,7 +779,7 @@ internal sealed partial class CaptureProcessingPersistence(
         if (output.ProductManifest is not null)
         {
             return await RestoreMetadataProductAsync(
-                output, payloadPath, sidecar, cancellationToken).ConfigureAwait(false);
+                output, sidecar, cancellationToken).ConfigureAwait(false);
         }
 
         var descriptor = output.Descriptor
@@ -789,7 +796,7 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             throw new InvalidDataException("Committed processing output sidecar conflicts with durable state.");
         }
-        var payload = await ReadProcessingPayloadAsync(output, payloadPath, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, descriptor.Layout.ByteLength, cancellationToken).ConfigureAwait(false);
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         if (!reconstruction.IsValid || frame is null)
         {
@@ -1099,22 +1106,21 @@ internal sealed partial class CaptureProcessingPersistence(
             _ => throw new InvalidDataException("Durable processing product manifest type is unsupported.")
         });
 
-    private async ValueTask<byte[]> ReadProcessingPayloadAsync(DurableProcessingOutput output, string path, long length,
+    private async ValueTask<byte[]> ReadProcessingPayloadAsync(DurableProcessingOutput output, long length,
         CancellationToken cancellationToken) => silo is null
-        ? await ReadCommittedFileAsync(path, length, cancellationToken).ConfigureAwait(false)
+        ? await ReadCommittedFileAsync(ResolveSafePath(output.PayloadRelativePath), length, cancellationToken).ConfigureAwait(false)
         : await silo.ReadMemberAsync(output.ArtifactId, output.OutputIdentitySha256, length, output.Artifact.ChecksumSha256,
             cancellationToken).ConfigureAwait(false) ?? throw new FileNotFoundException("The processing artifact has no settled Silo publication.");
 
     private async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
         DurableProcessingOutput output,
-        string payloadPath,
         byte[] sidecar,
         CancellationToken cancellationToken)
     {
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
         ValidateLayoutlessOutputFacts(output, manifest);
         var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
-        var payload = await ReadProcessingPayloadAsync(output, payloadPath, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadProcessingPayloadAsync(output, manifest.ByteLength, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||
             !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
         {

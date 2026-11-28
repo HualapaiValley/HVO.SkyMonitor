@@ -364,7 +364,6 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             !await processing.VerifySatelliteRawAsync(header.CaptureId, header.RawArtifactId, header.RawPayloadPath,
                 header.RawSidecarPath, cancellationToken).ConfigureAwait(false))
             throw new InvalidDataException("Satellite retention intent differs from its durable raw identity.");
-        _ = Resolve(header.RawPayloadPath); _ = Resolve(header.RawSidecarPath);
         return header;
     }
 
@@ -374,16 +373,6 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private static string WorkKey(Guid captureId, string nodeId) => ProcessingIdentity.ComputePayloadSha256(
         Encoding.UTF8.GetBytes($"capture-satellite-work-v1\0{captureId:N}\0{nodeId}"));
     private string DirectoryFor(string key) => Path.Combine(root, "journal", "capture-satellites", key);
-    private string Resolve(string relative)
-    {
-        var path = Path.GetFullPath(Path.Combine(root, relative));
-        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
-        if (Path.IsPathRooted(relative) || !path.StartsWith(prefix,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            throw new InvalidDataException("Satellite intent path escapes its storage root.");
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-        return path;
-    }
     private static async ValueTask<bool> AnyRetainedAsync(SiloArtifactStorage storage,
         IEnumerable<Guid> artifactIds, CancellationToken cancellationToken)
     {
