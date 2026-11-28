@@ -132,7 +132,7 @@ public sealed partial class DurableCaptureProcessingTests
             }
             var repaired = await selectedService.GetLatestAcceptedAstrometryAsync(token).ConfigureAwait(false);
             var exact = await selectedService.GetRetainedAstrometryAsync(far.Capture.CaptureId, token).ConfigureAwait(false);
-            Assert.AreEqual(far.ArtifactId, exact.Value?.ArtifactId);
+            Assert.AreEqual(far.ArtifactId, exact.Value?.ArtifactId, exact.Value?.Reason);
             Assert.AreEqual(AstrometricAssessmentStatus.Accepted, exact.Value?.Solution?.Assessment.Status);
             Assert.AreSame(candidates, await chosenStore.ReadAstrometryCandidatesAsync(token).ConfigureAwait(false));
             Assert.AreEqual(CameraAgentAstrometryPublicationState.Available,
@@ -210,15 +210,16 @@ public sealed partial class DurableCaptureProcessingTests
                     };
                     var rejectionGraph = AstrometryGraph(rejectedFixture, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
                     var rejectingNode = rejectionGraph.Nodes.Single(node => node.Id == "astrometry");
-                    foreach (var output in outputs[rejectingNode.Id])
-                        await RemoveLiveOutputBindingAsync(output, store).ConfigureAwait(false);
+                    await RemoveLiveOutputBindingAsync(fit, store).ConfigureAwait(false);
                     await store.WriteNodeAsync(captureId, rejectingNode, DurableProcessingNodeStatus.RetryableFailure,
                         "fixture-recompute-assessment", 1, null, null, DateTimeOffset.UtcNow, null,
                         ProcessingOutcomeStatus.RetryableFailure, [], 0, null, [], token).ConfigureAwait(false);
                     var rejected = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item, rejectionGraph, persistence,
                         telemetry, 2, NullLogger.Instance, token).ConfigureAwait(false);
                     Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, rejected.Outcome, rejected.Reason);
-                    rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!.Outputs;
+                    var priorArtifacts = outputs[rejectingNode.Id].Select(static output => output.ArtifactId).ToHashSet();
+                    rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!
+                        .Outputs.Where(output => !priorArtifacts.Contains(output.ArtifactId)).ToArray();
                     rejectedOutput = rejectionOutputs.Single(output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
                     var rejectedSolution = MeasuredAstrometryJson.Parse(
                         await ReadProductPartAsync(root, rejectedOutput).ConfigureAwait(false));
