@@ -1457,6 +1457,10 @@ public sealed partial class RawCaptureIngressTests
                 await ExecuteTestSqlAsync(connection, "CREATE TABLE centered_contract_drift(id INTEGER);").ConfigureAwait(false);
             Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
 
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+                await ExecuteTestSqlAsync(connection, "DROP TABLE centered_contract_drift; DROP TABLE silo_raw_admissions;").ConfigureAwait(false);
+            Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
+
             Installer.CameraAgentStatePreflightFinding[] Evaluate(
                 Installer.CameraAgentStateRequirements target)
                 => Installer.CameraAgentStatePreflight.Evaluate(paths, instance, null, null, target, Installer.CameraAgentStateContract.Current,

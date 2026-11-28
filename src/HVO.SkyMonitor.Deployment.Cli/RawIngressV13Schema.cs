@@ -21,6 +21,13 @@ internal static class RawIngressV13Schema
     internal const string V15Fingerprint = V14Fingerprint;
     // Raw 16 plus the 48 witnessed processing objects from the separately released astrometry beta.
     private const string V16WithLegacyAstrometryFingerprint = "194cba35fbe2eb39b8ecf193efa876b589f9c17f98f6a6cf5b24c4514a5d2f35";
+    private const string SiloAdmissionTable = "silo_raw_admissions";
+    private const string SiloAdmissionDefinition = """
+        CREATE TABLE silo_raw_admissions (
+            raw_capture_row_id INTEGER PRIMARY KEY REFERENCES raw_captures(raw_capture_row_id),
+            staged_bytes INTEGER NOT NULL CHECK (staged_bytes >= 0)
+        ) STRICT
+        """;
     private static readonly HashSet<string> SharedObjects = new(StringComparer.Ordinal)
     {
         "capture_processing_schema", "processing_nodes", "processing_node_inputs", "processing_outputs",
@@ -78,7 +85,17 @@ internal static class RawIngressV13Schema
              HasLegacyAstrometryMarker(connection));
 
     internal static bool IsCanonicalV17(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.IgnoreWithAstrometryIndex), V17Fingerprint, StringComparison.Ordinal);
+    {
+        if (!string.Equals(ComputeFingerprint(connection, ProcessingObjects.CurrentV17), V17Fingerprint, StringComparison.Ordinal))
+            return false;
+        // First-boot initialization can leave the capture journal empty before the host creates its Silo admission table.
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'silo_raw_admissions')
+                OR NOT EXISTS (SELECT 1 FROM raw_captures);
+            """;
+        return command.ExecuteScalar() is 1L;
+    }
 
     internal static string ComputeFingerprint(SqliteConnection connection)
         => ComputeFingerprint(connection, ProcessingObjects.Ignore);
@@ -107,8 +124,14 @@ internal static class RawIngressV13Schema
             }
             if (name == LegacyAstrometryJournalSchema.LookupIndexName &&
                 (processing == ProcessingObjects.Ignore ||
-                 (processing == ProcessingObjects.IgnoreWithAstrometryIndex && reader.GetString(0) == "index" &&
+                 (processing == ProcessingObjects.CurrentV17 && reader.GetString(0) == "index" &&
                   reader.GetString(2) == "processing_outputs" && reader.GetString(3) == LegacyAstrometryJournalSchema.LookupIndexDefinition)))
+            {
+                continue;
+            }
+            if (name == SiloAdmissionTable && processing == ProcessingObjects.CurrentV17 &&
+                reader.GetString(0) == "table" && reader.GetString(2) == SiloAdmissionTable &&
+                reader.GetString(3) == SiloAdmissionDefinition)
             {
                 continue;
             }
@@ -126,6 +149,6 @@ internal static class RawIngressV13Schema
         Ignore,
         RejectAstrometryIndex,
         Include,
-        IgnoreWithAstrometryIndex
+        CurrentV17
     }
 }
