@@ -28,7 +28,8 @@ public sealed partial class RawCaptureIngressTests
         long initialCursor;
         try
         {
-            using (var first = new CenteredFixture(root))
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using (var first = new CenteredFixture(root, siloProvider: silo))
             {
                 var start = Timestamp(1);
                 var submission = CenteredSubmission(start);
@@ -51,9 +52,9 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(acquisition, initial.View.Base.Definition.Reference.Input.Raw.CenteredAcquisition);
             }
 
-            using var restarted = new CenteredFixture(root);
+            using var restarted = new CenteredFixture(root, siloProvider: silo);
             await restarted.Ingress.InitializeAsync(token).ConfigureAwait(false);
-            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.InstalledSilo);
             Assert.AreEqual(initialCursor, await index.ReadProductCursorAsync(camera, token).ConfigureAwait(false));
             var reloaded = await index.ReadLastLiveAsync(camera, token).ConfigureAwait(false);
             Assert.AreEqual(initial.View.Revision.RevisionId, reloaded?.View.Revision.RevisionId);
@@ -83,15 +84,15 @@ public sealed partial class RawCaptureIngressTests
             await RecordCenteredTrailScanAsync(restarted.Store, oldExposure, observation, token).ConfigureAwait(false);
 
             // The durable transient completion can be consumed by a fresh publication reader.
-            using var reopenedProcessing = new SqliteCaptureProcessingStore(restarted.Options);
-            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+            using var reopenedProcessing = new SqliteCaptureProcessingStore(restarted.Options, silo: restarted.Silo);
+            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.InstalledSilo);
             Assert.HasCount(1, await afterRestart.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
-            using var faultStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = new CaptureProcessingPersistence(restarted.Options, reopenedProcessing, faultStorage, restarted.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+            var persistence = new CaptureProcessingPersistence(restarted.Options, reopenedProcessing, restarted.Telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: restarted.Silo);
             using var trailPublication = CreateCenteredTrailPublisher(restarted, afterRestart, persistence);
             await trailPublication.PublishReadyAsync(token).ConfigureAwait(false);
             await trailPublication.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleViewsAsync(afterRestart, token).ConfigureAwait(false);
             Assert.IsEmpty(await afterRestart.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
             var enriched = (await afterRestart.ReadArchiveAsync(oldExposure.CaptureId, token).ConfigureAwait(false)).Single();
             Assert.AreEqual(archived.DefaultRevisionId, enriched.DefaultRevisionId);
@@ -103,7 +104,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(observation, assessment.ObservedUtc);
             Assert.AreEqual(second.Issued.Interval, (await afterRestart.ReadLastLiveAsync(camera, token).ConfigureAwait(false))?.Interval);
 
-            using var artifacts = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder());
+            using var artifacts = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder(), silo: restarted.Silo);
             var reader = new CenteredViewPresentationReader(index, artifacts);
             var reopened = await reader.OpenPreviewAsync(archived.Base.BaseId, archived.InitialRevisionId, token).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, reopened.Status);
@@ -112,85 +113,6 @@ public sealed partial class RawCaptureIngressTests
             var bytes = new byte[checked((int)reopened.Content.ByteLength)];
             await reopened.Content.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
             Assert.AreEqual(initial.View.Base.Definition.Preview.PayloadSha256, PayloadChecksum.ComputeSha256(bytes));
-        }
-        finally { DeleteRoot(root); }
-    }
-
-    [TestMethod]
-    public async Task CenteredTrailRetentionDoesNotReplayAnExpiredBaseAfterRestart()
-    {
-        var root = CreateRoot();
-        var token = TestContext.CancellationToken;
-        var config = CenteredConfiguration("camera");
-        var camera = new CameraKey(config.AgentId!, config.CenteredExposure!.CameraId);
-        var observation = Timestamp(3);
-        ExposureKey exposure;
-        string expiredBase;
-        long cursor;
-        try
-        {
-            using (var fixture = new CenteredFixture(root))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
-            {
-                var receipt = await fixture.AdmitAsync(config, Timestamp(1)).ConfigureAwait(false);
-                var (expired, _) = await ProcessAndDrainAsync(fixture, config, camera, token).ConfigureAwait(false);
-                expiredBase = expired.View.Base.BaseId;
-                var reference = expired.View.Base.Definition.Reference;
-                exposure = reference.Input.Key;
-                await fixture.Ingress.ReconcileCenteredControlAsync(config with { CenteredExposure = null }, token, camera)
-                    .ConfigureAwait(false);
-                await fixture.AdmitAsync(config, Timestamp(2)).ConfigureAwait(false);
-                var (current, currentCursor) = await ProcessAndDrainAsync(fixture, config, camera, token).ConfigureAwait(false);
-                Assert.AreNotEqual(expiredBase, current.View.Base.BaseId);
-                cursor = currentCursor;
-
-                var views = new SqliteCenteredViews(fixture.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
-                var persistence = new CaptureProcessingPersistence(fixture.Options, fixture.Store, storage, fixture.Telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
-                using var publisher = CreateCenteredTrailPublisher(fixture, views, persistence);
-                await RecordCenteredTrailScanAsync(fixture.Store, exposure, observation, token).ConfigureAwait(false);
-                var work = Assert.ContainsSingle(await views.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
-                await publisher.PublishReadyAsync(token).ConfigureAwait(false);
-                Assert.IsEmpty(await views.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
-                var projection = await views.ReadTrailEvidenceAsync(work, token).ConfigureAwait(false);
-                Assert.IsNotNull(projection);
-                var archive = Assert.ContainsSingle(await views.ReadArchiveAsync(exposure.CaptureId, token).ConfigureAwait(false));
-                Assert.AreNotEqual(archive.InitialRevisionId, archive.LatestRevisionId);
-
-                // Match raw retention by removing the expired bytes while preserving the stage receipt.
-                var rawPaths = RawIngressFileStore.GetPaths(root, receipt.Manifest.Descriptor.Timing.ExposureStartedUtc,
-                    receipt.Manifest.Descriptor.Artifact.ArtifactId);
-                File.Delete(rawPaths.PayloadAbsolutePath);
-                File.Delete(rawPaths.SidecarAbsolutePath);
-                var linear = await fixture.Store.ReadOutputByArtifactIdAsync(reference.Linear!.ArtifactId, token).ConfigureAwait(false);
-                Assert.IsNotNull(linear);
-                var cutoff = new DateTimeOffset(DateTime.UtcNow.Date.AddDays(1));
-                var held = new HashSet<string> { Path.Combine(root, linear.PayloadRelativePath), Path.Combine(root, linear.SidecarRelativePath) };
-                await persistence.ExpireOutputsAsync(root, cutoff, held, token).ConfigureAwait(false);
-                Assert.IsNull(await views.ReadBaseAsync(expiredBase, token).ConfigureAwait(false));
-                Assert.AreEqual(projection, await views.ReadTrailEvidenceAsync(work, token).ConfigureAwait(false));
-                Assert.AreEqual(work, await views.ReadLatestTrailWorkAsync(exposure, token).ConfigureAwait(false));
-
-                await persistence.ExpireOutputsAsync(root, cutoff, new HashSet<string>(), token).ConfigureAwait(false);
-                Assert.IsNull(await views.ReadLatestTrailWorkAsync(exposure, token).ConfigureAwait(false));
-                Assert.IsNull(await fixture.Store.ReadOutputByArtifactIdAsync(projection.Pin.ArtifactId, token).ConfigureAwait(false));
-            }
-
-            using var reopened = new CenteredFixture(root);
-            await reopened.Ingress.InitializeAsync(token).ConfigureAwait(false);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var reopenedViews = new SqliteCenteredViews(reopened.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
-            var reopenedPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, restartedStorage,
-                reopened.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
-            using var restartedPublisher = CreateCenteredTrailPublisher(reopened, reopenedViews, reopenedPersistence);
-
-            await RecordCenteredTrailScanAsync(reopened.Store, exposure, observation, token).ConfigureAwait(false);
-            Assert.IsEmpty(await reopenedViews.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
-            await restartedPublisher.PublishReadyAsync(token).ConfigureAwait(false);
-            Assert.IsNull(await reopenedViews.ReadLatestTrailWorkAsync(exposure, token).ConfigureAwait(false));
-            Assert.IsNull(await reopenedViews.ReadBaseAsync(expiredBase, token).ConfigureAwait(false));
-            Assert.IsEmpty(await reopenedViews.ReadArchiveAsync(exposure.CaptureId, token).ConfigureAwait(false));
-            Assert.AreEqual(cursor, await reopenedViews.ReadProductCursorAsync(camera, token).ConfigureAwait(false));
         }
         finally { DeleteRoot(root); }
     }
@@ -221,16 +143,16 @@ public sealed partial class RawCaptureIngressTests
         CenteredFixture setup, CameraModuleConfig config, CameraKey camera, CancellationToken token)
     {
         var clock = TimeProvider.System;
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-        using var artifacts = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder());
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(setup.Ingress, token).ConfigureAwait(false);
+        using var artifacts = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder(), silo: setup.Silo);
         using var telemetry = new CaptureControlTelemetry();
         using var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, clock, telemetry);
         using var scheduleStore = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, clock);
         using var schedule = new CaptureScheduleRuntimeCoordinator(scheduleStore, admission, new RawIngressState(clock),
             new CaptureLaneState(clock, setup.Options), setup.Factory, clock);
-        var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
-        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance);
+        var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
+        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance, silo: setup.InstalledSilo);
         var products = new CenteredExposureProductReader(setup.Ingress, setup.Store);
         var producer = new CenteredViewProducer(persistence, artifacts, views, setup.Options, setup.Store);
         var layers = new CenteredViewSourceLayers(setup.Store, views, new CenteredViewLayerProducer(views, persistence));
@@ -249,6 +171,7 @@ public sealed partial class RawCaptureIngressTests
         var stream = CenteredViewLookup.ResolveStream(await setup.Ingress.ReadCurrentAsync(camera, token).ConfigureAwait(false));
         Assert.IsNotNull(stream);
         Assert.IsFalse(await worker.DrainCameraAsync(camera, stream, CancellationToken.None, token).ConfigureAwait(false));
+        await SettleViewsAsync(views, token).ConfigureAwait(false);
         var selected = await views.ReadCurrentAsync(stream, token).ConfigureAwait(false);
         Assert.IsNotNull(selected);
         Assert.AreEqual(selected.View.Base.BaseId, await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false));
@@ -258,5 +181,15 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(selected.Interval, (await views.ReadCurrentAsync(stream, token).ConfigureAwait(false))?.Interval);
         await setup.Ingress.CompleteAsync(lease, token).ConfigureAwait(false);
         return (selected, cursor);
+    }
+
+    private static async Task SettleViewsAsync(SqliteCenteredViews views, CancellationToken token)
+    {
+        while (true)
+        {
+            var publication = await views.PublishSiloChangesAsync(16, token).ConfigureAwait(false);
+            Assert.IsNull(publication.Status);
+            if (!publication.More) return;
+        }
     }
 }

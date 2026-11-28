@@ -413,11 +413,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             Descriptor = manifest.Descriptor with { Location = secondLocation.ToProvenance() }
         };
-        var evidenceDirectory = Path.Combine(_options.Value.RawIngressRoot, "evidence");
-        Directory.CreateDirectory(evidenceDirectory);
-        await File.WriteAllBytesAsync(
-            Path.Combine(evidenceDirectory, "capture.json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        _ = await CommitLocationEvidenceAsync(manifest).ConfigureAwait(false);
         await File.WriteAllBytesAsync(statePath, firstHistory).ConfigureAwait(false);
         await File.WriteAllBytesAsync(markerPath, firstMarker).ConfigureAwait(false);
 
@@ -441,11 +437,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             Descriptor = manifest.Descriptor with { Location = firstLocation.ToProvenance() }
         };
-        var evidenceDirectory = Path.Combine(_options.Value.RawIngressRoot, "evidence");
-        Directory.CreateDirectory(evidenceDirectory);
-        await File.WriteAllBytesAsync(
-            Path.Combine(evidenceDirectory, "capture.json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        _ = await CommitLocationEvidenceAsync(manifest).ConfigureAwait(false);
 
         _timeProvider.UtcNow = captureTime.AddHours(1);
         var backdated = CreateSeed(-31.2733, 149.0700, 1165, "Australia/Sydney") with
@@ -533,7 +525,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             using var store = new ProtectedDeploymentLocationStore(
                 options, _protector, _timeProvider, NullLogger<ProtectedDeploymentLocationStore>.Instance);
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await Assert.ThrowsAsync<IOException>(async () =>
                 await store.InitializeAsync(
                     CreateSeed(35.347, -113.878, 0, "America/Phoenix"),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
@@ -556,7 +548,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             var productionProtector = new DataProtectionDeploymentLocationProtector(_options);
             using var store = new ProtectedDeploymentLocationStore(
                 _options, productionProtector, _timeProvider, NullLogger<ProtectedDeploymentLocationStore>.Instance);
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await Assert.ThrowsAsync<IOException>(async () =>
                 await store.InitializeAsync(
                     CreateSeed(35.347, -113.878, 0, "America/Phoenix"),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);

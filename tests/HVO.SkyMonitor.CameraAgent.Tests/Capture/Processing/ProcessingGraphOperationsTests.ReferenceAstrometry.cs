@@ -14,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -149,10 +150,8 @@ public sealed partial class ProcessingGraphOperationsTests
                             Options = JsonSerializer.SerializeToElement(new { maximumMagnitude = 6.5 })
                         },
                         new("Storage", "archive", DependsOn: [canonicalId], Options: JsonSerializer.SerializeToElement(
-                            new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = Path.Combine(root, "archive"), UpdateLatestFrame = false
-                            }))
+                            new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };
@@ -274,8 +273,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     Assert.AreEqual(DurableProcessingNodeStatus.Completed, solve.Status, solve.Reason);
                     var output = solve.Outputs.Single(value => value.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-                    var assessment = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(
-                        Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false)).Assessment;
+                    var assessment = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false)).Assessment;
                     Assert.AreEqual(AstrometricAssessmentStatus.Rejected, assessment.Status);
                     Assert.AreEqual("insufficient-detections", assessment.ReasonCode);
                     CollectionAssert.AreEqual(new[] { raw.Manifest.Descriptor.Artifact.ArtifactId, solverMeasurement.ArtifactId, independent.ArtifactId },
@@ -311,7 +309,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
             async Task<MeasuredStellarAssociationsV1> ReadAssociationAsync(DurableProcessingOutput output)
             {
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false);
                 var product = MeasuredStellarAssociationJson.Parse(bytes).Associations;
                 Assert.IsNotNull(product);
                 return product;
@@ -516,7 +514,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Readout = fullFrame
                 },
                 Pipeline = new([new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))],
+                    new SiloCaptureProcessingStepOptions {  }))],
                     CapturePipelineSchemaVersions.ExplicitV2)
             };
             var compatible = full with
@@ -595,7 +593,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 config = config with
                 {
                     Pipeline = new([new("Storage", "LocalStorage", Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root }),
+                        new SiloCaptureProcessingStepOptions {  }),
                         DependsOn: ["$raw"])], CapturePipelineSchemaVersions.ExplicitV2)
                 };
             }
@@ -865,8 +863,8 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path)
-        => new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+    private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path) =>
+        new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, path),
             AgentId = "reference-astrometry-test",

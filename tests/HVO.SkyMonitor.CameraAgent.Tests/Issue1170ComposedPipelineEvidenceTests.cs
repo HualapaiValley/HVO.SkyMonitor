@@ -116,7 +116,7 @@ public sealed class Issue1170ComposedPipelineEvidenceTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(snapshot.Catalog);
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(root, "ingress"),
                 ["CameraAgent:RawIngressReserveBytes"] = "0",

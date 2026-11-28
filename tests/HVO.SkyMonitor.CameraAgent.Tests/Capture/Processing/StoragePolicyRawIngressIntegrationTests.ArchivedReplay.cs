@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -29,7 +30,12 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             var receipt = (await Ingress(provider).AcceptAsync(file, Submission(1), CancellationToken.None).ConfigureAwait(false))!;
             Assert.IsNotNull(receipt);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessNextAsync(provider, file).ConfigureAwait(false)).Outcome);
-            var manifestBefore = await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
+            var silo = provider.GetRequiredService<SiloArtifactStorage>();
+            var artifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+            var manifestBefore = await silo.ReadRawEvidenceAsync(artifactId,
+                receipt.CommittedManifestSha256, allowStaged: false, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(manifestBefore);
 
             const string requestedVariant = "explicit-archived-preview";
             var requestedPipeline = file.Pipeline with
@@ -65,8 +71,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 var frozen = JsonSerializer.Deserialize<CameraModuleConfig>(bytes, ReplayProfileJsonOptions)!;
                 Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(requestedPipeline),
                     CaptureContractJson.ComputeCanonicalJsonSha256(frozen.Pipeline));
-                Assert.AreEqual(StorageOptions(file).StorageRoot, StorageOptions(frozen).StorageRoot);
-                Assert.AreNotEqual(StorageOptions(current).StorageRoot, StorageOptions(frozen).StorageRoot);
+                Assert.AreEqual(StorageOptions(file).PublishArchive, StorageOptions(frozen).PublishArchive);
+                Assert.AreNotEqual(StorageOptions(current).PublishArchive, StorageOptions(frozen).PublishArchive);
             }
 
             var result = await ProcessingGraphOperationsTests.RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);
@@ -84,8 +90,9 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             Assert.AreEqual(scheduleBefore.Version, scheduleAfter.Version);
             Assert.AreEqual(scheduleBefore.ActiveRevision.RevisionId, scheduleAfter.ActiveRevision.RevisionId);
             Assert.AreEqual(scheduleBefore.ActiveRevision.ProfileSha256, scheduleAfter.ActiveRevision.ProfileSha256);
-            CollectionAssert.AreEqual(manifestBefore, await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false));
-            AssertRawRetained(receipt);
+            CollectionAssert.AreEqual(manifestBefore, await silo.ReadRawEvidenceAsync(artifactId,
+                receipt.CommittedManifestSha256, allowStaged: false, CancellationToken.None).ConfigureAwait(false));
+            Assert.IsNotNull(await silo.ReadRawAsync(receipt.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false));
             AssertNoStoragePublication(root);
         }
         finally { Directory.Delete(root, recursive: true); }

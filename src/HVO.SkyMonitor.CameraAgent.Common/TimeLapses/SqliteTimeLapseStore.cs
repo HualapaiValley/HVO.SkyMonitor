@@ -11,7 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.Video.FFmpeg;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -43,7 +43,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             "SELECT COALESCE(SUM(payload_bytes),0) FROM products;", token).ConfigureAwait(false), CultureInfo.InvariantCulture);
         var policy = options.Value.TimeLapses;
         var capacity = new FileSystemStorageCapacityProvider().GetCapacity(options.Value.RawIngressRoot);
-        var reserve = Math.Max(policy.MinimumFreeBytes, checked((long)(capacity.TotalBytes * options.Value.DiskPressureThresholdPercent / 100)));
+        var reserve = Math.Max(policy.MinimumFreeBytes, options.Value.RawIngressReserveBytes);
         if (publicationBytes < 0 || scratchBytes < 0 || published > policy.MaximumPublishedBytes - publicationBytes)
             throw new TimeLapseEncodingException("timelapse.publication-byte-budget", "The local video publication budget is exhausted.");
         if (capacity.AvailableBytes < scratchBytes + publicationBytes + reserve)
@@ -245,6 +245,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         CameraAgentTimeLapseProductIdentity.Validate(product);
         if (product.ProductId != ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256) || product.Encoding != encoded.Evidence)
             throw new ArgumentException("Video publication identity is invalid.", nameof(product));
+        var storage = silo ?? throw new InvalidOperationException("Video publication requires Silo storage.");
         await InitializeAsync(token).ConfigureAwait(false);
         await _writes.WaitAsync(token).ConfigureAwait(false);
         try
@@ -262,37 +263,19 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
                 return existing;
             }
             await RequireCapacityAsync(0, encoded.Evidence.PayloadBytes, token).ConfigureAwait(false);
-            var root = Root();
-            var name = "products/" + product.ProductId.ToString("N") + ".mp4";
+            var name = $"silo/time-lapses/{product.ProductId:N}.mp4";
             var json = Serialize(product);
             await ExecuteAsync(authorityConnection, null, "INSERT INTO publications(product_id) VALUES($id);", token,
                 ("$id", product.ProductId.ToString("N"))).ConfigureAwait(false);
-            if (silo is null)
+            var member = SiloArtifactStorage.Member(product.ProductId, product.OutputIdentitySha256, "video", SiloRetentionClass.Display,
+                "video/mp4", product.Encoding.PayloadBytes, product.Encoding.PayloadSha256);
+            var draft = new SiloGroupDraft("time-lapse", product.ProductId.ToString("N"), product.OutputIdentitySha256,
+                product.EndUtc.ToUniversalTime(), product.StartUtc.ToUniversalTime(), product.EndUtc.ToUniversalTime(), [member], [], new([]));
+            await storage.PublishAsync(draft, (_, cancellationToken) =>
             {
-                await AtomicPublisher.PublishAsync(root, name, PublishMode.Replace, async (output, cancellationToken) =>
-                {
-                    using var input = encoded.OpenRead();
-                    await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
-                }, token).ConfigureAwait(false);
-                if (await HashPathAsync(root.Resolve(name), token).ConfigureAwait(false) != product.Encoding.PayloadSha256 ||
-                    new FileInfo(root.Resolve(name)).Length != product.Encoding.PayloadBytes)
-                    throw new InvalidDataException("Published video bytes differ from encoder evidence.");
-                using (DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve("products/" + product.ProductId.ToString("N") + ".json"), Encoding.UTF8.GetBytes(json)))
-                    await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
-                        (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
-            }
-            else
-            {
-                var member = SiloArtifactStorage.Member(product.ProductId, product.OutputIdentitySha256, "video", SiloRetentionClass.Display,
-                    "video/mp4", product.Encoding.PayloadBytes, product.Encoding.PayloadSha256);
-                var draft = new SiloGroupDraft("time-lapse", product.ProductId.ToString("N"), product.OutputIdentitySha256,
-                    product.EndUtc.ToUniversalTime(), product.StartUtc.ToUniversalTime(), product.EndUtc.ToUniversalTime(), [member], [], new([]));
-                await silo.PublishAsync(draft, (_, cancellationToken) =>
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    return ValueTask.FromResult<Stream>(encoded.OpenRead());
-                }, token).ConfigureAwait(false);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                return ValueTask.FromResult<Stream>(encoded.OpenRead());
+            }, token).ConfigureAwait(false);
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             using var transaction = Begin(connection);
             await ExecuteAsync(connection, transaction, """
@@ -356,22 +339,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
     {
         var product = await GetAsync(productId, cancellationToken).ConfigureAwait(false);
         if (product is null) return null;
-        if (silo is not null)
-            return await silo.OpenMemberAsync(productId, product.OutputIdentitySha256, product.Encoding.PayloadBytes,
-                product.Encoding.PayloadSha256, cancellationToken).ConfigureAwait(false);
-        var path = Root().Resolve("products/" + productId.ToString("N") + ".mp4");
-        if (!File.Exists(path)) return null;
-        DurableSync.RequireRegularFile(path);
-        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous);
-        try
-        {
-            if (stream.Length != product.Encoding.PayloadBytes ||
-                Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)) != product.Encoding.PayloadSha256)
-                throw new InvalidDataException("Stored video differs from its immutable checksum.");
-            stream.Position = 0;
-            return stream;
-        }
-        catch { await stream.DisposeAsync().ConfigureAwait(false); throw; }
+        var storage = silo ?? throw new InvalidOperationException("Video retrieval requires Silo storage.");
+        return await storage.OpenMemberAsync(productId, product.OutputIdentitySha256, product.Encoding.PayloadBytes,
+            product.Encoding.PayloadSha256, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<CameraAgentTimeLapseDay> GetDayAsync(DateOnly reportDate, CancellationToken cancellationToken)
@@ -425,9 +395,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             var plan = DeserializeVerified<CameraAgentTimeLapseSourcePlan>(reader.GetString(0), reader.GetString(1));
             foreach (var source in plan.Sources)
             {
-                var id = source.Descriptor.Artifact.ArtifactId;
-                holds.Add(silo is null ? new(id, source.PayloadRelativePath, source.SidecarRelativePath)
-                    : new(id, SiloArtifactStorage.RawReference(id, ".bin"), SiloArtifactStorage.RawReference(id, ".json")));
+                holds.Add(new(source.Descriptor.Artifact.ArtifactId));
             }
         }
         return holds.Distinct().ToArray();
@@ -541,12 +509,6 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         if (value is CameraAgentTimeLapseProduct product) CameraAgentTimeLapseProductIdentity.Validate(product);
         return value;
     }
-    private static async Task<string> HashPathAsync(string path, CancellationToken token)
-    {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
-    }
-
     [SuppressMessage("Reliability", "CA1849:Call async methods when in an async method", Justification = "SQLite immediate transactions use the synchronous API.")]
     private static SqliteTransaction Begin(SqliteConnection connection) => connection.BeginTransaction(deferred: false);
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only repository-owned SQL literals are passed; every value is a parameter.")]

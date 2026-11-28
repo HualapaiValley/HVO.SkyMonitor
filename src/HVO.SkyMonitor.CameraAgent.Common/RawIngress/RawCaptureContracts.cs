@@ -14,8 +14,13 @@ public enum RawIngressOutcome
 public sealed record RawCaptureReceipt(
     RawIngressOutcome Outcome,
     ArtifactManifestV2 Manifest,
-    StoredFrameReference StoredFrame,
-    string CommittedManifestSha256);
+    string CommittedManifestSha256)
+{
+    internal RawCaptureReceipt(RawIngressOutcome outcome, ArtifactManifestV2 manifest, StoredFrameReference staged, string committedManifestSha256)
+        : this(outcome, manifest, committedManifestSha256) => StoredFrame = staged;
+
+    internal StoredFrameReference StoredFrame { get; init; } = null!;
+}
 
 public interface IRawCaptureIngress
 {
@@ -72,18 +77,6 @@ internal interface IProjectedSceneStageOwnerProvider
     ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(CancellationToken cancellationToken);
 }
 
-public sealed record RawIngressRetentionHold(
-    Guid ArtifactId,
-    string PayloadRelativePath,
-    string SidecarRelativePath);
-
-public interface IRawIngressRetentionHolds
-{
-    ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
-        string storageRoot,
-        CancellationToken cancellationToken);
-}
-
 internal sealed record RawCaptureIdentity(
     string AgentId,
     long CaptureSequence,
@@ -127,7 +120,6 @@ internal sealed record RawIngressReconciliationSummary(
     int Quarantined,
     int MissingEvidence,
     long QuarantineBytes,
-    int IndexProjectionFailures = 0,
     int ProjectedSceneStageBacklog = 0,
     int MaintenanceDeferred = 0);
 

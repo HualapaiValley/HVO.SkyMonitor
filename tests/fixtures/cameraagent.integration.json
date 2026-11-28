@@ -219,17 +219,7 @@
       "order": 100,
       "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview", "ProjectedScene"],
       "options": {
-        "storageRoot": __STORAGE_ROOT__,
-        "retentionDays": 1,
-        "updateLatestFrame": true,
-        "policies": [
-          {
-            "role": "Preview",
-            "variant": "calibrated-display",
-            "recipeName": "encoded-preview",
-            "retentionDays": 7
-          }
-        ]
+        "updateLatestFrame": true
       }
     },
     {

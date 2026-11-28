@@ -1,10 +1,9 @@
 using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
-using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -14,35 +13,34 @@ internal sealed class RawIngressFileStore(
     Action? fileFlushRecorder = null,
     Action? directorySyncRecorder = null)
 {
-    private static readonly string[] TopLevelDirectories = ["frames", "index", "journal", "quarantine"];
+    internal const string AdmissionStageDirectory = "raw-admissions";
+
+    private static readonly string[] TopLevelDirectories = ["journal", "quarantine"];
     private readonly string _root = Path.GetFullPath(root);
     private readonly IRawIngressFaultInjector _faultInjector = faultInjector;
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
 
     internal RawIngressPaths GetPaths(DateTimeOffset timestampUtc, Guid artifactId)
-        => GetPaths(_root, timestampUtc, artifactId);
+        => GetPaths(_root, artifactId);
 
     internal static RawIngressPaths GetPaths(string root, DateTimeOffset timestampUtc, Guid artifactId)
+        => GetPaths(root, artifactId);
+
+    internal static RawIngressPaths GetPaths(string root, Guid artifactId)
     {
         root = Path.GetFullPath(root);
-        var timestamp = timestampUtc.ToUniversalTime();
-        var directory = Path.Combine(
-            root,
-            "frames",
-            timestamp.Year.ToString("D4", CultureInfo.InvariantCulture),
-            timestamp.Month.ToString("D2", CultureInfo.InvariantCulture),
-            timestamp.Day.ToString("D2", CultureInfo.InvariantCulture),
-            FrameArtifactRole.Raw.ToString());
-        var stem = string.Concat(timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture), "-", artifactId.ToString("N"));
-        var payload = Path.Combine(directory, string.Concat(stem, ".bin"));
-        var sidecar = Path.Combine(directory, string.Concat(stem, ".json"));
+        var payload = Path.Combine(root, ".silo", AdmissionStagePath(artifactId, ".bin"));
+        var sidecar = Path.Combine(root, ".silo", AdmissionStagePath(artifactId, ".json"));
         return new RawIngressPaths(
             NormalizeRelative(root, payload),
             NormalizeRelative(root, sidecar),
             payload,
             sidecar);
     }
+
+    internal static string AdmissionStagePath(Guid artifactId, string extension)
+        => Path.Combine(AdmissionStageDirectory, artifactId.ToString("N") + extension);
 
     internal async Task PublishPayloadAsync(
         RawIngressPaths paths,
@@ -106,144 +104,6 @@ internal sealed class RawIngressFileStore(
         }
         return manifest;
     }
-
-    internal static async Task AppendCompatibilityIndexAsync(
-        string root,
-        RawCaptureReceipt receipt,
-        CancellationToken cancellationToken,
-        Action? fileFlushRecorder = null)
-    {
-        var descriptor = receipt.Manifest.Descriptor;
-        var indexDirectory = Path.Combine(Path.GetFullPath(root), "index");
-        Directory.CreateDirectory(indexDirectory);
-        var indexPath = Path.Combine(indexDirectory, $"frames_{descriptor.Timing.ExposureStartedUtc:yyyy-MM-dd}.jsonl");
-        var gate = FrameIndexLock.ForRoot(root);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            using var stream = new FileStream(
-                indexPath,
-                FileMode.OpenOrCreate,
-                FileAccess.ReadWrite,
-                FileShare.Read,
-                4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough);
-            if (stream.Length > 0)
-            {
-                stream.Seek(-1, SeekOrigin.End);
-                if (stream.ReadByte() != '\n')
-                {
-                    stream.Seek(0, SeekOrigin.End);
-                    await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
-                }
-            }
-            stream.Seek(0, SeekOrigin.End);
-            var line = JsonSerializer.SerializeToUtf8Bytes(new CompatibilityIndexEntry(
-                descriptor.Artifact.ArtifactId,
-                descriptor.Artifact.Role,
-                descriptor.Artifact.SourceArtifactIds,
-                descriptor.Artifact.Recipe.ImplementationVersion,
-                descriptor.Timing.ExposureStartedUtc,
-                descriptor.Layout.Width,
-                descriptor.Layout.Height,
-                descriptor.Layout.PixelFormat,
-                null), SerializerOptions);
-            await stream.WriteAsync(line, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            CameraAgentFileSystem.FlushFile(stream);
-            fileFlushRecorder?.Invoke();
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    internal static async Task AppendCompatibilityIndexAsync(
-        string root,
-        ReadOnlyMemory<byte> manifestJson,
-        CancellationToken cancellationToken,
-        Action? fileFlushRecorder = null)
-    {
-        var parsed = CaptureContractJson.ParseManifest(manifestJson);
-        var manifest = parsed.Document?.Manifest;
-        if (!parsed.IsValid || manifest is null)
-        {
-            throw new InvalidDataException("Cannot append an invalid raw ingress manifest to the compatibility index.");
-        }
-        var descriptor = manifest.Descriptor;
-        var receipt = new RawCaptureReceipt(
-            RawIngressOutcome.Existing,
-            manifest,
-            new StoredFrameReference(
-                manifest.RelativeArtifactPath,
-                Path.GetFullPath(Path.Combine(root, manifest.RelativeArtifactPath)),
-                descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw),
-            CaptureContractJson.ComputeManifestSha256(manifestJson.Span));
-        await AppendCompatibilityIndexAsync(root, receipt, cancellationToken, fileFlushRecorder).ConfigureAwait(false);
-    }
-
-    internal static async Task EnsureCompatibilityIndexAsync(
-        string root,
-        ReadOnlyMemory<byte> manifestJson,
-        CancellationToken cancellationToken,
-        Action? fileFlushRecorder = null)
-    {
-        var parsed = CaptureContractJson.ParseManifest(manifestJson);
-        var manifest = parsed.Document?.Manifest;
-        if (!parsed.IsValid || manifest is null)
-        {
-            throw new InvalidDataException("Cannot repair an invalid raw ingress manifest index projection.");
-        }
-        var descriptor = manifest.Descriptor;
-        var indexPath = Path.Combine(
-            Path.GetFullPath(root), "index", $"frames_{descriptor.Timing.ExposureStartedUtc:yyyy-MM-dd}.jsonl");
-        if (File.Exists(indexPath))
-        {
-            foreach (var line in await File.ReadAllLinesAsync(indexPath, cancellationToken).ConfigureAwait(false))
-            {
-                try
-                {
-                    using var document = JsonDocument.Parse(line);
-                    if (MatchesIndexEntry(document.RootElement, descriptor))
-                    {
-                        return;
-                    }
-                }
-                catch (JsonException)
-                {
-                }
-            }
-        }
-        await AppendCompatibilityIndexAsync(root, manifestJson, cancellationToken, fileFlushRecorder).ConfigureAwait(false);
-    }
-
-    internal static bool MatchesIndexEntry(JsonElement element, ReconstructionDescriptor descriptor)
-        => element.ValueKind == JsonValueKind.Object &&
-           element.TryGetProperty("artifactId", out var artifactId) &&
-           artifactId.ValueKind == JsonValueKind.String &&
-           Guid.TryParse(artifactId.GetString(), out var parsedId) &&
-           parsedId == descriptor.Artifact.ArtifactId &&
-           element.TryGetProperty("role", out var role) &&
-           role.ValueKind == JsonValueKind.String &&
-           string.Equals(role.GetString(), descriptor.Artifact.Role.ToString(), StringComparison.Ordinal) &&
-           element.TryGetProperty("timestampUtc", out var timestamp) &&
-           timestamp.ValueKind == JsonValueKind.String &&
-           timestamp.TryGetDateTimeOffset(out var parsedTimestamp) &&
-           parsedTimestamp == descriptor.Timing.ExposureStartedUtc &&
-           element.TryGetProperty("width", out var width) &&
-           width.ValueKind == JsonValueKind.Number &&
-           width.TryGetInt32(out var parsedWidth) &&
-           parsedWidth == descriptor.Layout.Width &&
-           element.TryGetProperty("height", out var height) &&
-           height.ValueKind == JsonValueKind.Number &&
-           height.TryGetInt32(out var parsedHeight) &&
-           parsedHeight == descriptor.Layout.Height &&
-           element.TryGetProperty("pixelFormat", out var pixelFormat) &&
-           pixelFormat.ValueKind == JsonValueKind.String &&
-           string.Equals(pixelFormat.GetString(), descriptor.Layout.PixelFormat.ToString(), StringComparison.Ordinal);
 
     private async Task PublishAsync(
         string finalPath,
@@ -315,9 +175,11 @@ internal sealed class RawIngressFileStore(
             outcome = CameraAgentWorkloadTelemetry.Outcome.Cancelled;
             throw;
         }
-        catch (FileSystemFaultException exception)
+        catch (FileSystemFaultException exception) when (exception.InnerException is OperationCanceledException)
         {
-            FileSystemFaultCompatibility.Rethrow(exception);
+            outcome = CameraAgentWorkloadTelemetry.Outcome.Cancelled;
+            ExceptionDispatchInfo.Throw(exception.InnerException);
+            throw;
         }
         finally
         {
@@ -328,6 +190,7 @@ internal sealed class RawIngressFileStore(
     internal void EnsureRootIsPhysical()
     {
         CameraAgentFileSystem.EnsureStorageRootDurable(_root, _directorySyncRecorder);
+        EnsureNoSymbolicLinks(_root, Path.Combine(_root, ".silo", AdmissionStageDirectory));
         foreach (var child in TopLevelDirectories)
         {
             var childPath = Path.Combine(_root, child);
@@ -365,14 +228,7 @@ internal sealed class RawIngressFileStore(
 
     internal static void EnsureNoSymbolicLinks(string rootPath, string path)
     {
-        try
-        {
-            PhysicalRoot.VerifyPath(rootPath, path, "inspect-raw-path");
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
+        PhysicalRoot.VerifyPath(rootPath, path, "inspect-raw-path");
     }
 
     internal static void SyncDirectory(string directory) => FlushDirectory(directory);
@@ -403,14 +259,7 @@ internal sealed class RawIngressFileStore(
         EnsureNoSymbolicLinks(root, path);
         using var handle = File.OpenHandle(path, FileMode.Open,
                 OperatingSystem.IsWindows() ? FileAccess.ReadWrite : FileAccess.Read, FileShare.Read);
-        try
-        {
-            DurableSync.File(handle, path);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
+        DurableSync.File(handle, path);
     }
 
     private static string NormalizeRelative(string root, string path)
@@ -418,21 +267,14 @@ internal sealed class RawIngressFileStore(
 
     private static void FlushDirectory(string directory)
     {
-        try
-        {
-            DurableSync.Directory(directory);
-        }
-        catch (FileSystemFaultException exception)
-        {
-            FileSystemFaultCompatibility.Rethrow(exception);
-        }
+        DurableSync.Directory(directory);
     }
 
     internal static int GetLinuxDirectoryOnlyFlag(Architecture architecture)
-        => HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.GetDirectoryFlag(architecture);
+        => HVO.SkyMonitor.LocalFiles.LinuxOpenFlags.GetDirectoryFlag(architecture);
 
     internal static int GetLinuxNoFollowFlag(Architecture architecture)
-        => HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.GetNoFollowFlag(architecture);
+        => HVO.SkyMonitor.LocalFiles.LinuxOpenFlags.GetNoFollowFlag(architecture);
 
     private void FlushDirectoryTracked(string directory)
     {
@@ -442,20 +284,4 @@ internal sealed class RawIngressFileStore(
             _directorySyncRecorder?.Invoke();
         }
     }
-
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
-    };
-
-    private sealed record CompatibilityIndexEntry(
-        Guid ArtifactId,
-        FrameArtifactRole Role,
-        IReadOnlyList<Guid> SourceArtifactIds,
-        string RecipeVersion,
-        DateTimeOffset TimestampUtc,
-        int Width,
-        int Height,
-        CameraPixelFormat PixelFormat,
-        object? Metadata);
 }

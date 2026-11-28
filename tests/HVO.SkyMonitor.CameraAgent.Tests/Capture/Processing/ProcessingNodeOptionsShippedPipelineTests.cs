@@ -330,7 +330,7 @@ public sealed class ProcessingNodeOptionsShippedPipelineTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()

@@ -33,19 +33,26 @@ public sealed class RawIngressMaintenanceInterruptionTests
         var db = Path.Combine(hold.Path, "journal", "raw-ingress.db");
         var journal = new SqliteRawCaptureJournal(db, 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var raw = Path.Combine(hold.Path, "frames", "2026", "01", "01", "Raw");
+        var raw = Path.Combine(hold.Path, ".silo", RawIngressFileStore.AdmissionStageDirectory);
         var quarantine = Path.Combine(hold.Path, "quarantine", "planned");
         Directory.CreateDirectory(raw);
         Directory.CreateDirectory(quarantine);
         // The first pair was fully moved before a crash, but its durable plan is unfinished.
         await File.WriteAllBytesAsync(Path.Combine(quarantine, "planned.bin"), new byte[] { 7 }).ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(quarantine, "planned.json"), "invalid-planned").ConfigureAwait(false);
-        await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine("planned", "frames/2026/01/01/Raw/planned.bin",
-            "frames/2026/01/01/Raw/planned.json", "quarantine/planned", "invalid-v2-sidecar", 16), CancellationToken.None).ConfigureAwait(false);
+        var planned = RawIngressFileStore.GetPaths(hold.Path, DateTimeOffset.UnixEpoch, Guid.NewGuid());
+        File.Move(Path.Combine(quarantine, "planned.bin"), Path.Combine(quarantine, Path.GetFileName(planned.PayloadAbsolutePath)));
+        File.Move(Path.Combine(quarantine, "planned.json"), Path.Combine(quarantine, Path.GetFileName(planned.SidecarAbsolutePath)));
+        await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine("planned", planned.PayloadRelativePath,
+            planned.SidecarRelativePath, "quarantine/planned", "invalid-v2-sidecar", 16), CancellationToken.None).ConfigureAwait(false);
+        var intents = new List<(Guid ArtifactId, RawIngressPaths Paths)>();
         for (var index = 0; index < 2; index++)
         {
-            await File.WriteAllBytesAsync(Path.Combine(raw, $"new-{index}.bin"), new byte[] { (byte)index }).ConfigureAwait(false);
-            await File.WriteAllTextAsync(Path.Combine(raw, $"new-{index}.json"), $"invalid-{index}").ConfigureAwait(false);
+            var id = Guid.NewGuid();
+            var paths = RawIngressFileStore.GetPaths(hold.Path, DateTimeOffset.UnixEpoch, id);
+            intents.Add((id, paths));
+            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, new byte[] { (byte)index }).ConfigureAwait(false);
+            await File.WriteAllTextAsync(paths.SidecarAbsolutePath, $"invalid-{index}").ConfigureAwait(false);
         }
         var syncs = 0;
         var completedAtPause = -1;
@@ -57,7 +64,7 @@ public sealed class RawIngressMaintenanceInterruptionTests
             completedAtPause = Completed(db);
             pause = admission.PauseAsync($"pause-{boundary}", null, "test", null, CancellationToken.None);
             Assert.IsFalse(pause.IsCompleted, "An active operation cannot release the barrier before its journal completion.");
-        });
+        }, siloIntents: intents);
         var first = await reconciler.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
         if (boundary == 0)
         {
@@ -78,7 +85,7 @@ public sealed class RawIngressMaintenanceInterruptionTests
         await admission.ResumeAsync($"resume-{boundary}", null, "test", null, CancellationToken.None).ConfigureAwait(false);
         var reopened = new SqliteRawCaptureJournal(db, 1);
         await reopened.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var next = new RawIngressReconciler(hold.Path, reopened);
+        var next = new RawIngressReconciler(hold.Path, reopened, siloIntents: intents);
         var resumed = await next.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(3 - expected, resumed.Quarantined);
         Assert.AreEqual(0, resumed.MaintenanceDeferred);
@@ -87,12 +94,12 @@ public sealed class RawIngressMaintenanceInterruptionTests
         Assert.IsFalse(Directory.EnumerateFiles(raw).Any());
         var evidence = Directory.EnumerateFiles(Path.Combine(hold.Path, "quarantine"), "*", SearchOption.AllDirectories).ToArray();
         Assert.HasCount(6, evidence);
-        CollectionAssert.AreEqual(new byte[] { 7 }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == "planned.bin")).ConfigureAwait(false));
-        Assert.AreEqual("invalid-planned", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == "planned.json")).ConfigureAwait(false));
+        CollectionAssert.AreEqual(new byte[] { 7 }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(planned.PayloadAbsolutePath))).ConfigureAwait(false));
+        Assert.AreEqual("invalid-planned", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(planned.SidecarAbsolutePath))).ConfigureAwait(false));
         for (var index = 0; index < 2; index++)
         {
-            CollectionAssert.AreEqual(new byte[] { (byte)index }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == $"new-{index}.bin")).ConfigureAwait(false));
-            Assert.AreEqual($"invalid-{index}", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == $"new-{index}.json")).ConfigureAwait(false));
+            CollectionAssert.AreEqual(new byte[] { (byte)index }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(intents[index].Paths.PayloadAbsolutePath))).ConfigureAwait(false));
+            Assert.AreEqual($"invalid-{index}", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(intents[index].Paths.SidecarAbsolutePath))).ConfigureAwait(false));
         }
         var finished = await next.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0, finished.Quarantined);
@@ -120,10 +127,23 @@ public sealed partial class ProjectedSceneStagingStoreTests
         if (!quarantine && !OperatingSystem.IsLinux()) return;
         using var hold = new Capture.MaintenanceHoldRoot();
         using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
-        var root = quarantine ? Path.Combine(hold.Path, "frames", "2026", "01", "01", "Raw") : Path.Combine(hold.Path, "staging", "projected-scenes");
+        var root = quarantine ? Path.Combine(hold.Path, ".silo", RawIngressFileStore.AdmissionStageDirectory) : Path.Combine(hold.Path, "staging", "projected-scenes");
         Directory.CreateDirectory(root);
         for (var index = 0; index < 3; index++)
-            await File.WriteAllTextAsync(Path.Combine(root, quarantine ? $"{index}.bin" : $".{index}.tmp"), "incomplete").ConfigureAwait(false);
+        {
+            if (quarantine)
+            {
+                var id = Guid.NewGuid();
+                await RawIngress.RawCaptureIngressTests.WriteRawAdmissionIntentAsync(hold.Path, id, DateTimeOffset.UnixEpoch)
+                    .ConfigureAwait(false);
+                var paths = RawIngressFileStore.GetPaths(hold.Path, DateTimeOffset.UnixEpoch, id);
+                await File.WriteAllTextAsync(paths.PayloadAbsolutePath, "incomplete").ConfigureAwait(false);
+            }
+            else
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, $".{index}.tmp"), "incomplete").ConfigureAwait(false);
+            }
+        }
         using var staging = CreateStore(hold.Path);
         using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
         var state = new RawIngressState(TimeProvider.System);

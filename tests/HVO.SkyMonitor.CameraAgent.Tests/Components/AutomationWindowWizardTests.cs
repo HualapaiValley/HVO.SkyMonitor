@@ -332,7 +332,8 @@ public sealed class AutomationWindowWizardTests
         {
             var options = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
             var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
-            using var store = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var store = silo.OpenStore(options, clock);
             using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
                 new InMemoryNightlySourceReader(), store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
             var adapter = new NightlyProductAutomationTaskRegistry(generator, options);

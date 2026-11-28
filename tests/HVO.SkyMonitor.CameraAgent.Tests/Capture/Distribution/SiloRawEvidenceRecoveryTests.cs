@@ -59,7 +59,11 @@ public sealed partial class SiloRawEvidenceRecoveryTests
 
         File.Delete(capture.StoredFrame.AbsolutePath);
         File.Delete(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"));
-        using var handler = new StandardCaptureLaneHandler(new EmptyPipelineFactory(),
+        using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
+        using var processingTelemetry = new CaptureProcessingTelemetry();
+        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, processingTelemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, artifacts);
+        using var handler = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), persistence, processingTelemetry,
             NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
         var standardFailure = await handler.HandleAsync(standard.Context, token).ConfigureAwait(false);
         var secondaryFailure = await new SecondaryEvidenceReader(artifacts).HandleAsync(secondary.Context, token).ConfigureAwait(false);
@@ -346,7 +350,7 @@ public sealed partial class SiloRawEvidenceRecoveryTests
             """).ConfigureAwait(false));
         var journal = new SqliteRawCaptureJournal(Path.Combine(fixture.Root, "journal", "raw-ingress.db"), 5, usesSilo: true);
         var holds = await journal.ReadRetentionHoldsAsync(token).ConfigureAwait(false);
-        Assert.IsFalse(holds.Any(hold => hold.ArtifactId == capture.Manifest.Descriptor.Artifact.ArtifactId),
+        Assert.DoesNotContain(capture.Manifest.Descriptor.Artifact.ArtifactId, holds,
             $"Capture {captureId} should not remain retention-held after evidence restoration with no remaining holds.");
     }
 
@@ -383,10 +387,8 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         Assert.IsNotNull(lease);
 
         using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
-        using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var processingTelemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, frameStorage,
-            processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: artifacts);
+        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: artifacts);
 
         var step = new DescriptorOnlyEnsureRawFrameStep();
         var graph = new CaptureProcessingGraph([
@@ -517,7 +519,7 @@ public sealed partial class SiloRawEvidenceRecoveryTests
         {
             var capture = context.RawCapture;
             var evidence = await artifacts.ReadRawEvidenceAsync(capture.Manifest.Descriptor.Artifact.ArtifactId,
-                capture.CommittedManifestSha256, Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"), cancellationToken)
+                capture.CommittedManifestSha256, allowStaged: true, cancellationToken)
                 .ConfigureAwait(false);
             return evidence is null ? CaptureLaneHandlerResult.Terminal("evidence-invalid") : CaptureLaneHandlerResult.Success;
         }

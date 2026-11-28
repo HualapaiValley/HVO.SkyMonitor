@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -24,13 +25,12 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var capture = fixture.Fixture.Manifest.Descriptor.Capture.CaptureId;
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
             var manifest = (await store.ReadCaptureProductsAsync(capture, OverlayManifestV1.CurrentSchemaVersion, 2, CancellationToken.None)
                 .ConfigureAwait(false)).Single();
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var observed = Channel.CreateUnbounded<Task<CameraAgentArtifactContentResult>>();
             var opens = new ConcurrentQueue<Task<CameraAgentArtifactContentResult>>();
             var decoratingArtifacts = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -126,12 +126,11 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var numericalGate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var fit = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, numericalGate).ConfigureAwait(false);
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var astrometry = new CameraAgentRetainedAstrometryService(store, artifacts);
             var reachedBase = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseBase = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -152,13 +151,14 @@ public sealed partial class DurableCaptureProcessingTests
             var capture = fit.Capture.CaptureId;
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var old = service.GetAsync(capture, deadline.Token).AsTask();
-            var sourcePath = Path.Combine(root, fixture.Fixture.Manifest.RelativeArtifactPath);
-            var savedPath = sourcePath + ".held";
+            var descriptor = fixture.Fixture.Manifest.Descriptor;
+            var raw = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor), deadline.Token).ConfigureAwait(false);
             try
             {
                 await reachedBase.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
                 // The old request has already projected the fit. Remove its real raw evidence before the re-read.
-                File.Move(sourcePath, savedPath);
+                raw.SetUnavailable(true);
                 var invalidated = await service.GetCurrentAsync(capture, deadline.Token).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, invalidated.Status, invalidated.Reason);
                 Assert.AreEqual(preview, invalidated.Presentation?.BaseArtifactId);
@@ -166,7 +166,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsNull(invalidated.Presentation.Astrometry?.Mapping);
                 Assert.IsFalse(old.IsCompleted);
 
-                File.Move(savedPath, sourcePath);
+                raw.SetUnavailable(false);
                 var repaired = await service.GetCurrentAsync(capture, deadline.Token).ConfigureAwait(false);
                 AssertMeasured(repaired);
                 Assert.IsFalse(old.IsCompleted);
@@ -175,7 +175,7 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 releaseBase.TrySetResult();
                 await old.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
-                if (File.Exists(savedPath)) File.Move(savedPath, sourcePath);
+                raw.SetUnavailable(false);
             }
             AssertMeasured(await old.ConfigureAwait(false));
 

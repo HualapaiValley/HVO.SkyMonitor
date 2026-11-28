@@ -587,7 +587,7 @@ shared_projects=(
   HVO.SkyMonitor.Imaging
   HVO.SkyMonitor.Processing
   HVO.SkyMonitor.Video.FFmpeg
-  HVO.SkyMonitor.Storage.FileSystem
+  HVO.SkyMonitor.LocalFiles
   HVO.SkyMonitor.TestSupport
   HVO.SkyMonitor.AgentCore.Tests
   HVO.SkyMonitor.Astronomy.Tests
@@ -596,7 +596,6 @@ shared_projects=(
   HVO.SkyMonitor.Common.Tests
   HVO.SkyMonitor.Imaging.Tests
   HVO.SkyMonitor.Processing.Tests
-  HVO.SkyMonitor.Storage.FileSystem.Tests
   HVO.SkyMonitor.TestSupport.Tests
 )
 

@@ -169,10 +169,6 @@ internal sealed record DurableGalleryProcessingNodeDetail(
     IReadOnlyList<DurableProcessingNodeInput>? Inputs,
     bool InputsTruncated);
 
-internal sealed record DurableRawProcessingInput(
-    ReconstructionDescriptor Descriptor,
-    string PayloadRelativePath);
-
 internal sealed record CaptureProcessingOperationalState(
     long PendingCount,
     long LeasedCount,
@@ -2701,10 +2697,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 JOIN processing_output_sources source
                   ON source.output_identity_sha256 = output.output_identity_sha256
             )
-            SELECT artifact_id, payload_relative_path, sidecar_relative_path, 0
+            SELECT artifact_id
             FROM processing_outputs WHERE artifact_id IN held AND availability_state = 'Available'
             UNION
-            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path, 1
+            SELECT raw_artifact_id
             FROM raw_captures WHERE raw_artifact_id IN held
             LIMIT $maximum_holds_plus_one;
             """;
@@ -2716,17 +2712,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            var id = Guid.ParseExact(reader.GetString(0), "N");
-            holds.Add(_silo is not null && reader.GetBoolean(3)
-                ? new ProcessingRetentionHold(id, SiloArtifactStorage.RawReference(id, ".bin"), SiloArtifactStorage.RawReference(id, ".json"))
-                : new ProcessingRetentionHold(id, reader.GetString(1), reader.GetString(2)));
+            holds.Add(new(Guid.ParseExact(reader.GetString(0), "N")));
         }
         if (holds.Count > ProcessingRetentionHoldSafetyCount)
             throw new InvalidDataException("Processing retention lineage exceeds its safety bound.");
         return holds;
     }
 
-    internal async ValueTask<IReadOnlyList<DurableRawProcessingInput>> ReadRecentRawInputsAsync(
+    internal async ValueTask<IReadOnlyList<ReconstructionDescriptor>> ReadRecentRawInputsAsync(
         string agentId,
         long currentCaptureSequence,
         int maximumCount,
@@ -2736,7 +2729,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT raw_capture_row_id, manifest_json, manifest_sha256, payload_relative_path
+            SELECT raw_capture_row_id, manifest_json, manifest_sha256
             FROM raw_captures
             WHERE state = 'committed' AND agent_id = $agent_id
               AND capture_sequence <= $current_capture_sequence
@@ -2746,7 +2739,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$agent_id", agentId);
         command.Parameters.AddWithValue("$current_capture_sequence", currentCaptureSequence);
         command.Parameters.AddWithValue("$maximum_count", maximumCount);
-        var candidates = new List<(long RawRowId, byte[] ManifestJson, string ManifestSha256, string PayloadPath)>(maximumCount);
+        var candidates = new List<(long RawRowId, byte[] ManifestJson, string ManifestSha256)>(maximumCount);
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2754,12 +2747,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 candidates.Add((
                     reader.GetInt64(0),
                     await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false),
-                    reader.GetString(2),
-                    reader.GetString(3)));
+                    reader.GetString(2)));
             }
         }
 
-        var entries = new List<DurableRawProcessingInput>(candidates.Count);
+        var entries = new List<ReconstructionDescriptor>(candidates.Count);
         foreach (var candidate in candidates)
         {
             if (!string.Equals(
@@ -2776,7 +2768,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await QuarantineRawInputAsync(connection, candidate.RawRowId, cancellationToken).ConfigureAwait(false);
                 throw new InvalidDataException("Durable raw rolling input manifest is invalid.");
             }
-            entries.Add(new DurableRawProcessingInput(descriptor, candidate.PayloadPath));
+            entries.Add(descriptor);
         }
         return entries;
     }
@@ -3011,7 +3003,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         return inserted;
     }
 
-    private static bool OutputEvidenceMatches(
+    internal static bool OutputEvidenceMatches(
         byte[] existing,
         byte[] requested,
         bool allowProducerAlias)

@@ -45,7 +45,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     private readonly SqliteCaptureProcessingStore _processingStore;
     private readonly IObservingDayCalendarProvider _observingDays;
     private readonly IDeploymentLocationStore? _deploymentLocation;
-    private readonly LocalArchiveReader? _localArchive;
     private readonly SiloArtifactStorage? _silo;
 
     public SqliteCameraAgentGallery(
@@ -54,12 +53,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         IObservingDayCalendarProvider? observingDays = null,
         IDeploymentLocationStore? deploymentLocation = null,
         Microsoft.Extensions.Logging.ILogger<SqliteCameraAgentGallery>? logger = null,
-        LocalArchiveReader? localArchive = null,
         SiloArtifactStorage? silo = null)
     {
         _silo = silo;
         _logger = logger;
-        _localArchive = localArchive;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _observingDays = observingDays ?? new DeploymentObservingDayCalendarProvider();
@@ -287,20 +284,9 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         await StorageLifecycleLock.WaitAsync(lifecycleGate, "gallery", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
-            byte[]? payload;
-            if (_silo is not null && SiloArtifactStorage.IsReference(output.PayloadRelativePath))
-            {
-                payload = await _silo.ReadMemberAsync(output.Artifact.ArtifactId, output.OutputIdentitySha256, expectedLength.Value,
+            var payload = _silo is null ? null :
+                await _silo.ReadMemberAsync(output.Artifact.ArtifactId, output.OutputIdentitySha256, expectedLength.Value,
                     output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                var path = ResolveSafePath(output.PayloadRelativePath);
-                RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-                var info = new FileInfo(path);
-                payload = info.Exists && info.Length == expectedLength.Value
-                    ? await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false) : null;
-            }
             if (payload is null)
                 return UnavailableCloudAssessment("Unavailable");
             if (!string.Equals(
@@ -339,52 +325,6 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             lifecycleGate.Release();
         }
-    }
-
-    private CameraAgentProductDetail ProjectArchiveDetail(IndexedArchiveFrame frame)
-    {
-        var descriptor = frame.Manifest.Descriptor;
-        var started = descriptor.Timing.ExposureStartedUtc;
-        var sourceIds = descriptor.Artifact.SourceArtifactIds;
-        var sources = sourceIds.Take(SqliteCaptureProcessingStore.MaximumOutputSourceCount)
-            .Select(static (id, ordinal) => new CameraAgentProductSource(ordinal, id, null, null, null)).ToArray();
-        return new CameraAgentProductDetail(ProjectArchiveProduct(frame), started,
-            _observingDays.Current.LegacyNoon.Resolve(started), descriptor.Capture.RigId,
-            sources, sources.Length < sourceIds.Count, null, []);
-    }
-
-    private static CameraAgentProduct ProjectArchiveProduct(IndexedArchiveFrame frame)
-    {
-        var descriptor = frame.Manifest.Descriptor;
-        var artifact = descriptor.Artifact;
-        var recipe = artifact.Recipe;
-        // File-only products have no journal commit clock or execution provenance.
-        // The indexed capture time supplies their stable archive ordering.
-        return new CameraAgentProduct(artifact.ArtifactId, frame.DescriptorIdentity,
-            descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, descriptor.Capture.AgentId,
-            frame.Manifest.ProducerStepId ?? string.Empty, artifact.Role, artifact.Variant,
-            descriptor.Timing.ExposureStartedUtc, artifact.CreatedUtc, artifact.MediaType,
-            artifact.ChecksumSha256, descriptor.Layout.ByteLength,
-            new CameraAgentGalleryRecipe(recipe.Name, recipe.SemanticVersion, recipe.ImplementationVersion,
-                recipe.OptionsSha256, LocalArchiveReader.RecipeIdentity(frame)),
-            [], null, null, null, "Available", null, descriptor.Controls.EffectiveExposure,
-            artifact.SourceArtifactIds.Count, null, null, "Unassociated", false);
-    }
-
-    private string ResolveSafePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || relativePath.Contains('\\', StringComparison.Ordinal) ||
-            Path.IsPathRooted(relativePath) || relativePath.Contains('\0', StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Artifact path is invalid.");
-        }
-        var fullPath = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!fullPath.StartsWith(prefix, PathComparison))
-        {
-            throw new InvalidDataException("Artifact path is invalid.");
-        }
-        return fullPath;
     }
 
     private static string? SanitizeFailureCategory(string? reason)
@@ -839,37 +779,16 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
                     await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? "Unassociated" : reader.GetString(2)));
             }
         }
-        if (_localArchive is not null && normalized.Availability == "Available" && normalized.ProductKind is null)
-        {
-            var from = keys.Count > normalized.PageSize
-                ? Math.Max(normalized.FromUnixMilliseconds ?? long.MinValue, keys[^1].CommittedUnixMilliseconds)
-                : normalized.FromUnixMilliseconds;
-            var retained = await _localArchive.ReadPageAsync(connection, normalized.PageSize + 1,
-                normalized.Role, normalized.Recipe, from, normalized.ToUnixMilliseconds,
-                cursor?.CommittedUnixMilliseconds, cursor?.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
-            keys.AddRange(retained.Select(static frame => new ProductKey(
-                frame.DescriptorIdentity, LocalArchiveReader.SortTime(frame), "Unassociated", frame)));
-            keys = keys.OrderByDescending(static key => key.CommittedUnixMilliseconds)
-                .ThenByDescending(static key => key.OutputIdentitySha256, StringComparer.Ordinal)
-                .Take(normalized.PageSize + 1).ToList();
-        }
-
         var hasMore = keys.Count > normalized.PageSize;
         if (hasMore)
         {
             keys.RemoveAt(keys.Count - 1);
         }
-        var journalKeys = keys.Where(static key => key.Archive is null).ToArray();
-        var journalProducts = await HydrateProductsAsync(connection, journalKeys, cancellationToken).ConfigureAwait(false);
-        var journalByIdentity = journalProducts.ToDictionary(static product => product.OutputIdentitySha256, StringComparer.Ordinal);
-        var products = keys.Select(key => key.Archive is { } frame
-                ? ProjectArchiveProduct(frame)
-                : journalByIdentity.GetValueOrDefault(key.OutputIdentitySha256))
-            .OfType<CameraAgentProduct>().ToArray();
+        var products = await HydrateProductsAsync(connection, keys, cancellationToken).ConfigureAwait(false);
         var nextCursor = hasMore && keys.Count > 0 ? EncodeProductCursor(keys[^1], normalized.FilterHash) : null;
         // A durable record the reader cannot decode is omitted, and the page
         // says so rather than shrinking silently.
-        return new CameraAgentProductPage(products, nextCursor, keys.Count - products.Length);
+        return new CameraAgentProductPage(products, nextCursor, keys.Count - products.Count);
     }
 
     public async ValueTask<CameraAgentProductDetail?> GetProductAsync(
@@ -903,9 +822,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
         if (key is null)
         {
-            var archive = _localArchive is null ? null
-                : await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
-            return archive is null ? null : ProjectArchiveDetail(archive);
+            return null;
         }
         var products = await HydrateProductsAsync(connection, [key], cancellationToken).ConfigureAwait(false);
         if (products.Count == 0)
@@ -1243,7 +1160,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
     }
 
-    private sealed record ProductKey(string OutputIdentitySha256, long CommittedUnixMilliseconds, string ExecutionClass, IndexedArchiveFrame? Archive = null);
+    private sealed record ProductKey(string OutputIdentitySha256, long CommittedUnixMilliseconds, string ExecutionClass);
 
     private sealed record ProductCursor(int Version, string FilterHash, long CommittedUnixMilliseconds, string OutputIdentitySha256);
 

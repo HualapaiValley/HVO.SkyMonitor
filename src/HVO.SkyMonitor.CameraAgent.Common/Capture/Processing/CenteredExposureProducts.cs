@@ -84,6 +84,8 @@ internal sealed class CenteredExposureProductReader(
         var exposure = CreateExposure(key, raw);
         var (product, provenance) = await store.ReadCenteredLinearAsync(key, raw, cancellationToken)
             .ConfigureAwait(false);
+        if (product is not null)
+            product = await ApplyRetentionAsync(product, cancellationToken).ConfigureAwait(false);
         var disposition = product?.Availability switch
         {
             ExposureProductAvailability.Available when provenance is not null => provenance.Disposition,
@@ -101,15 +103,28 @@ internal sealed class CenteredExposureProductReader(
         ExposureKey key, ExposureProductSlot slot, CancellationToken cancellationToken)
     {
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        return await store.ReadCenteredProductAsync(key, slot, cancellationToken).ConfigureAwait(false);
+        var product = await store.ReadCenteredProductAsync(key, slot, cancellationToken).ConfigureAwait(false);
+        return product is null ? null : await ApplyRetentionAsync(product, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<ExposureProductLookup>> ReadProductsAfterAsync(
         CameraKey camera, long afterRevision, int maximumCount, CancellationToken cancellationToken)
     {
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        return await store.ReadCenteredProductsAfterAsync(camera, afterRevision, maximumCount, cancellationToken)
+        var products = await store.ReadCenteredProductsAfterAsync(camera, afterRevision, maximumCount, cancellationToken)
             .ConfigureAwait(false);
+        var projected = new List<ExposureProductLookup>(products.Count);
+        foreach (var product in products)
+            projected.Add(await ApplyRetentionAsync(product, cancellationToken).ConfigureAwait(false));
+        return projected;
+    }
+
+    private async ValueTask<ExposureProductLookup> ApplyRetentionAsync(ExposureProductLookup lookup, CancellationToken cancellationToken)
+    {
+        if (lookup.Availability == ExposureProductAvailability.Available && lookup.Product is { } product &&
+            await store.IsCenteredProductExpiredAsync(product.ArtifactId, cancellationToken).ConfigureAwait(false))
+            return lookup with { Availability = ExposureProductAvailability.Expired, Reason = "retention-expired" };
+        return lookup;
     }
 
     internal static IReadOnlyList<CenteredProductSettlement> CreateSettlements(

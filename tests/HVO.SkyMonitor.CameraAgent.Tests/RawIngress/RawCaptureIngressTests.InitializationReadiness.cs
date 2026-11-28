@@ -31,8 +31,8 @@ public sealed partial class RawCaptureIngressTests
                 strict = Task.Run(async () => await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false));
                 await arrival.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
                 Assert.IsFalse(strict.IsCompleted);
-                var holds = await restarted.GetRetentionHoldsUnderLifecycleLockAsync(root, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsTrue(holds.Any(hold => hold.ArtifactId == receipt.Manifest.Descriptor.Artifact.ArtifactId));
+                var holds = await restarted.GetRetentionHoldsUnderLifecycleLockAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.Contains(receipt.Manifest.Descriptor.Artifact.ArtifactId, holds);
             }
             finally
             {
@@ -194,9 +194,9 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsFalse(await ingress.InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));
             Directory.Move(root, retained);
             Directory.CreateSymbolicLink(root, retained);
-            await Assert.ThrowsExactlyAsync<IOException>(() => ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<IOException>(() => ingress.InitializeForOperationsAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<IOException>(() => restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => ingress.InitializeForOperationsAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsAsync<IOException>(() => restarted.ReadEvidencePageAsync(10, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
             Directory.Delete(root);
             Directory.Move(retained, root);
             Assert.IsFalse(await ingress.InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));

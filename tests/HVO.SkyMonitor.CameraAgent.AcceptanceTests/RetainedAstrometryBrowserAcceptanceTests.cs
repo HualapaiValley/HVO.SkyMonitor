@@ -5,13 +5,14 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -53,6 +54,10 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             await File.ReadAllTextAsync(Path.Combine(source, "viewer-fixture.json")).ConfigureAwait(false))!;
         Assert.AreEqual(scenario, identity.Scenario);
         Assert.IsTrue(identity.HostCompatible, "Regenerate host-compatible fixtures; do not bypass native recovery.");
+        Assert.AreNotEqual(Guid.Empty, identity.SiloInstance, "Regenerate the viewer fixture with the current Silo generator.");
+        var bucket = new SiloInfrastructureFixture.Bucket(identity.SiloInstance);
+        bucket.Store.ImportVersions(await File.ReadAllBytesAsync(
+            Path.Combine(source, SiloInfrastructureFixture.VersionSnapshotFileName)).ConfigureAwait(false));
         var output = Path.Combine(evidenceRoot, scenario);
         Assert.IsFalse(Directory.Exists(output), "Preserve previous evidence; select a fresh evidence directory.");
         Directory.CreateDirectory(output);
@@ -69,9 +74,9 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             // artifact verification, retained reconstruction, composition and Razor/JS remain real.
             var paused = new HashSet<Type>
             {
-                typeof(CameraCaptureService), typeof(RetentionBackgroundService), typeof(CaptureDistributionService),
-                typeof(DerivedProductReconciliationService), typeof(ProjectedSceneStageReconciliationService),
-                typeof(ProcessingReplayWorker), typeof(TransientWorkerService)
+                typeof(CameraCaptureService), typeof(CaptureDistributionService),
+                typeof(ProjectedSceneStageReconciliationService),
+                typeof(ProcessingReplayWorker), typeof(TransientWorkerService), typeof(SiloRetentionWorker)
             };
             foreach (var descriptor in services.Where(value => value.ServiceType == typeof(IHostedService) &&
                 paused.Contains(value.ImplementationType ?? value.ImplementationFactory?.Method.ReturnType ?? typeof(void))).ToArray()) services.Remove(descriptor);
@@ -80,7 +85,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             await RetainedAstrometryBrowserFixture.CopyAsync(source, root).ConfigureAwait(false);
             preparedHashes = await HashAstrometryFixtureAsync(root).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(output, "prepared-baseline.json"), JsonSerializer.Serialize(new { root, files = preparedHashes }, AstrometryBrowserJson)).ConfigureAwait(false);
-        }, scratchRoot: evidenceRoot, preserveRoot: true).ConfigureAwait(false);
+        }, scratchRoot: evidenceRoot, preserveRoot: true, installedBucket: bucket).ConfigureAwait(false);
         Assert.IsNotNull(preparedHashes);
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext, successfulEvidenceDirectory: Path.Combine(output, "diagnostics"));
         await using var context = await diagnostics.NewContextAsync(new()
@@ -329,7 +334,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var relative in relativePaths ?? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(path => !path.EndsWith(".db", StringComparison.Ordinal) && !path.EndsWith("-wal", StringComparison.Ordinal) && !path.EndsWith("-shm", StringComparison.Ordinal))
+            .Where(path => !path.EndsWith(".db", StringComparison.Ordinal) && !path.EndsWith("-wal", StringComparison.Ordinal) &&
+                !path.EndsWith("-shm", StringComparison.Ordinal) && !path.EndsWith(".lock", StringComparison.Ordinal))
             .Select(path => Path.GetRelativePath(root, path)).Order(StringComparer.Ordinal))
         {
             await using var file = File.OpenRead(Path.Combine(root, relative));
@@ -351,7 +357,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.IsNotNull(product.Descriptor);
         Assert.AreEqual(size, product.Descriptor.Layout.Width);
         Assert.AreEqual(size, product.Descriptor.Layout.Height);
-        var payload = await File.ReadAllBytesAsync(Path.Combine(host.Root, product.PayloadRelativePath)).ConfigureAwait(false);
+        var payload = await SiloInfrastructureFixture.ReadProductBytesAsync(host.Services, product, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(product.Artifact.ChecksumSha256, PayloadChecksum.ComputeSha256(payload));
         var downloaded = await page.Context.APIRequest.GetAsync(new Uri(host.BaseAddress, url).ToString()).ConfigureAwait(false);
         try
@@ -366,7 +372,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.AreEqual(shown.PresentationIdentitySha256, await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-presentation-identity").ConfigureAwait(false));
         var manifest = await host.Services.GetRequiredService<SqliteCaptureProcessingStore>()
             .ReadOutputByArtifactIdAsync(shown.ManifestArtifactId, CancellationToken.None).ConfigureAwait(false);
-        var manifestBytes = await File.ReadAllBytesAsync(Path.Combine(host.Root, manifest!.PayloadRelativePath)).ConfigureAwait(false);
+        Assert.IsNotNull(manifest);
+        var manifestBytes = await SiloInfrastructureFixture.ReadProductBytesAsync(host.Services, manifest, CancellationToken.None).ConfigureAwait(false);
         var document = LayeredPresentationJson.ParseManifest(manifestBytes).Document!;
         var selected = shown.Layers.Single(layer => layer.Kind == AstrometricDiagnosticPresentation.ResidualsLayer);
         var residualArtifact = document.Layers.Single(layer => layer.LayerIdentitySha256 == selected.IdentitySha256).SourceProduct.ArtifactId;
@@ -405,5 +412,5 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
 
     [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Constructed by System.Text.Json from the retained fixture manifest.")]
     private sealed record AstrometryBrowserFixture(string Scenario, Guid CaptureId, Guid RawArtifactId, Guid BaseArtifactId,
-        string ManifestIdentitySha256, string BaseChecksum, string RawChecksum, bool HostCompatible);
+        string ManifestIdentitySha256, string BaseChecksum, string RawChecksum, bool HostCompatible, Guid SiloInstance);
 }

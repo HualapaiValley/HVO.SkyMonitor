@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -83,10 +84,12 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                     foreach (var support in originalDetail!.Nodes.Single(node => node.NodeId == nodeId).MixedGainDiagnostics!.Support)
                     {
                         var retained = await run.Store.ReadOutputByArtifactIdAsync(ProcessingIdentity.CreateArtifactId(support.OutputIdentitySha256), CancellationToken.None).ConfigureAwait(false);
-                        supportBytes.Add(support.OutputIdentitySha256, await File.ReadAllBytesAsync(Path.Combine(run.Root, retained!.PayloadRelativePath)).ConfigureAwait(false));
+                        supportBytes.Add(support.OutputIdentitySha256, await SiloInfrastructureFixture.ReadProductBytesAsync(
+                            run.Provider, retained!, CancellationToken.None).ConfigureAwait(false));
                     }
                 }
-                var expected = await File.ReadAllBytesAsync(Path.Combine(run.Root, original.PayloadRelativePath)).ConfigureAwait(false);
+                var expected = await SiloInfrastructureFixture.ReadProductBytesAsync(run.Provider, original, CancellationToken.None)
+                    .ConfigureAwait(false);
                 var plan = ordinaryMean ? null : await run.Store.ReadNormalizationPlanAsync(source.ExecutionId, nodeId, CancellationToken.None)
                     .ConfigureAwait(false);
 
@@ -152,7 +155,8 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 var output = detail.Nodes.Single(node => node.NodeId == nodeId).Outputs.Single(static output => output.Role == FrameArtifactRole.Combined);
                 var produced = await restartedRun.Store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(produced);
-                var actual = await File.ReadAllBytesAsync(Path.Combine(run.Root, produced.PayloadRelativePath)).ConfigureAwait(false);
+                var actual = await SiloInfrastructureFixture.ReadProductBytesAsync(restarted, produced, CancellationToken.None)
+                    .ConfigureAwait(false);
                 CollectionAssert.AreEqual(expected, actual);
                 Assert.AreEqual(original.OutputIdentitySha256, output.OutputIdentitySha256);
                 Assert.AreEqual(original.RecipeIdentitySha256, produced.RecipeIdentitySha256);
@@ -166,7 +170,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                     {
                         var retained = await restartedRun.Store.ReadOutputByArtifactIdAsync(ProcessingIdentity.CreateArtifactId(support.OutputIdentitySha256), CancellationToken.None).ConfigureAwait(false);
                         CollectionAssert.AreEqual(supportBytes[support.OutputIdentitySha256],
-                            await File.ReadAllBytesAsync(Path.Combine(run.Root, retained!.PayloadRelativePath)).ConfigureAwait(false));
+                            await SiloInfrastructureFixture.ReadProductBytesAsync(restarted, retained!, CancellationToken.None).ConfigureAwait(false));
                     }
                 }
             });
@@ -232,17 +236,12 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 .ConfigureAwait(false);
             Assert.IsNotNull(frozen);
             var master = LibraryMasters(run.Bundles[LowGain]).First();
-            var path = Path.Combine(run.Root, Path.ChangeExtension(master.ManifestRelativePath, ".bin"));
-            if (corrupt)
-            {
-                var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-                bytes[0] ^= 1;
-                await File.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
-            }
-            else
-            {
-                File.Delete(path);
-            }
+            var retained = await run.Provider.GetRequiredService<SiloInstalledStorage>().Index.FindRetainedLocalPayloadAsync(
+                master.ArtifactId.ToString("D"), SiloCenteredViews.LowerHex(master.PayloadSha256), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(retained);
+            var objects = run.Provider.GetRequiredService<SiloTestStore>();
+            if (corrupt) objects.Damage(retained.Value.Locator);
+            else objects.Delete(retained.Value.Locator);
             var detail = await RunReplayAsync(run, replay.Execution.ExecutionId).ConfigureAwait(false);
             var node = detail.Nodes.Single(static node => node.NodeId == NodeId);
             Assert.AreEqual("TerminalFailure", node.Status, node.Reason);

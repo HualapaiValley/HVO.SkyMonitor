@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -19,11 +20,10 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var second = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
@@ -71,14 +71,9 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsFalse(failedOpen.PreviousSummaryQuarantined);
             transientNewest = false;
 
-            var reconciler = new DerivedProductReconciler(root, store);
-            var contextPath = Path.Combine(root, context.PayloadRelativePath);
-            var bytes = await File.ReadAllBytesAsync(contextPath, token).ConfigureAwait(false);
-            bytes[0] ^= 1;
-            await File.WriteAllBytesAsync(contextPath, bytes, token).ConfigureAwait(false);
-            Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Quarantined);
-            Assert.AreEqual("Quarantined", (await store.ReadOutputByArtifactIdAsync(context.ArtifactId, token)
-                .ConfigureAwait(false))?.AvailabilityState);
+            var damaged = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, context, token).ConfigureAwait(false);
+            damaged.FlipByte();
+            await damaged.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token).ConfigureAwait(false);
 
             pauseNextFallback = true;
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -120,17 +115,14 @@ public sealed partial class DurableCaptureProcessingTests
                 "A later lookup must skip the confirmed quarantined candidate.");
             transientFallback = false;
 
-            var fallbackPath = Path.Combine(root, older.PayloadRelativePath);
-            var displaced = Path.Combine(root, "displaced-fallback");
-            File.Move(fallbackPath, displaced);
-            Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Missing);
+            var fallback = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, older, token).ConfigureAwait(false);
+            await fallback.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
             AssertInvalidationWhilePending(await reader.ReadLatestAcceptedAsync(displayed, token).ConfigureAwait(false));
 
             var invalidSelected = await reader.GetAsync(newest.Capture.CaptureId, token).ConfigureAwait(false);
             Assert.IsNull(invalidSelected.Solution);
             Assert.IsNull(invalidSelected.Mapping);
-            File.Move(displaced, fallbackPath);
-            _ = await reconciler.RunAsync(token).ConfigureAwait(false);
+            await fallback.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
             var recovered = await reader.ReadLatestAcceptedAsync(displayed, token).ConfigureAwait(false);
             Assert.IsTrue(recovered.Completed);
             Assert.AreEqual(exactOlder, recovered.Summary,

@@ -738,20 +738,16 @@ internal sealed partial class SqliteCaptureProcessingStore
             // The node declares no window, so it consumes only its own capture's dependency artifact.
             return [];
         }
-        // Selection and its file-retention checks stay outside the write transaction: raw acceptance shares
-        // this database with the lane, and holding the single writer across per-output filesystem probes at
-        // capture cadence would stall the acquisition path. What still holds: the pin insert re-checks
-        // availability inside the transaction, so a pin can only name an output the database still calls
-        // Available, and a change in between fails the attempt as a recorded, retryable node outcome. What no
-        // longer holds: file retention is verified before the transaction, so a payload removed without its
-        // row being marked unavailable is caught when the node reads it rather than at pin time.
+        // Select the inputs and check their catalog membership before opening the write transaction.
+        // Raw acceptance shares the lane database. The pin insert rechecks the journal's availability
+        // within the transaction, and the consumer verifies the exact Silo versions when it reads them.
         var selected = await ProcessingOutputWindowSelector.SelectAsync(
             connection, null, current, plan.ProducerId, plan.RevisionId, plan.ProducerPlanSha256,
             plan.InputsJson, plan.Requirement, _executionOptions.MaximumWindowInputs,
             includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
         foreach (var input in selected)
         {
-            await EnsureFrozenOutputFilesExistAsync(
+            await EnsureFrozenOutputMembersExistAsync(
                 connection, null, input.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
         }
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -772,7 +768,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         await InsertFrozenOutputPinsAsync(
             connection, transaction, execution.ExecutionId, nodeId, selected, cancellationToken,
-            validateRetainedFiles: false).ConfigureAwait(false);
+            validateRetainedMembers: false).ConfigureAwait(false);
         var outputs = await ReadPinnedOutputsAsync(
             connection, transaction, execution.ExecutionId, nodeId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1135,6 +1131,16 @@ internal sealed partial class SqliteCaptureProcessingStore
                 }
                 var durableOutputs = await ReadExecutionOutputsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                if (_silo is { } silo && durableOutputs.Count > 0)
+                {
+                    var retained = new List<DurableProcessingOutput>(durableOutputs.Count);
+                    foreach (var output in durableOutputs)
+                    {
+                        if (await silo.IsArtifactRetainedAsync(output.ArtifactId, cancellationToken).ConfigureAwait(false))
+                            retained.Add(output);
+                    }
+                    durableOutputs = retained;
+                }
                 var published = await ReadExecutionOutputAssociationsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
                 var inputs = await ReadExecutionInputsAsync(

@@ -217,7 +217,7 @@ public sealed partial class RawCaptureIngressTests
             // A later hold recomputation must not make written-off bytes eligible for retention.
             await ExecuteTestSqlAsync(verify, "UPDATE raw_captures SET retention_hold = 0 WHERE capture_sequence = 1;").ConfigureAwait(false);
             var holds = await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1).ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(holds.Any(hold => hold.ArtifactId == terminal.ArtifactId));
+            Assert.Contains(terminal.ArtifactId, holds);
         }
         finally { DeleteRoot(root); }
     }

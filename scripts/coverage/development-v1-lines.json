@@ -4031,8 +4031,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/AtomicPublisher.cs": {
-      "sourceSha256": "2b3e20308e5a3106cfbd2b8fc37f995d9a05bf44410f4d635af7a1d72627b7b2",
+    "HVO.SkyMonitor.LocalFiles/AtomicPublisher.cs": {
+      "sourceSha256": "bc0e4a64fdc0499c2f658c54bdb7a8f1d4c49d3f56709f28b814338a59fb7b54",
       "lines": [
       29, 43, 60, 61, 62, 63, 64, 66, 68, 73, 74, 75, 76, 77, 78, 79,
       80, 81, 82, 83, 84, 85, 87, 90, 91, 92, 93, 94, 95, 96, 98, 100,
@@ -4088,8 +4088,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/DurableSync.cs": {
-      "sourceSha256": "35e6698dcb5e729ccb67530a6f3a7e4847ad778611c128a271d471e7d215979b",
+    "HVO.SkyMonitor.LocalFiles/DurableSync.cs": {
+      "sourceSha256": "5bb3172b5c7a974052de5a98b2abaa9ac34d723af488c6128f6eebbf5114a5d2",
       "lines": [
       25, 30, 34, 36, 37, 41, 44, 45, 47, 49, 57, 60, 61, 62, 63, 65,
       67, 75, 79, 80, 82, 83, 84, 88, 89, 90, 91, 92, 94, 96, 104, 108,
@@ -4178,8 +4178,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/FileSystemFault.cs": {
-      "sourceSha256": "197ae8720f4b67bdc60cdf320bc46cbba34232239a64a06748bd9513adafa401",
+    "HVO.SkyMonitor.LocalFiles/FileSystemFault.cs": {
+      "sourceSha256": "43ff470bbab7a71a216d93a389e54d86fe9a0c718da4bd0bbf4d8dae17b77615",
       "lines": [
       44, 46, 49, 51, 52, 53, 54, 57, 59, 60, 61, 62, 65, 67, 68, 69,
       70, 72, 74, 77, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 98,
@@ -4196,8 +4196,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/HardLinkPublisher.cs": {
-      "sourceSha256": "9cf86578ef0536fab7e2d9fe81dbcf858d175eccd356835b763b9faa47b5254b",
+    "HVO.SkyMonitor.LocalFiles/HardLinkPublisher.cs": {
+      "sourceSha256": "4a862f9111053d8976222539dacf98cbce032d84d37f37276eee50d8bd72a0ca",
       "lines": [
       25, 37, 38, 40, 42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54,
       55, 57, 58, 60, 62, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76, 78,
@@ -4334,8 +4334,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/LinuxOpenFlags.cs": {
-      "sourceSha256": "42b24833e5e0fcb2d2845daa623362bfe2188a6d03a596edc3b956fcc40cd63c",
+    "HVO.SkyMonitor.LocalFiles/LinuxOpenFlags.cs": {
+      "sourceSha256": "5114ad552f6c083a36f71f517ee20fbdec31d03f057c6c18cf48896231e3694d",
       "lines": [
       33, 36, 40, 41, 42, 43, 44, 45, 49, 50, 51, 52, 53, 54
     ],
@@ -4350,8 +4350,8 @@
         }
       }
     },
-    "HVO.SkyMonitor.Storage.FileSystem/PhysicalRoot.cs": {
-      "sourceSha256": "a571050981a3f0afee25bbadb982c17e91ab8e99b0006c81b5d88c65370992d9",
+    "HVO.SkyMonitor.LocalFiles/PhysicalRoot.cs": {
+      "sourceSha256": "977e0e986e99944bdbb9a7606fb309c1c1b14f8b40cafbc6638b1bee6f801263",
       "lines": [
       18, 19, 21, 23, 24, 27, 36, 37, 38, 39, 40, 49, 50, 52, 54, 55,
       56, 58, 60, 62, 64, 76, 77, 79, 81, 82, 84, 86, 87, 97, 98, 100,

@@ -61,11 +61,8 @@ public sealed partial class ProcessingGraphOperationsTests
         if (retentionOwner)
         {
             var storage = new CaptureProcessingStepConfig("Storage", "archive",
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                {
-                    StorageRoot = Path.Combine(root, "archive"),
-                    UpdateLatestFrame = false
-                }),
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }),
                 DependsOn: ["projected-scene"]);
             baseline = baseline with { Pipeline = baseline.Pipeline with { Steps = [.. baseline.Pipeline.Steps, storage] } };
         }
@@ -105,7 +102,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Guid captureId;
             Guid rawId;
             string stageKey;
-            var outputs = new Dictionary<string, (string Identity, string Path, string Sha256)>(StringComparer.Ordinal);
+            var outputs = new Dictionary<string, (string Identity, Guid ArtifactId, string Sha256)>(StringComparer.Ordinal);
             var predictionId = AstrometryPredictionCaptureProcessingStep.Alias;
             using (var provider = CreateProvider(root, overrides, configureServices: services =>
             {
@@ -157,7 +154,6 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsNull(await provider.GetRequiredService<IProjectedSceneStagingReader>()
                     .ReadAsync(stageKey, token).ConfigureAwait(false));
 
-                var guard = new ProjectedSceneRetentionGuard(root, store);
                 var expectedOutputs = new List<(string Node, string Recipe, ProjectedSceneKind Kind)>
                 {
                     ("projected-scene", BuiltInProcessingRecipes.ProjectedScene, ProjectedSceneKind.VirtualRenderAuthoritative)
@@ -169,8 +165,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     Assert.IsNotNull(state);
                     Assert.HasCount(1, state.Outputs, $"{node}: {state.Status} {state.Reason}");
                     var output = state.Outputs.Single();
-                    var payloadPath = Path.Combine(root, output.PayloadRelativePath);
-                    var product = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false));
+                    var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false);
+                    var product = ProjectedSceneJson.Parse(bytes);
                     Assert.IsTrue(product.IsValid, product.ErrorPath);
                     var scene = product.Scene!;
                     Assert.AreEqual(expectedRecipe, output.Artifact.Recipe.Name);
@@ -199,11 +195,7 @@ public sealed partial class ProcessingGraphOperationsTests
                         Assert.IsTrue(scene.Objects.Any(static value => value.Id == "solar-system:Moon"));
                         Assert.IsTrue(scene.Segments.Any(static value => value.ConstellationId == "CAS"));
                     }
-                    Assert.AreEqual(node != predictionId, await guard.HasRetainedConsumerAsync(new DurableProcessingEvidence(
-                        output.OutputIdentitySha256, output.Artifact.ArtifactId, captureId, FrameArtifactRole.Metadata,
-                        output.PayloadRelativePath, output.SidecarRelativePath, output.EvidenceJson, 0, "Available", null), token)
-                        .ConfigureAwait(false));
-                    outputs.Add(node, (output.OutputIdentitySha256, payloadPath, Sha256OfFile(payloadPath)));
+                    outputs.Add(node, (output.OutputIdentitySha256, output.ArtifactId, PayloadChecksum.ComputeSha256(bytes)));
                 }
 
 
@@ -225,7 +217,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     var replayNode = completed.Nodes.Single(value => value.NodeId == node);
                     Assert.AreEqual(evidence.Identity, replayNode.Outputs.Single().OutputIdentitySha256);
-                    Assert.AreEqual(evidence.Sha256, Sha256OfFile(evidence.Path));
+                    Assert.AreEqual(evidence.Sha256, await ReadArtifactShaAsync(restarted, evidence.ArtifactId).ConfigureAwait(false));
                     Assert.IsEmpty(ReadOutputPins(root, replay.Execution.ExecutionId, node));
                 }
                 Assert.IsNull(await restarted.GetRequiredService<IProjectedSceneStagingReader>()

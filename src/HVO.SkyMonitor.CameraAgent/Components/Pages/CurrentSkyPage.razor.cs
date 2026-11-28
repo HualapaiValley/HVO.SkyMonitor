@@ -1226,19 +1226,17 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     private string StorageStatusLabel => IsArchived ? "Retained evidence" : _operations switch
     {
-        { ProductReconciliation.Succeeded: false } => "Recovery failed",
-        { RawReconciliation: { } raw } when raw.MissingEvidence > 0 || raw.IndexProjectionFailures > 0 => "Evidence missing",
+        { RawReconciliation.MissingEvidence: > 0 } => "Evidence missing",
         { RawReconciliation.Quarantined: > 0 } => "Review required",
-        { ProductReconciliation: { } products } when products.Missing > 0 || products.Quarantined > 0 => "Review required",
-        { RawReconciliation: not null, ProductReconciliation: not null } => "Recovery verified",
-        _ => "Not verified yet"
+        { RawReconciliation: not null } => "Raw admission checked",
+        _ => "Awaiting recovery check"
     };
 
     private string StorageStatusReason => IsArchived
         ? "Available retained artifacts are identified below; current free space is not a capture fact."
-        : _operations is { RawReconciliation: { } raw, ProductReconciliation: { } products }
-            ? $"Last recovery checks: raw {SiteTime.Format(raw.CompletedUtc)}; derived {SiteTime.Format(products.CompletedUtc)}. This is recovery evidence, not a free-space measurement."
-            : "A complete local recovery check is not available. Open Storage for its recorded results.";
+        : _operations is { RawReconciliation: { } raw }
+            ? $"Last raw admission check at {SiteTime.Format(raw.CompletedUtc)}. Open Storage for the results."
+            : "Open Storage for the status of raw admission recovery.";
 
     private string StageFactLabel => ShowLayeredHero && _layerInteractive
         ? "Processed base + selected overlays"

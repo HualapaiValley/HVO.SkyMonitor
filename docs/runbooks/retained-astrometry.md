@@ -217,17 +217,19 @@ normalizes capture timestamps to Unix milliseconds (the same boundary as
 `RawCaptureDescriptorFactory`) and writes raw payload/sidecar plus journal paths
 from `RawIngressFileStore.GetPaths`. A real raw-ingress reconciliation must
 inspect the committed capture with zero quarantined or missing evidence.
-`raw.bin`/`raw.json` at the root are fixture aliases; canonical timestamped
-`frames/.../Raw/...` paths are authoritative. `viewer-fixture.json` records
-`HostCompatible`, canonical raw path, descriptor identity, source/base hashes and
-manifest identity for each of `accepted`, `rejected`, `unavailable`, `budget` and
-`no-data`.
+`raw.bin` and `raw.json` are fixture aliases. Capture admission uses the
+`.silo/raw-admissions` paths, and published evidence uses exact Silo object
+versions. The generator writes those versions and their metadata to the
+test-only `silo-fixture-versions.json`. `viewer-fixture.json` records the Silo
+instance, `HostCompatible`, admission path, descriptor identity, source and base
+hashes, and manifest identity for `accepted`, `rejected`, `unavailable`, `budget`,
+`no-data` and `stack`.
 
 Older root-level durability fixtures are valid solver/read fixtures, **not directly
 host-ready trees**. Their hand-built timing may contain sub-millisecond values
 that a journal reload truncates. Merely copying them, or rewriting journal paths
 and the raw envelope hash, does not make startup recovery compatible. Regenerate
-all five viewer trees into fresh registered scratch with the current generator;
+all six viewer trees into fresh registered scratch with the current generator;
 never repair an already fitted descriptor, assessment or solution in place. The
 default helper mode remains unchanged for existing durability/resource tests.
 These virtual fixtures establish software behavior, not physical accuracy or
@@ -236,12 +238,13 @@ full-resolution qualification.
 ### Browser and read-resource acceptance
 
 `RetainedAstrometryBrowserAcceptanceTests.RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync`
-is a five-case **Manual** Playwright acceptance test. It starts the existing real
+is a six-case **Manual** Playwright acceptance test. It starts the existing real
 loopback Kestrel fixture. `Infrastructure/RetainedAstrometryBrowserFixture.cs`
 copies a completed canonical tree into a fresh host root without modifying any
 raw envelope, descriptor, journal path, pixels, artifact, assessment or solution.
-Only test-host autonomous capture/distribution, retention, processing replay and
-derived/staged reconciliation workers are paused. Native raw-ingress startup
+The test loads the exported versions into the fixture's versioned Silo store
+under the original binding. Autonomous capture, distribution, retention, replay
+and projected-scene stage reconciliation are paused. Native raw-ingress startup
 recovery remains enabled. Owner Identity, authorization,
 gallery selection, artifact authentication, retained reconstruction, typed
 composition, Razor and browser JavaScript remain the production paths. The
@@ -249,9 +252,9 @@ original fixture trees are never mounted for writes. No production fixture
 switch or substitute operator service is used.
 
 Finish the fixture producer above **before acquiring the browser gate's heavy
-lock**. All five `viewer-fixture.json` files must parse and name their scenario,
-capture UUID, `HostCompatible=true`, canonical raw path, source/base/manifest
-hashes and existing raw payloads. Do not wait for
+lock**. All six `viewer-fixture.json` files must parse and name their scenario,
+capture UUID, `HostCompatible=true`, Silo instance, admission path, source/base/manifest
+hashes and existing raw payloads. Each tree needs its exact Silo version export. Do not wait for
 the producer while holding that lock. Install the pinned browser with the
 [documented acceptance workflow](../validation/cameraagent-ui-106.md) and
 `scripts/test:cameraagent-ui --install-browser` if needed.

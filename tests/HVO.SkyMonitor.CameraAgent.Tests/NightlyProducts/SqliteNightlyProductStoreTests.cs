@@ -22,12 +22,14 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
 
     private string _root = null!;
     private SqliteNightlyProductStore _store = null!;
+    private NightlySiloFixture _silo = null!;
 
     [TestInitialize]
     public void Initialize()
     {
         _root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-nightly-store");
-        _store = new SqliteNightlyProductStore(
+        _silo = new NightlySiloFixture(_root);
+        _store = _silo.OpenStore(
             NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options()),
             new NightlyClock(new DateTimeOffset(2026, 10, 2, 19, 10, 0, TimeSpan.Zero)));
     }
@@ -35,11 +37,12 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
     public void Dispose()
     {
         _store.Dispose();
+        _silo.Dispose();
         Directory.Delete(_root, recursive: true);
     }
 
     [TestMethod]
-    public async Task Publish_WritesFilesAndExactLineage_AndReadsBackVerified()
+    public async Task Publish_SettlesSiloMembersAndExactLineage_AndReadsBackVerified()
     {
         var (product, lineage) = await StarTrail(1, 2, 3);
 
@@ -51,11 +54,6 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
         Assert.AreEqual(lineage[0].ObservationStartedUtc, detail.Summary.FirstObservationUtc);
         Assert.AreEqual(lineage[^1].ObservationStartedUtc, detail.Summary.LastObservationUtc);
         CollectionAssert.AreEqual(lineage.ToArray(), detail.Sources.ToArray());
-        var stem = detail.Summary.ProductId.ToString("N");
-        var files = Directory.GetFiles(Path.Combine(_root, SqliteNightlyProductStore.ProductDirectoryName), stem + "*",
-            SearchOption.AllDirectories).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
-        CollectionAssert.AreEqual(new[] { stem + ".bin", stem + ".jpg", stem + ".provenance.json" }, files);
-
         var stored = await _store.ReadStoredProductAsync(detail.Summary.ProductId, CancellationToken.None);
         CollectionAssert.AreEqual(product.Payload.ToArray(), stored.Payload.ToArray());
         Assert.AreEqual(product.Compatibility, stored.Compatibility);
@@ -63,8 +61,9 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
         Assert.AreEqual(SqliteNightlyProductStore.RenditionMediaType, rendition!.MediaType);
         Assert.AreEqual(0xFF, rendition.Content.Span[0]);
         Assert.AreEqual(0xD8, rendition.Content.Span[1]);
-        using var provenance = JsonDocument.Parse(await File.ReadAllBytesAsync(Directory.GetFiles(
-            _root, stem + ".provenance.json", SearchOption.AllDirectories)[0]));
+        var provenanceMember = await _store.OpenProvenanceAsync(detail.Summary.ProductId, CancellationToken.None);
+        Assert.IsNotNull(provenanceMember);
+        using var provenance = JsonDocument.Parse(provenanceMember.Content);
         Assert.AreEqual(product.OutputIdentitySha256, provenance.RootElement.GetProperty("outputIdentitySha256").GetString());
         Assert.AreEqual(3, provenance.RootElement.GetProperty("sources").GetArrayLength());
     }
@@ -145,14 +144,8 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
     {
         var (product, lineage) = await StarTrail(1, 2);
         var detail = await _store.PublishAsync(Publication(product, lineage), CancellationToken.None);
-        var stem = detail.Summary.ProductId.ToString("N");
-        var payload = Directory.GetFiles(_root, stem + ".bin", SearchOption.AllDirectories)[0];
-        var rendition = Directory.GetFiles(_root, stem + ".jpg", SearchOption.AllDirectories)[0];
-
-        var bytes = await File.ReadAllBytesAsync(payload);
-        bytes[^1] ^= 0x01;
-        await File.WriteAllBytesAsync(payload, bytes);
-        await File.AppendAllTextAsync(rendition, "x");
+        await _silo.DamageAsync(detail.Summary.ProductId, detail.OutputIdentitySha256);
+        await _silo.DamageAsync(detail.Summary.ProductId, "rendition-1");
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await _store.ReadStoredProductAsync(detail.Summary.ProductId, CancellationToken.None));

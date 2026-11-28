@@ -70,10 +70,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     var output = detail.Nodes.Single().Outputs.Single();
                     var target = await store.ReadOutputByArtifactIdAsync(output.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                     Assert.IsNotNull(target);
-                    var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                        target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                    await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                    await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+                    await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId,
+                        target.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
                 }
             }
             SqliteConnection.ClearAllPools();
@@ -173,10 +171,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(reference.PayloadSha256, auxiliary.GetProperty("payloadSha256").GetString());
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var target = (await store.ReadOutputByArtifactIdAsync(reference.ArtifactId, CancellationToken.None).ConfigureAwait(false))!;
-            var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-            await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-            await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId,
+                target.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, currentId, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
         }
         finally { Directory.Delete(root, recursive: true); }

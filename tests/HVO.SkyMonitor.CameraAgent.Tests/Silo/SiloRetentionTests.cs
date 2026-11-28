@@ -312,7 +312,7 @@ public sealed partial class SiloRetentionTests
             var running = await video.ClaimAsync(token).ConfigureAwait(false);
             Assert.IsNotNull(running);
             await video.FreezePlanAsync(running.JobId,
-                new([new(descriptor, "raw/frame.bin", "raw/frame.json")], new Dictionary<string, int>()), token).ConfigureAwait(false);
+                new([new(descriptor)], new Dictionary<string, int>()), token).ConfigureAwait(false);
             Assert.AreEqual("no-eligible-versions",
                 await retention.SweepAsync(true, video.ReadSiloTimeLapseHoldsAsync, null, token).ConfigureAwait(false));
         }

@@ -27,43 +27,25 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// </summary>
 internal sealed class CameraAgentStateStoreHarness : IDisposable
 {
-    private static readonly (string Container, string Directory)[] Mounts =
-        [("/app/App_Data", "identity"), ("/app/data/raw", "raw"), ("/app/data/archive", "archive")];
-
-    private CameraAgentStateStoreHarness(string root, IReadOnlyList<string> storageRoots)
+    private CameraAgentStateStoreHarness(string root)
     {
         Root = root;
         StateRoot = Path.Combine(root, "state");
-        StorageRoots = storageRoots;
     }
 
     public string Root { get; }
 
-    /// <summary>The instance state root, holding the <c>identity</c>, <c>raw</c> and <c>archive</c> bind sources.</summary>
     public string StateRoot { get; }
-
-    /// <summary>The configured FileStorage roots, as container paths.</summary>
-    public IReadOnlyList<string> StorageRoots { get; }
 
     public string RawRoot => Path.Combine(StateRoot, "raw");
 
-    /// <summary>A state tree whose FileStorage steps write to <paramref name="storageRoots"/>, given as container paths.</summary>
-    public static CameraAgentStateStoreHarness Create(IReadOnlyList<string> storageRoots)
+    public static CameraAgentStateStoreHarness Create()
     {
         var harness = new CameraAgentStateStoreHarness(
-            Path.Combine(Path.GetTempPath(), $"hvo-store-harness-{Guid.NewGuid():N}"), storageRoots);
-        foreach (var directory in Mounts.Select(mount => Path.Combine(harness.StateRoot, mount.Directory)))
-        {
-            Directory.CreateDirectory(directory);
-        }
+            Path.Combine(Path.GetTempPath(), $"hvo-store-harness-{Guid.NewGuid():N}"));
+        Directory.CreateDirectory(harness.RawRoot);
+        Directory.CreateDirectory(Path.Combine(harness.StateRoot, "identity"));
         return harness;
-    }
-
-    /// <summary>The host directory a container storage root maps to.</summary>
-    public string HostPath(string containerRoot)
-    {
-        var (container, directory) = Mounts.Single(mount => containerRoot == mount.Container || containerRoot.StartsWith(mount.Container + "/", StringComparison.Ordinal));
-        return Path.Combine(StateRoot, directory, containerRoot[container.Length..].TrimStart('/'));
     }
 
     /// <summary>Initializes every store; over existing stores this is what an upgraded instance does on startup.</summary>
@@ -73,7 +55,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         services.AddLogging();
         // The host registers Data Protection for the deployment location; the stores only need it to exist.
         services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(new PassThroughProtector());
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = RawRoot
         }).Build());

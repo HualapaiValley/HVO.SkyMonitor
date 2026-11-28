@@ -377,13 +377,13 @@ public sealed class SqliteCalibrationFamilyStoreTests
             var masters = await CreateLibraryMastersAsync(root, options).ConfigureAwait(false);
             // Today every bundle holds its own artifacts. Clear that, so only the family hold can keep the masters.
             ExecuteDatabase(Path.Combine(root, "journal", "raw-ingress.db"), "UPDATE calibration_library_bundles SET retention_hold = 0;");
-            using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
+            using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
             using var processingStore = new SqliteCaptureProcessingStore(options);
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var processingTelemetry = new CaptureProcessingTelemetry();
-            using var frameStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var persistence = new CaptureProcessingPersistence(
-                options, processingStore, frameStorage, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance,
+                silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
             using var families = new SqliteCalibrationFamilyStore(options, TimeProvider.System, NullLogger<SqliteCalibrationFamilyStore>.Instance);
             var holds = new CompositeProcessingRetentionHolds(
                 persistence, new CameraAgentClearReferenceLoader(options), library, calibrationFamilies: families);
@@ -391,7 +391,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
             var family = await families.StoreAsync(
                 Family("family-a", Member(10) with { Masters = [.. masters.Select(static master => new CalibrationFamilyMasterV1(master.Kind, master.ArtifactId, master.PayloadSha256))] }),
                 CancellationToken.None).ConfigureAwait(false);
-            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId, master.PayloadPath, master.ManifestPath)).ToArray();
+            var expected = masters.Select(static master => new ProcessingRetentionHold(master.ArtifactId)).ToArray();
 
             Assert.IsFalse((await HeldAsync(holds, root).ConfigureAwait(false)).Intersect(expected).Any(), "a stored family that is not active holds nothing");
 
@@ -418,9 +418,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
         var root = silo.RootPath;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 });
         var master = (await CreateLibraryMastersAsync(root, options).ConfigureAwait(false))[0];
-        var (settings, installed) = await Distribution.SiloRawEvidenceRecoveryTests.CreateRecoverySiloAsync().ConfigureAwait(false);
-        using var storage = new SiloInstalledStorage(settings, options, silo.Clock, null, null, installed, null);
-        var artifacts = new SiloArtifactStorage(storage, silo.Clock);
+        var artifacts = CalibrationSiloFixture.Storage(root);
         using var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, silo.Clock) { Silo = artifacts };
         var loader = new CameraAgentClearReferenceLoader(options, artifacts, library);
         var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
@@ -597,9 +595,9 @@ public sealed class SqliteCalibrationFamilyStoreTests
                     "synthetic-calibration-model", model.SchemaVersion, SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var synthetic = await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var synthetic = await new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options))
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
-        using (var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System))
+        using (var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) })
         {
             _ = await library.AdoptPublishedBundleAsync(synthetic.LibraryBundle, CancellationToken.None).ConfigureAwait(false);
         }

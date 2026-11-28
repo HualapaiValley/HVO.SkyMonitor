@@ -274,6 +274,23 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException("An AgentId or a local device identity is required.");
         }
 
+        foreach (var step in config.Pipeline.Steps)
+        {
+            if (!string.Equals(step.Type, "Storage", StringComparison.OrdinalIgnoreCase) ||
+                step.Options is not { ValueKind: JsonValueKind.Object } storage)
+                continue;
+
+            foreach (var option in storage.EnumerateObject())
+            {
+                var key = option.Name.ToUpperInvariant();
+                if (key is "STORAGEROOT" or "RETENTIONDAYS" or "QUEUEFORUPLOAD" or "POLICIES")
+                    throw new InvalidOperationException($"Storage option '{option.Name}' is a retired filesystem setting. Configure capture publication for Silo and set retention through the Silo policy.");
+                if (key is not ("UPDATELATESTFRAME" or "PUBLISHARCHIVE") ||
+                    option.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new InvalidOperationException("Storage accepts only the Silo publication options updateLatestFrame and publishArchive, both boolean.");
+            }
+        }
+
         var locationValidation = config.DeploymentLocation?.Validate()
             ?? CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidLocation, "location");
         if (!locationValidation.IsValid)

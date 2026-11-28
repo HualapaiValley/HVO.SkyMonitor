@@ -222,8 +222,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                     {
                         var output = await store.ReadOutputByArtifactIdAsync(product.ArtifactId, token).ConfigureAwait(false);
                         Assert.IsNotNull(output);
-                        var payload = new FileInfo(Path.Combine(root, output.PayloadRelativePath)).Length;
-                        sidecarBytes += new FileInfo(Path.Combine(root, output.SidecarRelativePath)).Length;
+                        var payload = (await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, output.ArtifactId, token)
+                            .ConfigureAwait(false)).LongLength;
+                        sidecarBytes += output.EvidenceJson.LongLength;
                         if (product == linear.Product) linearBytes += payload;
                         else measurementBytes += payload;
                     }

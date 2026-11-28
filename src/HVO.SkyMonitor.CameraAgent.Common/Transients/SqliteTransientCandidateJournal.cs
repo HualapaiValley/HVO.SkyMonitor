@@ -122,13 +122,13 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
     private readonly int _candidateTimeoutMinutes;
     private readonly TimeProvider _timeProvider;
     private readonly ITransientCandidateFaultInjector _faultInjector;
-    private readonly SiloArtifactStorage? _silo;
+    private readonly SiloArtifactStorage _silo;
 
     public SqliteTransientCandidateJournal(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
-        ITransientCandidateFaultInjector? faultInjector = null,
-        SiloArtifactStorage? silo = null)
+        SiloArtifactStorage silo,
+        ITransientCandidateFaultInjector? faultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -142,7 +142,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         _candidateTimeoutMinutes = configured.TransientDetection.CandidateTimeoutMinutes;
         _timeProvider = timeProvider;
         _faultInjector = faultInjector ?? NullTransientCandidateFaultInjector.Instance;
-        _silo = silo;
+        _silo = silo ?? throw new ArgumentNullException(nameof(silo));
     }
 
     public async ValueTask StageCaptureAsync(
@@ -1098,8 +1098,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             {
                 throw new InvalidDataException("Transient source manifest is invalid or altered.");
             }
-            await VerifySourcePairAsync(manifest.Descriptor, snapshot.ManifestJson, snapshot.PayloadRelativePath,
-                snapshot.SidecarRelativePath, snapshot.PayloadLength, cancellationToken).ConfigureAwait(false);
+            await VerifySourcePairAsync(manifest.Descriptor, snapshot.ManifestJson, snapshot.PayloadLength, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(snapshot.AgentId, reservation.AgentId, StringComparison.Ordinal))
             {
                 throw new TransientCandidateIdentityConflictException(
@@ -1552,7 +1551,6 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         string payloadSha256;
         string manifestSha256;
         string payloadRelativePath;
-        string sidecarRelativePath;
         byte[] manifestJson;
         string state;
         using (var command = connection.CreateCommand())
@@ -1560,8 +1558,7 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             command.Transaction = transaction;
             command.CommandText = """
                 SELECT raw_capture_row_id, payload_length, agent_id, payload_sha256,
-                       manifest_sha256, payload_relative_path, sidecar_relative_path,
-                       manifest_json, state
+                       manifest_sha256, payload_relative_path, manifest_json, state
                 FROM raw_captures WHERE raw_artifact_id = $artifact;
                 """;
             command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
@@ -1576,9 +1573,8 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             payloadSha256 = reader.GetString(3);
             manifestSha256 = reader.GetString(4);
             payloadRelativePath = reader.GetString(5);
-            sidecarRelativePath = reader.GetString(6);
-            manifestJson = (byte[])reader[7];
-            state = reader.GetString(8);
+            manifestJson = (byte[])reader[6];
+            state = reader.GetString(7);
         }
         if (!string.Equals(state, "committed", StringComparison.Ordinal) ||
             !string.Equals(payloadSha256, expectedPayloadSha256, StringComparison.OrdinalIgnoreCase) ||
@@ -1599,35 +1595,16 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         {
             throw new InvalidDataException("Transient source manifest is invalid or altered.");
         }
-        await VerifySourcePairAsync(manifest.Descriptor, manifestJson, payloadRelativePath,
-            sidecarRelativePath, payloadLength, cancellationToken).ConfigureAwait(false);
+        await VerifySourcePairAsync(manifest.Descriptor, manifestJson, payloadLength, cancellationToken).ConfigureAwait(false);
         return new SourceRow(rawRowId, payloadLength, agentId, manifest);
     }
 
-    private async ValueTask VerifySourcePairAsync(ReconstructionDescriptor descriptor, byte[] manifestJson,
-        string payloadRelativePath, string sidecarRelativePath, long payloadLength, CancellationToken cancellationToken)
+    private ValueTask VerifySourcePairAsync(ReconstructionDescriptor descriptor, byte[] manifestJson,
+        long payloadLength, CancellationToken cancellationToken)
     {
         if (descriptor.Layout.ByteLength != payloadLength)
             throw new InvalidDataException("Transient source payload length differs from committed evidence.");
-        if (_silo is not null &&
-            await _silo.VerifyRawPairIfPublishedAsync(descriptor, manifestJson, cancellationToken).ConfigureAwait(false)) return;
-
-        var payloadPath = Resolve(payloadRelativePath);
-        var sidecarPath = Resolve(sidecarRelativePath);
-        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
-            throw new FileNotFoundException("Transient source evidence is no longer physically retained.");
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
-        using (var stream = new FileStream(payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            if (stream.Length != payloadLength || Convert.ToHexString(
-                await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)) != descriptor.Artifact.ChecksumSha256)
-                throw new InvalidDataException("Transient source payload differs from committed evidence.");
-        }
-        var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-        if (!sidecar.AsSpan().SequenceEqual(manifestJson))
-            throw new InvalidDataException("Transient source sidecar differs from committed manifest evidence.");
+        return _silo.VerifyLiveRawPairAsync(descriptor, manifestJson, cancellationToken);
     }
 
     private async Task EnsureCapacityAsync(
@@ -2400,19 +2377,6 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
         return connection;
-    }
-
-    private string Resolve(string relativePath)
-    {
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(
-                prefix,
-                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Transient evidence path escapes the configured raw ingress root.");
-        }
-        return path;
     }
 
     private static SqliteTransaction BeginImmediate(SqliteConnection connection)

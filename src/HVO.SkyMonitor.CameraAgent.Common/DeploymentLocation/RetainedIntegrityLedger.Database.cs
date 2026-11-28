@@ -236,7 +236,7 @@ internal sealed partial class RetainedIntegrityLedger
         try
         {
             using var command = _database.CreateCommand();
-            command.CommandText = "SELECT key,digest,kind,generation,auth FROM entries WHERE key >= $prefix AND key < $end LIMIT $limit;";
+            command.CommandText = "SELECT key,digest,kind,generation,auth FROM entries WHERE kind<>0 AND key >= $prefix AND key < $end LIMIT $limit;";
             command.Parameters.AddWithValue("$prefix", prefix);
             command.Parameters.AddWithValue("$end", PrefixEnd(prefix));
             command.Parameters.AddWithValue("$limit", limit + 1);

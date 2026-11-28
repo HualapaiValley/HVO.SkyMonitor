@@ -29,7 +29,6 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
         {
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
             await journal.InitializeAsync(token).ConfigureAwait(false);
-            using var files = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var telemetry = new CaptureProcessingTelemetry();
             CenteredView initial;
             ExposureProductLookup plateTrail;
@@ -42,8 +41,8 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
             using (var store = new SqliteCaptureProcessingStore(options))
             {
                 await store.InitializeAsync(token).ConfigureAwait(false);
-                var persistence = new CaptureProcessingPersistence(options, store, files, telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
+                var persistence = new CaptureProcessingPersistence(options, store, telemetry,
+                    NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(root));
                 var plate = await RetainPlateAsync(acquired[0], store, persistence, token).ConfigureAwait(false);
                 var center = await RetainPlateAsync(reference, store, persistence, token).ConfigureAwait(false);
                 var other = mixedPresentation
@@ -102,8 +101,8 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
             }
 
             using var reopenedStore = new SqliteCaptureProcessingStore(options);
-            var reopenedPersistence = new CaptureProcessingPersistence(options, reopenedStore, files, telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+            var reopenedPersistence = new CaptureProcessingPersistence(options, reopenedStore, telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(root));
             var reopenedViews = new SqliteCenteredViews(reopenedStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
             var input = new PlatePublicationInputs(acquired, reopenedPersistence);
             var layers = new CenteredViewLayerProducer(reopenedViews, reopenedPersistence, registration: input);
@@ -114,7 +113,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
                 new("right-trail", 401, true), acquired[2].Pin.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
             Assert.IsNotNull(current);
             Assert.HasCount(2, current.Revision.Manifest.Layers);
-            using var artifactsReader = new CameraAgentArtifactService(options, reopenedStore, new CameraAgentPreviewEncoder());
+            using var artifactsReader = SiloInfrastructureFixture.OpenArtifactReader(options, reopenedStore);
             var reader = new CenteredViewPresentationReader(reopenedViews, artifactsReader);
             var rendered = await reader.ReadAsync(current.Base.BaseId, current.Revision.RevisionId, token).ConfigureAwait(false);
             Assert.IsNotNull(rendered.Presentation, rendered.Status.ToString());

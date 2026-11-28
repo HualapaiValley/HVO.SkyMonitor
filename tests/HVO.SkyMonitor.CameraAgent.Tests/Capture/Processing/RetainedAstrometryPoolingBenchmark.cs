@@ -40,10 +40,9 @@ public sealed partial class DurableCaptureProcessingTests
             var journal = new SqliteRawCaptureJournal(database, 1);
             var seedOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
             using var telemetry = new CaptureProcessingTelemetry();
-            using var writer = new SqliteCaptureProcessingStore(seedOptions);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var writer = SiloInfrastructureFixture.OpenProcessingStore(seedOptions);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(seedOptions, writer, storage, telemetry);
+            var persistence = CreatePersistence(seedOptions, writer, telemetry);
             var accepted = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 reference: reference, benchmarkJournal: journal).ConfigureAwait(false);
             var output = await ProduceLatestReadFixtureAsync(accepted, writer, persistence, telemetry, gate).ConfigureAwait(false);
@@ -91,8 +90,8 @@ public sealed partial class DurableCaptureProcessingTests
         };
         var expected = JsonSerializer.Deserialize<PoolingBenchmarkIdentity>(await File.ReadAllTextAsync(expectedFile).ConfigureAwait(false))!;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
-        using var store = new SqliteCaptureProcessingStore(options);
-        using var artifacts = new CameraAgentArtifactService(options, store, new CameraAgentPreviewEncoder());
+        using var store = SiloInfrastructureFixture.OpenProcessingStore(options);
+        using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(options, store);
         using var reader = CreateReader();
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         using var process = Process.GetCurrentProcess();

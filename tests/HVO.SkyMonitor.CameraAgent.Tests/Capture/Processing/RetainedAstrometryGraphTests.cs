@@ -25,7 +25,7 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);
@@ -79,7 +79,7 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);
@@ -190,7 +190,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root
             }).Build());
@@ -203,7 +203,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new("ProjectedScene", "scene", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal),
                         Options: JsonSerializer.SerializeToElement(new { constellationIds = (string[])["CAS"], solarSystemBodies = (string[])["Moon"] })),
                     new("Storage", "storage", DependsOn: ["$raw", "scene"], Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, UpdateLatestFrame = false }))
+                        new SiloCaptureProcessingStepOptions { UpdateLatestFrame = false }))
                 ], CapturePipelineSchemaVersions.ExplicitV2)
             };
             var prediction = new CaptureProcessingStepConfig(AstrometryPredictionCaptureProcessingStep.Alias, "prediction",
@@ -274,7 +274,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             { ["CameraAgent:RawIngressRoot"] = root }).Build());
             using var provider = services.BuildServiceProvider();
             var registration = provider.GetServices<CaptureProcessingStepRegistration>()
@@ -291,7 +291,7 @@ public sealed partial class DurableCaptureProcessingTests
                 new("MeasuredAstrometry", "astrometry", DependsOn: ["scene", "measured"], Required: mode == "required", Options: JsonSerializer.SerializeToElement(options),
                     Publication: mode == "memory-only" ? new(CaptureProcessingPersistenceMode.MemoryOnly) : durable),
                 new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, UpdateLatestFrame = false }))
+                    new SiloCaptureProcessingStepOptions { UpdateLatestFrame = false }))
             ], mode == "legacy" ? CapturePipelineSchemaVersions.LegacyV1 : CapturePipelineSchemaVersions.ExplicitV2)
             };
             var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();

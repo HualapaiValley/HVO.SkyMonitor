@@ -54,7 +54,8 @@ public sealed class NightlyProductAutomationTaskRegistryTests
             var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
             var reader = new InMemoryNightlySourceReader();
             reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
-            using var store = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var store = silo.OpenStore(options, clock);
             using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
                 reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
             var registry = new NightlyProductAutomationTaskRegistry(generator, options);
@@ -95,7 +96,8 @@ public sealed class NightlyProductAutomationTaskRegistryTests
             var options = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
             var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
             var reader = new InMemoryNightlySourceReader();
-            using var store = new SqliteNightlyProductStore(options, clock);
+            using var silo = new NightlySiloFixture(options.Value.RawIngressRoot);
+            using var store = silo.OpenStore(options, clock);
             using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
                 reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
             action(new(generator, options), store, reader);

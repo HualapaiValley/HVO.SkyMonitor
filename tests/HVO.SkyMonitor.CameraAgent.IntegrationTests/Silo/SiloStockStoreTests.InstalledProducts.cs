@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -122,12 +121,10 @@ public sealed partial class SiloStockStoreTests
         var restored = await sourceReader.RestoreAsync(retained.Sources.Single(), token).ConfigureAwait(false);
         CollectionAssert.AreEqual(pixels, restored.Payload.ToArray());
 
-        var activeConfig = await services.GetRequiredService<ICameraAgentConfigurationLoader>().LoadAsync(token).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Running, services.GetRequiredService<CaptureAdmissionCoordinator>().Snapshot.State);
-        var retention = services.GetServices<IHostedService>().OfType<RetentionBackgroundService>().Single();
-        await retention.ApplyRetentionAsync(activeConfig, token).ConfigureAwait(false);
-        Assert.AreEqual(new ProcessingRetentionHold(raw.ArtifactId, SiloArtifactStorage.RawReference(raw.ArtifactId, ".bin"),
-            SiloArtifactStorage.RawReference(raw.ArtifactId, ".json")),
+        var retention = services.GetRequiredService<SiloRetentionWorker>();
+        await retention.RunAsync(token).ConfigureAwait(false);
+        Assert.AreEqual(new ProcessingRetentionHold(raw.ArtifactId),
             (await videos.GetRetentionHoldsAsync(root, token).ConfigureAwait(false)).Single());
         CollectionAssert.AreEqual(pixels, (await sourceReader.RestoreAsync(retained.Sources.Single(), token).ConfigureAwait(false)).Payload.ToArray());
 
@@ -214,7 +211,7 @@ public sealed partial class SiloStockStoreTests
         using var document = JsonDocument.Parse(provenance.Content);
         Assert.AreEqual(product.OutputIdentitySha256, document.RootElement.GetProperty("outputIdentitySha256").GetString());
         Assert.AreEqual(lineage.Length, document.RootElement.GetProperty("sources").GetArrayLength());
-        Assert.IsFalse(Directory.Exists(Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName)));
+        Assert.IsFalse(Directory.Exists(Path.Combine(root, "nightly-products")));
     }
 
     private static async Task AssertSiloReplayPinsAsync(IServiceProvider services, Guid captureId, string root, CancellationToken token)
@@ -224,9 +221,12 @@ public sealed partial class SiloStockStoreTests
         Assert.IsTrue(worker.ExecuteTask?.IsCompletedSuccessfully, "Stopping replay must complete its background task cleanly.");
         var store = services.GetRequiredService<SqliteCaptureProcessingStore>();
         var source = await store.ReadReplaySourceAsync(captureId, null, token).ConfigureAwait(false);
-        var rawId = source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId;
-        Assert.IsFalse(File.Exists(source.RawCapture.StoredFrame.AbsolutePath));
-        Assert.AreEqual(source.RawCapture.Manifest.Descriptor.Artifact.ChecksumSha256, source.PayloadSha256);
+        var descriptor = source.RawCapture.Manifest.Descriptor;
+        var rawId = descriptor.Artifact.ArtifactId;
+        var stage = RawIngressFileStore.GetPaths(root, descriptor.Timing.ExposureStartedUtc, rawId);
+        Assert.IsFalse(File.Exists(stage.PayloadAbsolutePath));
+        Assert.IsFalse(File.Exists(stage.SidecarAbsolutePath));
+        Assert.AreEqual(descriptor.Artifact.ChecksumSha256, source.PayloadSha256);
         var current = await store.ReadActiveRevisionAsync(token).ConfigureAwait(false);
         Assert.IsNotNull(current);
         var operations = services.GetRequiredService<ProcessingGraphOperationsCoordinator>();

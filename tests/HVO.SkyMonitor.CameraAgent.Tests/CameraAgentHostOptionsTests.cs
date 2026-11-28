@@ -15,18 +15,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class CameraAgentHostOptionsTests
 {
     [TestMethod]
-    public void DerivedProductLifecycleDefaultsAreBoundedAndValid()
-    {
-        var options = new CameraAgentHostOptions();
-        var lifecycle = options.DerivedProductLifecycle;
-
-        Assert.IsInRange(16, 4096, lifecycle.ReconciliationBatchSize);
-        Assert.IsInRange(1, 365, lifecycle.DiagnosticRetentionDays);
-        Assert.IsInRange(1, 1440, lifecycle.OrphanRecoveryWindowMinutes);
-        Assert.IsTrue(Validator.TryValidateObject(lifecycle, new ValidationContext(lifecycle), [], true));
-    }
-
-    [TestMethod]
     public void SiteDefaults_AreValidAndKeepTheProjectionBoundAndOnlineMap()
     {
         var options = new CameraAgentHostOptions { RawIngressRoot = "raw-ingress" };
@@ -329,7 +317,7 @@ public sealed class CameraAgentHostOptionsTests
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(configuration);
+        services.AddSiloTestInfrastructure(configuration);
         using var provider = services.BuildServiceProvider();
 
         var policy = provider.GetRequiredService<CaptureLanePolicy>();

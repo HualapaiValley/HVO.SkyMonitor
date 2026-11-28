@@ -17,7 +17,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, RawCaptureIngress raw,
     IOptions<CameraAgentHostOptions> options, CaptureMaintenanceGate maintenance, IServiceProvider services,
-    SiloArchiveWorker archive, TimeProvider clock, ILogger<SiloRetentionWorker> logger) : BackgroundService, ICameraAgentSiloRetention
+    SiloArchiveWorker archive, CaptureSatelliteWorkStore satelliteWork, TimeProvider clock, ILogger<SiloRetentionWorker> logger)
+    : BackgroundService, ICameraAgentSiloRetention
 {
     public bool Ready => storage.BindingVerified && raw.SiloAdmissionsReady;
 
@@ -86,7 +87,7 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             {
                 return;
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+            catch (Exception exception) when (exception is IOException or InvalidDataException or System.Text.Json.JsonException or UnauthorizedAccessException or
                 SiloConflictException or SiloDataException or SiloCatalogDivergedException or Microsoft.Data.Sqlite.SqliteException)
             {
                 status = "reconciliation-blocked";
@@ -133,7 +134,12 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
 
     internal ValueTask<string> RunAsync(CancellationToken cancellationToken)
     {
-        storage.DiskBudget.Observe();
+        var headroom = storage.DiskBudget.Observe();
+        var capacity = headroom is { } observed ? new StorageCapacity(observed.TotalBytes, observed.AvailableBytes) : default;
+        var root = options.Value.RawIngressRoot;
+        services.GetRequiredService<StoragePressureState>().Set(new(
+            root, capacity, storage.DiskBudget.AdmissionRelease is not null, EffectiveRetentionDays: 0,
+            clock.GetUtcNow(), headroom is null ? "silo-capacity-unavailable" : null));
         if (!storage.BindingVerified) return ValueTask.FromResult("awaiting-storage");
 
         var controls = services.GetService<CameraAgentControlStore>();
@@ -141,14 +147,42 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             ReadHoldsAsync, archive, cancellationToken,
             cleanExpiredCache: token => storage.CleanExpiredRestoreCacheAsync(maintenance.TryEnterIfInitialized, token),
             canIssue: () => controls?.AdmissionHeld != true,
-            lifecycle: RawIngressLifecycleLock.ForRoot(options.Value.RawIngressRoot),
-            enterMaintenance: maintenance.TryEnterIfInitialized);
+            lifecycle: RawIngressLifecycleLock.ForRoot(root),
+            enterMaintenance: maintenance.TryEnterIfInitialized,
+            reclaimAuxiliary: token => ReclaimSatelliteWorkAsync(root, controls, token));
+    }
+
+    private async ValueTask ReclaimSatelliteWorkAsync(string root, CameraAgentControlStore? controls, CancellationToken cancellationToken)
+    {
+        var rawLifecycle = RawIngressLifecycleLock.ForRoot(root);
+        await rawLifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Preparation holds the storage lock through intent publication. Acquire it under raw ingress.
+            var storageLifecycle = StorageLifecycleLock.ForRoot(root);
+            await storageLifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!Ready || controls?.AdmissionHeld == true) return;
+                using var lease = maintenance.TryEnterIfInitialized();
+                if (lease is not null)
+                    await satelliteWork.ReconcileAsync(root, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                storageLifecycle.Release();
+            }
+        }
+        finally
+        {
+            rawLifecycle.Release();
+        }
     }
 
     private async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadHoldsAsync(CancellationToken cancellationToken)
     {
         var root = options.Value.RawIngressRoot;
-        var rawHolds = await raw.GetRetentionHoldsUnderLifecycleLockAsync(root, cancellationToken).ConfigureAwait(false);
+        var rawHolds = await raw.GetRetentionHoldsUnderLifecycleLockAsync(cancellationToken).ConfigureAwait(false);
         var processing = (IRawIngressLifecycleProcessingRetentionHolds)services.GetRequiredService<IProcessingRetentionHolds>();
         var processingHolds = await processing.GetRetentionHoldsUnderLifecycleLockAsync(root, cancellationToken).ConfigureAwait(false);
         var masterIds = await services.GetRequiredService<SqliteCalibrationFamilyStore>().GetActiveMasterArtifactIdsAsync(cancellationToken)
@@ -162,9 +196,8 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
         var sceneHolds = await storage.Index.ReadSceneRetentionHoldsAsync(sceneLineage, authority.UnknownInterval, cancellationToken)
             .ConfigureAwait(false);
         var nightlyHolds = await ReadNightlyHoldsAsync(cancellationToken).ConfigureAwait(false);
-        var satelliteHolds = await services.GetRequiredService<CaptureSatelliteWorkStore>().ReadSiloArchiveHoldsAsync(cancellationToken)
-            .ConfigureAwait(false);
-        return rawHolds.Select(static hold => new SiloRetentionHold(SiloHoldKind.ProcessingInput, hold.ArtifactId.ToString("D")))
+        var satelliteHolds = await satelliteWork.ReadSiloArchiveHoldsAsync(cancellationToken).ConfigureAwait(false);
+        return rawHolds.Select(static id => new SiloRetentionHold(SiloHoldKind.ProcessingInput, id.ToString("D")))
             .Concat(processingHolds.Select(static hold => new SiloRetentionHold(SiloHoldKind.ProcessingInput, hold.ArtifactId.ToString("D"))))
             .Concat(masterIds.Select(static id => new SiloRetentionHold(SiloHoldKind.CalibrationMaster, id.ToString("D"))))
             .Concat(videoHolds)

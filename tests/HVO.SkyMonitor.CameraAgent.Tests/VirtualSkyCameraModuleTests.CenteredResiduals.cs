@@ -120,6 +120,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(ExposureProductAvailability.Available, output.Availability, output.Reason);
                 Assert.IsNotNull(output.Product);
                 fitPin = new(output.Product.ArtifactId, output.Product.OutputIdentitySha256, output.Product.PayloadSha256);
+                await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var fit = await provider.GetRequiredService<ICameraAgentRetainedAstrometryService>().GetExactAsync(captureId, fitPin, token)
                     .ConfigureAwait(false);
                 Assert.AreEqual("Retained", fit.Availability, fit.Reason);

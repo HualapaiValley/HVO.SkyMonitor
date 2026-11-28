@@ -123,8 +123,6 @@
       "order": 100,
       "dependsOn": ["$raw", "RollingCombination", "Annotation", "ProjectedScene"],
       "options": {
-        "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
-        "retentionDays": 7,
         "updateLatestFrame": true
       }
     },

@@ -12,7 +12,7 @@ public sealed partial class RollingCombinationWindowLineageTests
 {
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task PinnedDescriptorCorruptionOnlyDisablesManifestAndPreservesJournalAndExportAcrossRestart()
+    public async Task PinnedDescriptorCorruptionOnlyDisablesManifestAndPreservesJournalAcrossRestart()
     {
         var root = CreateRoot();
         try
@@ -34,7 +34,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                     .First(input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput && input.CaptureId != receipt.Manifest.Descriptor.Capture.CaptureId);
                 identity = pinned.OutputIdentitySha256!;
                 Assert.IsNull(pinned.PayloadSha256, "Ordinary evidence keeps the established null hash for historical output pins.");
-                foreach (var consumer in new[] { "detail", "api", "ui", "replay", "export" })
+                foreach (var consumer in new[] { "detail", "api", "ui", "replay" })
                     expected.Add(consumer, await ProcessingGraphOperationsTests.ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: false).ConfigureAwait(false));
                 await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
                 using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");

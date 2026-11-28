@@ -28,10 +28,9 @@ public sealed partial class DurableCaptureProcessingTests
             var timeout = TimeSpan.FromSeconds(8);
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var next = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
@@ -39,7 +38,7 @@ public sealed partial class DurableCaptureProcessingTests
             var newest = await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false);
             var baseArtifact = await ProduceRetainedDisplayBaseAsync(next, persistence, telemetry).ConfigureAwait(false);
             var captureId = newest.Capture.CaptureId;
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var layerRead = new AsyncLocal<bool>();
             (TaskCompletionSource Entered, TaskCompletionSource Release)? checkpoint = null;
             var wrapper = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -71,7 +70,8 @@ public sealed partial class DurableCaptureProcessingTests
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), token).ConfigureAwait(false);
             Assert.AreEqual(1, reconciled.Quarantined);
 
-            using var context = new BunitContext();
+            var context = new BunitContext();
+            await using var contextLifetime = context.ConfigureAwait(false);
             context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
                 .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);
@@ -111,8 +111,10 @@ public sealed partial class DurableCaptureProcessingTests
                 return latest;
             };
 
-            // Establish the unavailable headline and the still-renderable selected frame with real I/O.
-            using (var inaccessible = File.Open(Path.Combine(root, older.PayloadRelativePath), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            // Establish the unavailable headline and the still-renderable selected frame with an unavailable Silo copy.
+            var inaccessible = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, older, token).ConfigureAwait(false);
+            inaccessible.SetUnavailable(true);
+            try
             {
                 using var page = context.Render<CurrentSkyPage>();
                 await CheckSelectedAsync().ConfigureAwait(false);
@@ -124,8 +126,8 @@ public sealed partial class DurableCaptureProcessingTests
                     StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, "temporarily unavailable", StringComparison.Ordinal);
                 }, timeout);
 
-                // Release the older file before advancing the actual page's next periodic refresh.
-                await inaccessible.DisposeAsync().ConfigureAwait(false);
+                // Restore the older copy before advancing the actual page's next periodic refresh.
+                inaccessible.SetUnavailable(false);
                 for (var tick = 1; tick <= 2; tick++)
                 {
                     selectedStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -155,6 +157,10 @@ public sealed partial class DurableCaptureProcessingTests
                     page.WaitForAssertion(() => StringAssert.Contains(page.Find(".latest-measured-solution").TextContent,
                         earlier.SolutionIdentitySha256, StringComparison.Ordinal), timeout);
                 }
+            }
+            finally
+            {
+                inaccessible.SetUnavailable(false);
             }
 
             async Task CheckSelectedAsync()

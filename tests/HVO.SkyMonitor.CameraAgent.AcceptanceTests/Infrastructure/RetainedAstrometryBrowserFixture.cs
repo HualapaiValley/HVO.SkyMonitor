@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
+
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 /// <summary>Copies an already canonical generator tree without rewriting retained identities.</summary>
@@ -7,7 +9,9 @@ internal static class RetainedAstrometryBrowserFixture
     {
         foreach (var path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
-            var destination = Path.Combine(root, Path.GetRelativePath(source, path));
+            var relative = Path.GetRelativePath(source, path);
+            if (relative == SiloInfrastructureFixture.VersionSnapshotFileName) continue;
+            var destination = Path.Combine(root, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             using var input = File.OpenRead(path);
             using var output = File.Create(destination);

@@ -436,7 +436,6 @@ public sealed class OperatorNotificationMonitorService(
             {
                 ["volume"] = alias,
                 ["state"] = isProbeFailure ? "probe-failed" : "under-pressure",
-                ["effectiveRetentionDays"] = snapshot.EffectiveRetentionDays.ToString(CultureInfo.InvariantCulture)
             };
             if (!isProbeFailure && snapshot.Capacity.TotalBytes > 0)
             {
@@ -445,7 +444,7 @@ public sealed class OperatorNotificationMonitorService(
 
             var summary = isProbeFailure
                 ? $"Storage volume '{alias}' on '{cameraName}' could not be probed for free space. Retention safety requires operator attention."
-                : $"Storage volume '{alias}' on '{cameraName}' is under disk pressure ({snapshot.Capacity.AvailablePercent:0.0}% free; effective retention reduced to {snapshot.EffectiveRetentionDays} day(s)).";
+                : $"Storage volume '{alias}' on '{cameraName}' is under disk pressure ({snapshot.Capacity.AvailablePercent:0.0}% free). Silo has paused capture admission.";
 
             _publisher.TryPublish(new OperatorNotificationEvent(
                 OperatorNotificationEventKind.DiskPressure,

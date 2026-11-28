@@ -5,7 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -14,7 +14,7 @@ internal sealed partial class RawCaptureIngress
 {
     internal bool SiloAdmissionsReady => Volatile.Read(ref _journalValidated);
 
-    private const string SiloIntentsDirectory = "raw-admission-intents";
+    private static readonly string SiloIntentsDirectory = Path.Combine(".silo", "raw-admission-intents");
     private TaskCompletionSource? _siloPressureRelease;
     private long _nextSiloAdmissionBytes;
     private long _siloAdmissionCursor;
@@ -35,27 +35,26 @@ internal sealed partial class RawCaptureIngress
 
     private async ValueTask RecordSiloRawIntentAsync(Guid artifactId, DateTimeOffset exposureStartedUtc)
     {
-        if (_silo is null) return;
         var intent = new SiloRawIntent(artifactId, exposureStartedUtc);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
-        await AtomicPublisher.PublishAsync(_silo.PhysicalState, SiloIntentPath(artifactId), PublishMode.CreateNew,
+        await AtomicPublisher.PublishAsync(PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot)), SiloIntentPath(artifactId), PublishMode.CreateNew,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), CancellationToken.None).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<(Guid ArtifactId, RawIngressPaths Paths)>?> ReadSiloRawIntentsAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<(Guid ArtifactId, RawIngressPaths Paths)>> ReadSiloRawIntentsAsync(CancellationToken cancellationToken)
     {
-        if (_silo is null) return null;
-        var root = _silo.PhysicalState;
+        var root = PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot));
         var directory = root.Resolve(SiloIntentsDirectory);
         if (!Directory.Exists(directory)) return [];
-        if (AtomicPublisher.CleanupTemporaries(root, directory, _siloSettings!.MaximumStagedFiles) > 0)
+        var limit = _siloSettings?.MaximumStagedFiles ?? SiloInstalledSettings.DefaultMaximumStagedFiles;
+        if (AtomicPublisher.CleanupTemporaries(root, directory, limit) > 0)
             DurableSync.Directory(directory);
         var intents = new List<(Guid, RawIngressPaths)>();
         foreach (var path in Directory.EnumerateFiles(directory))
         {
             cancellationToken.ThrowIfCancellationRequested();
             root.Verify(path, "silo-raw-intent");
-            if (intents.Count >= _siloSettings.MaximumStagedFiles || new FileInfo(path).Length is < 1 or > 512)
+            if (intents.Count >= limit || new FileInfo(path).Length is < 1 or > 512)
                 throw new InvalidDataException("The Silo raw admission intent inventory exceeds its bounds.");
             var intent = JsonSerializer.Deserialize<SiloRawIntent>(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
             if (intent is null || intent.ArtifactId == Guid.Empty || path != root.Resolve(SiloIntentPath(intent.ArtifactId)))
@@ -63,6 +62,8 @@ internal sealed partial class RawCaptureIngress
             var paths = _files.GetPaths(intent.ExposureStartedUtc, intent.ArtifactId);
             if (intent.Reclaim)
             {
+                if (_silo is null)
+                    throw new InvalidOperationException("Reclaiming a Silo admission requires the installed writer binding.");
                 var entry = await _journal.ReadSiloAdmissionByArtifactAsync(intent.ArtifactId, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidDataException("The Silo raw reclamation intent has no journal identity.");
                 // Older reclaim intents did not record whether publication or abandonment authorized deletion.
@@ -80,8 +81,7 @@ internal sealed partial class RawCaptureIngress
 
     private void ReleaseSiloRawIntent(Guid artifactId)
     {
-        if (_silo is null) return;
-        var path = _silo.PhysicalState.Resolve(SiloIntentPath(artifactId));
+        var path = PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot)).Resolve(SiloIntentPath(artifactId));
         if (!File.Exists(path)) return;
         File.Delete(path);
         DurableSync.Directory(Path.GetDirectoryName(path)!);
@@ -138,7 +138,7 @@ internal sealed partial class RawCaptureIngress
             _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "silo-staging-pressure");
     }
 
-    private async ValueTask<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<Guid>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
     {
         var holds = await _journal.ReadRetentionHoldsAsync(cancellationToken).ConfigureAwait(false);
         return _silo is null ? holds : [.. holds, .. await _journal.ReadSiloAdmissionHoldsAsync(cancellationToken).ConfigureAwait(false)];
@@ -219,18 +219,23 @@ internal sealed partial class RawCaptureIngress
                 return "silo-staged-evidence-missing";
 
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
+            var paths = _files.GetPaths(entry.ExposureStartedUtc, entry.ArtifactId);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
-                CaptureContractJson.ComputeManifestSha256(entry.ManifestJson) != entry.ManifestSha256)
+                CaptureContractJson.ComputeManifestSha256(entry.ManifestJson) != entry.ManifestSha256 ||
+                manifest.Descriptor.Artifact.ArtifactId != entry.ArtifactId ||
+                manifest.RelativeArtifactPath != paths.PayloadRelativePath ||
+                entry.PayloadRelativePath != paths.PayloadRelativePath || entry.SidecarRelativePath != paths.SidecarRelativePath)
                 return "silo-admission-evidence-refused";
 
             var draft = CreateSiloDraft(entry, manifest, revision);
             try
             {
-                var root = PhysicalRoot.Open(_options.RawIngressRoot);
+                var root = PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot));
                 await silo.Publisher.StageAsync(draft, (member, token) =>
                 {
                     token.ThrowIfCancellationRequested();
-                    var path = root.Resolve(member.Role == "raw" ? entry.PayloadRelativePath : entry.SidecarRelativePath);
+                    var path = member.Role == "raw" ? paths.PayloadAbsolutePath : paths.SidecarAbsolutePath;
+                    root.Verify(path, "silo-raw-stage");
                     return ValueTask.FromResult<Stream>(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                         64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan));
                 }, cancellationToken).ConfigureAwait(false);
@@ -294,7 +299,7 @@ internal sealed partial class RawCaptureIngress
     {
         var intent = new SiloRawIntent(entry.ArtifactId, entry.ExposureStartedUtc, Reclaim: true, SiloVisible: siloVisible);
         var bytes = JsonSerializer.SerializeToUtf8Bytes(intent);
-        await AtomicPublisher.PublishAsync(_silo!.PhysicalState, SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
+        await AtomicPublisher.PublishAsync(PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot)), SiloIntentPath(entry.ArtifactId), PublishMode.Replace,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
         if (await ReclaimSiloStagingAsync(entry, siloVisible, cancellationToken).ConfigureAwait(false))
             await RefreshLaneStateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -312,7 +317,7 @@ internal sealed partial class RawCaptureIngress
         if (paths.PayloadRelativePath != entry.PayloadRelativePath || paths.SidecarRelativePath != entry.SidecarRelativePath)
             throw new InvalidDataException("The settled Silo admission has unexpected staging paths.");
 
-        var root = PhysicalRoot.Open(_options.RawIngressRoot);
+        var root = PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot));
         root.Verify(paths.PayloadAbsolutePath, "silo-raw-reclaim");
         root.Verify(paths.SidecarAbsolutePath, "silo-raw-reclaim");
         var directory = Path.GetDirectoryName(paths.PayloadAbsolutePath)!;
@@ -369,7 +374,7 @@ internal sealed partial class RawCaptureIngress
         }
     }
 
-    private static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision)
+    internal static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision)
     {
         var artifact = entry.ArtifactId.ToString("D");
         var payloadSha = SiloCenteredViews.LowerHex(entry.PayloadSha256);

@@ -56,13 +56,10 @@ public sealed partial class RollingCombinationWindowLineageTests
                 Assert.AreEqual(manifest, await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false));
                 var store = restarted.GetRequiredService<SqliteCaptureProcessingStore>();
                 var target = (await store.ReadOutputByArtifactIdAsync(sourceId, CancellationToken.None).ConfigureAwait(false))!;
-                var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                    target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNull(await store.ReadOutputByArtifactIdAsync(sourceId, CancellationToken.None).ConfigureAwait(false));
+                await SiloInfrastructureFixture.ExpireLocalMemberAsync(restarted, target.ArtifactId, target.OutputIdentitySha256,
+                    CancellationToken.None).ConfigureAwait(false);
                 var journal = (await operations.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!;
-                Assert.HasCount(WindowSize - 2, journal.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs);
+                Assert.HasCount(WindowSize - 1, journal.Nodes.Single(static node => node.NodeId == RollingNodeId).Inputs);
                 await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();

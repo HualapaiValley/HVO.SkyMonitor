@@ -7,7 +7,6 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using DotNet.Testcontainers.Containers;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.Processing;
@@ -189,14 +188,15 @@ public sealed partial class SiloStockStoreTests
                         { Status: DurableProcessingNodeStatus.Completed })
                         await Task.Delay(50, productToken).ConfigureAwait(false);
                     var satelliteHolds = await satellite.GetRetentionHoldsAsync(root, token).ConfigureAwait(false);
-                    Assert.IsTrue(satelliteHolds.Any(hold => hold.ArtifactId == view.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId &&
-                        hold.PayloadRelativePath.StartsWith("silo/raw/", StringComparison.Ordinal)));
+                    Assert.IsTrue(satelliteHolds.Any(hold => hold.ArtifactId == view.Base.Definition.Reference.Input.Raw.Artifact.ArtifactId));
                     await satellite.ReconcileAsync(root, token).ConfigureAwait(false);
                     var processing = scope.ServiceProvider.GetRequiredService<CaptureProcessingPersistence>();
                     var holds = await processing.GetRetentionHoldsAsync(root, token).ConfigureAwait(false);
-                    Assert.IsTrue(holds.Any(static hold => hold.PayloadRelativePath.StartsWith("silo/products/", StringComparison.Ordinal)));
-                    var retention = scope.ServiceProvider.GetServices<IHostedService>().OfType<RetentionBackgroundService>().Single();
-                    await retention.ApplyRetentionAsync(config, token).ConfigureAwait(false);
+                    var tracks = await processingStore.ReadNodeAsync(reference, "CaptureSatelliteTracks", productToken).ConfigureAwait(false);
+                    Assert.IsNotNull(tracks);
+                    Assert.IsTrue(tracks.Outputs.Any(output => holds.Contains(new(output.ArtifactId))));
+                    var retention = scope.ServiceProvider.GetRequiredService<SiloRetentionWorker>();
+                    await retention.RunAsync(token).ConfigureAwait(false);
                     var required = exact.Items.First(static item => item.Required && item.Role.Kind == SiloIdentityKind.Member);
                     Assert.IsNotNull(required.ServedFrom);
                     await AssertInstalledViewReadOutcomesAsync(restarted, verifier, readFault, view, required.ServedFrom, token)
@@ -448,7 +448,7 @@ public sealed partial class SiloStockStoreTests
         Assert.AreEqual(flat.ArtifactId, loaded.ArtifactId);
         Assert.AreEqual(flat.PayloadSha256, PayloadChecksum.ComputeSha256(loaded.Payload.Span));
         Assert.IsFalse(Directory.Exists(Path.Combine(root, "calibration")));
-        Assert.HasCount(0, bundle.EvidenceFiles);
+        Assert.HasCount(4, bundle.ReferenceManifests);
         var library = services.GetRequiredService<SqliteCalibrationLibraryStore>();
         var state = await library.GetStateAsync(token).ConfigureAwait(false);
         await library.ActivateAsync(bundle.LibraryBundle.BundleId, "silo-test-calibration", state.Version, "operator", null, token)
@@ -644,8 +644,7 @@ public sealed partial class SiloStockStoreTests
         var storage = steps.Single(step => step!["id"]!.GetValue<string>() == "LocalStorage")!.DeepClone();
         storage["dependsOn"] = new JsonArray("Calibration");
         var options = storage["options"]!.AsObject();
-        options.Remove("policies");
-        options["storageRoot"] = Path.Combine(options["storageRoot"]!.GetValue<string>(), "archive");
+        options["publishArchive"] = true;
         var cloud = JsonNode.Parse("""
             {
               "id": "CloudAssessment", "type": "CloudAssessment", "order": 60,

@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -32,12 +33,10 @@ public sealed partial class InstallationVerificationStartupTests
         Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
         Assert.IsTrue(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStarted.IsCancellationRequested);
 
-        await host.RunWithHostStoppedAsync(async root =>
+        await host.RunWithHostStoppedAsync(root =>
         {
-            var raw = Path.Combine(root, "frames", DateTimeOffset.UtcNow.ToString("yyyy/MM/dd",
-                System.Globalization.CultureInfo.InvariantCulture), "Raw");
-            Directory.CreateDirectory(raw);
-            await File.WriteAllTextAsync(Path.Combine(raw, "torn.json"), "{").ConfigureAwait(false);
+            File.Delete(Path.Combine(root, ".location", "deployment-location.v1.protected"));
+            return Task.CompletedTask;
         }).ConfigureAwait(false);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var loader = host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
@@ -48,8 +47,7 @@ public sealed partial class InstallationVerificationStartupTests
         using var recovery = await owner.GetAsync(new Uri("/system", UriKind.Relative), timeout.Token).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, restartedAlive.StatusCode);
         Assert.AreEqual(HttpStatusCode.OK, recovery.StatusCode);
-        // Health may recover after raw reconciliation quarantines the torn
-        // sidecar. It must never imply qualification of the retained history.
+        // Recovery UI must remain available without recreating missing authority.
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/internal/owner-bootstrap/installation-verification");
         request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
         using var verification = await owner.SendAsync(request, timeout.Token).ConfigureAwait(false);
@@ -59,13 +57,14 @@ public sealed partial class InstallationVerificationStartupTests
     [TestMethod]
     [DataRow("quarantine/torn.json", "{")]
     [DataRow("quarantine/invalid-v2.json", "{\"schemaVersion\":\"v2\"}")]
-    [DataRow("frames/2026/11/10/Raw/torn.json", "{")]
+    [DataRow(".silo/raw-admissions/01010101010101010101010101010101.json", "{")]
     public async Task StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence(string relative, string json)
     {
         await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
         {
             // Run the real configuration load during host startup, with autonomous acquisition disabled.
             services.RemoveAll<IHostedService>();
+            services.RemoveAll<ICameraAgentSiloVerification>();
             services.AddSingleton(provider => new ConfigurationStartupProbe(provider.GetRequiredService<ICameraAgentConfigurationLoader>()));
             services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ConfigurationStartupProbe>());
         }, prepareRoot: async root =>

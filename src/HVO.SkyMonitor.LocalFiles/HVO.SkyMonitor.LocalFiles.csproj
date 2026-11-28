@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <InternalsVisibleTo Include="HVO.SkyMonitor.Common.Tests" />
+  </ItemGroup>
+</Project>

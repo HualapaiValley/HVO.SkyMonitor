@@ -48,18 +48,18 @@ else
     }
     @if (HasPressure)
     {
-        <div class="ops-note-banner storage-pressure" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Pressure detected.</strong> Retention is shortened for eligible history only; evidence still waiting to be processed, delivered or reviewed stays pinned.</span></div>
+        <div class="ops-note-banner storage-pressure" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Pressure detected.</strong> Silo can expire eligible objects under its configured pressure policy. Held evidence stays pinned.</span></div>
     }
 
     <div class="ops-grid sidebar-right">
         <section class="ops-panel storage-capacity" aria-labelledby="storage-capacity-heading">
             <header class="ops-panel-heading">
-                <div><h2 id="storage-capacity-heading">Local capacity</h2><p>Pressure shortens only eligible history; held evidence remains pinned.</p></div>
+                <div><h2 id="storage-capacity-heading">Local capacity</h2></div>
                 <span class="state-chip @capacity.Chip">@capacity.Text</span>
             </header>
             @if (storage.Count == 0)
             {
-                <p class="storage-empty">No storage location has reported its capacity yet. The first retention sweep records it.</p>
+                <p class="storage-empty">Silo has yet to report local capacity.</p>
             }
             else
             {
@@ -90,12 +90,6 @@ else
                                     <div><dt>Used</dt><dd>@OperationsPage.FormatBytes(location.TotalBytes - location.AvailableBytes)</dd></div>
                                     <div><dt>Available</dt><dd>@OperationsPage.FormatBytes(location.AvailableBytes)</dd></div>
                                 }
-                                @if (_system is not null)
-                                {
-                                    <div><dt>Pressure starts</dt><dd>Below @Percent(_system.Retention.PressureThresholdPercent) free</dd></div>
-                                    <div><dt>Recovers</dt><dd>At @Percent(_system.Retention.PressureRecoveryPercent) free</dd></div>
-                                }
-                                <div class="full"><dt>Retention now</dt><dd>@Days(location.EffectiveRetentionDays)@(location.IsUnderPressure ? ", shortened by disk pressure" : null)</dd></div>
                             </dl>
                         </div>
                     </div>
@@ -121,31 +115,15 @@ else
     <div class="ops-grid two">
         <section class="ops-panel storage-classes" aria-labelledby="storage-classes-heading">
             <header class="ops-panel-heading">
-                <div><h2 id="storage-classes-heading">Retention classes</h2><p>Eligibility requires the time policy and every required acknowledgement.</p></div>
+                <div><h2 id="storage-classes-heading">Local history and ingress reserve</h2></div>
             </header>
             <div class="ops-table-wrap">
                 <table class="ops-table storage-class-table">
                     <thead><tr><th>Class</th><th>Policy</th><th>Current</th></tr></thead>
                     <tbody>
-                        @foreach (var location in storage)
-                        {
-                            <tr>
-                                <td><strong>Captures &amp; products</strong>@if (storage.Count > 1)
-                                    {
-                                        <small>@OperationsPage.SplitWords(location.Alias)</small>
-                                    }</td>
-                                <td>@Days(location.EffectiveRetentionDays)</td>
-                                <td>@(location.IsUnderPressure ? "Shortened by pressure" : "Normal")</td>
-                            </tr>
-                        }
                         @if (_system is not null)
                         {
                             var retention = _system.Retention;
-                            <tr>
-                                <td><strong>Disk-pressure history</strong><small>Below @Percent(retention.PressureThresholdPercent) free</small></td>
-                                <td>@Days(retention.PressureRetentionDays)</td>
-                                <td>@(HasStoragePressure ? "Active" : "Not active")</td>
-                            </tr>
                             <tr>
                                 <td><strong>Environment observations</strong><small>Up to @retention.EnvironmentalMaximumHistoryCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) / @OperationsPage.FormatBytes(retention.EnvironmentalMaximumHistoryBytes)</small></td>
                                 <td>@(retention.EnvironmentalHistoryEnabled ? Days(retention.EnvironmentalRetentionDays) : "Not collected")</td>
@@ -168,7 +146,7 @@ else
 
         <section class="ops-panel storage-reconciliation" aria-labelledby="storage-reconciliation-heading">
             <header class="ops-panel-heading">
-                <div><h2 id="storage-reconciliation-heading">Evidence reconciliation</h2><p>Files on disk and their durable records are checked against each other.</p></div>
+                <div><h2 id="storage-reconciliation-heading">Raw admission recovery</h2><p>Startup checks the durable records for staged Silo admissions.</p></div>
                 @if (LastReconciledUtc is { } last)
                 {
                     <span>Last @FormatSiteTime(last)</span>
@@ -181,7 +159,7 @@ else
             else
             {
                 <ul class="ops-validation-list">
-                    @foreach (var line in ReconciliationLines)
+                    @foreach (var line in ReadReconciliationLines())
                     {
                         <li class="ops-validation-item @line.Kind">
                             <i aria-hidden="true">@line.Glyph</i>
@@ -235,15 +213,11 @@ else
                     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
                 </button>
             </div>
-            <p id="storage-policy-dialog-description" class="dialog-intro">These bounds come from this agent's configuration. A sweep never removes evidence that is still waiting to be processed, delivered or reviewed; it waits for that work to finish.</p>
+            <p id="storage-policy-dialog-description" class="dialog-intro">Retention uses exact Silo versions. The installed Silo policy controls age limits, pressure expiry and protected inputs.</p>
             <div class="storage-dialog-body">
                 <h3>Sweeps and disk pressure</h3>
                 <dl class="ops-facts">
-                    <div><dt>Sweep interval</dt><dd>Every @Minutes(retention.SweepIntervalMinutes)</dd></div>
                     <div><dt>Raw ingress reserve</dt><dd>@OperationsPage.FormatBytes(retention.RawIngressReserveBytes)</dd></div>
-                    <div><dt>Pressure starts</dt><dd>Below @Percent(retention.PressureThresholdPercent) free</dd></div>
-                    <div><dt>Pressure ends</dt><dd>At @Percent(retention.PressureRecoveryPercent) free</dd></div>
-                    <div class="full"><dt>History kept under pressure</dt><dd>@Days(retention.PressureRetentionDays), or less if the location keeps less</dd></div>
                 </dl>
                 <h3>Environment observations</h3>
                 <dl class="ops-facts">

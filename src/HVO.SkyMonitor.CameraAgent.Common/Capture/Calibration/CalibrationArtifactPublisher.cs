@@ -1,10 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
@@ -63,14 +59,17 @@ public sealed class CalibrationPublicationConflictException : IOException
     }
 }
 
-public sealed class CalibrationArtifactPublisher(
-    IOptions<CameraAgentHostOptions> options,
-    ICalibrationPublicationFaultInjector faultInjector)
+public sealed class CalibrationArtifactPublisher
 {
-    private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
-    private readonly ICalibrationPublicationFaultInjector _faultInjector = faultInjector;
+    private readonly ICalibrationPublicationFaultInjector _faultInjector;
 
-    internal SiloArtifactStorage? Silo { get; init; }
+    internal CalibrationArtifactPublisher(ICalibrationPublicationFaultInjector faultInjector, SiloArtifactStorage silo)
+    {
+        _faultInjector = faultInjector;
+        Silo = silo;
+    }
+
+    internal SiloArtifactStorage Silo { get; }
 
     internal const string SiloEvidenceRevision = "calibration-evidence-1";
     internal const string SiloBundleRevision = "calibration-bundle-1";
@@ -90,7 +89,6 @@ public sealed class CalibrationArtifactPublisher(
     internal async ValueTask PublishSiloBundleAsync(CalibrationLibraryBundleV1 bundle, ReadOnlyMemory<byte> profile,
         CancellationToken cancellationToken)
     {
-        if (Silo is null) return;
         var envelope = CalibrationLibraryContractJson.Serialize(bundle);
         var id = BundleArtifactId(bundle);
         var members = new[]
@@ -103,8 +101,12 @@ public sealed class CalibrationArtifactPublisher(
         var created = bundle.CreatedUtc.ToUniversalTime();
         var draft = new SiloGroupDraft("calibration-bundle", id.ToString("N"), "1", created, created, created,
             members, [], new([]), CameraId: bundle.Applicability.RigId);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeBundleWrite, bundle.ProfileRelativePath);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeProfileWrite, bundle.ProfileRelativePath);
         await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
             member.ArtifactRevision == SiloBundleRevision ? envelope : profile, token), cancellationToken).ConfigureAwait(false);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterBundlePublished, bundle.ProfileRelativePath);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterProfilePublished, bundle.ProfileRelativePath);
     }
 
     internal void InjectFault(CalibrationPublicationFaultPoint point, string relativePath)
@@ -120,258 +122,34 @@ public sealed class CalibrationArtifactPublisher(
         ArgumentNullException.ThrowIfNull(payloadRelativePath);
         ArgumentNullException.ThrowIfNull(manifestRelativePath);
         ValidatePairPaths(payloadRelativePath, manifestRelativePath);
-        if (Silo is not null)
+        var parsed = CaptureContractJson.ParseManifest(manifest);
+        if (!parsed.IsValid || parsed.Document?.Manifest is not { } evidence)
+            throw new InvalidDataException("Silo calibration publication requires a valid artifact manifest.");
+        var descriptor = evidence.Descriptor;
+        if (descriptor.Layout.ByteLength != payload.Length || evidence.RelativeArtifactPath != payloadRelativePath)
+            throw new InvalidDataException("The Silo calibration manifest differs from its payload identity.");
+        var id = descriptor.Artifact.ArtifactId;
+        var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
+        var payloadMember = SiloArtifactStorage.Member(id, revision, "calibration-frame", SiloRetentionClass.Full,
+            descriptor.Artifact.MediaType, payload.Length, descriptor.Artifact.ChecksumSha256);
+        var evidenceMember = SiloArtifactStorage.Member(id, SiloEvidenceRevision, "calibration-evidence", SiloRetentionClass.Metadata,
+            "application/json", manifest.Length, SiloHash.Sha256(manifest.Span));
+        var draft = new SiloGroupDraft("calibration-artifact", id.ToString("N"), revision, descriptor.Artifact.CreatedUtc.ToUniversalTime(),
+            descriptor.Timing.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
+            [payloadMember, evidenceMember], [], new([]), CameraId: descriptor.Capture.RigId);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforePayloadWrite, payloadRelativePath);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeManifestWrite, manifestRelativePath);
+        try
         {
-            var parsed = CaptureContractJson.ParseManifest(manifest);
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } evidence)
-                throw new InvalidDataException("Silo calibration publication requires a valid artifact manifest.");
-            var descriptor = evidence.Descriptor;
-            if (descriptor.Layout.ByteLength != payload.Length || evidence.RelativeArtifactPath != payloadRelativePath)
-                throw new InvalidDataException("The Silo calibration manifest differs from its payload identity.");
-            var id = descriptor.Artifact.ArtifactId;
-            var revision = CaptureContractJson.ComputeDescriptorSha256(descriptor);
-            var payloadMember = SiloArtifactStorage.Member(id, revision, "calibration-frame", SiloRetentionClass.Full,
-                descriptor.Artifact.MediaType, payload.Length, descriptor.Artifact.ChecksumSha256);
-            var evidenceMember = SiloArtifactStorage.Member(id, SiloEvidenceRevision, "calibration-evidence", SiloRetentionClass.Metadata,
-                "application/json", manifest.Length, SiloHash.Sha256(manifest.Span));
-            var draft = new SiloGroupDraft("calibration-artifact", id.ToString("N"), revision, descriptor.Artifact.CreatedUtc.ToUniversalTime(),
-                descriptor.Timing.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
-                [payloadMember, evidenceMember], [], new([]), CameraId: descriptor.Capture.RigId);
             await Silo.PublishAsync(draft, (member, token) => SiloArtifactStorage.OpenMemoryAsync(
-                member.Role == "calibration-frame" ? payload : manifest, token), cancellationToken).ConfigureAwait(false);
-            return;
+                member == payloadMember ? payload : manifest, token), cancellationToken).ConfigureAwait(false);
         }
-        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
-        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        catch (SiloConflictException exception)
         {
-            var payloadPath = Resolve(payloadRelativePath);
-            var manifestPath = Resolve(manifestRelativePath);
-            if (File.Exists(manifestPath) && !File.Exists(payloadPath))
-            {
-                throw new CalibrationPublicationConflictException(
-                    "A committed calibration manifest references a missing immutable payload.");
-            }
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforePayloadWrite, payloadRelativePath);
-            await WriteImmutableAsync(payloadPath, payload, cancellationToken).ConfigureAwait(false);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterPayloadPublished, payloadRelativePath);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeManifestWrite, manifestRelativePath);
-            await WriteImmutableAsync(manifestPath, manifest, cancellationToken).ConfigureAwait(false);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterManifestPublished, manifestRelativePath);
+            throw new CalibrationPublicationConflictException("Silo calibration publication conflicts with immutable evidence.", exception);
         }
-        finally
-        {
-            lifecycle.Release();
-        }
-    }
-
-    public async Task PublishProfileMarkerAsync(
-        string relativePath,
-        ReadOnlyMemory<byte> profile,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(relativePath);
-        if (!relativePath.EndsWith($"/{CalibrationLibraryEvidenceNames.ProfileMarker}", StringComparison.Ordinal))
-        {
-            throw new ArgumentException("The calibration profile marker path is invalid.", nameof(relativePath));
-        }
-        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
-        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeProfileWrite, relativePath);
-            var path = Resolve(relativePath);
-            await WriteImmutableAsync(path, profile, cancellationToken).ConfigureAwait(false);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterProfilePublished, relativePath);
-            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.DirectorySynced, relativePath);
-        }
-        finally
-        {
-            lifecycle.Release();
-        }
-    }
-
-    public async Task PublishBundleEnvelopeAsync(
-        string relativePath,
-        ReadOnlyMemory<byte> bundle,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(relativePath);
-        if (!relativePath.EndsWith($"/{CalibrationLibraryEvidenceNames.BundleEnvelope}", StringComparison.Ordinal))
-        {
-            throw new ArgumentException("The calibration bundle envelope path is invalid.", nameof(relativePath));
-        }
-        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
-        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeBundleWrite, relativePath);
-            await WriteImmutableAsync(Resolve(relativePath), bundle, cancellationToken).ConfigureAwait(false);
-            _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterBundlePublished, relativePath);
-        }
-        finally
-        {
-            lifecycle.Release();
-        }
-    }
-
-    public async Task<bool> EnsureCommittedEvidenceIsCompleteAsync(
-        string profileRelativePath,
-        IReadOnlyList<string> requiredRelativePaths,
-        bool markerExpected,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(profileRelativePath);
-        ArgumentNullException.ThrowIfNull(requiredRelativePaths);
-        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
-        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!File.Exists(Resolve(profileRelativePath)))
-            {
-                if (markerExpected)
-                {
-                    throw new CalibrationPublicationConflictException(
-                        "The committed calibration profile marker is missing.");
-                }
-                return false;
-            }
-            foreach (var relativePath in requiredRelativePaths)
-            {
-                if (!File.Exists(Resolve(relativePath)))
-                {
-                    throw new CalibrationPublicationConflictException(
-                        "The committed calibration profile references missing immutable evidence.");
-                }
-            }
-            return true;
-        }
-        finally
-        {
-            lifecycle.Release();
-        }
-    }
-
-    private async Task WriteImmutableAsync(
-        string path,
-        ReadOnlyMemory<byte> bytes,
-        CancellationToken cancellationToken)
-    {
-        var directory = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(directory);
-        EnsureSafePath(path);
-        RawIngressFileStore.SyncDirectoryHierarchy(_root, directory);
-        if (File.Exists(path))
-        {
-            if (!await FileMatchesAsync(path, bytes, cancellationToken).ConfigureAwait(false))
-            {
-                throw new CalibrationPublicationConflictException(
-                    "Calibration publication conflicts with existing immutable bytes.");
-            }
-            RawIngressFileStore.SyncDirectory(directory);
-            return;
-        }
-
-        var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            var stream = new FileStream(
-                temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.WriteThrough);
-            await using (stream.ConfigureAwait(false))
-            {
-                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                CameraAgentFileSystem.FlushFile(stream);
-            }
-            EnsureSafePath(directory);
-            try
-            {
-                CameraAgentFileSystem.PublishPrepared(_root, temporaryPath, path, overwrite: false);
-            }
-            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(path))
-            {
-                if (!await FileMatchesAsync(path, bytes, cancellationToken).ConfigureAwait(false))
-                {
-                    throw new CalibrationPublicationConflictException(
-                        "Concurrent calibration publication produced different immutable bytes.", exception);
-                }
-            }
-            EnsureSafePath(path);
-            RawIngressFileStore.SyncDirectory(directory);
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-            {
-                RetainedFileMutations.Delete(temporaryPath);
-            }
-        }
-    }
-
-    private static async Task<bool> FileMatchesAsync(
-        string path,
-        ReadOnlyMemory<byte> expected,
-        CancellationToken cancellationToken)
-    {
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length != expected.Length)
-        {
-            return false;
-        }
-
-        var buffer = new byte[64 * 1024];
-        var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.Read, buffer.Length,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using (stream.ConfigureAwait(false))
-        {
-            var offset = 0;
-            while (offset < expected.Length)
-            {
-                var count = await stream.ReadAsync(
-                    buffer.AsMemory(0, Math.Min(buffer.Length, expected.Length - offset)), cancellationToken)
-                    .ConfigureAwait(false);
-                if (count == 0 || !buffer.AsSpan(0, count).SequenceEqual(expected.Span.Slice(offset, count)))
-                {
-                    return false;
-                }
-                offset += count;
-            }
-            return await stream.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false) == 0;
-        }
-    }
-
-    private string Resolve(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath) ||
-            relativePath.Contains('\\', StringComparison.Ordinal) ||
-            relativePath.Split('/').Any(static segment => segment is "" or "." or ".."))
-        {
-            throw new ArgumentException("Calibration publication paths must be safe relative paths.", nameof(relativePath));
-        }
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath));
-        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(_root), Path.DirectorySeparatorChar);
-        if (!path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new ArgumentException("Calibration publication paths cannot escape storage.", nameof(relativePath));
-        }
-        EnsureSafePath(path);
-        return path;
-    }
-
-    private void EnsureSafePath(string path)
-    {
-        try
-        {
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            throw new CalibrationPublicationConflictException(
-                "Calibration publication storage contains an unsafe path.", exception);
-        }
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterPayloadPublished, payloadRelativePath);
+        _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterManifestPublished, manifestRelativePath);
     }
 
     private static void ValidatePairPaths(string payloadRelativePath, string manifestRelativePath)

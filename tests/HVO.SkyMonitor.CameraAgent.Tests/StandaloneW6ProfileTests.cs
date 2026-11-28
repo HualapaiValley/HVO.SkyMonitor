@@ -52,7 +52,7 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual($"rig-{rigSha256[..16]}", sensorTemperature.RigId);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "7AE0C731C2AC7C865B0A62C763FD0E680A95D0E0E782FBBCAD5742DAB3A85BC7",
+            "1ACBF2EF0D064A66C605DC6954E6C5F39DE5B84B8D2FC08B0200AB546F5C5DF8",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
@@ -61,7 +61,7 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "6D1AE053A0827745EF7E7E5602C78DCD6DB8C4A0BFCE933ED1C0CE6B54EFF640",
+            "2570113E69869AECC075AF1E67E4A49C5F897860015AE1396E6D75DFC0521FBB",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
@@ -69,11 +69,11 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreNotEqual(localProfileSha256, LimitedCatalogProfileSha256(configuration));
         Assert.AreEqual(
-            "7B502DC7EB6D565C7671D5B8042FAB4CACFA72E0B4B25B38F67629C5CA607F3E",
+            "07319B2D44782E622E8B7F65A1C7663DE8C81468E9D867F0BB58EF7AD76776BE",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "982CCB44AF344846F4716C9D8400206CE9496532ED0E1A810A668CEBBD97DC6D",
+            "D345EC6D5F5F57BC663A8535AB83E4FDD817D66E1FF4C3181CA7FC72541ABF34",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -152,7 +152,7 @@ public sealed class StandaloneW6ProfileTests
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "36205AA7433BF39C252928F52C3B04A855FD3A81463D120D9ABCB54575C5541D",
+            "5C61635D7CDE598CB3FF284E286E030DBD96DFEC0DEC74B56A6153468CCCFC92",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
@@ -160,16 +160,16 @@ public sealed class StandaloneW6ProfileTests
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
-        Assert.AreEqual("336492536C4A68193AC96FD1B30D9545A03BFFDF5B1628ABBC5948BF908331CF", localProfileSha256);
+        Assert.AreEqual("4F766993D001F743C4979E76D63988BBAFDA8CEC6B01E3DD39E06B9FE6BC1A7A", localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         // The mono8 W6 control keeps full catalog depth instead of the operator's scene object limit.
         Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreNotEqual(localProfileSha256, LimitedCatalogProfileSha256(configuration));
         Assert.AreEqual(
-            "E5F0E7EAEA0C834FF8A332F11A9725DC50C31A603D87A32EC8FB73BB80006680",
+            "927499D9AAEE0358B615B9A4122DF2F59B0AC88870B06F706240280F0F93AB99",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "C8580B09979EE4C27D5FE6C43D4835C1D4CC482A2F83B3D1C19DF26B1D6E3418",
+            "2DD7F9CDB24AC4D660F421B2B9A2C3CF660E2137CD4D2EA21DCE6B609F6932A2",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -377,42 +377,6 @@ public sealed class StandaloneW6ProfileTests
         }
     }
 
-    [TestMethod]
-    public async Task StoragePolicyMatchesSecondaryOutput()
-    {
-        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
-        using var provider = CreateProvider();
-        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-
-        CameraModuleConfig WithSecondaryPolicy()
-        {
-            var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
-                ? step with
-                {
-                    Options = System.Text.Json.JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions
-                        {
-                            StorageRoot = "/var/lib/hvo/data/agent",
-                            RetentionDays = 1,
-                            UpdateLatestFrame = true,
-                            Policies =
-                            [
-                                new ArtifactStoragePolicyOptions
-                                {
-                                    StepId = "scene-presentation",
-                                    Variant = "w6-constellation-layer"
-                                }
-                            ]
-                        })
-                }
-                : step).ToArray();
-            return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
-        }
-
-        var accepted = factory.CreateGraph(WithSecondaryPolicy());
-        accepted.DisposeSteps();
-    }
-
     private static void AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(
         CameraModuleConfig configuration, CaptureProcessingGraph graph, CaptureProcessingPlanPreview preview)
     {
@@ -448,7 +412,7 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("BB8D6C83C335521ADE7FD8A5C5AF0B31BB49AB6711CE0A8625F1344A06AC4089", Aggregate(removeV3: true),
+        Assert.AreEqual("6DEA3AA6642C10F13F8A938E667CEBEFF8796541786840265137DA2DCCCF3E60", Aggregate(removeV3: true),
             "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 
@@ -527,7 +491,7 @@ public sealed class StandaloneW6ProfileTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()

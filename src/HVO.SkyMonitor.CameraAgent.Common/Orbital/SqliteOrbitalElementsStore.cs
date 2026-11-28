@@ -5,7 +5,7 @@ using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 

@@ -21,6 +21,8 @@ internal sealed partial class CameraAgentInstaller
 
     public static async Task<InstallationResult> InstallAsync(InstallRequest request, CancellationToken cancellationToken)
     {
+        if (request.StorageLayout != CameraAgentStorageLayout.Silo)
+            throw InstallerException.Refused("Filesystem storage is retired. Install a fresh CameraAgent instance with Silo.");
         var processRunner = new ProcessRunner();
         return await InstallAsync(
             request,

@@ -58,7 +58,7 @@ public sealed class Issue518UpgradeRetryEvidenceTests
         services.AddLogging();
         services.AddSingleton<TimeProvider>(new FixedTimeProvider(SceneUtc.AddSeconds(clockSeconds)));
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -138,9 +138,8 @@ public sealed class Issue518UpgradeRetryEvidenceTests
                 new("Preview", "preview", DependsOn: ["$raw"]),
                 new("Annotation", "annotation", Options: JsonSerializer.SerializeToElement(new
                     { requireProjectedSceneDependency = true }), DependsOn: ["preview", "scene"]),
-                new("Storage", "archive", Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = Path.Combine(root, "archive"), UpdateLatestFrame = false,
-                        Policies = [new() { Role = FrameArtifactRole.Metadata }] }),
+                new("Storage", "archive", Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                    { UpdateLatestFrame = false }),
                     DependsOn: ["$raw", "scene", "preview", "annotation"])
             ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent),
             AgentId: "issue518-retry");

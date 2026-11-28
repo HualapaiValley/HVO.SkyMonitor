@@ -50,7 +50,7 @@ internal sealed record CameraAgentTimeLapseSourcePlan(
     IReadOnlyList<CameraAgentTimeLapseRawSource> Sources,
     IReadOnlyDictionary<string, int> Exclusions);
 
-internal sealed record CameraAgentTimeLapseRawSource(ReconstructionDescriptor Descriptor, string PayloadRelativePath, string SidecarRelativePath);
+internal sealed record CameraAgentTimeLapseRawSource(ReconstructionDescriptor Descriptor);
 
 /// <summary>Bounded immediate source lineage for one rendered image, including explicit one/two-frame warmup.</summary>
 public sealed record CameraAgentTimeLapseFrameLineage(

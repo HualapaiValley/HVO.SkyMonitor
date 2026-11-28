@@ -249,8 +249,16 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
     {
         var bundleId = $"bundle-{job.Plan.JobId}";
         var id = CalibrationArtifactPublisher.VirtualBundleArtifactId(bundleId);
-        var evidence = await _publisher.Silo!.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloBundleRevision,
-            CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
+        byte[]? evidence;
+        try
+        {
+            evidence = await _publisher.Silo.ReadMetadataAsync(id, CalibrationArtifactPublisher.SiloBundleRevision,
+                CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (FileNotFoundException exception)
+        {
+            throw new CalibrationPublicationConflictException("The committed Silo calibration envelope is missing.", exception);
+        }
         if (evidence is null)
         {
             if (AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("profile-published"))
@@ -274,10 +282,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 return await _store.CancelAcquisitionAsync(
                     current.Plan.JobId, CancellationToken.None).ConfigureAwait(false);
             }
-            var markerCommitted = _publisher.Silo is null
-                ? await _publisher.EnsureCommittedEvidenceIsCompleteAsync(ProfilePath(current.Plan), EvidencePaths(current.Plan),
-                    AcquisitionPhaseRank(current.Phase) >= AcquisitionPhaseRank("profile-published"), CancellationToken.None).ConfigureAwait(false)
-                : await ReadSiloBundleAsync(current, CancellationToken.None).ConfigureAwait(false) is not null;
+            var markerCommitted = await ReadSiloBundleAsync(current, CancellationToken.None).ConfigureAwait(false) is not null;
             return markerCommitted
                 ? await ExecuteAsync(current, CancellationToken.None).ConfigureAwait(false)
                 : await _store.CancelAcquisitionAsync(current.Plan.JobId, CancellationToken.None).ConfigureAwait(false);
@@ -309,16 +314,15 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         await _admissionCoordinator.EnsureLifecycleCaptureAllowedAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_publisher.Silo is not null &&
-                await ReadSiloBundleAsync(job, cancellationToken).ConfigureAwait(false) is { } settled)
+            if (await ReadSiloBundleAsync(job, cancellationToken).ConfigureAwait(false) is { } settled &&
+                job.State == CalibrationAcquisitionStates.Publishing &&
+                AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("master-defect"))
             {
                 _ = await _store.AdoptPublishedBundleAsync(settled, CancellationToken.None).ConfigureAwait(false);
+                await RecordPublishedProfileAsync(job).ConfigureAwait(false);
                 return await _store.CompleteAcquisitionAsync(job.Plan.JobId, settled.BundleId, CancellationToken.None).ConfigureAwait(false);
             }
-            var markerCommitted = _publisher.Silo is null &&
-                await _publisher.EnsureCommittedEvidenceIsCompleteAsync(ProfilePath(job.Plan), EvidencePaths(job.Plan),
-                    AcquisitionPhaseRank(job.Phase) >= AcquisitionPhaseRank("profile-published"), cancellationToken).ConfigureAwait(false);
-            if (!markerCommitted && job.AttemptCount >= SqliteCalibrationLibraryStore.MaximumAcquisitionAttempts)
+            if (job.AttemptCount >= SqliteCalibrationLibraryStore.MaximumAcquisitionAttempts)
             {
                 _ = await _store.FailAcquisitionAsync(
                     job.Plan.JobId, CalibrationLibraryReasonCodes.AcquisitionFailure, CancellationToken.None)
@@ -415,18 +419,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             var profileJson = ReferenceCalibrationProfileJson.Serialize(profile);
             var profilePath = ProfilePath(job.Plan);
             var bundle = CreateBundle(job.Plan, profilePath, profileJson, artifacts);
-            if (_publisher.Silo is null)
-                await _publisher.PublishProfileMarkerAsync(profilePath, profileJson, cancellationToken).ConfigureAwait(false);
-            else
-                await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
-            if (job.State == CalibrationAcquisitionStates.Publishing &&
-                AcquisitionPhaseRank(job.Phase) < AcquisitionPhaseRank("profile-published"))
-            {
-                job = await _store.RecordAcquisitionProgressAsync(
-                    job.Plan.JobId, CalibrationAcquisitionStates.Publishing, "profile-published", CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
+            await _publisher.PublishSiloBundleAsync(bundle, profileJson, cancellationToken).ConfigureAwait(false);
+            await RecordPublishedProfileAsync(job).ConfigureAwait(false);
             _ = await _store.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
             _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, profilePath);
             return await _store.CompleteAcquisitionAsync(
@@ -468,6 +462,15 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                     "Virtual calibration acquisition exhausted its retry limit.", exception);
             }
             throw;
+        }
+    }
+
+    private async Task RecordPublishedProfileAsync(CalibrationAcquisitionJobSnapshot job)
+    {
+        if (AcquisitionPhaseRank(job.Phase) < AcquisitionPhaseRank("profile-published"))
+        {
+            _ = await _store.RecordAcquisitionProgressAsync(job.Plan.JobId, CalibrationAcquisitionStates.Publishing,
+                "profile-published", CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -762,27 +765,6 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
 
     private static string ProfilePath(VirtualCalibrationAcquisitionPlanV1 plan)
         => $"{BasePath(plan)}/reference-calibration-profile.json";
-
-    private static List<string> EvidencePaths(VirtualCalibrationAcquisitionPlanV1 plan)
-    {
-        var paths = new List<string>(32);
-        foreach (var kind in CalibrationReferenceKinds.All)
-        {
-            for (var sourceIndex = 0; sourceIndex < CalibrationMasterBuilder.RequiredSourceCount; sourceIndex++)
-            {
-                var manifest = $"{BasePath(plan)}/sources/{kind}-{sourceIndex}.json";
-                paths.Add(PayloadPath(manifest));
-                paths.Add(manifest);
-            }
-        }
-        foreach (var kind in CalibrationReferenceKinds.All)
-        {
-            var manifest = $"{BasePath(plan)}/masters/{kind}.json";
-            paths.Add(PayloadPath(manifest));
-            paths.Add(manifest);
-        }
-        return paths;
-    }
 
     private static string PayloadPath(string manifestPath)
         => string.Concat(manifestPath.AsSpan(0, manifestPath.Length - ".json".Length), ".bin");

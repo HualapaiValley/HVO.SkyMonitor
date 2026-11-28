@@ -351,7 +351,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     scene,
                     CancellationToken.None).ConfigureAwait(false);
                 var submission = WithSceneProvenance(CreateSubmission(), sceneId, stageKey);
-                receipt = await ingress.AcceptAsync(upgradedConfig, submission, CancellationToken.None).ConfigureAwait(false)
+                receipt = await ingress.AcceptAndSettleAsync(upgradedConfig, submission, CancellationToken.None).ConfigureAwait(false)
                     ?? throw new AssertFailedException("Raw capture must be accepted.");
             }
 

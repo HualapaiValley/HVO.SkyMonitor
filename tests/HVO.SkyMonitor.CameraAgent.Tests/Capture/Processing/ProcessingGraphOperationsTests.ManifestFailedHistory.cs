@@ -89,11 +89,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(retained, await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false));
                 var store = restarted.GetRequiredService<SqliteCaptureProcessingStore>();
                 var output = (await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false))!;
-                var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", output.OutputIdentitySha256,
-                    output.PayloadRelativePath, output.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired", 0);
-                await store.PlanLifecycleOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, store).ResumeOperationAsync(deletion, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNull(await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false));
+                await SiloInfrastructureFixture.ExpireLocalMemberAsync(restarted, output.ArtifactId,
+                    output.OutputIdentitySha256, CancellationToken.None).ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(operations, id, unavailable).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();

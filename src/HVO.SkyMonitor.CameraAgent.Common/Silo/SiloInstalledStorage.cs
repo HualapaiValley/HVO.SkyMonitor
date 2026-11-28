@@ -2,7 +2,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Globalization;
@@ -35,18 +35,16 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     internal SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
         ISiloFaults? faults, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore, SiloInstalledStore? installedStore,
-        ISiloPayloadSpool? payloadSpool, SiloStateRoot? fixtureLease = null)
+        ISiloPayloadSpool? payloadSpool)
     {
         _clock = clock;
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(rawRoot);
         _rawRoot = PhysicalRoot.Open(rawRoot);
         var statePath = _rawRoot.Resolve(".silo");
-        _root = fixtureLease ?? SiloStateRoot.Acquire(statePath);
+        _root = SiloStateRoot.Acquire(statePath);
         try
         {
-            if (fixtureLease is not null)
-                _root.PrepareSpool();
             Binding = settings.Binding;
             _publicationStateExisted = File.Exists(_root.PublicationDatabasePath);
             Spool = payloadSpool ?? new SiloFilePayloadSpool(_root, settings.MaximumStagedBytes, settings.MaximumStagedFiles);

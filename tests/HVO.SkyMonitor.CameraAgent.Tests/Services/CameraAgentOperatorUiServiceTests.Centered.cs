@@ -35,10 +35,9 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         using var fixture = await CameraAgentArtifactServiceTests.ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -313,10 +312,9 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         using var fixture = await CameraAgentArtifactServiceTests.ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -376,11 +374,13 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             new("scene-constellations", 10, true), input.Raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
         Assert.IsNotNull(enriched);
 
-        // Corrupt the second layer's artifact on disk; first layer and ready base MUST remain displayable!
+        // Lose the second layer's exact Silo version while the first layer and base remain intact.
         var badLayerArtifactId = enriched.Revision.Manifest.Layers.Single(layer => layer.LayerKind == "scene-constellations").SourceProduct.ArtifactId;
         var badStored = await fixture.ProcessingStore.ReadOutputByArtifactIdAsync(badLayerArtifactId, token).ConfigureAwait(false);
         Assert.IsNotNull(badStored);
-        File.Delete(Path.Combine(fixture.Root, badStored.PayloadRelativePath));
+        var locator = await fixture.ReadLocalLocatorAsync(badLayerArtifactId, badStored.OutputIdentitySha256, token)
+            .ConfigureAwait(false);
+        fixture.Objects.Delete(locator);
 
         var partial = await presentationReader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, token).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, partial.Status);

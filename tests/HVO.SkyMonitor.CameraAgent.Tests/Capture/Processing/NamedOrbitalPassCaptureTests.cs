@@ -155,6 +155,7 @@ public sealed class NamedOrbitalPassCaptureTests
             {
                 var receipt = captures[index];
                 var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, ct).ConfigureAwait(false);
                 var outcome = outcomes[captureId];
                 var measurement = await trails.GetCaptureTrailsAsync(captureId, ct).ConfigureAwait(false);
                 var view = await presentation.GetAsync(captureId, ct).ConfigureAwait(false);
@@ -165,8 +166,7 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.IsNotNull(satelliteLayer);
                 Assert.IsNotNull(overlay);
                 var evidence = predictionNode.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
-                var status = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
-                    Path.Combine(ingressRoot, evidence.PayloadRelativePath), ct).ConfigureAwait(false));
+                var status = CaptureSatelliteProducts.ParseStatus(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, evidence.ArtifactId, ct).ConfigureAwait(false));
                 var linear = await processing.ReadNodeAsync(captureId, "linear", ct).ConfigureAwait(false);
                 Assert.IsNotNull(linear);
                 Assert.IsTrue(linear.Outputs.Any(static output => output.Artifact.Role == FrameArtifactRole.Calibrated));
@@ -222,12 +222,10 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.IsTrue(view.Presentation.Layers.Single(static layer => layer.Kind == OrbitalTrackPresentation.LayerKind)
                     .Satellite!.Renderable);
                 var binding = predictionNode.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
-                var bound = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(
-                    Path.Combine(ingressRoot, binding.PayloadRelativePath), ct).ConfigureAwait(false));
+                var bound = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, binding.ArtifactId, ct).ConfigureAwait(false));
                 Assert.AreEqual(input.Snapshot.Manifest.ManifestSha256, CaptureSatelliteProducts.ReadSnapshotManifest(bound)!.ManifestSha256);
                 var predictionFile = predictionNode.Outputs.Single(static output => output.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
-                var prediction = CaptureOrbitalPredictionJson.Parse(await File.ReadAllBytesAsync(
-                    Path.Combine(ingressRoot, predictionFile.PayloadRelativePath), ct).ConfigureAwait(false),
+                var prediction = CaptureOrbitalPredictionJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, predictionFile.ArtifactId, ct).ConfigureAwait(false),
                     CaptureSatelliteProducts.Restore(bound, OrbitalSnapshotReadResult.Available(input.Snapshot)));
                 CollectionAssert.AreEquivalent(CatalogNumbers, prediction.Tracks.Select(track => track.Lineage.ObjectIdentity.CatalogNumber).ToArray());
                 foreach (var track in prediction.Tracks)
@@ -249,7 +247,7 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.IsNotEmpty(measurement.Trails, $"Slot {index + 101} must contain a measured trail.");
                 var bright = input.Tracks[(index, CatalogNumbers[0])];
                 var dark = input.Tracks[(index, CatalogNumbers[1])];
-                var rawBytes = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, ct).ConfigureAwait(false);
+                var rawBytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, receipt.Manifest.Descriptor.Artifact.ArtifactId, ct).ConfigureAwait(false);
                 var brightCodes = SampleCorridor(rawBytes, bright, bayer);
                 var darkCodes = SampleCorridor(rawBytes, dark, bayer);
                 Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
@@ -588,8 +586,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var node = await store.ReadNodeAsync(manifest.Descriptor.Capture.CaptureId, "satellite", ct).ConfigureAwait(false);
             Assert.IsNotNull(node);
             var status = node.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
-            var prediction = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
-                Path.Combine(ingressRoot, status.PayloadRelativePath), ct).ConfigureAwait(false));
+            var prediction = CaptureSatelliteProducts.ParseStatus(await SiloInfrastructureFixture.ReadArtifactBytesAsync(reopened, status.ArtifactId, ct).ConfigureAwait(false));
             TestContext.WriteLine($"observed={shutter:O} descriptor={descriptorStart:O} mapping={manifest.Scene?.VirtualExposure?.TimeMapping} " +
                 $"integration={manifest.Scene?.TransientScenario?.IntegrationStartUtc:O} prediction={prediction.Exposure.StartUtc:O} " +
                 $"reason={prediction.Reason} renderable={prediction.Renderable} tracks={prediction.TrackCount}");
@@ -604,8 +601,7 @@ public sealed class NamedOrbitalPassCaptureTests
             Assert.AreEqual(expectedReason == "None" ? 2 : 0, prediction.TrackCount);
             Assert.AreEqual(expectedReason == "None", prediction.Renderable);
             var evidence = node.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
-            var retained = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(
-                Path.Combine(ingressRoot, evidence.PayloadRelativePath), ct).ConfigureAwait(false));
+            var retained = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(reopened, evidence.ArtifactId, ct).ConfigureAwait(false));
             Assert.AreEqual(shutterDelayTicks == 5_000 ? manifest.Scene!.VirtualExposure : null, retained.VirtualShutter);
             var orbital = node.Outputs.SingleOrDefault(static output =>
                 output.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
@@ -616,8 +612,7 @@ public sealed class NamedOrbitalPassCaptureTests
                     .ReadExactAsync(input.Snapshot.Manifest.ManifestSha256, ct).ConfigureAwait(false);
                 var restored = CaptureSatelliteProducts.Restore(retained, exact);
                 Assert.AreEqual(prediction.Exposure, restored.Plan.Timing.Exposure);
-                var tracks = CaptureOrbitalPredictionJson.Parse(await File.ReadAllBytesAsync(
-                    Path.Combine(ingressRoot, orbital.PayloadRelativePath), ct).ConfigureAwait(false), restored);
+                var tracks = CaptureOrbitalPredictionJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(reopened, orbital.ArtifactId, ct).ConfigureAwait(false), restored);
                 Assert.HasCount(2, tracks.Tracks);
                 Assert.IsTrue(tracks.Tracks.All(track => track.RequestedInterval == prediction.Exposure));
             }
@@ -848,10 +843,8 @@ public sealed class NamedOrbitalPassCaptureTests
                         satelliteStatusVariant = "capture-satellites-v1-status" }),
                 new("Storage", "storage", DependsOn: ["$raw", "scene", "linear", "single-contributor-base", "preview", "scene-layer", "environment",
                     "satellite", "satellite-layer", "overlay"], Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions
-                        {
-                            StorageRoot = storageRoot, UpdateLatestFrame = false
-                        }, Json))
+                        new SiloCaptureProcessingStepOptions
+                        { UpdateLatestFrame = false }, Json))
             ])
         };
     }
@@ -887,7 +880,7 @@ public sealed class NamedOrbitalPassCaptureTests
             ["CameraAgent:SatellitePlanning:LeapSecondsPath"] = leapOverride?.Path ?? Path.Combine(packageRoot, "leaps"),
             ["CameraAgent:SatellitePlanning:LeapSecondsSha256"] = leapOverride?.Sha256 ?? input.Time.LeapSecondsSha256
         }).Build();
-        services.AddCameraAgentInfrastructure(configuration);
+        services.AddSiloTestInfrastructure(configuration);
         services.AddCameraAgentSatellitePlanning(configuration);
         services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());

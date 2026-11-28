@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
@@ -40,6 +41,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private readonly string _root;
     private readonly CatalogFixtureInstallation _catalog;
     private readonly Dictionary<string, string?> _overrides;
+    private readonly SiloInfrastructureFixture.Bucket _silo;
     private readonly Action<IServiceCollection>? _configureServices;
     private bool _preserveRoot;
     private bool _reloadConfigurationOnChange = true;
@@ -53,11 +55,14 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         string root,
         CatalogFixtureInstallation catalog,
         Dictionary<string, string?> overrides,
-        Action<IServiceCollection>? configureServices)
+        Action<IServiceCollection>? configureServices,
+        SiloInfrastructureFixture.Bucket? installedBucket)
     {
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
+        _silo = installedBucket ?? SiloInfrastructureFixture.GetOrCreateBucket(root);
+        _silo.Configure(overrides);
         _configureServices = configureServices;
     }
 
@@ -89,7 +94,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool preserveRoot = false,
         string? productionCatalogRoot = null,
         IReadOnlyDictionary<string, string?>? settingsOverrides = null,
-        bool reloadConfigurationOnChange = true)
+        bool reloadConfigurationOnChange = true,
+        SiloInfrastructureFixture.Bucket? installedBucket = null)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -185,7 +191,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
         }
 
-        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices)
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices, installedBucket)
         {
             _preserveRoot = preserveRoot,
             _reloadConfigurationOnChange = reloadConfigurationOnChange
@@ -232,7 +238,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     private async Task StartHostAsync()
     {
-        var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices, _reloadConfigurationOnChange);
+        var factory = new BrowserWebApplicationFactory(_root, _overrides, _silo, _configureServices, _reloadConfigurationOnChange);
         factory.UseKestrel(options =>
         {
             options.Listen(IPAddress.Loopback, _restartPort);
@@ -395,6 +401,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private sealed class BrowserWebApplicationFactory(
         string root,
         IReadOnlyDictionary<string, string?> overrides,
+        SiloInfrastructureFixture.Bucket silo,
         Action<IServiceCollection>? configureServices,
         bool reloadConfigurationOnChange) : WebApplicationFactory<Program>
     {
@@ -430,6 +437,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             });
             builder.ConfigureServices(services =>
             {
+                silo.RegisterInstalledStorage(services);
                 services.AddDataProtection()
                     .SetApplicationName("HVO.SkyMonitor.CameraAgent.AcceptanceTests")
                     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(root, "dataprotection")));

@@ -248,9 +248,8 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                 .ConfigureAwait(false);
             if (cloudNode is { Outputs.Count: 1 })
             {
-                var payloadPath = Path.Combine(
-                    root, cloudNode.Outputs[0].PayloadRelativePath.Replace('/', Path.DirectorySeparatorChar));
-                var parsed = CloudAssessmentJson.Parse(await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
+                var parsed = CloudAssessmentJson.Parse(await SiloInfrastructureFixture.ReadProductBytesAsync(
+                    provider, cloudNode.Outputs[0], CancellationToken.None).ConfigureAwait(false));
                 Assert.IsNotNull(parsed.Assessment);
                 reasonCodes = parsed.Assessment.ReasonCodes;
                 precipitationStatus = parsed.Assessment.Environment?.PrecipitationStatus.ToString();
@@ -422,7 +421,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                     // Durable-local outputs require a Storage node to own retention, as in the sample.
                     new CaptureProcessingStepConfig(
                         "Storage", "LocalStorage", Order: 100,
-                        Options: JsonSerializer.SerializeToElement(new { storageRoot = root }),
+                        Options: JsonSerializer.SerializeToElement(new { updateLatestFrame = true }),
                         DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig(
                         "Telemetry", "Telemetry", Order: 1000, DependsOn: ["Calibration", "LocalStorage"])
@@ -544,7 +543,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
             services.AddLogging();
             // The host registers its configuration; the environmental source factory reads source options from it.
             services.AddSingleton<IConfiguration>(configuration);
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             services.AddSingleton<ILoggerProvider>(logs);
             services.Configure<LoggerFilterOptions>(static options => options.MinLevel = LogLevel.Debug);
             // The host (Program.cs) supplies the Data Protection implementation; it is not exercised here.

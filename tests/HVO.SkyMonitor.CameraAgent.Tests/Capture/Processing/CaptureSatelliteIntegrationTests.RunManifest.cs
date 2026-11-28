@@ -51,12 +51,8 @@ public sealed partial class CaptureSatelliteIntegrationTests
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var target = await store.ReadOutputByArtifactIdAsync(layer.Outputs[^1].ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(target);
-            var operation = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", target.OutputIdentitySha256,
-                target.PayloadRelativePath, target.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}",
-                "retention-expired", new FileInfo(Path.Combine(root, target.PayloadRelativePath)).Length + new FileInfo(Path.Combine(root, target.SidecarRelativePath)).Length);
-            await store.PlanLifecycleOperationAsync(operation, CancellationToken.None).ConfigureAwait(false);
-            await new DerivedProductReconciler(root, store).ResumeOperationAsync(operation, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNull(await store.ReadOutputByArtifactIdAsync(target.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, target.ArtifactId, target.OutputIdentitySha256,
+                CancellationToken.None).ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.ArtifactEvidenceUnavailableReason).ConfigureAwait(false);
         }
         finally { Directory.Delete(root, recursive: true); }

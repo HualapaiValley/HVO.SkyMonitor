@@ -287,7 +287,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(configuration);
+        services.AddSiloTestInfrastructure(configuration);
         using var provider = services.BuildServiceProvider();
         var bound = provider.GetRequiredService<ISceneObjectBound>();
 
@@ -313,7 +313,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         services.AddLogging();
         services.AddSingleton<ICelestialCatalog>(catalog);
         services.AddSingleton<TimeProvider>(time);
-        services.AddCameraAgentInfrastructure(configuration);
+        services.AddSiloTestInfrastructure(configuration);
         Program.AddCameraModules(services);
         using var provider = services.BuildServiceProvider();
 
@@ -360,7 +360,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(configuration);
+        services.AddSiloTestInfrastructure(configuration);
         using var provider = services.BuildServiceProvider();
         var bound = provider.GetRequiredService<ISceneObjectBound>();
         var workload = await LoadProfileAsync(workloadProfile).ConfigureAwait(false);

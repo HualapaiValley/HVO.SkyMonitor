@@ -38,9 +38,7 @@ internal sealed partial class CaptureProcessingPersistence
                 ValidateProductForPublication(product);
                 if (product.Layout is not { } layout)
                 {
-                    outputs.Add(await PersistMetadataProductAsync(_storageRoot, reference, CenteredWindowCoordinator.RegistrationProducer,
-                        product, BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken,
-                        writeLocalCopies: silo is null).ConfigureAwait(false));
+                    outputs.Add(DescribeMetadataProduct(reference, CenteredWindowCoordinator.RegistrationProducer, product));
                     continue;
                 }
 
@@ -54,7 +52,7 @@ internal sealed partial class CaptureProcessingPersistence
                 var artifact = new FrameArtifact(artifactId, product.Role, frame, product.SourceArtifactIds,
                     product.Recipe.Descriptor.ImplementationVersion);
                 var descriptor = DerivativeDescriptorFactory.Create(reference, artifactId, producer, product);
-                var path = await GetRasterPublicationPathAsync(artifact, descriptor, producer, cancellationToken).ConfigureAwait(false);
+                var path = GetRasterPublicationReference(artifact, descriptor);
                 var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, path, null, producer);
                 outputs.Add(new(product.OutputIdentitySha256, artifactId, path, NormalizeRelativePath(Path.ChangeExtension(path, ".json")),
                     CaptureContractJson.Serialize(manifest), descriptor, null, product.Recipe.IdentitySha256, product.Algorithms,

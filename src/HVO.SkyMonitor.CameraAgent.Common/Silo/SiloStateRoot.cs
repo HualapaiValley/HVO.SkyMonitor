@@ -1,4 +1,4 @@
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
@@ -38,7 +38,7 @@ internal sealed class SiloStateRoot : IDisposable
 
     public string IndexDatabasePath => Root.Resolve(IndexDatabaseFileName);
 
-    public static SiloStateRoot Acquire(string path, bool prepareSpool = true)
+    public static SiloStateRoot Acquire(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         Directory.CreateDirectory(path);
@@ -56,8 +56,7 @@ internal sealed class SiloStateRoot : IDisposable
         try
         {
             var state = new SiloStateRoot(root, lockStream);
-            if (prepareSpool)
-                state.PrepareSpool();
+            state.PrepareSpool();
             return state;
         }
         catch
@@ -67,7 +66,7 @@ internal sealed class SiloStateRoot : IDisposable
         }
     }
 
-    internal void PrepareSpool()
+    private void PrepareSpool()
     {
         var directory = Root.Resolve(SpoolDirectoryName);
         AtomicPublisher.EnsureDirectory(Root, directory);

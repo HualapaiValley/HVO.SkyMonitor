@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
@@ -21,10 +20,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    [DataRow("storageRoot")]
-    [DataRow("retentionDays")]
     [DataRow("updateLatestFrame")]
-    [DataRow("policies")]
+    [DataRow("publishArchive")]
     public async Task StoragePolicyRejectsLocalDraftDivergenceWithoutChangingHostPlans(string member)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-storage-policy-create");
@@ -35,22 +32,21 @@ public sealed partial class ProcessingGraphOperationsTests
             await InitializeStoragePolicyFixtureAsync(provider, profile).ConfigureAwait(false);
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(profile, CancellationToken.None).ConfigureAwait(false);
-            var changed = DivergentStoragePipeline(profile.Pipeline, root, member);
+            var changed = DivergentStoragePipeline(profile.Pipeline, member);
             var error = await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                 await operations.CreateRevisionAsync("storage-policy", "2", changed, "create", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             StringAssert.Contains(error.Message, "capture profile", StringComparison.Ordinal);
             var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, registry.ActiveRevisionId);
             Assert.HasCount(1, registry.Revisions);
-            AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), profile, root);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
 
     [TestMethod]
-    [DataRow("storageRoot")]
-    [DataRow("retentionDays")]
-    public async Task StoragePolicyRejectsLegacyValidateActivateRollbackAndRecoveryAcrossRestart(string member)
+    [DataRow("updateLatestFrame")]
+    [DataRow("publishArchive")]
+    public async Task StoragePolicyRejectsIncompatibleValidateActivateRollbackAndRecoveryAcrossRestart(string member)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-storage-policy-legacy");
         try
@@ -64,10 +60,10 @@ public sealed partial class ProcessingGraphOperationsTests
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var initial = await operations.EnsureConfiguredBasicAsync(profile, CancellationToken.None).ConfigureAwait(false);
                 sourceId = initial.ActiveRevisionId;
-                // Model an immutable draft persisted by the pre-fix UI, using its real snapshot compiler.
+                // Persist a draft captured under a different Silo publication policy.
                 var compiler = typeof(ProcessingGraphOperationsCoordinator).GetMethod("CreateRevisionSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 var snapshot = (ProcessingGraphRevisionSnapshot)compiler.Invoke(operations,
-                    [profile with { Pipeline = DivergentStoragePipeline(profile.Pipeline, root, member) },
+                    [profile with { Pipeline = DivergentStoragePipeline(profile.Pipeline, member) },
                         "legacy-storage", "2", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft,
                         null, CaptureProcessingGraphCompilation.Proposal])!;
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -76,12 +72,11 @@ public sealed partial class ProcessingGraphOperationsTests
                     await operations.ValidateRevisionAsync(legacyId, "validate-rejected", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
                 Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft,
                     (await store.ReadRevisionAsync(legacyId, CancellationToken.None).ConfigureAwait(false)).State.Lifecycle);
-                // A revision already validated by an old host must still be rejected at selection boundaries.
+                // Validation under a different profile does not authorize selection.
                 await store.ValidateRevisionAsync(legacyId, "legacy-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
                 var oldActive = await store.ActivateRevisionAsync(legacyId, initial.StateVersion, "legacy-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
                 var oldRollback = await store.RollbackRevisionAsync(sourceId, oldActive.StateVersion, "legacy-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
                 await AssertStorageCommandsRejectedAndRawBindingPreservedAsync(operations, profile, legacyId, oldRollback.StateVersion, "before").ConfigureAwait(false);
-                AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), profile, root);
             }
             using (var restarted = CreateRemainingOptionsProvider(root))
             {
@@ -102,8 +97,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var active = await operations.ActivateRevisionAsync(safe.RevisionId, initial.StateVersion, "safe-activate", "test", null, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(safe.RevisionId, active.ActiveRevisionId);
                 var selected = await operations.SelectLiveRevisionAsync(profile, false, CancellationToken.None).ConfigureAwait(false);
-                Assert.AreEqual(root, selected.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value.GetProperty("StorageRoot").GetString());
-                AssertProfileStoragePlans(restarted.GetRequiredService<ICameraAgentConfigurationAccessor>(), profile, root);
+                Assert.IsTrue(selected.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value.GetProperty("UpdateLatestFrame").GetBoolean());
                 var rolledBack = await operations.RollbackRevisionAsync(sourceId, active.StateVersion, "safe-rollback", "test", null, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(sourceId, rolledBack.ActiveRevisionId);
             }
@@ -112,7 +106,6 @@ public sealed partial class ProcessingGraphOperationsTests
             var restored = reopened.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             await restored.EnsureConfiguredBasicAsync(profile, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(sourceId, (await restored.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
-            AssertProfileStoragePlans(reopened.GetRequiredService<ICameraAgentConfigurationAccessor>(), profile, root);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -129,7 +122,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var current = stale with
             {
                 Pipeline = DivergentStoragePipeline(
-                DivergentStoragePipeline(stale.Pipeline, root, "retentionDays"), root, "updateLatestFrame")
+                DivergentStoragePipeline(stale.Pipeline, "updateLatestFrame"), "publishArchive")
             };
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(stale, CancellationToken.None).ConfigureAwait(false);
@@ -143,9 +136,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(accepted.RevisionId, active.ActiveRevisionId);
             var selected = await operations.SelectLiveRevisionAsync(current, false, CancellationToken.None).ConfigureAwait(false);
             var storage = selected.Pipeline.Steps.Single(step => step.Type == "Storage").Options!.Value;
-            Assert.AreEqual(90, storage.GetProperty("RetentionDays").GetInt32());
             Assert.IsFalse(storage.GetProperty("UpdateLatestFrame").GetBoolean());
-            AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), current, root, 90);
+            Assert.IsTrue(storage.GetProperty("PublishArchive").GetBoolean());
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -198,7 +190,7 @@ public sealed partial class ProcessingGraphOperationsTests
                         new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue, DayOffset: 1),
                         "always")).ToArray())
             };
-            var current = file with { Pipeline = DivergentStoragePipeline(file.Pipeline, root, "retentionDays") };
+            var current = file with { Pipeline = DivergentStoragePipeline(file.Pipeline, "updateLatestFrame") };
             await InitializeStoragePolicyFixtureAsync(provider, file).ConfigureAwait(false);
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             await operations.EnsureConfiguredBasicAsync(file, CancellationToken.None).ConfigureAwait(false);
@@ -209,7 +201,6 @@ public sealed partial class ProcessingGraphOperationsTests
             var accepted = await operations.CreateRevisionAsync("schedule-policy", "1", snapshot.Configuration.Pipeline,
                 "schedule-create", "test", null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, accepted.Lifecycle);
-            AssertProfileStoragePlans(provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), snapshot.Configuration, root, 90);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -222,16 +213,11 @@ public sealed partial class ProcessingGraphOperationsTests
             { Steps = [.. RemainingOptionsPipeline(root).Steps.Select(step => step.Type == "Storage" ? step with { DependsOn = ["$raw", "scene"] } : step)] }
         };
 
-    private static CapturePipelineConfig DivergentStoragePipeline(CapturePipelineConfig source, string root, string member)
+    private static CapturePipelineConfig DivergentStoragePipeline(CapturePipelineConfig source, string member)
         => source with
         {
             Steps = [.. source.Steps.Select(step => step.Type == "Storage" ? step with
-        { Options = ChangeStorageMember(step.Options!.Value, member, member switch
-        {
-            "storageRoot" => JsonSerializer.Serialize(Path.Combine(root, "edited")),
-            "retentionDays" => "90", "updateLatestFrame" => "false",
-            _ => "[{\"Role\":\"Raw\",\"RetentionDays\":90}]"
-        }) } : step)]
+        { Options = ChangeStorageMember(step.Options!.Value, member, member == "updateLatestFrame" ? "false" : "true") } : step)]
         };
 
     private static JsonElement ChangeStorageMember(JsonElement source, string member, string token)
@@ -242,20 +228,4 @@ public sealed partial class ProcessingGraphOperationsTests
         return JsonSerializer.SerializeToElement(json);
     }
 
-    private static void AssertProfileStoragePlans(ICameraAgentConfigurationAccessor accessor, CameraModuleConfig profile, string root,
-        int retentionDays = 30)
-    {
-        var host = new CameraAgentHostOptions
-        {
-            RawIngressRoot = root,
-            CaptureDistribution = new() { }
-        };
-        using var retention = new RetentionBackgroundService(accessor, Options.Create(host), TimeProvider.System, Mock.Of<IStorageCapacityProvider>(), new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance);
-        var planner = typeof(RetentionBackgroundService).GetMethod("BuildRetentionPlans", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var plans = (List<StorageRetentionPlan>)planner.Invoke(retention, [profile])!;
-        Assert.HasCount(1, plans);
-        Assert.AreEqual(Path.GetFullPath(root), plans[0].StorageRoot);
-        Assert.AreEqual(retentionDays, plans[0].RetentionDays);
-
-    }
 }

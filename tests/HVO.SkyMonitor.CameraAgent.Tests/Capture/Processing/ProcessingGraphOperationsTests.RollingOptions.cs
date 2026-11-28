@@ -40,13 +40,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "test", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             var captures = new List<RawCaptureReceipt>();
             for (var index = 0; index < size - 1; index++)
-                captures.Add((await ingress.AcceptAsync(config, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
+                captures.Add((await ingress.AcceptAndSettleAsync(config, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
             var center = captures[size / 2];
             var submission = new ProcessingReplaySubmission(center.Manifest.Descriptor.Capture.CaptureId,
                 draft.RevisionId, center.Manifest.Descriptor.Artifact.ArtifactId);
             await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
                 await operations.SubmitReplayAsync(submission, "incomplete", "test", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            captures.Add((await ingress.AcceptAsync(config, CreateSubmission(size - 1, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
+            captures.Add((await ingress.AcceptAndSettleAsync(config, CreateSubmission(size - 1, CameraPixelFormat.Mono16), CancellationToken.None).ConfigureAwait(false))!);
             var replay = await operations.SubmitReplayAsync(submission, "complete", "test", CancellationToken.None).ConfigureAwait(false);
             var frozen = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
                 .ReadFrozenReplayRawInputsAsync(replay.Execution.ExecutionId, "rolling", CancellationToken.None).ConfigureAwait(false);
@@ -126,8 +126,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(TimeSpan.FromSeconds(1), changedOutput.TotalIntegration);
             Assert.HasCount(1, changedOutput.Descriptor!.Artifact.SourceArtifactIds);
             Assert.AreEqual("kept", changed.Nodes.Single().Outputs.Single().Variant);
-            Assert.AreNotEqual(Sha256OfFile(Path.Combine(root, originalOutput.PayloadRelativePath)),
-                Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath)));
+            var changedSha = await ReadArtifactShaAsync(provider, changedOutput.ArtifactId).ConfigureAwait(false);
+            Assert.AreNotEqual(await ReadArtifactShaAsync(provider, originalOutput.ArtifactId).ConfigureAwait(false), changedSha);
             var retained = await operations.ReadRevisionPipelineAsync(initial.ActiveRevisionId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(originalPipeline.Steps[0].Options!.Value.GetRawText(), retained!.Steps[0].Options!.Value.GetRawText());
             var replay = await operations.SubmitReplayAsync(new ProcessingReplaySubmission(original.Execution.CaptureId,
@@ -140,7 +140,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var restored = await Capture(7).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, restored.Execution.GraphRevisionId);
             Assert.AreEqual(TimeSpan.FromSeconds(3), (await store.ReadNodeAsync(restored.Execution.CaptureId, "rolling", CancellationToken.None).ConfigureAwait(false))!.Outputs.Single().TotalIntegration);
-            Console.WriteLine($"{key}: warmup=1s; original=3s; edited=1s; rollback=3s; old={initial.ActiveRevisionId}; new={draft.RevisionId}; payload={Sha256OfFile(Path.Combine(root, changedOutput.PayloadRelativePath))}");
+            Console.WriteLine($"{key}: warmup=1s; original=3s; edited=1s; rollback=3s; old={initial.ActiveRevisionId}; new={draft.RevisionId}; payload={changedSha}");
         }
         finally
         {

@@ -22,14 +22,17 @@ public sealed partial class VirtualSkyCameraModuleTests
         var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "installer-controlled-night.json");
         using var before = JsonDocument.Parse(await File.ReadAllTextAsync(path).ConfigureAwait(false));
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-lighting-{Guid.NewGuid():N}");
+        var runtimePath = Path.Combine(root, "cameraagent.json");
         var options = Options.Create(new CameraAgentHostOptions
         {
-            ConfigFilePath = path,
+            ConfigFilePath = runtimePath,
             RawIngressRoot = root,
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         });
         try
         {
+            Directory.CreateDirectory(root);
+            File.Copy(path, runtimePath);
             var loader = new FileCameraAgentConfigurationLoader(options, NullLogger<FileCameraAgentConfigurationLoader>.Instance);
             var baseline = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             var ingress = new InstallerLightingJournal(root);

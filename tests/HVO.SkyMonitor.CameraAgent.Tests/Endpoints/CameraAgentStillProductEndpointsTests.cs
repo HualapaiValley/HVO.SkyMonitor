@@ -59,26 +59,19 @@ public sealed class CameraAgentStillProductEndpointsTests
     }
 
     [TestMethod]
-    [DataRow("GetCameraAgentStillProductPreview", "*.jpg", false)]
-    [DataRow("GetCameraAgentStillProductPreview", "*.jpg", true)]
-    [DataRow("GetCameraAgentStillProductProvenance", "*.provenance.json", false)]
-    [DataRow("GetCameraAgentStillProductProvenance", "*.provenance.json", true)]
-    public async Task ActualCorruptPublication_ReturnsSanitizedUnavailable(string name, string pattern, bool missing)
+    [DataRow("GetCameraAgentStillProductPreview", "rendition-1", false)]
+    [DataRow("GetCameraAgentStillProductPreview", "rendition-1", true)]
+    [DataRow("GetCameraAgentStillProductProvenance", "provenance-1", false)]
+    [DataRow("GetCameraAgentStillProductProvenance", "provenance-1", true)]
+    public async Task ActualCorruptPublication_ReturnsSanitizedUnavailable(string name, string revision, bool missing)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-corruption");
         try
         {
-            using var store = Store(root);
+            using var silo = new NightlySiloFixture(root);
+            using var store = Store(silo, root);
             var detail = await PublishAsync(store).ConfigureAwait(false);
-            var file = Directory.GetFiles(Path.Combine(root, SqliteNightlyProductStore.ProductDirectoryName), pattern,
-                SearchOption.AllDirectories).Single();
-            if (missing) File.Delete(file);
-            else
-            {
-                var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
-                bytes[^1] ^= 1;
-                await File.WriteAllBytesAsync(file, bytes).ConfigureAwait(false);
-            }
+            await silo.DamageAsync(detail.Summary.ProductId, revision, missing).ConfigureAwait(false);
             using var app = CatalogApp(store);
             var context = Context(app);
             context.Request.RouteValues["productId"] = detail.Summary.ProductId.ToString("D");
@@ -120,7 +113,8 @@ public sealed class CameraAgentStillProductEndpointsTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-media");
         try
         {
-            using var store = Store(root);
+            using var silo = new NightlySiloFixture(root);
+            using var store = Store(silo, root);
             var detail = await PublishAsync(store).ConfigureAwait(false);
             using var app = CatalogApp(store);
             var etag = $"\"{detail.RenditionSha256.ToUpperInvariant()}\"";
@@ -172,7 +166,8 @@ public sealed class CameraAgentStillProductEndpointsTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-still-api-projections");
         try
         {
-            using var store = Store(root);
+            using var silo = new NightlySiloFixture(root);
+            using var store = Store(silo, root);
             var detail = await PublishAsync(store).ConfigureAwait(false);
             using var app = CatalogApp(store);
 
@@ -217,8 +212,8 @@ public sealed class CameraAgentStillProductEndpointsTests
         Assert.IsFalse(body.Contains("checksum", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static SqliteNightlyProductStore Store(string root) =>
-        new(NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options()),
+    private static SqliteNightlyProductStore Store(NightlySiloFixture silo, string root) =>
+        silo.OpenStore(NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options()),
             new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
 
     private static async Task<NightlyProductDetail> PublishAsync(SqliteNightlyProductStore store)

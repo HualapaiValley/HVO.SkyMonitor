@@ -1,7 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Deployment;

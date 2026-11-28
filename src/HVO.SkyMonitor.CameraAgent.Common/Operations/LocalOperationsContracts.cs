@@ -1,7 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -62,90 +61,8 @@ public sealed class CameraAgentStorageResolver(
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(options);
 
-        return ResolveLocations(
-            ResolveLocalStorageRoots(configuration, options),
-            options.RawIngressRoot);
+        return [new CameraAgentStorageLocation("raw-ingress", Path.GetFullPath(options.RawIngressRoot))];
     }
-
-    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web)
-    {
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
-    };
-
-    private static List<string> ResolveLocalStorageRoots(
-        CameraModuleConfig config,
-        CameraAgentHostOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(options);
-        var roots = new List<string> { Path.GetFullPath(options.RawIngressRoot) };
-        foreach (var step in config.Pipeline.Steps)
-        {
-            if (!IsStorageStep(step.Type) || step.Enabled == false)
-            {
-                continue;
-            }
-
-            var parsed = ParseStorageOptions(step.Options);
-            if (parsed is null || string.IsNullOrWhiteSpace(parsed.StorageRoot))
-            {
-                continue;
-            }
-
-            var root = Path.GetFullPath(parsed.StorageRoot);
-            if (!roots.Any(existing => PathsEqual(existing, root)))
-            {
-                roots.Add(root);
-            }
-        }
-        return roots;
-    }
-
-    private static bool IsStorageStep(string typeName)
-        => string.Equals(typeName, FileStorageCaptureProcessingStep.StableAlias, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(typeName.Split(',', 2)[0].Trim(), nameof(FileStorageCaptureProcessingStep), StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(typeName.Split(',', 2)[0].Trim(), typeof(FileStorageCaptureProcessingStep).FullName, StringComparison.OrdinalIgnoreCase);
-
-    private static FileStorageCaptureProcessingStepOptions? ParseStorageOptions(System.Text.Json.JsonElement? options)
-    {
-        if (options is null)
-        {
-            return new FileStorageCaptureProcessingStepOptions();
-        }
-        try
-        {
-            return System.Text.Json.JsonSerializer.Deserialize<FileStorageCaptureProcessingStepOptions>(
-                options.Value.GetRawText(), SerializerOptions);
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return null;
-        }
-    }
-
-
-    private static List<CameraAgentStorageLocation> ResolveLocations(
-        List<string> roots,
-        string rawIngressRoot)
-    {
-        var rawRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawIngressRoot));
-        var locations = new List<CameraAgentStorageLocation>(roots.Count);
-        var nextStorage = 1;
-        foreach (var configuredRoot in roots)
-        {
-            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(configuredRoot));
-            var alias = PathsEqual(root, rawRoot) ? "raw-ingress" : $"storage-{nextStorage++}";
-            locations.Add(new CameraAgentStorageLocation(alias, root));
-        }
-
-        return locations;
-    }
-
-    private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            left,
-            right,
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 }
 
 public static class QuarantineOperationReasonCodes

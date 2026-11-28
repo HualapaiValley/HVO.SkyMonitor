@@ -48,6 +48,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
             {
                 config = Configuration(root, f);
                 receipt = await CaptureAsync(provider, config, f).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
                 var output = await ProcessAsync(provider, config).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, output.Outcome, output.Reason);
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -62,10 +63,12 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.IsNotNull(layerNode);
                 Assert.HasCount(2, layerNode.Outputs);
                 checksums = node.Outputs.ToDictionary(static p => p.Artifact.Variant, static p => p.Artifact.ChecksumSha256);
-                var evidence = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                var input = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
+                var evidence = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    provider, input.ArtifactId, CancellationToken.None).ConfigureAwait(false));
                 var prediction = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath)).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, prediction.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false);
                 var independentRaw = f.Raw with
                 {
                     ArtifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId,
@@ -99,7 +102,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.IsNotNull(node);
                 foreach (var product in node.Outputs)
                     Assert.AreEqual(checksums[product.Artifact.Variant], ProcessingIdentity.ComputePayloadSha256(
-                        await File.ReadAllBytesAsync(Path.Combine(root, product.PayloadRelativePath)).ConfigureAwait(false)));
+                        await SiloInfrastructureFixture.ReadArtifactBytesAsync(restarted, product.ArtifactId, CancellationToken.None).ConfigureAwait(false)));
                 var presentation = await restarted.GetRequiredService<ICameraAgentLayeredPresentationService>()
                     .GetAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, presentation.Status, presentation.Reason);
@@ -163,6 +166,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         Assert.AreEqual(reference.ArtifactId, layer.Evidence!.ArtifactId);
         Assert.IsNotNull(layer.Drawable);
         Assert.IsFalse(layer.Drawable.EnabledByDefault);
+        await SiloInfrastructureFixture.SettleViewChangesAsync(provider, token).ConfigureAwait(false);
 
         var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
         var source = await persistence.ReadCenteredViewParentAsync(exposure.CaptureId, output.ArtifactId, token).ConfigureAwait(false);
@@ -250,10 +254,12 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     "satellite", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(node);
                 if (frozen is not null)
-                    CollectionAssert.AreEqual(frozen, await File.ReadAllBytesAsync(Path.Combine(root,
-                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).PayloadRelativePath)).ConfigureAwait(false));
-                CollectionAssert.AreEqual(frozenInput, await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                    CollectionAssert.AreEqual(frozen, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).ArtifactId,
+                        CancellationToken.None).ConfigureAwait(false));
+                CollectionAssert.AreEqual(frozenInput, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).ArtifactId,
+                    CancellationToken.None).ConfigureAwait(false));
             }
         }
         finally { Directory.Delete(root, true); }
@@ -272,7 +278,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton<TimeProvider>(clock);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
@@ -308,8 +314,8 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("SatelliteFixtureManifest", "manifest", DependsOn: ["preview", "satellite", "satellite-layer"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
             new("Storage", "storage", DependsOn: ["$raw", "preview", "satellite", "satellite-layer", "manifest"],
-                Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = root, UpdateLatestFrame = false }))
+                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                { UpdateLatestFrame = false }))
         ])
         };
 

@@ -57,8 +57,6 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "Omitted")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "blank")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "clipped")]
-    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", true,
-        DisplayName = "ExposureMeasurement_OperationsReopensOriginalMeasurementAfterLinearRetentionDeletion")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.LeftShiftedV1,
         DisplayName = "ExposureMeasurement_CenteredLeftShiftedKeepsQualifiedStoredLevels")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.FullRangeScaledV1,
@@ -67,8 +65,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         DisplayName = "ExposureMeasurement_PublicationIoRetriesOnceAndFencesThePreviousLease")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 2,
         DisplayName = "ExposureMeasurement_PublicationIoStopsAtTheExistingAttemptBound")]
-    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
-        0, "expired", DisplayName = "ExposureMeasurement_OperationsRecognizesDeletedMeasurementSlot")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
         0, "corrupt", DisplayName = "ExposureMeasurement_OperationsRecognizesCorruptCommittedJournal")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
@@ -116,10 +112,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             {
                 new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
                 new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions
-                    {
-                        StorageRoot = Path.Combine(root, "storage"), UpdateLatestFrame = false
-                    }))
+                    new SiloCaptureProcessingStepOptions
+                    { UpdateLatestFrame = false }))
             };
             if (calibration != "Omitted")
             {
@@ -488,7 +482,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                                     sample.DetectionIndex == detection.Index && sample.DiameterPixels > 0));
                             }
                             var linearId = Assert.ContainsSingle(execution.Nodes.Single(item => item.NodeId == "linear").Outputs).ArtifactId;
-                            var bytes = await ReadReferenceReplayPayloadAsync(provider, root, linearId).ConfigureAwait(false);
+                            var bytes = await ReadReferenceReplayPayloadAsync(provider, linearId).ConfigureAwait(false);
                             var replacement = references with { Seed = references.Seed + 1 };
                             referenceReplay = new(receipt.Manifest.Descriptor, replacement, execution, bytes);
                         }
@@ -554,7 +548,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         {
                             var prediction = execution.Nodes.Single(item => item.NodeId == ExposureCatalogPredictionProducts.StepAlias);
                             Assert.Contains(Assert.ContainsSingle(prediction.Outputs).ArtifactId, associationOutput.SourceArtifactIds);
-                            await AssertAuthoritativeLocalScenesAsync(provider, lease.Context, execution).ConfigureAwait(false);
+                            await AssertAuthoritativeScenePublicationAsync(provider, lease.Context, execution).ConfigureAwait(false);
                         }
                         Assert.Contains(artifactId, associationOutput.SourceArtifactIds);
                         var fitting = execution.Nodes.Single(item => item.NodeId == "fit");
@@ -563,8 +557,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                         var stored = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadOutputByArtifactIdAsync(
                             solutionOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
                         Assert.IsNotNull(stored);
-                        var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, stored.PayloadRelativePath))
-                            .ConfigureAwait(false));
+                        var solution = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                            provider, stored.ArtifactId, CancellationToken.None).ConfigureAwait(false));
                         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
                         Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
                         if (publicationFailures == 0)
@@ -574,26 +568,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         }
                     }
 
-                    if (expireLinear)
-                        await ExpireQualifiedLinearAsync(provider, root, reader, exposure, slot, measurement).ConfigureAwait(false);
-                    if (archiveFault == "expired")
-                    {
-                        await ExpireOnlyProductAsync(provider, root, artifactId).ConfigureAwait(false);
-                        var expired = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
-                        Assert.AreEqual(ExposureProductAvailability.Expired, expired?.Availability);
-                        Assert.AreEqual("retention-expired", expired?.Reason);
-                        Assert.AreEqual(published.Revision, expired?.Revision);
-                        Assert.AreEqual(published.Exposure, expired?.Exposure);
-
-                        var snapshotReader = provider.GetRequiredService<IExposureMeasurementRunReader>();
-                        var raced = await snapshotReader.ReadAsync(execution, CancellationToken.None).ConfigureAwait(false);
-                        Assert.AreEqual("retention-expired", raced?.UnavailableReason,
-                            "Retention completed after Operations took the available snapshot.");
-                        var otherRevision = execution with { Execution = execution.Execution with { GraphRevisionId = new string('F', 64) } };
-                        var unrelated = await snapshotReader.ReadAsync(otherRevision, CancellationToken.None).ConfigureAwait(false);
-                        Assert.AreEqual("measurement-unreadable", unrelated?.UnavailableReason);
-                    }
-                    else if (archiveFault == "corrupt")
+                    if (archiveFault == "corrupt")
                     {
                         // Mutate the journaled run snapshot, not the current configuration or the committed step-four payload.
                         await CorruptMeasurementRunSnapshotAsync(root, exposure).ConfigureAwait(false);
@@ -694,7 +669,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private static async Task AssertAuthoritativeLocalScenesAsync(ServiceProvider provider, CaptureLaneHandlerContext context,
+    private static async Task AssertAuthoritativeScenePublicationAsync(ServiceProvider provider, CaptureLaneHandlerContext context,
         ProcessingGraphExecutionDetail execution)
     {
         var token = CancellationToken.None;
@@ -787,6 +762,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         ExposureMeasurementV1 originalMeasurement, bool fit)
     {
         var token = CancellationToken.None;
+        await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
         var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
         var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
         var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
@@ -899,67 +875,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private static async Task ExpireQualifiedLinearAsync(ServiceProvider provider, string root, IExposureProductReader reader,
-        ExposureKey exposure, ExposureProductSlot measurementSlot, ExposureMeasurementV1 measurement)
-    {
-        var custody = provider.GetRequiredService<CenteredExposureInputCustody>();
-        var qualified = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(qualified?.Product);
-        Assert.IsNotNull(qualified.Provenance);
-        Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, qualified.Disposition);
-        Assert.AreEqual(measurementSlot.ExecutionId, qualified.Product.Slot.ExecutionId);
-        Assert.AreEqual(qualified.Product.ArtifactId, measurement.Input.Linear!.ArtifactId);
-        Assert.AreEqual(qualified.Revision, measurement.Input.Step3Revision);
-        var provenance = JsonSerializer.Serialize(qualified.Provenance);
-
-        var input = await custody.OpenLinearAsync(qualified.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
-            .ConfigureAwait(false);
-        Assert.IsNotNull(input);
-        await using (input.ConfigureAwait(false))
-        {
-            Assert.AreEqual(qualified.Provenance.LinearPayloadSha256,
-                ProcessingIdentity.ComputePayloadSha256(input.Input.Linear.Payload));
-        }
-
-        await ExpireOnlyProductAsync(provider, root, qualified.Product.ArtifactId).ConfigureAwait(false);
-        var expired = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(expired);
-        Assert.AreEqual(LinearExposureDisposition.Expired, expired.Disposition);
-        Assert.AreEqual("retention-expired", expired.Reason);
-        Assert.AreEqual(qualified.Product, expired.Product);
-        Assert.AreEqual(qualified.Revision, expired.Revision);
-        Assert.AreEqual(provenance, JsonSerializer.Serialize(expired.Provenance));
-        var reopened = await custody.OpenLinearAsync(qualified.Product, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-        if (reopened is not null)
-            await reopened.DisposeAsync().ConfigureAwait(false);
-        Assert.IsNull(reopened, "An archived identity must not permit new pixel custody.");
-    }
-
-    private static async Task ExpireOnlyProductAsync(ServiceProvider provider, string root, Guid artifactId)
-    {
-        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-        var stored = await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(stored);
-        var payload = Path.Combine(root, stored.PayloadRelativePath);
-        var sidecar = Path.Combine(root, stored.SidecarRelativePath);
-        Assert.IsTrue(File.Exists(payload));
-        Assert.IsTrue(File.Exists(sidecar));
-
-        // Expire the named product while keeping the rest of the isolated test archive.
-        var cutoff = DateTimeOffset.UtcNow.AddMinutes(1);
-        var outputs = await store.ReadAvailableExpirationPageAsync(cutoff, null, null, 32, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNull(outputs.NextTimestamp);
-        var retainedPaths = outputs.Items.Where(item => item.ArtifactId != artifactId)
-            .SelectMany(item => new[] { Path.Combine(root, item.PayloadRelativePath), Path.Combine(root, item.SidecarRelativePath) })
-            .ToHashSet(StringComparer.Ordinal);
-        var deleted = await provider.GetRequiredService<CaptureProcessingPersistence>()
-            .ExpireOutputsAsync(root, cutoff, retainedPaths, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(2, deleted);
-        Assert.IsFalse(File.Exists(payload));
-        Assert.IsFalse(File.Exists(sidecar));
-        Assert.IsNull(await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false));
-    }
-
     private static ServiceProvider MeasurementProvider(string root, DeploymentLocationSnapshot location, ICelestialCatalog catalog,
         ICaptureProcessingFaultInjector? fault = null, TimeProvider? timeProvider = null,
         Action<IServiceCollection>? configureServices = null)
@@ -1069,10 +984,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                             Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
                         new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
                         new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                            new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = Path.Combine(root, "storage"), UpdateLatestFrame = false
-                            }))
+                            new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };

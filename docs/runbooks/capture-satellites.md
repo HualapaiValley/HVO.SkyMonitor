@@ -36,8 +36,8 @@ contracts. Add both node IDs to the existing `OverlayManifest` dependencies
 and set its options `satelliteVariant` to `capture-satellites-v1-layer` and
 `satelliteStatusVariant` to `capture-satellites-v1-status`. Preserve its existing
 scene, environment and base-image dependencies. Existing `Storage` dependencies
-may include both new nodes. Durable-local publication owns the canonical copy
-of those outputs. Current Sky and the archive
+may include both new nodes. Durable-local publication writes their canonical
+Silo versions. Current Sky and the archive
 view consume the canonical retained products. Retention also protects copies in
 recorded historical archive roots made through existing publication primitives.
 

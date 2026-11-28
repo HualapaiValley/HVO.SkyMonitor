@@ -40,17 +40,13 @@ public sealed partial class VirtualSkyPipelineTests
         };
         var telemetry = scope.ServiceProvider.GetRequiredService<ICaptureTelemetryProvider>();
         await WaitUntilAsync(() => telemetry.Latest is { FrameStored: true }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
-        diagnostics.LastListedFrames = scope.ServiceProvider.GetRequiredService<IFrameStorageService>().List(
-            Fixture.StorageRoot, DateOnly.FromDateTime(telemetry.Latest!.StartedUtc.UtcDateTime), null, 10_000);
-        diagnostics.LastListCapReached = diagnostics.LastListedFrames.Count >= 10_000;
         var error = await Assert.ThrowsAsync<AssertFailedException>(() => WaitUntilAsync(
             () => false, TimeSpan.Zero, describeTimeout: diagnostics.Describe)).ConfigureAwait(false);
-        foreach (var field in new[] { "checkpoint:", "capture loop/metering/admission:", "capture telemetry:", "fleet capture:", "ingress queues/bytes/oldest age:", "durable processing/publication:", "journal capture sequence/publication/metering:", "storage list/manifest filtering:" })
+        foreach (var field in new[] { "checkpoint:", "capture loop/metering/admission:", "capture telemetry:", "fleet capture:", "ingress queues/bytes/oldest age:", "durable processing/publication:", "journal capture sequence/publication/metering:" })
         {
             StringAssert.Contains(error.Message, field, StringComparison.Ordinal);
         }
         StringAssert.Contains(error.Message, "CaptureSequence", StringComparison.Ordinal);
-        StringAssert.Contains(error.Message, "ListedRole", StringComparison.Ordinal);
         Assert.IsFalse(error.Message.Contains("unavailable(", StringComparison.Ordinal), error.Message);
         Assert.IsTrue(error.Message.Length < VirtualSkyOutageDiagnostics.OutputLimit + 1024);
         Console.WriteLine(error.Message);

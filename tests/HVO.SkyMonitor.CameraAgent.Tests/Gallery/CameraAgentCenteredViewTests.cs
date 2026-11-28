@@ -37,73 +37,15 @@ public sealed partial class CameraAgentArtifactServiceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task StandaloneArchiveProductVisibilityRespectsTheCaptureJournalAsync(bool captureIsJournaled)
-    {
-        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
-        var token = CancellationToken.None;
-        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-        var source = raw.Manifest.Descriptor;
-        var capture = captureIsJournaled ? source.Capture : source.Capture with { CaptureId = Guid.NewGuid() };
-        var artifact = source.Artifact with
-        {
-            ArtifactId = Guid.NewGuid(),
-            Role = FrameArtifactRole.Calibrated,
-            SourceArtifactIds = [raw.ArtifactId]
-        };
-        var descriptor = source with { Capture = capture, Artifact = artifact };
-        var layout = descriptor.Layout;
-        var controls = descriptor.Controls;
-        var frame = new CameraFrame(descriptor.Timing.ExposureStartedUtc, layout.Width, layout.Height, layout.PixelFormat, raw.Payload,
-            new(controls.EffectiveExposure, controls.EffectiveGain, controls.EffectiveTemperatureC ?? double.NaN,
-                artifact.SourceId, Offset: controls.EffectiveOffset), layout.StrideBytes);
-
-        var config = StoragePolicyRawIngressIntegrationTests.Profile(fixture.Root);
-        var accessor = new CameraAgentConfigurationAccessor();
-        accessor.SetConfiguration(config);
-        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-        await storage.SaveAsync(Path.Combine(fixture.Root, "storage-a"),
-            new FrameArtifact(artifact.ArtifactId, artifact.Role, frame, artifact.SourceArtifactIds), descriptor, token).ConfigureAwait(false);
-        var archive = new LocalArchiveReader(storage, accessor, options, () => config);
-        using var service = new CameraAgentArtifactService(options, fixture.ProcessingStore, new CameraAgentPreviewEncoder(), localArchive: archive);
-        var gallery = new SqliteCameraAgentGallery(options, fixture.ProcessingStore, localArchive: archive);
-
-        var opened = await service.OpenContentAsync(artifact.ArtifactId, token).ConfigureAwait(false);
-        var content = opened.Content;
-        await using var contentScope = (content ?? Stream.Null).ConfigureAwait(false);
-        var product = await gallery.GetProductAsync(artifact.ArtifactId, token).ConfigureAwait(false);
-        var page = await gallery.GetProductPageAsync(new(Role: FrameArtifactRole.Calibrated), token).ConfigureAwait(false);
-
-        if (captureIsJournaled)
-        {
-            Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, opened.Status);
-            Assert.IsNull(content);
-            Assert.IsNull(product);
-            Assert.IsEmpty(page.Items);
-        }
-        else
-        {
-            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, opened.Status);
-            Assert.IsNotNull(content);
-            CollectionAssert.AreEqual(raw.Payload, await ReadAllAsync(content).ConfigureAwait(false));
-            Assert.IsNotNull(product);
-            Assert.AreEqual(artifact.ArtifactId, page.Items.Single().ArtifactId);
-        }
-    }
-
-    [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
     public async Task CenteredViewServesRetainedColorPreviewAndExactLateTrailOnEachBase(bool malformedFirstMap)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
         var failure = new CenteredLayerCommitInterruption();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance, failure);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, fixture.Storage, failure);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -405,10 +347,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -513,10 +454,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -605,10 +545,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var token = CancellationToken.None;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);
@@ -1961,10 +1900,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         CancellationToken token)
     {
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = fixture.Root });
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var persistence = new CaptureProcessingPersistence(options, fixture.ProcessingStore, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Storage);
         var views = new SqliteCenteredViews(fixture.ProcessingStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         var producer = new CenteredViewProducer(persistence, fixture.Service, views, options, fixture.ProcessingStore);
         var layerProducer = new CenteredViewLayerProducer(views, persistence);

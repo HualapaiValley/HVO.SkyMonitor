@@ -825,7 +825,7 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                     capture.Frame!.Metadata.Scene!.ProjectedSceneSchemaVersion);
 
                 var submission = new CaptureLoopSubmission(request, capture, request.RequestedStartUtc, request.TargetInterval, TimeSpan.Zero);
-                var accepted = await ingress.AcceptAsync(config, submission, token).ConfigureAwait(false);
+                var accepted = await ingress.AcceptAndSettleAsync(config, submission, token).ConfigureAwait(false);
                 Assert.IsNotNull(accepted);
                 rawArtifactId = accepted.Manifest.Descriptor.Artifact.ArtifactId;
 
@@ -845,7 +845,7 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                 var node = await store.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
                 Assert.IsNotNull(node);
                 committedOutput = node.Outputs.Single();
-                expectedSceneBytes = await File.ReadAllBytesAsync(Path.Combine(tempRoot, committedOutput.PayloadRelativePath), token).ConfigureAwait(false);
+                expectedSceneBytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, committedOutput.ArtifactId, token).ConfigureAwait(false);
                 var parsed = ProjectedSceneJson.Parse(expectedSceneBytes);
                 Assert.IsTrue(parsed.IsValid);
                 Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, parsed.Scene!.SchemaVersion);
@@ -922,8 +922,8 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                 Assert.AreEqual(committedOutput.ContentIdentitySha256, replayOutput.ContentIdentitySha256);
                 Assert.AreEqual(committedOutput.ArtifactId, replayOutput.ArtifactId);
                 Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, replayOutput.ProductSchemaVersion);
-                var replayOutputBytes = await File.ReadAllBytesAsync(
-                    Path.Combine(tempRoot, replayOutput.PayloadRelativePath), token).ConfigureAwait(false);
+                var replayOutputBytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    reopenedProvider, replayOutput.ArtifactId, token).ConfigureAwait(false);
                 CollectionAssert.AreEqual(expectedSceneBytes, replayOutputBytes,
                     "Replay execution's own output payload must match the live committed v3 scene byte-for-byte.");
                 var replayed = ProjectedSceneJson.Parse(replayOutputBytes);
@@ -989,7 +989,7 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                         conflictLease.WorkId, conflictLease.LeaseToken, [conflictingLineageOutput],
                         conflictExecution, ProcessingNodeExecutionRoute.InProcess, token).ConfigureAwait(false)).ConfigureAwait(false);
 
-                // Verify the committed original row and on-disk payload remain untouched after rejected conflicts.
+                // Verify the committed original row and exact payload after rejected conflicts.
                 var intactNode = await reopenedStore.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
                 Assert.IsNotNull(intactNode);
                 var intactOutput = intactNode.Outputs.Single();
@@ -997,7 +997,8 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                 CollectionAssert.AreEqual(
                     originalOutput.Artifact.SourceArtifactIds.ToArray(),
                     intactOutput.Artifact.SourceArtifactIds.ToArray());
-                var intactBytes = await File.ReadAllBytesAsync(Path.Combine(tempRoot, intactOutput.PayloadRelativePath), token).ConfigureAwait(false);
+                var intactBytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    reopenedProvider, intactOutput.ArtifactId, token).ConfigureAwait(false);
                 CollectionAssert.AreEqual(expectedSceneBytes, intactBytes);
             }
         }
@@ -1156,8 +1157,8 @@ public sealed class VirtualSkyExtendedDeepSkyTests
 
                 var node = await store.ReadNodeAsync(captureId, "scene", token).ConfigureAwait(false);
                 Assert.IsNotNull(node);
-                var sceneBytes = await File.ReadAllBytesAsync(
-                    Path.Combine(tempRoot, node.Outputs.Single().PayloadRelativePath), token).ConfigureAwait(false);
+                var sceneBytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    provider, node.Outputs.Single().ArtifactId, token).ConfigureAwait(false);
                 return (captureStageMs, persistMs, sceneBytes);
             }
 
@@ -1343,7 +1344,7 @@ public sealed class VirtualSkyExtendedDeepSkyTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(catalog);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,

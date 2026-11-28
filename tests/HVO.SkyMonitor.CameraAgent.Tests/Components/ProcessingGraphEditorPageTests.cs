@@ -388,11 +388,8 @@ public sealed class ProcessingGraphEditorPageTests
                             Options: JsonSerializer.SerializeToElement(new { strategy = "None", outputVariant = "qualified-linear" })),
                         new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
                         new("Storage", "storage", Order: 75, DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                            new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = Path.Combine(root, "storage"),
-                                UpdateLatestFrame = false
-                            }))
+                            new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };

@@ -2,7 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.TestSupport;
@@ -12,6 +13,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
@@ -44,7 +46,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         string? storageRoot = null,
         Func<string, string>? configureCamera = null)
     {
-        _storageRoot = storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
+        _storageRoot = Path.GetFullPath(storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}"));
         Directory.CreateDirectory(_storageRoot);
         var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
         Directory.CreateDirectory(provisioningRoot);
@@ -67,15 +69,18 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         await File.WriteAllTextAsync(_configurationPath, configureCamera?.Invoke(rendered) ?? rendered)
             .ConfigureAwait(false);
 
+        var overrides = BuildConfigurationOverrides(provisioningRoot);
+        foreach (var setting in settings ?? new Dictionary<string, string?>())
+            overrides[setting.Key] = setting.Value;
+        var fixtureBucket = overrides.ContainsKey("CameraAgent:Silo:StoreId")
+            ? null
+            : SiloInfrastructureFixture.GetOrCreateBucket(_storageRoot);
+        fixtureBucket?.Configure(overrides);
+
         _agentBaseFactory = new WebApplicationFactory<Program>();
         _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Development");
-            var overrides = BuildConfigurationOverrides(provisioningRoot);
-            foreach (var setting in settings ?? new Dictionary<string, string?>())
-            {
-                overrides[setting.Key] = setting.Value;
-            }
             foreach (var setting in overrides.Where(static setting =>
                          setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
             {
@@ -94,6 +99,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                         IntegrationUserAuthenticationHandler.SchemeName,
                         _ => { });
 
+                fixtureBucket?.RegisterInstalledStorage(services);
                 configureServices?.Invoke(services);
             });
         });
@@ -133,7 +139,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         ArgumentNullException.ThrowIfNull(configureServices);
         EnsureInitialized();
-        return _agentFactory!.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        var parent = _agentFactory!;
+        var installedStorage = parent.Services.GetRequiredService<SiloInstalledStorage>();
+        return parent.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             foreach (var hostedService in services
                          .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
@@ -141,6 +149,12 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             {
                 services.Remove(hostedService);
             }
+            // Endpoint-only hosts share the parent's state root and its installed Silo owner.
+            // Register both aliases as instances so the endpoint host does not dispose the shared owner.
+            services.RemoveAll<SiloInstalledStorage>();
+            services.AddSingleton(installedStorage);
+            services.RemoveAll<ICameraAgentSiloVerification>();
+            services.AddSingleton<ICameraAgentSiloVerification>(installedStorage);
             configureServices(services);
         }));
     }
@@ -160,6 +174,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     public void Dispose()
     {
+        _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
         _agentFactory = null;
         _agentBaseFactory = null;
@@ -174,8 +189,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         ["CameraAgent:ConfigFilePath"] = _configurationPath,
         ["CameraAgent:RawIngressRoot"] = _storageRoot,
-        ["CameraAgent:DiskPressureThresholdPercent"] = "1",
-        ["CameraAgent:DiskPressureRecoveryPercent"] = "2",
         // The shared host must never stop itself: a restart request is refused as unsupervised, wherever the tests run.
         ["CameraAgent:Restart:Supervised"] = "false",
         ["Catalog:Root"] = _catalogFixture?.Root,

@@ -38,9 +38,8 @@ public sealed partial class DurableCaptureProcessingTests
             byte[] sidecar;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
-                var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+                var persistence = CreatePersistence(fixture.Options, store, telemetry);
                 var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
                 var observer = new MeasuredDurabilityObservationStep();
                 var producerGraph = CreateMeasuredDurabilityGraph(sceneInput, adapter, persistence, fixture.Options, root);
@@ -73,8 +72,8 @@ public sealed partial class DurableCaptureProcessingTests
                 CollectionAssert.AreEqual(new[] { fixture.Manifest.Descriptor.Artifact.ArtifactId },
                     product.SourceArtifactIds.ToArray());
                 Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(output.ProductManifest);
-                payload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
-                sidecar = await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false);
+                payload = await ReadProductPartAsync(root, output).ConfigureAwait(false);
+                sidecar = await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false);
                 CollectionAssert.AreEqual(product.Payload.ToArray(), payload);
                 CollectionAssert.AreEqual(output.EvidenceJson, sidecar);
                 Assert.AreEqual(product.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(payload));
@@ -82,17 +81,15 @@ public sealed partial class DurableCaptureProcessingTests
 
             if (fault != "none")
             {
-                var path = Path.Combine(root, fault == "payload" ? output.PayloadRelativePath : output.SidecarRelativePath);
                 var original = fault == "payload" ? payload : sidecar;
                 var tampered = new byte[original.Length + 1];
                 tampered[0] = (byte)' ';
                 original.CopyTo(tampered, 1);
-                await File.WriteAllBytesAsync(path, tampered).ConfigureAwait(false);
+                await SubstituteProductPartAsync(root, output, tampered, evidence: fault == "sidecar").ConfigureAwait(false);
             }
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry);
+            var restartedPersistence = CreatePersistence(fixture.Options, restartedStore, restartedTelemetry);
             var noReexecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(
                 ProcessingOutcome.TerminalFailure("fixture.unexpected-reexecution")));
             var inspector = new RestoredMetadataInspectingStep(product);
@@ -116,9 +113,9 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.AreEqual(1, node.Attempt, "Restart must restore, never silently rerun a completed producer.");
                 }
                 CollectionAssert.AreEqual(payload,
-                    await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false));
+                    await ReadProductPartAsync(root, output).ConfigureAwait(false));
                 CollectionAssert.AreEqual(sidecar,
-                    await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
+                    await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             }
             else
             {
@@ -142,10 +139,9 @@ public sealed partial class DurableCaptureProcessingTests
         var sceneStep = new DurabilitySceneRecipeStep(scene, adapter);
         var measured = new MeasuredStellarAssociationCaptureProcessingStep(new("measured", "MeasuredStellarAssociations", 1),
             new MeasuredStellarAssociationProcessingStepOptions(), adapter);
-        var storage = new FileStorageCaptureProcessingStep(new("storage", "Storage", 2),
-            new FileStorageCaptureProcessingStepOptions { StorageRoot = root, UpdateLatestFrame = false },
-            Mock.Of<ILatestFrameAccessor>(), Mock.Of<IFrameStorageService>(),
-            NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
+        var storage = new SiloCaptureProcessingStep(new("storage", "Storage", 2),
+            new SiloCaptureProcessingStepOptions { UpdateLatestFrame = false },
+            Mock.Of<ILatestFrameAccessor>(), persistence);
         return new CaptureProcessingGraph([
             new CaptureProcessingGraphNode("scene", sceneStep, [], true, sceneStep.RecipeName,
                 sceneStep.OutputRole, sceneStep.OutputVariant, new string('A', 64)),
@@ -201,18 +197,19 @@ public sealed partial class DurableCaptureProcessingTests
             SchemaVersion: scene.SchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: sceneBytes)
         { ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes) };
         var manifestBytes = CaptureContractJson.Serialize(manifest);
-        await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), bytes).ConfigureAwait(false);
-        await File.WriteAllBytesAsync(Path.Combine(root, "raw.json"), manifestBytes).ConfigureAwait(false);
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var reserved = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId,
             descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(descriptor.Capture.CaptureSequence, reserved.CaptureSequence);
-        Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
+        var entry = new RawIngressJournalEntry(
             descriptor.Capture.AgentId, descriptor.Capture.CaptureSequence, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
             descriptor.Artifact.ChecksumSha256, bytes.Length, "raw.bin", "raw.json", manifestBytes,
-            descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
+            descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc);
+        Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false));
+        await SiloInfrastructureFixture.PublishRawFixtureAsync(
+            SiloInfrastructureFixture.ProductStorage(root), entry, manifest, bytes, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame).IsValid);
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
             new StoredFrameReference("raw.bin", Path.Combine(root, "raw.bin"), utc, FrameArtifactRole.Raw),

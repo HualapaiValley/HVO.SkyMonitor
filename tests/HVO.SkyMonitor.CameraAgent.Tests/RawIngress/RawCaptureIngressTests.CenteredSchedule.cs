@@ -54,13 +54,14 @@ public sealed partial class RawCaptureIngressTests
         };
         try
         {
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
             CenteredRawEvidence original;
             CaptureScheduleRuntimeSnapshot first;
             CaptureScheduleRuntimeSnapshot? day40 = null;
             CaptureScheduleRuntimeSnapshot previous;
             CaptureScheduleRuntimeSnapshot latest;
             long expansions;
-            using (var setup = new CenteredFixture(root, timeProvider: clock))
+            using (var setup = new CenteredFixture(root, timeProvider: clock, siloProvider: silo))
             using (var telemetry = new CaptureControlTelemetry())
             using (var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, clock, telemetry))
             using (var store = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, clock))
@@ -85,9 +86,9 @@ public sealed partial class RawCaptureIngressTests
                     .ConfigureAwait(false)).AcquisitionHead!.Exposure;
                 original = (await setup.Ingress.ReadCenteredRawAsync(raw, token).ConfigureAwait(false))!;
                 Assert.IsNotNull(work);
-                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(setup.Ingress, token).ConfigureAwait(false);
+                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
+                    NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
                 using var handler = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                     NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options, timeProvider: clock);
                 var result = await handler.HandleAsync(work.Context, token).ConfigureAwait(false);
@@ -115,7 +116,7 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(0L, await ScalarLongAsync(journal, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
             }
 
-            using var reopened = new CenteredFixture(root, timeProvider: clock);
+            using var reopened = new CenteredFixture(root, timeProvider: clock, siloProvider: silo);
             using var restartedTelemetry = new CaptureControlTelemetry();
             using var restartedAdmission = new CaptureAdmissionCoordinator(reopened.Ingress, reopened.Options, clock, restartedTelemetry);
             using var restartedStore = new SqliteCaptureScheduleStore(reopened.Ingress, reopened.Options, clock);
@@ -151,9 +152,8 @@ public sealed partial class RawCaptureIngressTests
             var replayed = replay.RawCapture.Manifest.Descriptor.CenteredAcquisition!.ScheduleAdmission!;
             Assert.AreEqual(historical.CenteredAcquisition!.ScheduleAdmission, replayed);
             Assert.AreEqual(first.AdmissionPolicy.ExpansionSha256, replayed.ExpansionSha256);
-            using var replayStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var replayPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, replayStorage,
-                reopened.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+            var replayPersistence = new CaptureProcessingPersistence(reopened.Options, reopened.Store, reopened.Telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: reopened.Silo);
             var execution = new ProcessingExecutionContext(replay.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
                 replay.Execution.GraphRevisionId, replay.Execution.LocalPlanIdentitySha256, false, replay.WorkId,
                 replay.LeaseToken, replay.LeaseOwner, replay.Execution.DeadlineUtc);

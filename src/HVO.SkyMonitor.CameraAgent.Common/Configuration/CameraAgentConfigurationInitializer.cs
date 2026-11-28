@@ -2,7 +2,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.AgentCore;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Hosting;
@@ -17,11 +16,9 @@ public sealed class CameraAgentConfigurationInitializer(
     ILogger<CameraAgentConfigurationInitializer> logger,
     SqliteCaptureScheduleStore? scheduleStore = null,
     SqliteCalibrationLibraryStore? calibrationLibrary = null,
-    CalibrationLibraryReconciler? calibrationReconciler = null,
     SqliteNamedRigProfileStore? namedRigProfiles = null,
     DeploymentLocation.IDeploymentLocationStore? deploymentLocationStore = null,
-    IHostApplicationLifetime? hostLifetime = null,
-    ICameraAgentSiloVerification? silo = null) : IHostedService
+    IHostApplicationLifetime? hostLifetime = null) : IHostedService
 {
     private readonly ICameraAgentConfigurationLoader _loader = loader;
     private readonly ICameraAgentConfigurationAccessor _accessor = accessor;
@@ -29,7 +26,6 @@ public sealed class CameraAgentConfigurationInitializer(
     private readonly ILogger<CameraAgentConfigurationInitializer> _logger = logger;
     private readonly SqliteCaptureScheduleStore? _scheduleStore = scheduleStore;
     private readonly SqliteCalibrationLibraryStore? _calibrationLibrary = calibrationLibrary;
-    private readonly CalibrationLibraryReconciler? _calibrationReconciler = calibrationReconciler;
     private readonly SqliteNamedRigProfileStore? _namedRigProfiles = namedRigProfiles;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -77,10 +73,6 @@ public sealed class CameraAgentConfigurationInitializer(
         if (_calibrationLibrary is not null)
         {
             await _calibrationLibrary.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        }
-        if (silo is null && _calibrationReconciler is not null)
-        {
-            _ = await _calibrationReconciler.ReconcileAsync(cancellationToken).ConfigureAwait(false);
         }
         var graph = _scheduleStore is null ? _pipelineFactory.CreateGraph(config) : _pipelineFactory.CreateActiveProfileGraph(config);
         graph.DisposeSteps();

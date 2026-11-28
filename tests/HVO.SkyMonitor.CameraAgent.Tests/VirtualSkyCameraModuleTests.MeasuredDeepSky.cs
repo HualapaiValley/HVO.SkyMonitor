@@ -70,6 +70,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await worker.GetRequiredService<RawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
                 await worker.GetRequiredService<CenteredWindowRegistrationWorker>().RegisterPendingAsync(token).ConfigureAwait(false);
                 await worker.GetRequiredService<CenteredViewWindowPublicationWorker>().PublishReadyAsync(token).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(worker, token).ConfigureAwait(false);
                 var views = worker.GetRequiredService<SqliteCenteredViews>();
                 var window = await worker.GetRequiredService<ICenteredWindowReader>().ReadAsync(ids[2], token).ConfigureAwait(false);
                 Assert.IsNotNull(window);
@@ -114,6 +115,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
                 using var resumed = MakeScheduler(processor);
                 await resumed.RunOnceAsync(token).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleViewChangesAsync(worker, token).ConfigureAwait(false);
                 var published = await views.ReadRevisionsAsync(work.BaseId, 0, 8, token).ConfigureAwait(false);
                 Assert.HasCount(originalRevisions.Count + 1, published);
                 var revision = published[^1];

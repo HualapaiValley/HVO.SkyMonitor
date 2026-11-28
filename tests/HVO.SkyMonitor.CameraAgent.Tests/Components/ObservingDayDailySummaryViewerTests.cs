@@ -68,7 +68,8 @@ public sealed class ObservingDayDailySummaryViewerTests
 
             var hostOptions = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
             var clock = new FixedTimeProvider(NightlyProductFixture.DayEndUtc.AddDays(1));
-            using var store = new SqliteNightlyProductStore(hostOptions, clock);
+            using var silo = new NightlySiloFixture(hostOptions.Value.RawIngressRoot);
+            using var store = silo.OpenStore(hostOptions, clock);
             var reader = new InMemoryNightlySourceReader();
             reader.Add(frames);
             using (var generator = new NightlyProductGenerator(

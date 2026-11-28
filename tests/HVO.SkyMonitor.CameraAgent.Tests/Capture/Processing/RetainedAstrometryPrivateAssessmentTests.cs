@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing;
@@ -32,7 +33,8 @@ public sealed partial class DurableCaptureProcessingTests
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 commit: static (journal, entry, _) => journal.CommitAsync(entry, CancellationToken.None)).ConfigureAwait(false);
             var probe = new AstrometryLookupBudget();
-            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root,
+                SiloInfrastructureFixture.ProductStore(root).GetRequiredService<SiloInstalledStorage>());
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var pipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(root);
@@ -44,9 +46,8 @@ public sealed partial class DurableCaptureProcessingTests
             var revision = await operations.ReadRevisionSnapshotAsync(registry.ActiveRevisionId, token).ConfigureAwait(false);
             var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(definition => definition.Name == "standard");
             using var telemetry = new CaptureProcessingTelemetry();
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             using var gate = new CaptureAstrometryExecutionGate();
-            var persistence = CreatePersistence(first.Fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var oldest = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var lanes = provider.GetRequiredService<ICaptureLaneStore>();
             await lanes.InitializeLanesAsync(token).ConfigureAwait(false);
@@ -107,13 +108,13 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreNotEqual(far.ArtifactId, rejection.ArtifactId);
                 Assert.AreEqual(rejection.ArtifactId, visible?.ArtifactId);
                 Assert.AreEqual(AstrometricAssessmentStatus.Rejected, visible?.Solution?.Assessment.Status);
-                await EvictAndRestoreFilesAsync(rejection, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(rejection, store).ConfigureAwait(false);
             }
             else Assert.IsNull(visible?.Solution);
 
             // Reinsert the exact assessment on the public persistence path from a different
             // store. Its notifications cannot invalidate the reader's candidate snapshot.
-            await EvictAndRestoreFilesAsync(far, store).ConfigureAwait(false);
+            await RemoveLiveOutputBindingAsync(far, store).ConfigureAwait(false);
             var repair = AstrometryGraph(first, new(new ProcessingRecipeExecutor()), gate);
             await PublishAsync(far, "astrometry").ConfigureAwait(false);
             if (splitRepair)
@@ -125,18 +126,18 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(expectedOld, partial.Value?.Summary);
                 Assert.AreEqual(CameraAgentAstrometryPublicationState.Invalidated,
                     await selectedReader.ReadPublicationStateAsync(Identity(far), token).ConfigureAwait(false));
-                await EvictAndRestoreFilesAsync(measured, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(measured, store).ConfigureAwait(false);
                 await PublishAsync(measured, "measured").ConfigureAwait(false);
                 await ExpectPublicArtifactAsync(measured.ArtifactId, CameraAgentArtifactReadStatus.Found).ConfigureAwait(false);
             }
             var repaired = await selectedService.GetLatestAcceptedAstrometryAsync(token).ConfigureAwait(false);
             var exact = await selectedService.GetRetainedAstrometryAsync(far.Capture.CaptureId, token).ConfigureAwait(false);
-            Assert.AreEqual(far.ArtifactId, exact.Value?.ArtifactId);
+            Assert.AreEqual(far.ArtifactId, exact.Value?.ArtifactId, exact.Value?.Reason);
             Assert.AreEqual(AstrometricAssessmentStatus.Accepted, exact.Value?.Solution?.Assessment.Status);
             Assert.AreSame(candidates, await chosenStore.ReadAstrometryCandidatesAsync(token).ConfigureAwait(false));
             Assert.AreEqual(CameraAgentAstrometryPublicationState.Available,
                 await selectedReader.ReadPublicationStateAsync(Identity(far), token).ConfigureAwait(false));
-            using var repairedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var repairedStore = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var repairedReader = new CameraAgentRetainedAstrometryService(repairedStore, artifacts);
             var reopened = (await repairedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary;
             Assert.AreEqual(far.ArtifactId, reopened?.ArtifactId);
@@ -196,7 +197,7 @@ public sealed partial class DurableCaptureProcessingTests
                 if (publishRejection)
                 {
                     var older = MeasuredAstrometryJson.Parse(
-                        await File.ReadAllBytesAsync(Path.Combine(root, oldest.PayloadRelativePath), token).ConfigureAwait(false));
+                        await ReadProductPartAsync(root, oldest).ConfigureAwait(false));
                     var settings = fixture.Options.Recipe.Solver!;
                     var rejectedFixture = fixture with
                     {
@@ -208,21 +209,26 @@ public sealed partial class DurableCaptureProcessingTests
                         }
                     };
                     var rejectionGraph = AstrometryGraph(rejectedFixture, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
-                    var rejectingNode = rejectionGraph.Nodes.Single(node => node.Id == "astrometry") with { Id = "astrometry-rejected" };
-                    var alternate = new CaptureProcessingGraph([.. rejectionGraph.Nodes.Where(node => node.Id != "astrometry"), rejectingNode]);
-                    var rejected = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item, alternate, persistence,
-                        telemetry, 1, NullLogger.Instance, token).ConfigureAwait(false);
+                    var rejectingNode = rejectionGraph.Nodes.Single(node => node.Id == "astrometry");
+                    await RemoveLiveOutputBindingAsync(fit, store).ConfigureAwait(false);
+                    await store.WriteNodeAsync(captureId, rejectingNode, DurableProcessingNodeStatus.RetryableFailure,
+                        "fixture-recompute-assessment", 1, null, null, DateTimeOffset.UtcNow, null,
+                        ProcessingOutcomeStatus.RetryableFailure, [], 0, null, [], token).ConfigureAwait(false);
+                    var rejected = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item, rejectionGraph, persistence,
+                        telemetry, 2, NullLogger.Instance, token).ConfigureAwait(false);
                     Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, rejected.Outcome, rejected.Reason);
-                    rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!.Outputs;
+                    var priorArtifacts = outputs[rejectingNode.Id].Select(static output => output.ArtifactId).ToHashSet();
+                    rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!
+                        .Outputs.Where(output => !priorArtifacts.Contains(output.ArtifactId)).ToArray();
                     rejectedOutput = rejectionOutputs.Single(output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
                     var rejectedSolution = MeasuredAstrometryJson.Parse(
-                        await File.ReadAllBytesAsync(Path.Combine(root, rejectedOutput.PayloadRelativePath), token).ConfigureAwait(false));
+                        await ReadProductPartAsync(root, rejectedOutput).ConfigureAwait(false));
                     Assert.AreEqual(AstrometricAssessmentStatus.Rejected, rejectedSolution.Assessment.Status);
                     foreach (var output in rejectionOutputs)
-                        await EvictAndRestoreFilesAsync(output, store).ConfigureAwait(false);
+                        await RemoveLiveOutputBindingAsync(output, store).ConfigureAwait(false);
                 }
-                if (privateMeasurement) await EvictAndRestoreFilesAsync(measuredOutput, store).ConfigureAwait(false);
-                await EvictAndRestoreFilesAsync(fit, store).ConfigureAwait(false);
+                if (privateMeasurement) await RemoveLiveOutputBindingAsync(measuredOutput, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(fit, store).ConfigureAwait(false);
                 var live = await lanes.ClaimAsync(standard, "stage-private-fit", config, token).ConfigureAwait(false);
                 Assert.IsNotNull(live);
                 Assert.AreEqual(captureId, live.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
@@ -265,20 +271,12 @@ public sealed partial class DurableCaptureProcessingTests
                 }
             }
 
-            async ValueTask EvictAndRestoreFilesAsync(DurableProcessingOutput fit, SqliteCaptureProcessingStore writer)
+            async ValueTask RemoveLiveOutputBindingAsync(DurableProcessingOutput fit, SqliteCaptureProcessingStore writer)
             {
-                var path = Path.Combine(root, fit.PayloadRelativePath);
-                var sidecarPath = Path.Combine(root, fit.SidecarRelativePath);
-                var payload = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                var sidecar = await File.ReadAllBytesAsync(sidecarPath, token).ConfigureAwait(false);
-                var operation = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", fit.OutputIdentitySha256,
-                    fit.PayloadRelativePath, fit.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}",
-                    "retention-expired", payload.Length + sidecar.Length);
-                await writer.PlanLifecycleOperationAsync(operation, token).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, writer).ResumeOperationAsync(operation, token).ConfigureAwait(false);
+                await writer.CompleteLifecycleOperationAsync(new(Guid.NewGuid().ToString("N"), "delete",
+                    fit.OutputIdentitySha256, fit.PayloadRelativePath, fit.SidecarRelativePath,
+                    "unused", "retired-live-binding-fixture", 0), token).ConfigureAwait(false);
                 Assert.IsNull(await writer.ReadOutputByArtifactIdAsync(fit.ArtifactId, token).ConfigureAwait(false));
-                await File.WriteAllBytesAsync(path, payload, token).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(sidecarPath, sidecar, token).ConfigureAwait(false);
             }
 
             static CameraAgentAstrometryAssessmentIdentity Identity(DurableProcessingOutput fit)

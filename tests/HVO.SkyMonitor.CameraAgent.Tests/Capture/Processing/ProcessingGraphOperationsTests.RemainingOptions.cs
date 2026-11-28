@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -32,7 +33,7 @@ public sealed partial class ProcessingGraphOperationsTests
             "MeasuredAstrometry" or ExposureAstrometryCaptureProcessingStep.CenteredAlias => new MeasuredAstrometryCaptureOptions(),
             "CaptureSatelliteTracks" => new CaptureSatelliteTracksOptions(),
             "CaptureSatelliteLayer" => new CaptureSatelliteLayerOptions(),
-            _ => new FileStorageCaptureProcessingStepOptions()
+            _ => new SiloCaptureProcessingStepOptions()
         };
         var descriptor = ProcessingNodeOptionsForm.DescriptorFor(alias);
         Assert.IsNotNull(descriptor);
@@ -151,15 +152,16 @@ public sealed partial class ProcessingGraphOperationsTests
             Options: JsonSerializer.SerializeToElement(new CaptureSatelliteTracksOptions { CatalogNumbers = ["25544"] }), Publication: durable),
         new("CaptureSatelliteLayer", "satellite-layer", DependsOn: ["satellites"], Required: false, Publication: durable),
         new("Storage", "storage", DependsOn: ["$raw"],
-            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))
+            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions {  }))
         ]);
         return pipeline;
     }
 
-    internal static ServiceProvider CreateRemainingOptionsProvider(string root) => CreateProvider(root,
+    internal static ServiceProvider CreateRemainingOptionsProvider(string root, SiloInstalledStorage? sharedStorage = null) => CreateProvider(root,
         configureServices: services =>
         {
             services.AddSingleton(Moq.Mock.Of<ICameraAgentOrbitalTimeSource>());
             services.AddSingleton(Moq.Mock.Of<IDeploymentLocationStore>());
+            if (sharedStorage is not null) services.AddSingleton(sharedStorage);
         });
 }

@@ -66,8 +66,6 @@ internal sealed class SiloPublisher(
             if (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is { } existing)
             {
                 RequireMatchingDraft(draft, existing.DraftSha256, sha);
-                if (existing.State == SiloStagedState.Staged && draft.GroupKind == SiloFixtureInventory.GroupKind)
-                    payloads.RequireWithinCapacity();
                 return false;
             }
             if (await catalog.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false) is not null)
@@ -405,31 +403,10 @@ internal sealed class SiloPublisher(
         var draft = member.Draft;
         await state.MarkMemberPutUnresolvedAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, cancellationToken).ConfigureAwait(false);
         var created = await SiloCreateOnly.PutVerifiedAsync(Local, SiloObjectNamespace.PayloadKey(draft.RetentionClass, draft.Sha256), draft.Length,
-            draft.Sha256, token => OpenPayloadAsync(group.Draft.GroupKind, draft, token), null, binding.BindingId, clock,
+            draft.Sha256, token => payloads.OpenAsync(draft.SourceToken, token), null, binding.BindingId, clock,
             () => faults?.Hit(SiloFaultPoint.AfterPayloadPut), cancellationToken).ConfigureAwait(false);
         fresh.Verified(PayloadLocator(Local, draft, created.VersionId), draft.Length, draft.Sha256, created.VerifiedUtc);
         return created;
-    }
-
-    private async ValueTask<Stream> OpenPayloadAsync(string groupKind, SiloDraftMember member, CancellationToken cancellationToken)
-    {
-        var input = await payloads.OpenAsync(member.SourceToken, cancellationToken).ConfigureAwait(false);
-        if (groupKind != SiloFixtureInventory.GroupKind)
-            return input;
-
-        // A fixture retry must prove local evidence even if the store already has a current object at the key.
-        try
-        {
-            if (!await SiloFilePayloadSpool.MatchesAsync(input, member.Sha256, member.Length, cancellationToken).ConfigureAwait(false))
-                throw new SiloConflictException(StagedEvidenceMissing, "A required staged payload differs from its identity.");
-            input.Position = 0;
-            return input;
-        }
-        catch
-        {
-            await input.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
     }
 
     /// <summary>P1: create, read back and qualify each payload's content-addressed locator from its exact spooled bytes.</summary>
@@ -675,8 +652,6 @@ internal sealed class SiloPublisher(
     /// </summary>
     private async ValueTask IndexAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
-        if (group.Draft.GroupKind == SiloFixtureInventory.GroupKind)
-            await VerifyRecordedFixtureAsync(group, fresh, cancellationToken).ConfigureAwait(false);
         await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), fresh, cancellationToken)
             .ConfigureAwait(false);
         var confirmed = await catalog.ConfirmP4Async(group.Draft.GroupId, group.Draft.RevisionId, fresh, cancellationToken).ConfigureAwait(false);
@@ -689,37 +664,6 @@ internal sealed class SiloPublisher(
             cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterVisibleCommitted);
         await ReleaseAsync(group, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask VerifyRecordedFixtureAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
-    {
-        var missingPayload = false;
-        foreach (var member in group.Members)
-        {
-            var draft = member.Draft;
-            var locator = PayloadLocator(Local, draft, member.VersionId!);
-            var probe = await ProbeQualifiedVersionAsync(Local, locator, draft.Length, draft.Sha256, clock, cancellationToken)
-                .ConfigureAwait(false);
-            if (probe.Status == SiloProbeStatus.Absent)
-            {
-                var staged = await OpenPayloadAsync(group.Draft.GroupKind, draft, cancellationToken).ConfigureAwait(false);
-                await staged.DisposeAsync().ConfigureAwait(false);
-                missingPayload = true;
-            }
-            else
-            {
-                fresh.Verified(locator, draft.Length, draft.Sha256, probe.ObservedUtc);
-            }
-        }
-
-        var manifest = ManifestLocator(group.Draft, group.ManifestSha256!, group.ManifestVersionId!);
-        var length = group.ManifestLength!.Value;
-        var proof = await ProbeQualifiedVersionAsync(Local, manifest, length, group.ManifestSha256!, clock, cancellationToken, captureBytes: true)
-            .ConfigureAwait(false);
-        // First P4 must use the exact locators sealed by P3, even if staged bytes could create a new version.
-        if (missingPayload || proof.Status == SiloProbeStatus.Absent)
-            throw new SiloConflictException(SiloFixtureImport.ReopenFailed, "An exact version named by the committed fixture is missing.");
-        fresh.Verified(manifest, length, group.ManifestSha256!, proof.ObservedUtc, proof.Bytes);
     }
 
     /// <summary>Release every unreleased member and the manifest spool. Idempotent: a resume finishes an interrupted release.</summary>

@@ -29,19 +29,6 @@ public sealed record CaptureProcessingSnapshot(
     string? StoragePolicyMismatchActiveRevisionId = null,
     long StoragePolicySkippedCount = 0);
 
-/// <summary>
-/// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
-/// failure is also reflected in <see cref="CaptureProcessingSnapshot.ReconciliationFailed"/>.
-/// </summary>
-public sealed record DerivedProductReconciliationReport(
-    DateTimeOffset CompletedUtc,
-    bool Succeeded,
-    int Inspected,
-    int Recoverable,
-    int Cleaned,
-    int Missing,
-    int Quarantined);
-
 public sealed class CaptureProcessingState
 {
     private readonly object _gate = new();
@@ -147,14 +134,6 @@ public sealed class CaptureProcessingState
     internal void SetActiveStoragePolicyMismatch(string? revisionId) { lock (_gate) _storagePolicyMismatchActiveRevision = revisionId; }
     internal void SetStoragePolicySkipped(long count) { lock (_gate) _storagePolicySkipped = count; }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
-    private DerivedProductReconciliationReport? _lastReconciliation;
-    public DerivedProductReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
-    internal void RecordReconciliation(DateTimeOffset completedUtc, DerivedProductReconciliationSummary? summary) => Volatile.Write(
-        ref _lastReconciliation,
-        summary is null
-            ? new DerivedProductReconciliationReport(completedUtc, false, 0, 0, 0, 0, 0)
-            : new DerivedProductReconciliationReport(
-                completedUtc, true, summary.Inspected, summary.Recoverable, summary.Cleaned, summary.Missing, summary.Quarantined));
     internal void SetProcessingEvidence(long missing, long quarantined) { lock (_gate) { _missing = missing; _quarantine = quarantined; } }
     internal void SetProcessingQuarantine(long count) => SetProcessingEvidence(_missing, count);
 

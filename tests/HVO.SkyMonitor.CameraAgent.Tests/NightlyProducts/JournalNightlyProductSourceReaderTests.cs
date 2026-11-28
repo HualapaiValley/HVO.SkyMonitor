@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -175,14 +176,14 @@ public sealed class JournalNightlyProductSourceReaderTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Restore_RejectsOversizedCommittedFiles(bool sidecar)
+    public async Task Restore_RejectsOversizedExactObjectVersions(bool sidecar)
     {
-        var allocated = await VerifyOversizedFileRejectionAsync(_root, sidecar);
+        var allocated = await VerifyOversizedVersionRejectionAsync(_root, sidecar);
         Assert.IsLessThan(64L * 1024 * 1024, allocated,
-            "Reject the oversized file before allocating a buffer based on its untrusted length.");
+            "Reject the oversized version before allocating a buffer based on its untrusted length.");
     }
 
-    internal static async Task<long> VerifyOversizedFileRejectionAsync(string root, bool sidecar)
+    internal static async Task<long> VerifyOversizedVersionRejectionAsync(string root, bool sidecar)
     {
         using var provider = CreateProvider(root);
         await CaptureAsync(provider);
@@ -192,9 +193,14 @@ public sealed class JournalNightlyProductSourceReaderTests
         var output = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
             .ReadOutputByArtifactIdAsync(selected.ArtifactId, CancellationToken.None);
         Assert.IsNotNull(output);
-        var path = Path.Combine(root, sidecar ? output.SidecarRelativePath : output.PayloadRelativePath);
-        using (var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
+        var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, selected.ArtifactId,
+            sidecar ? SiloArtifactStorage.ProductEvidenceRevision : output.OutputIdentitySha256, CancellationToken.None);
+        var path = Path.Combine(root, "oversized-version");
+        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             file.SetLength(256L * 1024 * 1024 + 1);
+        provider.GetRequiredService<SiloTestStore>().ReadContentOverride = exact => exact == locator
+            ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous)
+            : null;
 
         var before = GC.GetTotalAllocatedBytes(precise: true);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
@@ -255,7 +261,7 @@ public sealed class JournalNightlyProductSourceReaderTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["CameraAgent:RawIngressRoot"] = root,
@@ -396,15 +402,15 @@ public sealed class JournalNightlyProductSourceReaderPerformanceTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task Restore_RejectsOversizedCommittedFilesWithoutAllocatingTheirUntrustedLength(bool sidecar)
+    public async Task Restore_RejectsOversizedExactObjectVersionsWithoutAllocatingTheirUntrustedLength(bool sidecar)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-nightly-journal");
         try
         {
-            var allocated = await JournalNightlyProductSourceReaderTests.VerifyOversizedFileRejectionAsync(root, sidecar)
+            var allocated = await JournalNightlyProductSourceReaderTests.VerifyOversizedVersionRejectionAsync(root, sidecar)
                 .ConfigureAwait(false);
             Assert.IsLessThan(1024L * 1024, allocated,
-                "A sparse corrupt payload/sidecar must be rejected using its retained length before reading its oversized contents.");
+                "Reject a corrupt payload or evidence version using its committed length.");
         }
         finally
         {

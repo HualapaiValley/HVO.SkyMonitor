@@ -7,7 +7,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 using HVO.SkyMonitor.Video.FFmpeg;
 
 namespace HVO.SkyMonitor.TimeLapseBenchmark;

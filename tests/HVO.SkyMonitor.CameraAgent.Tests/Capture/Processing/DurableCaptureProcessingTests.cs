@@ -3,12 +3,12 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Data.Sqlite;
 using Moq;
@@ -45,7 +46,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             var recovery = new RecordingRecoveryControl();
 
-            await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+            await RunWorkerAsync(fixture, new RawObservingStep(), recovery, CancellationToken.None)
                 .ConfigureAwait(false);
 
             Assert.IsFalse(recovery.Invalidated);
@@ -68,7 +69,7 @@ public sealed partial class DurableCaptureProcessingTests
             var recovery = new RecordingRecoveryControl();
 
             await Assert.ThrowsExactlyAsync<FileNotFoundException>(async () =>
-                await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+                await RunWorkerAsync(fixture, new RawObservingStep(), recovery, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
 
             Assert.IsTrue(recovery.Invalidated);
@@ -91,7 +92,7 @@ public sealed partial class DurableCaptureProcessingTests
             var recovery = new RecordingRecoveryControl();
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-                await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+                await RunWorkerAsync(fixture, new RawObservingStep(), recovery, CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
 
             Assert.IsTrue(recovery.Invalidated);
@@ -114,7 +115,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var cancellation = new CancellationTokenSource();
 
             await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
-                await RunWorkerAsync(fixture.Item, new CancelingStep(cancellation), recovery, cancellation.Token)
+                await RunWorkerAsync(fixture, new CancelingStep(cancellation), recovery, cancellation.Token)
                     .ConfigureAwait(false)).ConfigureAwait(false);
 
             Assert.IsFalse(recovery.Invalidated);
@@ -137,11 +138,12 @@ public sealed partial class DurableCaptureProcessingTests
             File.Delete(fixture.Item.RawCapture!.StoredFrame.AbsolutePath);
             var step = new DescriptorOnlyStep();
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item,
                 new CaptureProcessingGraph([CreateNode(step)]),
-                null,
+                CreatePersistence(fixture.Options, store, telemetry),
                 telemetry,
                 1,
                 NullLogger.Instance,
@@ -168,6 +170,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             var descriptor = new DescriptorOnlyStep();
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
             var pixel = new ProducingStep();
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
@@ -176,7 +179,7 @@ public sealed partial class DurableCaptureProcessingTests
                     CreateNode(pixel),
                     CreateNode(descriptor) with { Dependencies = ["normalize"] }
                 ]),
-                null,
+                CreatePersistence(fixture.Options, store, telemetry),
                 telemetry,
                 1,
                 NullLogger.Instance,
@@ -259,12 +262,13 @@ public sealed partial class DurableCaptureProcessingTests
                 fixture.Item.RawCapture!.StoredFrame.AbsolutePath,
                 [1]).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateNode(new ProducingStep())]),
-                    null,
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -292,12 +296,11 @@ public sealed partial class DurableCaptureProcessingTests
                 var node = CreateNode(step) with { Publication = policy };
                 using var telemetry = new CaptureProcessingTelemetry();
                 using var store = new SqliteCaptureProcessingStore(fixture.Options);
-                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
 
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([node]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     attempt,
                     NullLogger.Instance,
@@ -336,11 +339,10 @@ public sealed partial class DurableCaptureProcessingTests
                 dependent.OutputVariant, new string('2', 64));
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, new CaptureProcessingGraph([first, second]),
-                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
@@ -370,11 +372,10 @@ public sealed partial class DurableCaptureProcessingTests
                     CaptureProcessingPersistenceMode.MemoryOnly));
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, new CaptureProcessingGraph([node]),
-                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
@@ -400,7 +401,6 @@ public sealed partial class DurableCaptureProcessingTests
             var firstSteps = variants.Select(variant => new JpegProducingStep(variant)).ToArray();
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var graph = new CaptureProcessingGraph(firstSteps.Select(step => new CaptureProcessingGraphNode(
                     step.Name,
@@ -413,7 +413,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new string(step.OutputVariant[0], 64),
                     Publication: policy)).ToArray());
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
-                    fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry,
+                    fixture.Item, graph, CreatePersistence(fixture.Options, store, telemetry), telemetry,
                     1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
             }
@@ -421,7 +421,6 @@ public sealed partial class DurableCaptureProcessingTests
             var restartedSteps = variants.Select(variant => new JpegProducingStep(variant)).ToArray();
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var nodes = restartedSteps.Select(step => new CaptureProcessingGraphNode(
                     step.Name,
@@ -436,7 +435,7 @@ public sealed partial class DurableCaptureProcessingTests
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph(nodes),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     2,
                     NullLogger.Instance,
@@ -458,8 +457,7 @@ public sealed partial class DurableCaptureProcessingTests
                         durable.Outputs[0].ProductManifest);
                     Assert.AreEqual(DurableEncodedProductManifestV2.CurrentSchemaVersion, manifest.SchemaVersion);
                     Assert.AreEqual(node.Id, manifest.ProducerStepId);
-                    var decoded = JpegImageCodec.DecodeJpeg(await File.ReadAllBytesAsync(
-                        Path.Combine(root, durable.Outputs[0].PayloadRelativePath)).ConfigureAwait(false));
+                    var decoded = JpegImageCodec.DecodeJpeg(await ReadProductPartAsync(root, durable.Outputs[0]).ConfigureAwait(false));
                     Assert.AreEqual(decoded.Width, manifest.EncodedWidth);
                     Assert.AreEqual(decoded.Height, manifest.EncodedHeight);
                     Assert.AreEqual(decoded.PixelFormat, manifest.EncodedPixelFormat);
@@ -468,10 +466,7 @@ public sealed partial class DurableCaptureProcessingTests
 
             Assert.IsTrue(restartedSteps.All(static step => step.ExecutionCount == 0));
             Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
-            Assert.AreEqual(3, Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Count());
-            Assert.IsFalse(Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
-                .Any(path => path.Contains("derived", StringComparison.Ordinal) &&
-                    !path.EndsWith(".manifest.json", StringComparison.Ordinal)));
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "derived")));
         }
         finally
         {
@@ -489,8 +484,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var annotation = new PackedAnnotationProducingStep();
             var oldHash = new string('A', 64);
             var oldNode = new CaptureProcessingGraphNode("sky-annotation", annotation, [], true,
@@ -547,8 +541,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var annotation = new PackedAnnotationProducingStep();
             var oldHash = new string('A', 64);
             var first = await FrameProcessingWorker.ProcessGraphItemAsync(
@@ -608,20 +601,19 @@ public sealed partial class DurableCaptureProcessingTests
             Guid[] beforeSources;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var graph = await CreateProductionLayeredGraphAsync(fixture, root).ConfigureAwait(false);
                 var first = await FrameProcessingWorker.ProcessGraphItemAsync(
-                    fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    fixture.Item, graph, CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome, first.Reason);
                 var before = await ReadProductAsync(store, "presentation-materializer").ConfigureAwait(false);
                 beforeIdentity = before.OutputIdentitySha256;
-                beforePayload = await File.ReadAllBytesAsync(Path.Combine(root, before.PayloadRelativePath)).ConfigureAwait(false);
+                beforePayload = await ReadProductPartAsync(root, before).ConfigureAwait(false);
                 beforeSources = before.Artifact.SourceArtifactIds.ToArray();
                 var manifestOutput = await ReadProductAsync(store, "overlay-manifest").ConfigureAwait(false);
                 var manifest = LayeredPresentationJson.ParseManifest(
-                    await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false)).Document;
+                    await ReadProductPartAsync(root, manifestOutput).ConfigureAwait(false)).Document;
                 Assert.IsNotNull(manifest);
                 CollectionAssert.AreEqual(
                     ExpectedProductionLayerOrder,
@@ -633,15 +625,14 @@ public sealed partial class DurableCaptureProcessingTests
             var restartedFixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var replayGraph = await CreateProductionLayeredGraphAsync(restartedFixture, root).ConfigureAwait(false);
             var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
                 restartedFixture.Item, replayGraph,
-                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                CreatePersistence(restartedFixture.Options, restartedStore, restartedTelemetry),
                 restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome, replay.Reason);
             var after = await ReadProductAsync(restartedStore, "presentation-materializer").ConfigureAwait(false);
-            var afterPayload = await File.ReadAllBytesAsync(Path.Combine(root, after.PayloadRelativePath)).ConfigureAwait(false);
+            var afterPayload = await ReadProductPartAsync(root, after).ConfigureAwait(false);
 
             Assert.AreEqual(beforeIdentity, after.OutputIdentitySha256);
             CollectionAssert.AreEqual(beforePayload, afterPayload);
@@ -661,7 +652,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new CaptureProcessingGraphNode("continuation", continuation, ["overlay-manifest"], true,
                         null, null, null, new string('C', 64))
                 ]),
-                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                CreatePersistence(restartedFixture.Options, restartedStore, restartedTelemetry),
                 restartedTelemetry, 3, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, continuationResult.Outcome, continuationResult.Reason);
             Assert.AreEqual(1, continuation.ExecutionCount);
@@ -697,8 +688,7 @@ public sealed partial class DurableCaptureProcessingTests
             await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var graph = await CreateProductionLayeredGraphAsync(fixture, root).ConfigureAwait(false);
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, graph, persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None)
@@ -710,7 +700,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(manifestNode);
             var manifestOutput = manifestNode.Outputs.Single();
             var manifest = LayeredPresentationJson.ParseManifest(
-                await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false))
+                await ReadProductPartAsync(root, manifestOutput).ConfigureAwait(false))
                 .Document!;
             var selected = new[] { manifest.Layers[0].LayerIdentitySha256 };
             await rawJournal.ReserveIdentityAsync(
@@ -733,12 +723,8 @@ public sealed partial class DurableCaptureProcessingTests
                 rawManifestJson,
                 fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
                 fixture.Manifest.Descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
-            var reconciliation = await new DerivedProductReconciler(root, store)
-                .RunAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, reconciliation.Quarantined);
-            Assert.IsGreaterThan(0, reconciliation.Available);
             using var artifactService = new CameraAgentArtifactService(
-                fixture.Options, store, new CameraAgentPreviewEncoder());
+                fixture.Options, store, new CameraAgentPreviewEncoder(), silo: persistence.Silo);
             var openedManifest = await artifactService.OpenContentAsync(
                 manifestOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedManifest.Status);
@@ -816,22 +802,15 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreNotEqual("operator-test", audit.IdentitySha256);
             var reconstruction = FrameReconstructor.TryReconstruct(
                 output.Descriptor!,
-                await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false),
+                await ReadProductPartAsync(root, output).ConfigureAwait(false),
                 out _);
             Assert.IsTrue(reconstruction.IsValid, reconstruction.ReasonCode);
 
-            var materializedPath = Path.Combine(root, output.PayloadRelativePath);
             if (centered)
-            {
                 Assert.IsNotNull(output.Descriptor!.CenteredAcquisition);
-                var date = DateOnly.FromDateTime(output.Descriptor.Timing.ExposureStartedUtc.UtcDateTime);
-                Assert.IsTrue(storage.List(root, date, FrameArtifactRole.AnnotatedPreview, 10)
-                    .Any(frame => frame.AbsolutePath == materializedPath),
-                    "A completed on-demand materialization is published without an execution association.");
-            }
-            var corruptPayload = await File.ReadAllBytesAsync(materializedPath).ConfigureAwait(false);
+            var corruptPayload = await ReadProductPartAsync(root, output).ConfigureAwait(false);
             corruptPayload[0] ^= 0xFF;
-            await File.WriteAllBytesAsync(materializedPath, corruptPayload).ConfigureAwait(false);
+            await SubstituteProductPartAsync(root, output, corruptPayload).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await persistence.MaterializePresentationAsync(
                     fixture.Manifest.Descriptor.Capture.CaptureId,
@@ -889,14 +868,13 @@ public sealed partial class DurableCaptureProcessingTests
             };
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var producer = new FixedMetadataProducingStep(legacyProduct);
                 var committed = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", producer, [], false,
                         producer.RecipeName, producer.OutputRole, producer.OutputVariant, Pre433CloudPlanSha256)]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, committed.Outcome, committed.Reason);
             }
@@ -904,7 +882,6 @@ public sealed partial class DurableCaptureProcessingTests
             var restartedFixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var cloud = CreateRealCloudStep(root);
             await Assert.ThrowsExactlyAsync<ProcessingPlanSupersededException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
@@ -912,7 +889,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", cloud, [], false,
                         cloud.RecipeName, cloud.OutputRole, cloud.OutputVariant,
                         new string('N', 64))]),
-                    CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    CreatePersistence(restartedFixture.Options, restartedStore, restartedTelemetry),
                     restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false);
             var unchanged = await restartedStore.ReadNodeAsync(
@@ -936,124 +913,6 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task DeploymentShapedFlow_PersistsOnlyRawFinalAndTwoThumbnailsAndQueuesOnlyRaw()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            var memory = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
-            var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
-            var configuredSteps = new[]
-            {
-                new CaptureProcessingStepConfig("Test", "annotation", DependsOn: ["$raw"], Publication: memory),
-                new CaptureProcessingStepConfig("Test", "quality", DependsOn: ["$raw"], Required: false, Publication: memory),
-                new CaptureProcessingStepConfig("JpegEncoding", "final-jpeg", DependsOn: ["annotation"], Publication: durable),
-                new CaptureProcessingStepConfig("JpegEncoding", "thumbnail-large", DependsOn: ["annotation"], Publication: durable),
-                new CaptureProcessingStepConfig("JpegEncoding", "thumbnail-small", DependsOn: ["annotation"], Publication: durable),
-                new CaptureProcessingStepConfig("Storage", "storage", DependsOn:
-                    ["annotation", "quality", "final-jpeg", "thumbnail-large", "thumbnail-small"])
-            };
-            var config = fixture.Item.Config with
-            {
-                Pipeline = new CapturePipelineConfig(
-                    configuredSteps,
-                    CapturePipelineSchemaVersions.ExplicitV2,
-                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
-            };
-            var item = fixture.Item with { Config = config };
-            var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
-            var annotation = new PackedAnnotationProducingStep();
-            var quality = new MetadataProducingStep();
-            var jpegSteps = new[]
-            {
-                new JpegEncodingCaptureProcessingStep(
-                    new CaptureProcessingStepMetadata("final-jpeg", "JpegEncoding", 80),
-                    new JpegEncodingProcessingStepOptions
-                    {
-                        OutputVariant = "annotated-final-jpeg",
-                        JpegQuality = 90
-                    },
-                    adapter),
-                new JpegEncodingCaptureProcessingStep(
-                    new CaptureProcessingStepMetadata("thumbnail-large", "JpegEncoding", 81),
-                    new JpegEncodingProcessingStepOptions
-                    {
-                        OutputVariant = "annotated-thumbnail-1024-jpeg",
-                        JpegQuality = 85,
-                        MaximumDimension = 1024
-                    },
-                    adapter),
-                new JpegEncodingCaptureProcessingStep(
-                    new CaptureProcessingStepMetadata("thumbnail-small", "JpegEncoding", 82),
-                    new JpegEncodingProcessingStepOptions
-                    {
-                        OutputVariant = "annotated-thumbnail-320-jpeg",
-                        JpegQuality = 80,
-                        MaximumDimension = 320
-                    },
-                    adapter)
-            };
-            var frameStorage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-            var latest = new LatestFrameAccessor();
-            var storageStep = new FileStorageCaptureProcessingStep(
-                new CaptureProcessingStepMetadata("storage", "Storage", 90),
-                new FileStorageCaptureProcessingStepOptions
-                {
-                    StorageRoot = root,
-                    RetentionDays = 1,
-                    UpdateLatestFrame = true
-                },
-                latest,
-                frameStorage.Object,
-                NullLogger<FileStorageCaptureProcessingStep>.Instance);
-            var graph = new CaptureProcessingGraph([
-                new CaptureProcessingGraphNode(
-                    "annotation", annotation, [], true, annotation.RecipeName,
-                    annotation.OutputRole, annotation.OutputVariant, new string('A', 64), Publication: memory),
-                new CaptureProcessingGraphNode(
-                    "quality", quality, [], false, quality.RecipeName,
-                    quality.OutputRole, quality.OutputVariant, new string('Q', 64), Publication: memory),
-                .. jpegSteps.Select(step => new CaptureProcessingGraphNode(
-                    step.Name, step, ["annotation"], true, step.RecipeName,
-                    step.OutputRole, step.OutputVariant, new string(step.Name[0], 64), Publication: durable)),
-                new CaptureProcessingGraphNode(
-                    "storage", storageStep,
-                    ["annotation", "quality", "final-jpeg", "thumbnail-large", "thumbnail-small"],
-                    true, null, null, null, new string('S', 64))
-            ]);
-            using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var durableStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-
-            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
-                item,
-                graph,
-                CreatePersistence(fixture.Options, store, durableStorage, telemetry),
-                telemetry,
-                1,
-                NullLogger.Instance,
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
-            Assert.AreEqual(3, Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Count());
-            Assert.IsFalse(Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
-                .Any(path => path.Contains("derived", StringComparison.Ordinal) &&
-                    !path.EndsWith(".manifest.json", StringComparison.Ordinal)));
-            Assert.IsTrue(latest.TryGetSnapshot(out var latestFrame));
-            Assert.AreEqual(CameraPixelFormat.Mono8, latestFrame!.PixelFormat);
-            Assert.AreEqual(annotation.OutputVariant, latestFrame.RecipeVersion);
-            frameStorage.VerifyNoOtherCalls();
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    [TestCategory("Integration")]
     public async Task MemoryOnlyRetryThenSuccess_ClearsStaleStateAndReexecutesAfterRestart()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
@@ -1067,8 +926,7 @@ public sealed partial class DurableCaptureProcessingTests
                 "memory", value, [], true, null, null, null, new string('Y', 64), Publication: policy);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
 
             var retry = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, new CaptureProcessingGraph([Node(step)]), persistence, telemetry,
@@ -1124,7 +982,6 @@ public sealed partial class DurableCaptureProcessingTests
                 Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly));
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             await store.WriteNodeAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId,
                 node,
@@ -1150,7 +1007,7 @@ public sealed partial class DurableCaptureProcessingTests
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item,
                 new CaptureProcessingGraph([node]),
-                CreatePersistence(fixture.Options, store, storage, telemetry),
+                CreatePersistence(fixture.Options, store, telemetry),
                 telemetry,
                 2,
                 NullLogger.Instance,
@@ -1185,13 +1042,12 @@ public sealed partial class DurableCaptureProcessingTests
 
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await FrameProcessingWorker.ProcessGraphItemAsync(
                         fixture.Item,
                         new CaptureProcessingGraph([Node(new JpegProducingStep("malformed", malformed: true))]),
-                        CreatePersistence(fixture.Options, store, storage, telemetry),
+                        CreatePersistence(fixture.Options, store, telemetry),
                         telemetry,
                         1,
                         NullLogger.Instance,
@@ -1202,12 +1058,11 @@ public sealed partial class DurableCaptureProcessingTests
             DurableProcessingOutput output;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var step = new JpegProducingStep("restore-malformed");
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item, new CaptureProcessingGraph([Node(step)]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry,
+                    CreatePersistence(fixture.Options, store, telemetry), telemetry,
                     1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 output = (await store.ReadNodeAsync(
                     fixture.Manifest.Descriptor.Capture.CaptureId,
@@ -1231,11 +1086,9 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.ThrowsExactly<InvalidDataException>(() =>
                 DurableProcessingProductManifestJson.Serialize(falseV1));
 
-            async Task CommitEvidenceAsync(DurableEncodedProductManifestV2 manifest, byte[] payload)
+            async Task CommitEvidenceAsync(DurableEncodedProductManifestV2 manifest)
             {
                 var evidence = DurableProcessingProductManifestJson.Serialize(manifest);
-                await File.WriteAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), payload).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(Path.Combine(root, output.SidecarRelativePath), evidence).ConfigureAwait(false);
                 using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
@@ -1249,22 +1102,19 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 using var restartedTelemetry = new CaptureProcessingTelemetry();
                 using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-                using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
                 await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await FrameProcessingWorker.ProcessGraphItemAsync(
                         fixture.Item,
                         new CaptureProcessingGraph([Node(new JpegProducingStep("restore-malformed"))]),
-                        CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                        CreatePersistence(fixture.Options, restartedStore, restartedTelemetry),
                         restartedTelemetry,
                         attempt,
                         NullLogger.Instance,
                         CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             }
 
-            var validPayload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
             await CommitEvidenceAsync(
-                encodedManifest with { EncodedWidth = encodedManifest.EncodedWidth + 1 },
-                validPayload).ConfigureAwait(false);
+                encodedManifest with { EncodedWidth = encodedManifest.EncodedWidth + 1 }).ConfigureAwait(false);
             await AssertRestoreRejectedAsync(2).ConfigureAwait(false);
 
             var malformedManifest = encodedManifest with
@@ -1275,7 +1125,7 @@ public sealed partial class DurableCaptureProcessingTests
                 },
                 ByteLength = malformed.Length
             };
-            await CommitEvidenceAsync(malformedManifest, malformed).ConfigureAwait(false);
+            await CommitEvidenceAsync(malformedManifest).ConfigureAwait(false);
             await AssertRestoreRejectedAsync(3).ConfigureAwait(false);
         }
         finally
@@ -1299,9 +1149,8 @@ public sealed partial class DurableCaptureProcessingTests
             CaptureLaneHandlerResult first;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
-                var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+                var persistence = CreatePersistence(fixture.Options, store, telemetry);
                 var firstStep = new ProducingStep(recipeVersion: "configured-artifact-v2");
                 var firstNode = CreateNode(firstStep);
                 first = await FrameProcessingWorker.ProcessGraphItemAsync(
@@ -1323,7 +1172,6 @@ public sealed partial class DurableCaptureProcessingTests
                 fixture.Manifest.Scene!, "configured-artifact-v2");
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 second = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
@@ -1332,7 +1180,7 @@ public sealed partial class DurableCaptureProcessingTests
                         new CaptureProcessingGraphNode(
                             "inspect", inspector, [restartedNode.Id], true, null, null, null, new string('I', 64))
                     ]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     2,
                     NullLogger.Instance,
@@ -1363,20 +1211,20 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual("test-v1", output.Artifact.Recipe.ImplementationVersion);
             Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor!.CycleEvidence);
             Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, output.Descriptor.Artifact.SourceArtifactIds.Single());
-            Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
-            Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
+            Assert.IsNotEmpty(await ReadProductPartAsync(root, output).ConfigureAwait(false));
+            CollectionAssert.AreEqual(output.EvidenceJson,
+                await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             var sidecar = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
+                await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
             CollectionAssert.AreEqual(
                 output.EvidenceJson,
-                await File.ReadAllBytesAsync(Path.Combine(root, output.SidecarRelativePath)).ConfigureAwait(false));
+                await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             Assert.AreEqual(
                 fixture.Manifest.Descriptor.CycleEvidence,
                 sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
             Assert.AreEqual(fixture.Manifest.Scene, sidecar.Document.Manifest.Scene);
-            Assert.AreEqual(1, Directory.EnumerateFiles(
-                Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).Count());
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")));
         }
         finally
         {
@@ -1397,7 +1245,6 @@ public sealed partial class DurableCaptureProcessingTests
             var firstInspector = new RestoredMetadataInspectingStep();
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var first = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
@@ -1406,7 +1253,7 @@ public sealed partial class DurableCaptureProcessingTests
                         new CaptureProcessingGraphNode(
                             "inspect-first", firstInspector, ["metadata"], true, null, null, null, new string('F', 64))
                     ]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -1423,7 +1270,6 @@ public sealed partial class DurableCaptureProcessingTests
             DurableProcessingNode? durable;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var second = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
@@ -1432,7 +1278,7 @@ public sealed partial class DurableCaptureProcessingTests
                         new CaptureProcessingGraphNode(
                             "inspect", inspector, ["metadata"], true, null, null, null, new string('I', 64))
                     ]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     2,
                     NullLogger.Instance,
@@ -1454,9 +1300,10 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNull(output.Descriptor);
             var manifest = Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(output.ProductManifest);
             Assert.AreEqual(DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, manifest.SchemaVersion);
-            Assert.IsTrue(output.PayloadRelativePath.StartsWith("derived/", StringComparison.Ordinal));
-            Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
-            Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
+            Assert.IsTrue(output.PayloadRelativePath.StartsWith("silo/products/", StringComparison.Ordinal));
+            Assert.IsNotEmpty(await ReadProductPartAsync(root, output).ConfigureAwait(false));
+            CollectionAssert.AreEqual(output.EvidenceJson,
+                await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")));
         }
         finally
@@ -1475,13 +1322,12 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var step = new MetadataProducingStep(typed: false);
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item,
                 new CaptureProcessingGraph([CreateMetadataNode(step)]),
-                CreatePersistence(fixture.Options, store, storage, telemetry),
+                CreatePersistence(fixture.Options, store, telemetry),
                 telemetry,
                 1,
                 NullLogger.Instance,
@@ -1508,12 +1354,11 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
             }
@@ -1614,7 +1459,6 @@ public sealed partial class DurableCaptureProcessingTests
                 fixture.Item, registeredScene, "image-registered-scene"));
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
@@ -1626,7 +1470,7 @@ public sealed partial class DurableCaptureProcessingTests
                             "registered", registered, [], true, registered.RecipeName, registered.OutputRole,
                             registered.OutputVariant, new string('B', 64))
                     ]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
             }
@@ -1662,162 +1506,6 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task ApplyRetentionAsync_ProductionProjectedSceneDependencyChainHoldsThenExpiresAndConverges()
-    {
-        var root = CreateTestRoot();
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            var datedDirectory = Path.Combine(root, "frames", "2020", "01", "01", "Raw");
-            Directory.CreateDirectory(datedDirectory);
-            var datedPayload = Path.Combine(datedDirectory, "raw.bin");
-            var datedSidecar = Path.ChangeExtension(datedPayload, ".json");
-            File.Move(Path.Combine(root, "raw.bin"), datedPayload);
-            File.Move(Path.Combine(root, "raw.json"), datedSidecar);
-            var datedRelativePayload = Path.GetRelativePath(root, datedPayload).Replace(Path.DirectorySeparatorChar, '/');
-            var datedManifest = fixture.Manifest with { RelativeArtifactPath = datedRelativePayload };
-            await File.WriteAllBytesAsync(datedSidecar, CaptureContractJson.Serialize(datedManifest)).ConfigureAwait(false);
-            var datedReceipt = fixture.Item.RawCapture! with
-            {
-                Manifest = datedManifest,
-                StoredFrame = fixture.Item.RawCapture.StoredFrame with
-                {
-                    RelativePath = datedRelativePayload,
-                    AbsolutePath = datedPayload
-                },
-                CommittedManifestSha256 = CaptureContractJson.ComputeManifestSha256(datedManifest)
-            };
-            fixture = fixture with
-            {
-                Manifest = datedManifest,
-                Item = fixture.Item with { RawCapture = datedReceipt }
-            };
-            var rawId = fixture.Manifest.Descriptor.Artifact.ArtifactId;
-            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
-            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            await journal.ReserveIdentityAsync(
-                fixture.Manifest.Descriptor.Capture.AgentId,
-                fixture.Manifest.Descriptor.Capture.CaptureId,
-                rawId,
-                CancellationToken.None).ConfigureAwait(false);
-            await journal.CommitAsync(new RawIngressJournalEntry(
-                fixture.Manifest.Descriptor.Capture.AgentId,
-                fixture.Manifest.Descriptor.Capture.CaptureSequence,
-                fixture.Manifest.Descriptor.Capture.CaptureId,
-                rawId,
-                CaptureContractJson.ComputeDescriptorSha256(fixture.Manifest.Descriptor),
-                CaptureContractJson.ComputeManifestSha256(fixture.Manifest),
-                fixture.Manifest.Descriptor.Artifact.ChecksumSha256,
-                fixture.Manifest.Descriptor.Layout.ByteLength,
-                fixture.Manifest.RelativeArtifactPath,
-                Path.ChangeExtension(fixture.Manifest.RelativeArtifactPath, ".json"),
-                CaptureContractJson.Serialize(fixture.Manifest),
-                fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
-                fixture.Manifest.Descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
-            var predicted = CreateSyntheticMetadataProduct(fixture.Item, "predicted", [rawId]);
-            var registered = CreateSyntheticMetadataProduct(fixture.Item, "registered", [rawId]);
-            var dependent = CreateSyntheticMetadataProduct(
-                fixture.Item, "dependent",
-                [ProcessingIdentity.CreateArtifactId(predicted.OutputIdentitySha256),
-                 ProcessingIdentity.CreateArtifactId(registered.OutputIdentitySha256)]);
-            using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
-            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
-                fixture.Item,
-                new CaptureProcessingGraph([
-                    new CaptureProcessingGraphNode("predicted", new FixedMetadataProducingStep(predicted), [], true,
-                        predicted.Recipe.Descriptor.Name, predicted.Role, predicted.Variant, new string('A', 64)),
-                    new CaptureProcessingGraphNode("registered", new FixedMetadataProducingStep(registered), [], true,
-                        registered.Recipe.Descriptor.Name, registered.Role, registered.Variant, new string('B', 64)),
-                    new CaptureProcessingGraphNode("dependent", new FixedMetadataProducingStep(dependent),
-                        ["predicted", "registered"], true, dependent.Recipe.Descriptor.Name, dependent.Role,
-                        dependent.Variant, new string('C', 64))
-                ]),
-                persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-
-            var expiredUnix = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
-            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
-            {
-                await connection.OpenAsync().ConfigureAwait(false);
-                using var age = connection.CreateCommand();
-                age.CommandText = "UPDATE processing_outputs SET committed_unix_ms = $expired;";
-                age.Parameters.AddWithValue("$expired", expiredUnix);
-                await age.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-            var outputPaths = new List<string>();
-            foreach (var nodeId in new[] { "predicted", "registered", "dependent" })
-            {
-                var node = await store.ReadNodeAsync(
-                    fixture.Manifest.Descriptor.Capture.CaptureId, nodeId, CancellationToken.None).ConfigureAwait(false);
-                var output = node!.Outputs.Single();
-                outputPaths.Add(Path.Combine(root, output.PayloadRelativePath));
-                outputPaths.Add(Path.Combine(root, output.SidecarRelativePath));
-            }
-            var config = CreateRetentionConfig(root);
-            var retention = CreateProductionRetentionService(root, persistence);
-
-            await retention.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
-
-            Assert.IsTrue(outputPaths.All(File.Exists));
-            Assert.IsTrue(File.Exists(datedPayload));
-            Assert.IsTrue(File.Exists(datedSidecar));
-            Assert.HasCount(3, await store.ReadCaptureProductsAsync(
-                fixture.Manifest.Descriptor.Capture.CaptureId, null, 10, CancellationToken.None).ConfigureAwait(false));
-
-            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
-            {
-                await connection.OpenAsync().ConfigureAwait(false);
-                using var release = connection.CreateCommand();
-                release.CommandText = """
-                    UPDATE processing_outputs
-                    SET availability_state = 'Missing', availability_reason = 'retention-released',
-                        unavailable_unix_ms = $expired;
-                    """;
-                release.Parameters.AddWithValue("$expired", expiredUnix);
-                await release.ExecuteNonQueryAsync().ConfigureAwait(false);
-                using var releaseRaw = connection.CreateCommand();
-                releaseRaw.CommandText = "DELETE FROM raw_captures WHERE capture_id = $capture;";
-                releaseRaw.Parameters.AddWithValue(
-                    "$capture", fixture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
-                await releaseRaw.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-
-            await retention.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
-
-            Assert.IsTrue(outputPaths.All(path => !File.Exists(path)));
-            Assert.IsFalse(File.Exists(datedPayload));
-            Assert.IsFalse(File.Exists(datedSidecar));
-            Assert.IsEmpty(await store.ReadCaptureProductsAsync(
-                fixture.Manifest.Descriptor.Capture.CaptureId, null, 10, CancellationToken.None).ConfigureAwait(false));
-            using var verify = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
-            await verify.OpenAsync().ConfigureAwait(false);
-            using var counts = verify.CreateCommand();
-            counts.CommandText = """
-                SELECT
-                    (SELECT COUNT(*) FROM processing_outputs WHERE capture_id = $capture),
-                    (SELECT COUNT(*) FROM processing_output_sources source
-                     JOIN processing_outputs output ON output.output_identity_sha256 = source.output_identity_sha256
-                     WHERE output.capture_id = $capture),
-                    (SELECT COUNT(*) FROM processing_nodes WHERE capture_id = $capture);
-                """;
-            counts.Parameters.AddWithValue("$capture", fixture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
-            using var reader = await counts.ExecuteReaderAsync().ConfigureAwait(false);
-            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual(0L, reader.GetInt64(0));
-            Assert.AreEqual(0L, reader.GetInt64(1));
-            Assert.AreEqual(0L, reader.GetInt64(2));
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    [TestCategory("Integration")]
     public async Task DurableLineageAcceptsAndQueriesFiveHundredTwelveOrderedSources()
     {
         var root = CreateTestRoot();
@@ -1827,11 +1515,10 @@ public sealed partial class DurableCaptureProcessingTests
             var step = new MetadataProducingStep(sourceCount: LayeredPresentationJson.MaximumSourceArtifactCount);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item, new CaptureProcessingGraph([CreateMetadataNode(step)]),
-                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             var output = (await store.ReadNodeAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId, "metadata", CancellationToken.None)
@@ -1862,12 +1549,11 @@ public sealed partial class DurableCaptureProcessingTests
             var step = new MetadataProducingStep(sourceCount: LayeredPresentationJson.MaximumSourceArtifactCount + 1);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item, new CaptureProcessingGraph([CreateMetadataNode(step)]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             Assert.IsFalse(Directory.Exists(Path.Combine(root, "derived")));
@@ -1931,12 +1617,11 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -1972,12 +1657,11 @@ public sealed partial class DurableCaptureProcessingTests
 
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    CreatePersistence(fixture.Options, restartedStore, restartedTelemetry),
                     restartedTelemetry,
                     2,
                     NullLogger.Instance,
@@ -2012,12 +1696,11 @@ public sealed partial class DurableCaptureProcessingTests
             DurableProcessingNode? durable;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     item,
                     new CaptureProcessingGraph([node]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -2056,13 +1739,12 @@ public sealed partial class DurableCaptureProcessingTests
             DurableProcessingOutput output;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var step = new MetadataProducingStep();
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(step)]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -2074,23 +1756,19 @@ public sealed partial class DurableCaptureProcessingTests
                 output = durable!.Outputs.Single();
             }
 
-            var evidencePath = Path.Combine(
-                root,
-                tamperPayload ? output.PayloadRelativePath : output.SidecarRelativePath);
-            var committed = await File.ReadAllBytesAsync(evidencePath).ConfigureAwait(false);
+            var committed = await ReadProductPartAsync(root, output, evidence: !tamperPayload).ConfigureAwait(false);
             var tampered = tamperPayload
                 ? committed.Select(static value => (byte)(value ^ 0x01)).ToArray()
                 : [.. "\n"u8, .. committed];
-            await File.WriteAllBytesAsync(evidencePath, tampered).ConfigureAwait(false);
+            await SubstituteProductPartAsync(root, output, tampered, evidence: !tamperPayload).ConfigureAwait(false);
 
             using var restartedTelemetry = new CaptureProcessingTelemetry();
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
-            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    CreatePersistence(fixture.Options, restartedStore, restartedTelemetry),
                     restartedTelemetry,
                     2,
                     NullLogger.Instance,
@@ -2114,12 +1792,11 @@ public sealed partial class DurableCaptureProcessingTests
             DurableProcessingOutput output;
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -2130,20 +1807,17 @@ public sealed partial class DurableCaptureProcessingTests
                     CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
             }
 
-            var payloadPath = Path.Combine(root, output.PayloadRelativePath);
-            var sidecarPath = Path.Combine(root, output.SidecarRelativePath);
-            var payloadBytes = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
-            var sidecarBytes = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var payloadBytes = await ReadProductPartAsync(root, output).ConfigureAwait(false);
+            var sidecarBytes = await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false);
             await DeleteProcessingCommitAsync(root).ConfigureAwait(false);
 
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
-                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     2,
                     NullLogger.Instance,
@@ -2155,76 +1829,9 @@ public sealed partial class DurableCaptureProcessingTests
                     CancellationToken.None).ConfigureAwait(false))!.Outputs);
             }
 
-            CollectionAssert.AreEqual(payloadBytes, await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
-            CollectionAssert.AreEqual(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(payloadBytes, await ReadProductPartAsync(root, output).ConfigureAwait(false));
+            CollectionAssert.AreEqual(sidecarBytes, await ReadProductPartAsync(root, output, evidence: true).ConfigureAwait(false));
             Assert.IsFalse(Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any());
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    [TestCategory("Integration")]
-    public async Task PublishedOutputWithoutSqliteCommit_ReplayConvergesExactEvidence()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var step = new ProducingStep();
-            var graph = new CaptureProcessingGraph([CreateNode(step)]);
-
-            await Assert.ThrowsExactlyAsync<IOException>(async () =>
-                await FrameProcessingWorker.ProcessGraphItemAsync(
-                    fixture.Item,
-                    graph,
-                    CreatePersistence(fixture.Options, store, new ThrowAfterSaveStorage(storage), telemetry),
-                    telemetry,
-                    1,
-                    NullLogger.Instance,
-                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-
-            var legacySidecarPath = Directory.EnumerateFiles(
-                Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories).Single();
-            var legacySidecar = System.Text.Json.Nodes.JsonNode.Parse(
-                await File.ReadAllBytesAsync(legacySidecarPath).ConfigureAwait(false))!.AsObject();
-            Assert.IsTrue(legacySidecar.Remove("producerStepId"));
-            await File.WriteAllTextAsync(legacySidecarPath, legacySidecar.ToJsonString()).ConfigureAwait(false);
-            var legacyParsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(legacySidecarPath).ConfigureAwait(false));
-            Assert.IsTrue(legacyParsed.IsValid, legacyParsed.Validation.ReasonCode);
-            Assert.IsNull(legacyParsed.Document!.Manifest!.ProducerStepId);
-
-            var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
-                fixture.Item,
-                graph,
-                CreatePersistence(fixture.Options, store, storage, telemetry),
-                telemetry,
-                2,
-                NullLogger.Instance,
-                CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome);
-            Assert.HasCount(1, Directory.EnumerateFiles(
-                Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories));
-            var durable = await store.ReadNodeAsync(
-                fixture.Manifest.Descriptor.Capture.CaptureId,
-                "normalize",
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(durable);
-            Assert.HasCount(1, durable.Outputs);
-            Assert.IsNull(durable.Outputs[0].Descriptor!.CycleEvidence);
-            var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
-                Path.Combine(root, durable.Outputs[0].SidecarRelativePath)).ConfigureAwait(false));
-            Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
-            Assert.AreEqual("normalize", sidecar.Document!.Manifest!.ProducerStepId);
-            Assert.IsNull(sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
         }
         finally
         {
@@ -2249,12 +1856,13 @@ public sealed partial class DurableCaptureProcessingTests
                 sidecarPath,
                 tampered).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
                     new CaptureProcessingGraph([CreateNode(new ProducingStep())]),
-                    null,
+                    CreatePersistence(fixture.Options, store, telemetry),
                     telemetry,
                     1,
                     NullLogger.Instance,
@@ -2397,10 +2005,10 @@ public sealed partial class DurableCaptureProcessingTests
             var holds = await store.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
 
             CollectionAssert.AreEqual(new long[] { 100, 99, 98, 97, 96 },
-                history.Select(static entry => entry.Descriptor.Capture.CaptureSequence).ToArray());
+                history.Select(static descriptor => descriptor.Capture.CaptureSequence).ToArray());
             Assert.HasCount(100, holds);
-            Assert.IsFalse(holds.Any(static hold => hold.PayloadRelativePath == "raw/1.bin"));
-            Assert.IsTrue(holds.Any(static hold => hold.PayloadRelativePath == "raw/101.bin"));
+            Assert.IsFalse(holds.Any(static hold => hold.ArtifactId == Guid.Parse("50000000-0000-0000-0000-000000000001")));
+            Assert.IsTrue(holds.Any(static hold => hold.ArtifactId == Guid.Parse("50000000-0000-0000-0000-000000000101")));
         }
         finally
         {
@@ -2483,8 +2091,8 @@ public sealed partial class DurableCaptureProcessingTests
                 firstPrunedCapture, CancellationToken.None).ConfigureAwait(false);
 
             Assert.HasCount(expectedHoldCount, holds);
-            Assert.IsTrue(holds.Any(static hold => hold.PayloadRelativePath == "frames/0/2.bin"));
-            Assert.IsFalse(holds.Any(static hold => hold.PayloadRelativePath == "frames/0/1.bin"));
+            Assert.IsTrue(holds.Any(static hold => hold.ArtifactId == Guid.Parse("70000000-0000-0000-0000-000000000002")));
+            Assert.IsFalse(holds.Any(static hold => hold.ArtifactId == Guid.Parse("70000000-0000-0000-0000-000000000001")));
             Assert.IsTrue(firstRetainedState[Guid.Parse("70000000-0000-0000-0000-000000000002")]);
             Assert.IsFalse(firstPrunedState[Guid.Parse("70000000-0000-0000-0000-000000000001")]);
         }
@@ -2520,8 +2128,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.HasCount(1, rolling.Outputs);
             Assert.HasCount(2, rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var restoredHistory = await CreatePersistence(second.Options, store, storage, telemetry).ReadRecentInputsAsync(
+            var restoredHistory = await CreatePersistence(second.Options, store, telemetry).ReadRecentInputsAsync(
                 second.Manifest.Descriptor,
                 "calibration",
                 FrameArtifactRole.Calibrated,
@@ -2539,12 +2146,32 @@ public sealed partial class DurableCaptureProcessingTests
         }
     }
 
+    private static async Task<byte[]> ReadProductPartAsync(string root, DurableProcessingOutput output, bool evidence = false)
+    {
+        var provider = SiloInfrastructureFixture.ProductStore(root);
+        var revision = evidence ? SiloArtifactStorage.ProductEvidenceRevision : output.OutputIdentitySha256;
+        var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, output.ArtifactId, revision,
+            CancellationToken.None).ConfigureAwait(false);
+        return provider.GetRequiredService<SiloTestStore>().Read(locator.Key, locator.VersionId);
+    }
+
+    private static async Task SubstituteProductPartAsync(string root, DurableProcessingOutput output, byte[] bytes, bool evidence = false)
+    {
+        var provider = SiloInfrastructureFixture.ProductStore(root);
+        var revision = evidence ? SiloArtifactStorage.ProductEvidenceRevision : output.OutputIdentitySha256;
+        var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, output.ArtifactId, revision,
+            CancellationToken.None).ConfigureAwait(false);
+        var objects = provider.GetRequiredService<SiloTestStore>();
+        var existing = objects.ReadContentOverride;
+        objects.ReadContentOverride = candidate => candidate == locator ? new MemoryStream(bytes, writable: false) : existing?.Invoke(candidate);
+    }
+
     private static CaptureProcessingPersistence CreatePersistence(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore store,
-        IFrameStorageService storage,
         CaptureProcessingTelemetry telemetry)
-        => new(options, store, storage, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+        => new(options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance,
+            silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
 
     private static string CreateTestRoot()
     {
@@ -2554,15 +2181,16 @@ public sealed partial class DurableCaptureProcessingTests
     }
 
     private static async Task RunWorkerAsync(
-        FrameProcessingItem item,
+        Fixture fixture,
         ICaptureProcessingStep step,
         IRawIngressRecoveryControl recovery,
         CancellationToken cancellationToken)
     {
         var channel = new FrameProcessingChannel(2);
-        await channel.WriteAsync(item, CancellationToken.None).ConfigureAwait(false);
+        await channel.WriteAsync(fixture.Item, CancellationToken.None).ConfigureAwait(false);
         channel.Complete();
-        await new FrameProcessingWorker(channel, [step], NullLogger.Instance, recovery)
+        var storage = SiloInfrastructureFixture.ProductStorage(fixture.Options.Value.RawIngressRoot);
+        await new FrameProcessingWorker(channel, [step], NullLogger.Instance, recovery, storage)
             .RunAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -2663,11 +2291,8 @@ public sealed partial class DurableCaptureProcessingTests
 
     private static CameraModuleConfig CreateRetentionConfig(string root)
     {
-        var storageOptions = new FileStorageCaptureProcessingStepOptions
-        {
-            StorageRoot = root,
-            RetentionDays = 1
-        };
+        var storageOptions = new SiloCaptureProcessingStepOptions
+        { };
         return CreateConfig() with
         {
             Pipeline = new CapturePipelineConfig(
@@ -2680,18 +2305,6 @@ public sealed partial class DurableCaptureProcessingTests
             ])
         };
     }
-
-    private static RetentionBackgroundService CreateProductionRetentionService(
-        string root,
-        CaptureProcessingPersistence persistence)
-        => new(
-            new RetentionConfigurationAccessor(),
-            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
-            new RetentionTimeProvider(new DateTimeOffset(2026, 8, 25, 12, 0, 0, TimeSpan.Zero)),
-            new RetentionCapacityProvider(),
-            new StoragePressureState(),
-            NullLogger<RetentionBackgroundService>.Instance,
-            processingHolds: persistence);
 
     private static DurableTypedMetadataProductManifestV3 CreateTypedMetadataManifest(ProcessingProduct product)
     {
@@ -2978,8 +2591,7 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var persistence = CreatePersistence(fixture.Options, store, telemetry);
             var retryGraph = CreateDurableOptionalCloudGraph(
                 new OutcomeStep(ProcessingOutcome.RetryableFailure("cloud.retry")));
 
@@ -3040,12 +2652,11 @@ public sealed partial class DurableCaptureProcessingTests
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var graph = CreateDurableOptionalCloudGraph(
                 new OutcomeStep(ProcessingOutcome.TerminalFailure("cloud.terminal")));
 
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(
-                fixture.Item, graph.Graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                fixture.Item, graph.Graph, CreatePersistence(fixture.Options, store, telemetry), telemetry, 1,
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
@@ -3191,12 +2802,11 @@ public sealed partial class DurableCaptureProcessingTests
                 "sensor-v1", CatalogId: "test-catalog");
             manifest = manifest with { Scene = scene };
         }
-        var payloadPath = Path.Combine(root, "raw.bin");
-        await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
-        await File.WriteAllBytesAsync(
-            Path.ChangeExtension(payloadPath, ".json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
-        var stored = new StoredFrameReference("raw.bin", payloadPath, manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw);
+        var paths = RawIngressFileStore.GetPaths(root, manifest.Descriptor.Timing.ExposureStartedUtc, manifest.Descriptor.Artifact.ArtifactId);
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, payload).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        var stored = new StoredFrameReference(paths.PayloadRelativePath, paths.PayloadAbsolutePath, manifest.Descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw);
         var receipt = new RawCaptureReceipt(
             RawIngressOutcome.Committed,
             manifest,
@@ -3253,11 +2863,10 @@ public sealed partial class DurableCaptureProcessingTests
             ArtifactManifestV2.CurrentSchemaVersion,
             descriptor,
             $"{suffix}.bin");
-        var payloadPath = Path.Combine(root, $"{suffix}.bin");
-        await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
-        await File.WriteAllBytesAsync(
-            Path.ChangeExtension(payloadPath, ".json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        var paths = RawIngressFileStore.GetPaths(root, descriptor.Timing.ExposureStartedUtc, artifactId);
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, payload).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         Assert.IsTrue(reconstruction.IsValid);
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
@@ -3272,7 +2881,7 @@ public sealed partial class DurableCaptureProcessingTests
                 new RawCaptureReceipt(
                     RawIngressOutcome.Committed,
                     manifest,
-                    new StoredFrameReference($"{suffix}.bin", payloadPath, descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw),
+                    new StoredFrameReference(paths.PayloadRelativePath, paths.PayloadAbsolutePath, descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw),
                     CaptureContractJson.ComputeManifestSha256(manifest))));
     }
 
@@ -3280,7 +2889,6 @@ public sealed partial class DurableCaptureProcessingTests
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var store = new SqliteCaptureProcessingStore(fixture.Options);
-        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
         var calibration = new CalibrationCaptureProcessingStep(
             new CaptureProcessingStepMetadata("calibration", "calibration", 0),
@@ -3301,7 +2909,7 @@ public sealed partial class DurableCaptureProcessingTests
         var result = await FrameProcessingWorker.ProcessGraphItemAsync(
             fixture.Item,
             graph,
-            CreatePersistence(fixture.Options, store, storage, telemetry),
+            CreatePersistence(fixture.Options, store, telemetry),
             telemetry,
             1,
             NullLogger.Instance,
@@ -3814,24 +3422,6 @@ public sealed partial class DurableCaptureProcessingTests
         }
     }
 
-    private sealed class RetentionConfigurationAccessor : ICameraAgentConfigurationAccessor
-    {
-        public bool IsConfigured => false;
-        public void SetConfiguration(CameraModuleConfig config) { }
-        public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromException<CameraModuleConfig>(new InvalidOperationException("Not used by direct retention tests."));
-    }
-
-    private sealed class RetentionTimeProvider(DateTimeOffset utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
-    }
-
-    private sealed class RetentionCapacityProvider : IStorageCapacityProvider
-    {
-        public StorageCapacity GetCapacity(string storageRoot) => new(1000, 500);
-    }
-
     private sealed class JpegProducingStep(string variant, bool malformed = false) : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         public bool Enabled => true;
@@ -4085,44 +3675,6 @@ public sealed partial class DurableCaptureProcessingTests
         public ValueTask<ProcessingOutcome> ExecuteAsync(
             ProcessingExecutionRequest request,
             CancellationToken cancellationToken = default) => ValueTask.FromResult(outcome);
-    }
-
-    private sealed class ThrowAfterSaveStorage(IFrameStorageService inner) : IFrameStorageService
-    {
-        public async ValueTask<StoredFrameReference> SaveAsync(
-            string storageRoot,
-            FrameArtifact artifact,
-            ReconstructionDescriptor descriptor,
-            CancellationToken cancellationToken)
-        {
-            _ = await inner.SaveAsync(storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
-            throw new IOException("Injected failure after immutable publication.");
-        }
-
-        public async ValueTask<StoredFrameReference> SaveAsync(
-            string storageRoot,
-            FrameArtifact artifact,
-            ReconstructionDescriptor descriptor,
-            string producerStepId,
-            CancellationToken cancellationToken)
-        {
-            _ = await inner.SaveAsync(
-                storageRoot, artifact, descriptor, producerStepId, cancellationToken).ConfigureAwait(false);
-            throw new IOException("Injected failure after immutable publication.");
-        }
-
-        public ValueTask RemoveAsync(
-            string storageRoot,
-            StoredFrameReference storedFrame,
-            Guid artifactId,
-            CancellationToken cancellationToken) =>
-            inner.RemoveAsync(storageRoot, storedFrame, artifactId, cancellationToken);
-
-        public IReadOnlyList<StoredFrameReference> List(
-            string storageRoot,
-            DateOnly utcDate,
-            FrameArtifactRole? role,
-            int maximumResults) => inner.List(storageRoot, utcDate, role, maximumResults);
     }
 
     private sealed record Fixture(

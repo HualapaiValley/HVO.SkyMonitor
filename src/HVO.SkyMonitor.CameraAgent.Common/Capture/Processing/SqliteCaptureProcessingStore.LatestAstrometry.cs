@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -152,9 +153,14 @@ internal sealed partial class SqliteCaptureProcessingStore
                 Guid.ParseExact(reader.GetString(0), "N"),
                 await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
                 reader.GetString(2));
-            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
-                   reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Available
-                ? new(AstrometryAssessmentSelectionKind.Ambiguous) : selected;
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
+                reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Available)
+                return new(AstrometryAssessmentSelectionKind.Ambiguous);
+            if (_silo is not null && selected.AvailabilityState == "Available" &&
+                await _silo.ReadRetainedEvidenceFailureAsync([selected.ArtifactId], cancellationToken).ConfigureAwait(false)
+                    == SiloAvailabilityState.Quarantined)
+                return selected with { AvailabilityState = "Quarantined" };
+            return selected;
         }
     }
 
@@ -207,7 +213,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 LEFT JOIN outputs ON outputs.capture = requested.capture
                 GROUP BY requested.capture
             )
-            SELECT requested.capture
+            SELECT requested.capture, requested.artifact, requested.solution, requested.lineage,
+                   observed.public_count = 1 AND observed.exact_public = 1 AND requested.lineage <> 0
             FROM requested
             JOIN observed ON observed.capture = requested.capture
             LEFT JOIN processing_outputs assessment ON assessment.artifact_id = requested.artifact
@@ -231,10 +238,26 @@ internal sealed partial class SqliteCaptureProcessingStore
             solution = check.Assessment?.ContentIdentitySha256,
             lineage = (int)check.Lineage
         })));
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var changed = new HashSet<Guid>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            changed.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        var recheck = new List<(CameraAgentAstrometryAssessmentIdentity Identity, RetainedAstrometryLineageState State)>();
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var capture = Guid.ParseExact(reader.GetString(0), "N");
+                if (_silo is not null && reader.GetBoolean(4))
+                    recheck.Add((new(capture, Guid.ParseExact(reader.GetString(1), "N"), reader.GetString(2)),
+                        (RetainedAstrometryLineageState)reader.GetInt32(3)));
+                else
+                    changed.Add(capture);
+            }
+        }
+        foreach (var (identity, previousState) in recheck)
+        {
+            var currentState = await ReadAstrometryLineageAsync(null, null, identity, cancellationToken).ConfigureAwait(false);
+            if (currentState.Result != previousState)
+                changed.Add(identity.CaptureId);
+        }
         return changed;
     }
 
@@ -290,7 +313,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                        (1, $selectedCapture, $selectedArtifact, $selectedSolution),
                        (2, $resultCapture, $resultArtifact, $resultSolution)
             )
-            SELECT {AstrometryExactLineageState}
+            SELECT {AstrometryExactLineageState}, requested.artifact,
+                (SELECT json_group_array(source_artifact_id) FROM processing_output_sources
+                 WHERE output_identity_sha256 = assessment.output_identity_sha256)
             FROM requested
             LEFT JOIN processing_outputs assessment ON assessment.artifact_id = requested.artifact
             ORDER BY requested.slot;
@@ -315,8 +340,29 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
 
         async ValueTask<RetainedAstrometryLineageState> ReadStateAsync()
-            => await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-                ? (RetainedAstrometryLineageState)reader.GetInt32(0) : RetainedAstrometryLineageState.Unknown;
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return RetainedAstrometryLineageState.Unknown;
+            var state = (RetainedAstrometryLineageState)reader.GetInt32(0);
+            if (_silo is null || state is RetainedAstrometryLineageState.Unknown or RetainedAstrometryLineageState.Quarantined)
+                return state;
+            var sources = JsonSerializer.Deserialize<string[]>(reader.GetString(2))!;
+            var artifacts = new List<Guid>(sources.Length + 1) { Guid.ParseExact(reader.GetString(1), "N") };
+            foreach (var source in sources)
+            {
+                if (!Guid.TryParseExact(source, "N", out var artifact))
+                    return RetainedAstrometryLineageState.Unknown;
+                artifacts.Add(artifact);
+            }
+            var siloState = await _silo.ReadRetainedEvidenceFailureAsync(artifacts, cancellationToken).ConfigureAwait(false) switch
+            {
+                SiloAvailabilityState.Quarantined => RetainedAstrometryLineageState.Quarantined,
+                SiloAvailabilityState.PolicyExpired => RetainedAstrometryLineageState.Evicted,
+                SiloAvailabilityState.Missing => RetainedAstrometryLineageState.Missing,
+                _ => state
+            };
+            return siloState > state ? siloState : state;
+        }
     }
 
     // A deadline can prevent another SQL read. Check that the identified capture has no pending or

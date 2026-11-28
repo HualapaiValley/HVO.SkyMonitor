@@ -72,7 +72,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
             var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);

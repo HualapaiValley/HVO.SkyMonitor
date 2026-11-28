@@ -128,7 +128,6 @@ public sealed partial class RawCaptureIngressPerformanceTests
         Assert.AreEqual(0, state.LastReconciliation.Recovered);
         Assert.AreEqual(0, state.LastReconciliation.MissingEvidence);
         Assert.AreEqual(0, state.LastReconciliation.Quarantined);
-        Assert.AreEqual(0, state.LastReconciliation.IndexProjectionFailures);
         Assert.AreEqual(RetainedCaptureCount, stages.Count);
         // Before #1295 event 2048 also logged a successful checkpoint at Warning. That exact message stays allowed so the
         // harness can still run against a baseline Common assembly from before that change; every other warning fails.

@@ -335,10 +335,10 @@ public sealed class NightlyProductGeneratorTests
     }
 
     [TestMethod]
-    [DataRow("*.bin")]
-    [DataRow("*.jpg")]
-    [DataRow("*.provenance.json")]
-    public async Task CorruptedPublishedFile_FailsAReuseWithoutRestoringOrRepublishingSources(string pattern)
+    [DataRow("still")]
+    [DataRow("rendition-1")]
+    [DataRow("provenance-1")]
+    public async Task CorruptedSiloVersion_FailsAReuseWithoutRestoringOrRepublishingSources(string role)
     {
         var reader = new InMemoryNightlySourceReader();
         reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
@@ -346,9 +346,9 @@ public sealed class NightlyProductGeneratorTests
         var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.Keogram);
         await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         var restores = reader.Restores;
-        var file = Directory.GetFiles(Path.Combine(_roots[^1], SqliteNightlyProductStore.ProductDirectoryName), pattern,
-            SearchOption.AllDirectories)[0];
-        var bytes = await File.ReadAllBytesAsync(file); bytes[^1] ^= 1; await File.WriteAllBytesAsync(file, bytes);
+        var product = await Final(harness.Store, occurrence);
+        var revision = role == "still" ? product.OutputIdentitySha256 : role;
+        await harness.Silo.DamageAsync(product.Summary.ProductId, revision);
         var retry = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         Assert.AreEqual(1, retry.FailedWindows);
         Assert.AreEqual(0, retry.ProductsPublished);
@@ -391,14 +391,15 @@ public sealed class NightlyProductGeneratorTests
         _roots.Add(root);
         var host = NightlyProductFixture.HostOptions(root, options);
         var clock = new NightlyClock(now ?? NightlyProductFixture.DayEndUtc.AddMinutes(10));
-        var store = new SqliteNightlyProductStore(host, clock);
+        var silo = new NightlySiloFixture(root);
+        var store = silo.OpenStore(host, clock);
         var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(configuration ?? NightlyProductFixture.Configuration()),
             reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
-        return new(store, generator);
+        return new(store, generator, silo);
     }
 
-    private sealed record HarnessState(SqliteNightlyProductStore Store, NightlyProductGenerator Generator) : IDisposable
+    private sealed record HarnessState(SqliteNightlyProductStore Store, NightlyProductGenerator Generator, NightlySiloFixture Silo) : IDisposable
     {
-        public void Dispose() { Generator.Dispose(); Store.Dispose(); }
+        public void Dispose() { Generator.Dispose(); Store.Dispose(); Silo.Dispose(); }
     }
 }

@@ -201,8 +201,8 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.IsTrue(jpegSteps.All(step =>
                 step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal));
             var storage = pipeline.Steps.Single(step => step.Id == "storage");
-            var storageOptions = storage.Options!.Value.Deserialize<FileStorageCaptureProcessingStepOptions>(StrictJsonOptions)!;
-            Assert.IsTrue(storageOptions.UpdateLatestFrame);
+            var storageOptions = storage.Options!.Value.Deserialize<SiloCaptureProcessingStepOptions>(StrictJsonOptions)!;
+            Assert.IsFalse(storageOptions.PublishArchive);
             CollectionAssert.AreEquivalent(
                 ExpectedStorageDependencies,
                 storage.DependsOn!.ToArray());
@@ -214,47 +214,6 @@ public sealed class DeploymentAsi676ProfileTests
         Assert.IsFalse(color.Module.Options.Value.GetRawText().Contains("fireball", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(mono.Module.Options!.Value.GetRawText().Contains("meteor", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(mono.Module.Options.Value.GetRawText().Contains("fireball", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [TestMethod]
-    public async Task StoragePolicies_SelectExactProducers()
-    {
-        var configuration = await LoadAsync("hvo-edge-01.virtual-asi676mm.full.json").ConfigureAwait(false);
-        using var provider = CreateProvider();
-        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-
-        CameraModuleConfig WithPolicies(
-            params ArtifactStoragePolicyOptions[] policies)
-        {
-            var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
-                ? step with
-                {
-                    Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    {
-                        StorageRoot = "/app/data/raw",
-                        RetentionDays = 1,
-                        UpdateLatestFrame = true,
-                        Policies = policies
-                    }, StrictJsonOptions)
-                }
-                : step).ToArray();
-            return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
-        }
-
-        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
-            new ArtifactStoragePolicyOptions { StepId = "missing" })));
-        Assert.ThrowsExactly<System.ComponentModel.DataAnnotations.ValidationException>(() => factory.CreateGraph(WithPolicies(
-            new ArtifactStoragePolicyOptions { StepId = "final-jpeg", RetentionDays = 1 },
-            new ArtifactStoragePolicyOptions { StepId = "FINAL-JPEG", RetentionDays = 30 })));
-
-        var alertFrameGraph = factory.CreateGraph(WithPolicies(
-            new ArtifactStoragePolicyOptions { StepId = "sky-annotation" }));
-        alertFrameGraph.DisposeSteps();
-        var jpegGraph = factory.CreateGraph(WithPolicies(
-            new ArtifactStoragePolicyOptions { StepId = "final-jpeg" },
-            new ArtifactStoragePolicyOptions { StepId = "thumbnail-large" },
-            new ArtifactStoragePolicyOptions { StepId = "thumbnail-small" }));
-        jpegGraph.DisposeSteps();
     }
 
     [TestMethod]
@@ -298,7 +257,7 @@ public sealed class DeploymentAsi676ProfileTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = Path.GetTempPath() })
             .Build());
         return services.BuildServiceProvider();

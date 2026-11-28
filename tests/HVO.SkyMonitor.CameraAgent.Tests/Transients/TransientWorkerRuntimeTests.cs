@@ -387,7 +387,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateOneFrameScenario(epoch));
@@ -464,7 +464,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var cameraConfiguration = CreateConfiguration();
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
@@ -579,9 +579,10 @@ public sealed partial class TransientWorkerRuntimeTests
                 pendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
             Assert.IsTrue(pendingCaptures.All(static capture =>
                 capture.AgentId == "transient-runtime-agent"));
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var operations = await provider.GetRequiredService<CameraAgentOperationsSummaryProvider>()
                 .GetAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(2L, operations.RawIngress.Value.PendingCount);
+            Assert.AreEqual(0L, operations.RawIngress.Value.PendingCount);
             Assert.AreEqual(2L, operations.CaptureLanes.Value.PendingCount);
             CollectionAssert.AreEqual(
                 new long[] { 6, 7 },
@@ -1933,7 +1934,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddCameraAgentInfrastructure(configuration);
+            services.AddSiloTestInfrastructure(configuration);
             using var provider = services.BuildServiceProvider();
             var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
             var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
@@ -2399,7 +2400,7 @@ public sealed partial class TransientWorkerRuntimeTests
             services.AddSingleton(timeProvider);
         }
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         if (faultInjector is not null)
         {
             services.AddSingleton(faultInjector);

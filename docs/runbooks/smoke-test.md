@@ -7,11 +7,11 @@ central HTTP traffic, and requires an installed Production HYG 4.4 catalog. The
 checked-in `appsettings.StandaloneProductionSmoke.json` supplies the standalone
 host boundary when running the CameraAgent directly with
 `DOTNET_ENVIRONMENT=StandaloneProductionSmoke`. The checked-in deployment pair
-uses the instance `state/` root for both raw ingress and derivative storage and
+uses the instance `state/` root for CameraAgent state and
 the selected `/var/lib/hvo-sky/catalogs/hyg-v44-production` installation.
-If an operator changes the storage
-location, both `CameraAgent__RawIngressRoot` and the deployment copy's
-`LocalStorage.options.storageRoot` must resolve to the same directory.
+Use an installed local Silo binding. Set `CameraAgent__RawIngressRoot` to
+the writable application state directory for that installation. See the
+[Silo runtime runbook](cameraagent-silo-runtime.md).
 
 Direct-host startup also requires an owner password and writable identity,
 provisioning, and Data Protection state. Keep the password out of source and

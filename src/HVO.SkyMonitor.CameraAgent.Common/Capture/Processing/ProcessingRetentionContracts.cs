@@ -2,36 +2,13 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-public sealed record ProcessingRetentionHold(
-    Guid ArtifactId,
-    string PayloadRelativePath,
-    string SidecarRelativePath);
+public sealed record ProcessingRetentionHold(Guid ArtifactId);
 
 public interface IProcessingRetentionHolds
 {
     ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
         CancellationToken cancellationToken);
-
-}
-
-internal interface IProcessingOutputExpiration
-{
-    ValueTask<int> ExpireOutputsAsync(
-        string storageRoot,
-        DateTimeOffset committedBeforeUtc,
-        IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken,
-        CancellationToken interruptionToken = default)
-        => ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, null, cancellationToken, interruptionToken);
-
-    ValueTask<int> ExpireOutputsAsync(
-        string storageRoot,
-        DateTimeOffset committedBeforeUtc,
-        IReadOnlySet<string> heldAbsolutePaths,
-        Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
-        CancellationToken cancellationToken,
-        CancellationToken interruptionToken);
 }
 
 internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
@@ -52,8 +29,7 @@ internal sealed class CompositeProcessingRetentionHolds(
     SqliteCalibrationFamilyStore? calibrationFamilies = null,
     CaptureSatelliteWorkStore? satelliteWork = null) :
     IProcessingRetentionHolds,
-    IRawIngressLifecycleProcessingRetentionHolds,
-    IProcessingOutputExpiration
+    IRawIngressLifecycleProcessingRetentionHolds
 {
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -98,20 +74,5 @@ internal sealed class CompositeProcessingRetentionHolds(
                 storageRoot, [.. familyMasters.Union(planMasters)], cancellationToken).ConfigureAwait(false);
         }
         return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Concat(videos).Concat(masters).Concat(satellite).Distinct().ToArray();
-    }
-
-    public async ValueTask<int> ExpireOutputsAsync(
-        string storageRoot,
-        DateTimeOffset committedBeforeUtc,
-        IReadOnlySet<string> heldAbsolutePaths,
-        Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
-        CancellationToken cancellationToken,
-        CancellationToken interruptionToken)
-    {
-        var deleted = await persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, yieldLifecycleLocks, cancellationToken, interruptionToken)
-            .ConfigureAwait(false);
-        if (satelliteWork is not null)
-            await satelliteWork.ReconcileAsync(storageRoot, cancellationToken).ConfigureAwait(false);
-        return deleted;
     }
 }

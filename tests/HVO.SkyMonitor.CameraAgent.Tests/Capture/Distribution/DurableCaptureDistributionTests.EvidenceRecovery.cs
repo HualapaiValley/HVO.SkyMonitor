@@ -47,7 +47,7 @@ public sealed partial class DurableCaptureDistributionTests
             new NullCaptureLaneFaultInjector(), fixture.LaneState, fixture.LaneTelemetry);
         using var controlTelemetry = new CaptureControlTelemetry();
         using var coordinator = new CaptureAdmissionCoordinator(ingress, fixture.Options, fixture.Time, controlTelemetry);
-        using var standard = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+        using var standard = fixture.CreateStandardHandler(ingress: ingress);
         using var distribution = new CaptureDistributionService(new ConfigurationAccessor(fixture.Configuration), ingress,
             ingress, fixture.Policy, [standard], standard, fixture.Options, TimeProvider.System,
             new NullCaptureLaneFaultInjector(), fixture.LaneTelemetry, fixture.LaneState,
@@ -140,7 +140,7 @@ public sealed partial class DurableCaptureDistributionTests
             Assert.IsNotNull(lease);
             File.Move(receipt.StoredFrame.AbsolutePath, backup);
             File.Move(sidecar, sidecarBackup);
-            using var standard = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+            using var standard = fixture.CreateStandardHandler();
             var failed = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, failed.Outcome);
             Assert.AreEqual(reason, failed.Reason);
@@ -167,8 +167,8 @@ public sealed partial class DurableCaptureDistributionTests
             recompute.CommandText = "UPDATE raw_captures SET retention_hold=0 WHERE capture_sequence=1;";
             await recompute.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        var holds = await fixture.Ingress.GetRetentionHoldsAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsTrue(holds.Any(hold => hold.ArtifactId == receipt.Manifest.Descriptor.Artifact.ArtifactId));
+        var holds = await fixture.Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.Contains(receipt.Manifest.Descriptor.Artifact.ArtifactId, holds);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
     }
 

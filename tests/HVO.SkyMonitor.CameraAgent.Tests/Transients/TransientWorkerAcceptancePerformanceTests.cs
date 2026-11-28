@@ -931,7 +931,7 @@ public sealed class TransientWorkerAcceptancePerformanceTests
             }
         });
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         if (faultInjector is not null)
         {
             services.AddSingleton(faultInjector);

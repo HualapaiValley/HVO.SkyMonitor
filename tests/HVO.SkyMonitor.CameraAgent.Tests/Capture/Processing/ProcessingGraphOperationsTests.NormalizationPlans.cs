@@ -4,7 +4,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Silo;
@@ -13,7 +12,6 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -29,7 +27,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var store = fixture.Store;
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
@@ -93,7 +91,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var store = fixture.Store;
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
@@ -173,7 +171,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var store = fixture.Store;
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var freezer = new NormalizationPlanFreezer(store, calibration);
@@ -207,14 +205,16 @@ public sealed partial class ProcessingGraphOperationsTests
             CollectionAssert.AreEqual(frozen.CanonicalJson, claimed.CanonicalJson);
 
             // A master that is no longer intact fails the claim explicitly; the frozen plan is unchanged.
-            var marker = Path.Combine(root, fixture.Bundle.ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var markerBytes = await File.ReadAllBytesAsync(marker).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(marker, markerBytes[..^1]).ConfigureAwait(false);
+            var profile = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider,
+                CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundle), CalibrationArtifactPublisher.SiloProfileRevision,
+                CancellationToken.None).ConfigureAwait(false);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            objects.Damage(profile);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, (await Assert.ThrowsExactlyAsync<NormalizationPlanException>(
                 async () => await freezer.FreezeAsync(
                     fixture.Context, PlanNode, "{}"u8.ToArray(), GainNormalizationPolicyV1.Approved, Asi174PlanResponse(),
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false)).ReasonCode);
-            await File.WriteAllBytesAsync(marker, markerBytes).ConfigureAwait(false);
+            objects.Damage(profile);
             Assert.AreEqual(frozen.IdentitySha256, (await freezer.FreezeAsync(
                 fixture.Context, PlanNode, "{}"u8.ToArray(), GainNormalizationPolicyV1.Approved, Asi174PlanResponse(),
                 CancellationToken.None).ConfigureAwait(false)).IdentitySha256);
@@ -263,34 +263,28 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var plan = PlanFor(fixture.Inputs, fixture.Bundle, 0);
-            // Establish the same verified master snapshot as preparation, then damage files without changing library rows.
+            // Keep the indexed identity and change the bytes returned for its exact version.
             await NormalizationPlanFreezer.ConfirmAsync(calibration, plan, CancellationToken.None).ConfigureAwait(false);
             if (alreadyFrozen)
             {
                 _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
                     fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false);
             }
-            var manifest = fixture.Bundle.Artifacts.Single(artifact => artifact.Kind == CalibrationReferenceKinds.Flat)
-                .ManifestRelativePath;
-            var relative = evidence switch
+            var flat = fixture.Bundle.Artifacts.Single(artifact => artifact.Kind == CalibrationReferenceKinds.Flat);
+            var member = evidence == "profile-marker" ? CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundle) : flat.ArtifactId;
+            var revision = evidence switch
             {
-                "payload" => string.Concat(manifest.AsSpan(0, manifest.Length - ".json".Length), ".bin"),
-                "manifest" => manifest,
-                _ => fixture.Bundle.ProfileRelativePath
+                "payload" => await ReadMasterRevisionAsync(provider, flat.ArtifactId).ConfigureAwait(false),
+                "manifest" => CalibrationArtifactPublisher.SiloEvidenceRevision,
+                _ => CalibrationArtifactPublisher.SiloProfileRevision
             };
-            var path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
-            var original = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-            var lastWriteUtc = File.GetLastWriteTimeUtc(path);
-            var corrupt = original.ToArray();
-            corrupt[0] ^= 0x01;
-            await File.WriteAllBytesAsync(path, corrupt).ConfigureAwait(false);
-            // A return must verify bytes even when an earlier evidence-cache fingerprint still matches.
-            File.SetLastWriteTimeUtc(path, lastWriteUtc);
-            Assert.AreEqual((long)original.Length, new FileInfo(path).Length);
-            Assert.AreEqual(lastWriteUtc, File.GetLastWriteTimeUtc(path));
+            var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, member, revision,
+                CancellationToken.None).ConfigureAwait(false);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            objects.Damage(locator);
 
             var failure = await Assert.ThrowsExactlyAsync<NormalizationPlanException>(async () =>
                 await fixture.Store.FreezeNormalizationPlanAsync(calibration,
@@ -307,7 +301,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await fixture.Store.FreezeNormalizationPlanAsync(calibration,
                     fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 40), CancellationToken.None)
                     .ConfigureAwait(false)).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
+            objects.Damage(locator);
             var retry = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
                 fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false);
             CollectionAssert.AreEqual(frozen.CanonicalJson, retry.CanonicalJson);
@@ -328,7 +322,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var preparer = provider.GetRequiredService<GainNormalizationPreparer>();
             var original = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
@@ -378,15 +372,16 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(planInput.Payload), planInput.IdentitySha256, ignoreCase: true);
 
             // A pruned master fails the window as master-missing, and the plan is not re-derived.
-            var flat = MasterPayloadPath(root, fixture.Bundle.Artifacts.Single(
-                static artifact => artifact.Kind == CalibrationReferenceKinds.Flat));
-            var flatBytes = await File.ReadAllBytesAsync(flat).ConfigureAwait(false);
-            File.Delete(flat);
+            var flatId = fixture.Bundle.Artifacts.Single(static artifact => artifact.Kind == CalibrationReferenceKinds.Flat).ArtifactId;
+            var flat = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, flatId,
+                await ReadMasterRevisionAsync(provider, flatId).ConfigureAwait(false), CancellationToken.None).ConfigureAwait(false);
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            objects.MissOnRead = key => key == flat.Key;
             var missing = (await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
                 .ConfigureAwait(false)).Outcome!;
             Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, missing.Status);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMissing, missing.ReasonCode);
-            await File.WriteAllBytesAsync(flat, flatBytes).ConfigureAwait(false);
+            objects.MissOnRead = null;
             Assert.IsNull((await preparer.PrepareAsync(fixture.NodeContext(fixture.Context), CancellationToken.None)
                 .ConfigureAwait(false)).Outcome);
 
@@ -413,7 +408,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var families = provider.GetRequiredService<SqliteCalibrationFamilyStore>();
             var activation = provider.GetRequiredService<CalibrationFamilyActivationService>();
@@ -511,7 +506,7 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             using var provider = CreateProvider(root, PlanSettings, clock);
-            var fixture = await CreatePlanFixtureAsync(provider, root, clock).ConfigureAwait(false);
+            var fixture = await CreatePlanFixtureAsync(provider, clock).ConfigureAwait(false);
             var calibration = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             _ = await fixture.Store.FreezeNormalizationPlanAsync(calibration,
                 fixture.Context, PlanNode, PlanFor(fixture.Inputs, fixture.Bundle, 0), CancellationToken.None)
@@ -554,7 +549,7 @@ public sealed partial class ProcessingGraphOperationsTests
     /// A claimed replay of one accepted capture, whose preview node froze that raw capture as its window, and a
     /// published synthetic calibration bundle in the same library for the plan's masters.
     /// </summary>
-    private static async Task<PlanFixture> CreatePlanFixtureAsync(ServiceProvider provider, string root, MutableTimeProvider clock)
+    private static async Task<PlanFixture> CreatePlanFixtureAsync(ServiceProvider provider, MutableTimeProvider clock)
     {
         var configuration = CreateConfiguration() with
         {
@@ -586,7 +581,6 @@ public sealed partial class ProcessingGraphOperationsTests
             .ConfigureAwait(false);
         Assert.AreEqual(1, inputs.Count);
 
-        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
         var model = new SyntheticCalibrationModelV1 { Gain = 0, TemperatureC = -10 };
         var template = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
         var light = template.Descriptor with
@@ -606,10 +600,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var bundle = (await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var bundle = (await provider.GetRequiredService<SyntheticCalibrationReferenceStore>()
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false)).LibraryBundle;
-        _ = await provider.GetRequiredService<SqliteCalibrationLibraryStore>()
-            .AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
         return new PlanFixture(
             store, operations, replay.Execution.ExecutionId, lease, ContextFor(lease), inputs, bundle, configuration, submission, receipt);
     }
@@ -737,10 +729,16 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
-    private static string MasterPayloadPath(string root, CalibrationLibraryArtifactV1 master)
-        => Path.Combine(root, string.Concat(
-            master.ManifestRelativePath.AsSpan(0, master.ManifestRelativePath.Length - ".json".Length), ".bin")
-            .Replace('/', Path.DirectorySeparatorChar));
+    private static async ValueTask<string> ReadMasterRevisionAsync(IServiceProvider provider, Guid artifactId)
+    {
+        var storage = provider.GetRequiredService<SiloArtifactStorage>();
+        var bytes = await storage.ReadMetadataAsync(artifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
+            CalibrationLibraryContractJson.MaximumBundleBytes, null, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(bytes);
+        var parsed = CaptureContractJson.ParseManifest(bytes);
+        Assert.IsNotNull(parsed.Document?.Manifest);
+        return CaptureContractJson.ComputeDescriptorSha256(parsed.Document.Manifest.Descriptor);
+    }
 
     private static async Task ClearBundleRetentionHoldsAsync(string root)
     {

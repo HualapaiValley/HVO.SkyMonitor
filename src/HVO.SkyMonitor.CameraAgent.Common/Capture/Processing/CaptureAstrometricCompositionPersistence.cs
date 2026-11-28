@@ -105,6 +105,7 @@ internal sealed partial class CaptureProcessingPersistence
             var nodeId = "capture-astrometry-" + composed.OutputIdentitySha256[..16];
             // Validate retained publications, including their layers, on every read. Never trust a cache after source loss.
             var outputs = new List<DurableProcessingOutput>();
+            var newProducts = new List<ProcessingProduct>();
             foreach (var product in products)
             {
                 var id = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
@@ -118,9 +119,13 @@ internal sealed partial class CaptureProcessingPersistence
                     // An unchanged layer keeps its original producer. The new manifest references it by artifact ID;
                     // registering it again under this revision's node would violate the durable producer binding.
                 }
-                else outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor, nodeId, product,
-                    BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false));
+                else
+                {
+                    outputs.Add(DescribeMetadataProduct(descriptor, nodeId, product));
+                    newProducts.Add(product);
+                }
             }
+            await PersistSiloOutputsAsync(descriptor, outputs, newProducts, nodeId, null, cancellationToken).ConfigureAwait(false);
             var now = _timeProvider.GetUtcNow();
             var node = new CaptureProcessingGraphNode(nodeId, OnDemandMaterializationStep.Instance, [], false,
                 "capture-astrometric-composition", FrameArtifactRole.Metadata, AstrometricDiagnosticPresentation.CompositionSchema, composed.OutputIdentitySha256);

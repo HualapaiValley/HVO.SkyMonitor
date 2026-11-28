@@ -4,7 +4,6 @@ using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
-using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -44,7 +43,6 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             foreach (var descriptor in services.Where(value => value.ServiceType == typeof(IHostedService) &&
                 (value.ImplementationType == typeof(CameraCaptureService) ||
-                 value.ImplementationType == typeof(RetentionBackgroundService) ||
                  value.ImplementationType?.FullName?.Contains("CaptureDistributionService", StringComparison.Ordinal) == true ||
                  value.ImplementationFactory?.Method.ReturnType == typeof(TransientWorkerService) ||
                  value.ImplementationFactory?.Method.ReturnType == typeof(CenteredViewPublicationWorker) ||
@@ -69,7 +67,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         var token = CancellationToken.None;
         var hostOptions = host.Services.GetRequiredService<IOptions<CameraAgentHostOptions>>();
-        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 30);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(host.Root, "journal", "raw-ingress.db"), 30, usesSilo: true);
         await journal.InitializeAsync(token).ConfigureAwait(false);
         var processingStore = host.Services.GetRequiredService<SqliteCaptureProcessingStore>();
         var artifactService = host.Services.GetRequiredService<ICameraAgentArtifactService>();

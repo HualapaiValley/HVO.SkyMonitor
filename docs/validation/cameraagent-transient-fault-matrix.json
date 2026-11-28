@@ -1,17 +1,17 @@
 {
   "schema": "hvo-cameraagent-transient-fault-matrix-v1",
   "issue": 116,
-  "boundary": "CameraAgent acquisition and local transient provenance during an outbound transport outage",
+  "boundary": "CameraAgent acquisition and local transient provenance during Silo read faults",
   "defaultMode": "Off",
   "rows": [
     {
-      "id": "cameraagent-central-outage-isolation",
+      "id": "cameraagent-silo-raw-recovery",
       "workload": "W0",
-      "fault": "The CameraAgent artifact uploader receives deterministic failures at the outbound transport boundary",
-      "control": "A failing HTTP handler is injected only at the CameraAgent-to-Central artifact transport boundary",
-      "expectedDurableState": "Acquisition, raw SQLite/filesystem durability, transient provenance and local previews continue while upload records remain pending or retry.",
-      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.VirtualSkyPipelineTests.CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance",
-      "dockerRequired": false
+      "fault": "An interrupted Silo publication and exact-version read faults during local transient reservation.",
+      "control": "A disposable local Silo bucket and a faulting exact-version read decorator.",
+      "expectedDurableState": "Staged raw admissions settle across restart. A transient reservation verifies exact retained evidence and refuses unavailable or damaged source bytes.",
+      "test": "HVO.SkyMonitor.CameraAgent.IntegrationTests.Silo.SiloStockStoreTests.InstalledMonoCameraRecoversRawAdmissionsAndReopensLocalProducts",
+      "dockerRequired": true
     }
   ]
 }

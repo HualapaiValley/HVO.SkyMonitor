@@ -12,6 +12,5 @@
   "HVO.SkyMonitor.Deployment.Distribution.Tests",
   "HVO.SkyMonitor.Imaging.Tests",
   "HVO.SkyMonitor.Processing.Tests",
-  "HVO.SkyMonitor.Storage.FileSystem.Tests",
   "HVO.SkyMonitor.TestSupport.Tests"
 ]

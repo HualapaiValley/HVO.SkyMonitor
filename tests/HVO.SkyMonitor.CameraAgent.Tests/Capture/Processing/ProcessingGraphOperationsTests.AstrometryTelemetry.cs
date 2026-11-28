@@ -23,10 +23,9 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("prediction-io")]
     [DataRow("prediction-io-archive-first")]
     [DataRow("archive-failure")]
-    public async Task RequiredTelemetryReportsUnavailableAstrometryAndKeepsArchiving(string scenario)
+    public async Task RequiredTelemetryReportsUnavailableAstrometryAndKeepsSiloProducts(string scenario)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-astrometry-telemetry");
-        var archiveRoot = Path.Combine(root, "archive");
         var token = CancellationToken.None;
         var migrateLegacy = scenario == "archive-first-migrated";
         var invalidPin = scenario == "bad-pin";
@@ -107,10 +106,8 @@ public sealed partial class ProcessingGraphOperationsTests
                             Options: JsonSerializer.SerializeToElement(new { requireProjectedSceneDependency = true })),
                         new("JpegEncoding", "jpeg", DependsOn: ["annotation"]),
                         new("Storage", "archive", DependsOn: ["jpeg", "annotation", "projected-scene"],
-                            Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                            {
-                                StorageRoot = archiveRoot, UpdateLatestFrame = false
-                            }))
+                            Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
+                            { UpdateLatestFrame = false }))
                     ]
                 }
             };
@@ -150,6 +147,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 services.AddSingleton(catalog.Object);
                 services.AddSingleton(locations.Object);
                 services.AddSingleton(invalidPin ? CreateReferenceCatalog("replacement", stars: referenceData.Stars) : reference);
+                if (failArchive)
+                    services.AddSingleton<ICaptureProcessingFaultInjector>(new StorageSelectionFailure());
             });
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             await ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -158,8 +157,6 @@ public sealed partial class ProcessingGraphOperationsTests
             var draft = await operations.CreateRevisionAsync("telemetry", "1", pipeline, "create", "owner", null, token).ConfigureAwait(false);
             await operations.ValidateRevisionAsync(draft.RevisionId, "validate", "owner", null, token).ConfigureAwait(false);
             await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate", "owner", null, token).ConfigureAwait(false);
-            if (failArchive)
-                await File.WriteAllTextAsync(archiveRoot, "occupied storage root", token).ConfigureAwait(false);
 
             var lanes = provider.GetRequiredService<ICaptureLaneStore>();
             var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(lane => lane.Name == "standard");
@@ -228,7 +225,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 var solved = await store.ReadNodeAsync(captureId, "Astrometry", token).ConfigureAwait(false);
                 var observed = await store.ReadNodeAsync(captureId, "telemetry", token).ConfigureAwait(false);
                 var archive = await store.ReadNodeAsync(captureId, "archive", token).ConfigureAwait(false);
-                var rawSha = Sha256OfFile(raw.StoredFrame.AbsolutePath);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
+                var rawSha = await ReadArtifactShaAsync(provider, raw.Manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
                 Assert.AreEqual(raw.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
                 var archived = archive?.Status == DurableProcessingNodeStatus.Completed;
                 var stepTelemetry = telemetry.Latest?.ProcessingSteps.SingleOrDefault(step => step.Name == "Astrometry");
@@ -266,15 +264,12 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsNotNull(inputs);
                 Assert.IsTrue(inputs.Any(input => input.ArtifactId == annotated.ArtifactId));
                 Assert.IsTrue(inputs.Any(input => input.ArtifactId == canonical.ArtifactId));
-                var image = Directory.GetFiles(archiveRoot, $"*-{annotated.ArtifactId:N}.bin", SearchOption.AllDirectories).Single();
-                var archiveSha = Sha256OfFile(image);
+                var archiveSha = await ReadArtifactShaAsync(provider, annotated.ArtifactId).ConfigureAwait(false);
                 Assert.AreEqual(annotated.Artifact.ChecksumSha256, archiveSha);
-                Assert.IsTrue(File.Exists(Path.ChangeExtension(image, ".json")));
                 if (expectedFit == DurableProcessingNodeStatus.Completed)
                 {
                     var solution = solved.Outputs.Single(output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-                    var assessment = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(
-                        Path.Combine(root, solution.PayloadRelativePath), token).ConfigureAwait(false)).Assessment;
+                    var assessment = MeasuredAstrometryJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, solution.ArtifactId, token).ConfigureAwait(false)).Assessment;
                     Assert.IsTrue(assessment.HasMeasuredMapping, assessment.ReasonCode);
                 }
                 else Assert.IsEmpty(solved.Outputs);
@@ -333,12 +328,19 @@ public sealed partial class ProcessingGraphOperationsTests
             CollectionAssert.AreEqual(frozenRevision.PipelineJson, persisted.PipelineJson);
             CollectionAssert.AreEqual(frozenRevision.DefinitionJson, persisted.DefinitionJson);
             CollectionAssert.AreEqual(frozenRevision.FrozenPlanJson, persisted.FrozenPlanJson);
-            if (!failArchive)
-                Assert.HasCount(frameCount, Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories));
         }
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class StorageSelectionFailure : ICaptureProcessingFaultInjector
+    {
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "archive")
+                throw new IOException("Simulated interruption while selecting retained storage inputs.");
         }
     }
 }

@@ -1,6 +1,9 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +12,75 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class CaptureSatelliteIntegrationTests
 {
+    [TestMethod]
+    public async Task SiloRetentionWorkerReclaimsSatelliteWorkAndOrbitalReferences()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var token = TestContext.CancellationToken;
+            var f = new CaptureSatelliteFixture();
+            var clock = new Clock(f.Descriptor.Timing.DurableIngressUtc);
+            using var provider = CreateProvider(root, f, clock);
+            var worker = provider.GetRequiredService<SiloRetentionWorker>();
+            var work = provider.GetRequiredService<CaptureSatelliteWorkStore>();
+            var config = Configuration(root, f);
+            var raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token).ConfigureAwait(false);
+
+            var directory = Path.Combine(root, "journal", "capture-satellites");
+            var orphan = Path.Combine(directory, new string('0', 64));
+            Directory.CreateDirectory(orphan);
+            await File.WriteAllTextAsync(Path.Combine(orphan, "interrupted.tmp"), "interrupted preparation", token).ConfigureAwait(false);
+            Directory.SetLastWriteTimeUtc(orphan, clock.Now.AddDays(-2).UtcDateTime);
+
+            var admission = provider.GetRequiredService<CaptureAdmissionCoordinator>();
+            await worker.RunAsync(token).ConfigureAwait(false);
+            Assert.IsTrue(Directory.Exists(orphan), "Maintenance must wait for capture admission to initialize.");
+            await admission.InitializeAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(CaptureAdmissionState.Running, admission.Snapshot.State);
+
+            Task<string>? sweepDuringPreparation = null;
+            work.BeforeHeaderPublicationForTest = () =>
+            {
+                sweepDuringPreparation = worker.RunAsync(token).AsTask();
+                Assert.AreEqual(0, RawIngressLifecycleLock.ForRoot(root).CurrentCount,
+                    "Retention must acquire raw ingress before waiting for the storage lock held by preparation.");
+                Assert.IsFalse(sweepDuringPreparation.IsCompleted);
+                Assert.IsTrue(Directory.Exists(orphan), "Retention must wait for intent publication before reclaiming directories.");
+            };
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
+            Assert.IsNotNull(sweepDuringPreparation);
+            await sweepDuringPreparation.ConfigureAwait(false);
+            Assert.IsFalse(Directory.Exists(orphan));
+            var intent = Assert.ContainsSingle(Directory.EnumerateDirectories(directory));
+            Assert.IsTrue(File.Exists(Path.Combine(intent, "header.json")));
+            var input = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(intent, "input.json"), token)
+                .ConfigureAwait(false));
+            var source = input.InputManifest();
+            Assert.AreEqual(1L, await ReferenceCountAsync(root, source).ConfigureAwait(false));
+
+            // Record expiry of the retained raw payload and all its processing consumers in the Silo catalog.
+            var descriptor = raw.Manifest.Descriptor;
+            var processing = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            foreach (var nodeId in new[] { "satellite", "satellite-layer", "preview", "manifest" })
+            {
+                var node = await processing.ReadNodeAsync(descriptor.Capture.CaptureId, nodeId, token).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                foreach (var output in node.Outputs)
+                    await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, output.ArtifactId, output.OutputIdentitySha256, token)
+                        .ConfigureAwait(false);
+            }
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor), token).ConfigureAwait(false);
+
+            await worker.RunAsync(token).ConfigureAwait(false);
+            Assert.IsFalse(Directory.Exists(intent));
+            Assert.AreEqual(0L, await ReferenceCountAsync(root, source).ConfigureAwait(false));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [TestMethod]
     public async Task CapacityStopsNewIntentsButAllowsInterruptedRetriesAndResumesAfterRetention()
     {
@@ -44,69 +116,6 @@ public sealed partial class CaptureSatelliteIntegrationTests
             clock.Now = clock.Now.AddSeconds(130);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
             Assert.AreEqual(2L, await ReferenceCountAsync(root, source).ConfigureAwait(false));
-        }
-        finally { Directory.Delete(root, true); }
-    }
-
-    [TestMethod]
-    public async Task DailyAccumulationRenewsDiscoveryBudgetsWithoutDroppingAnyRawHold()
-    {
-        // Exercise the actual production capacity/cadence invariant as well as a scaled byte budget.
-        Assert.IsGreaterThan(31 * 24 * 60 * 4, CaptureSatelliteWorkStore.MaximumWorkEntries);
-        var root = CreateRoot();
-        try
-        {
-            var f = new CaptureSatelliteFixture();
-            var clock = new Clock(f.Descriptor.Timing.DurableIngressUtc);
-            using var provider = CreateProvider(root, f, clock);
-            var config = Configuration(root, f);
-            var rawIds = new List<Guid>();
-            for (var day = 0; day < 31; day++)
-            {
-                clock.Now = f.Descriptor.Timing.DurableIngressUtc.AddDays(day);
-                var raw = await CaptureAsync(provider, config, f, day * 86400).ConfigureAwait(false);
-                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
-                rawIds.Add(raw.Manifest.Descriptor.Artifact.ArtifactId);
-            }
-            var work = provider.GetRequiredService<CaptureSatelliteWorkStore>();
-            var renewals = 0;
-            work.WorkEntryLimit = 1; // An existing oversized inventory still needs every live hold.
-            work.RetentionGuardFactory = () =>
-            {
-                renewals++;
-                return new(root, provider.GetRequiredService<SqliteCaptureProcessingStore>(), maximumBytes: 64 * 1024);
-            };
-            var holds = await work.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsGreaterThan(1, renewals, "Daily accumulation must renew a cumulative budget rather than aborting retention.");
-            Assert.IsTrue(rawIds.All(id => holds.Any(hold => hold.ArtifactId == id)), "Discovery must include every day's live raw hold.");
-        }
-        finally { Directory.Delete(root, true); }
-    }
-
-    [TestMethod]
-    public async Task AFirstCaptureThatCannotFitDiscoveryStillFailsClosed()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var f = new CaptureSatelliteFixture();
-            using var provider = CreateProvider(root, f, new Clock(f.Descriptor.Timing.DurableIngressUtc));
-            var config = Configuration(root, f);
-            var raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
-            var work = provider.GetRequiredService<CaptureSatelliteWorkStore>();
-            var attempts = 0;
-            work.RetentionGuardFactory = () =>
-            {
-                attempts++;
-                return new(root, provider.GetRequiredService<SqliteCaptureProcessingStore>(), maximumBytes: 1);
-            };
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => work.GetRetentionHoldsAsync(root, CancellationToken.None).AsTask()).ConfigureAwait(false);
-            Assert.AreEqual(2, attempts, "One retry must never become an unbounded retry or an incomplete hold result.");
-            var input = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Directory.GetFiles(
-                Path.Combine(root, "journal", "capture-satellites"), "input.json", SearchOption.AllDirectories).Single()).ConfigureAwait(false));
-            Assert.AreEqual(1L, await ReferenceCountAsync(root, input.InputManifest()).ConfigureAwait(false));
-            Assert.IsTrue(File.Exists(raw.StoredFrame.AbsolutePath));
         }
         finally { Directory.Delete(root, true); }
     }

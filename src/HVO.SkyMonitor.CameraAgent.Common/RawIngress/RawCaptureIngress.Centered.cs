@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
@@ -288,16 +289,11 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)
         => _journal.ReadCenteredRawAsync(key, cancellationToken);
 
-    internal async ValueTask<bool> CenteredFrameEvidenceExistsAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
-    {
-        var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
-        return File.Exists(paths.SidecarAbsolutePath) && File.Exists(paths.PayloadAbsolutePath) ||
-            _siloArtifacts is not null &&
-            await _siloArtifacts.HasMemberAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
-                cancellationToken).ConfigureAwait(false);
-    }
+    private SiloArtifactStorage CenteredArtifactStorage =>
+        _siloArtifacts ?? throw new InvalidOperationException("Centered raw evidence requires Silo.");
+
+    internal ValueTask<bool> CenteredFrameEvidenceExistsAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+        => CenteredArtifactStorage.HasLiveRawEvidenceAsync(descriptor, cancellationToken);
 
     internal async Task<CameraFrame> ReadCenteredFrameAsync(CenteredRawEvidence evidence, CancellationToken cancellationToken)
     {
@@ -305,17 +301,11 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             throw new InvalidDataException("The centered raw source is not available as committed evidence.");
 
         var descriptor = evidence.Manifest.Descriptor;
-        var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
-        RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
-        var sidecar = _siloArtifacts is null
-            ? await File.ReadAllBytesAsync(paths.SidecarAbsolutePath, cancellationToken).ConfigureAwait(false)
-            : await _siloArtifacts.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, evidence.ManifestSha256, paths.SidecarAbsolutePath,
-                cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("The centered raw source has no retained evidence.");
-        var bytes = _siloArtifacts is null
-            ? await File.ReadAllBytesAsync(paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
-            : await _siloArtifacts.ReadLiveRawAsync(descriptor, paths.PayloadAbsolutePath, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidDataException("The centered raw source has no retained payload.");
+        var storage = CenteredArtifactStorage;
+        var sidecar = await storage.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, evidence.ManifestSha256, allowStaged: true,
+            cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("The centered raw source has no retained evidence.");
+        var bytes = await storage.ReadLiveRawAsync(descriptor, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The centered raw source has no retained payload.");
         if (PayloadChecksum.ComputeSha256(sidecar) != evidence.ManifestSha256 || bytes.LongLength != descriptor.Layout.ByteLength)
             throw new InvalidDataException("Centered raw frame evidence differs from its committed identity.");
 

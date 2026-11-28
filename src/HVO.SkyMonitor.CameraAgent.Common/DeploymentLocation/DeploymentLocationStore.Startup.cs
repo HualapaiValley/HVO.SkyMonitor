@@ -2,13 +2,13 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 public sealed partial class ProtectedDeploymentLocationStore
 {
-    internal const int RecentMaximumEntries = 400_000;
     internal const int RecentMaximumCaptures = 20_000;
     private const long RecentMaximumBytes = 4L * 1024 * 1024 * 1024;
     private const int RecentMaximumFileBytes = 8 * 1024 * 1024;
@@ -39,66 +39,13 @@ public sealed partial class ProtectedDeploymentLocationStore
         if (ledger is null) return false;
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-startup-recent");
         var root = Path.GetFullPath(_options.RawIngressRoot);
-        var now = _timeProvider.GetUtcNow();
-        var cutoff = now.AddHours(-48);
-        var entries = 0;
+        var cutoff = _timeProvider.GetUtcNow().AddHours(-48);
         long bytesRead = 0;
-        var rawCaptures = new HashSet<string>(StringComparer.Ordinal);
         try
         {
-            foreach (var area in new[] { "frames", "derived" })
-            {
-                for (var day = cutoff.Date; day <= now.Date; day = day.AddDays(1))
-                {
-                    var relative = Path.Combine(area, day.Year.ToString("D4", CultureInfo.InvariantCulture),
-                        day.Month.ToString("D2", CultureInfo.InvariantCulture), day.Day.ToString("D2", CultureInfo.InvariantCulture));
-                    var directory = Path.Combine(root, relative);
-                    RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
-                    var prefix = "F|" + relative + Path.DirectorySeparatorChar;
-                    var expected = ledger?.ReadRecentExpected(prefix, RecentMaximumEntries - entries, cancellationToken)
-                        ?? new Dictionary<string, RetainedIntegrityLedger.Entry>(StringComparer.Ordinal);
-                    var pending = new Stack<(string Path, int Depth)>();
-                    if (Directory.Exists(directory)) pending.Push((directory, 0));
-                    while (pending.TryPop(out var current))
-                    {
-                        foreach (var path in Directory.EnumerateFileSystemEntries(current.Path))
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            if (++entries > RecentMaximumEntries) return false;
-                            RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                            if (Directory.Exists(path))
-                            {
-                                if (current.Depth >= 8) return false;
-                                pending.Push((path, current.Depth + 1));
-                                continue;
-                            }
-                            if (!path.EndsWith(".json", StringComparison.Ordinal) || !InRecentWindow(path, cutoff)) continue;
-                            using var stream = File.OpenRead(path);
-                            if (stream.Length > RecentMaximumFileBytes || bytesRead + stream.Length > RecentMaximumBytes) return false;
-                            var json = new byte[checked((int)stream.Length)];
-                            stream.ReadExactly(json);
-                            if (stream.ReadByte() != -1) return false;
-                            bytesRead += json.Length;
-                            BeforeRetainedManifestValidationForTest?.Invoke();
-                            var parsed = ValidateRecentJson(history, json, requireManifest: area == "frames");
-                            var kind = parsed.Kind;
-                            if (parsed.CaptureId is not null) rawCaptures.Add(parsed.CaptureId);
-                            var key = RetainedIntegrityLedger.FileKey(root, path);
-                            if (kind == 3) return false;
-                            var known = expected.Remove(key, out var old);
-                            if (ledger is { HasExpectedEvidence: true })
-                            {
-                                var digest = SHA256.HashData(json);
-                                var matchesExpected = known && old is { Kind: not 0 } && digest.AsSpan().SequenceEqual(old.Digest);
-                                if (!matchesExpected && !ledger.MatchesRecent(key, digest, cancellationToken)) return false;
-                            }
-                        }
-                    }
-                    if (expected.Values.Any(entry => entry.Kind != 0 && InRecentWindow(entry.Key, cutoff) &&
-                        !ledger!.MatchesRecent(entry.Key, null, cancellationToken))) return false;
-                }
-            }
-            return ValidateRecentJournal(root, history, ledger, cutoff, rawCaptures, ref bytesRead, cancellationToken);
+            var stagedCaptures = new HashSet<string>(StringComparer.Ordinal);
+            return ValidateSiloAdmissions(root, history, ledger, cutoff, stagedCaptures, ref bytesRead, cancellationToken) &&
+                ValidateRecentJournal(root, history, ledger, cutoff, stagedCaptures, ref bytesRead, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or
             CryptographicException or SqliteException or JsonException or FormatException or InvalidCastException or OverflowException)
@@ -106,20 +53,49 @@ public sealed partial class ProtectedDeploymentLocationStore
             DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
             return false;
         }
-        finally { activity?.SetTag("startup.recent.entries", entries); activity?.SetTag("startup.recent.bytes", bytesRead); }
+        finally { activity?.SetTag("startup.recent.bytes", bytesRead); }
     }
 
-    private static bool InRecentWindow(string path, DateTimeOffset cutoff)
+    private bool ValidateSiloAdmissions(string root, DeploymentLocationHistory history, RetainedIntegrityLedger ledger,
+        DateTimeOffset cutoff, HashSet<string> stagedCaptures, ref long bytesRead, CancellationToken cancellationToken)
     {
-        var name = Path.GetFileName(path);
-        return name.Length < 24 || !DateTimeOffset.TryParseExact(name.AsSpan(0, 24), "yyyy-MM-dd_HH-mm-ss.fff'Z'",
-            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var timestamp) || timestamp >= cutoff;
+        var relative = Path.Combine(".silo", RawIngressFileStore.AdmissionStageDirectory);
+        var directory = Path.Combine(root, relative);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        var expected = ledger.ReadRecentExpected("F|" + relative + Path.DirectorySeparatorChar,
+            RecentMaximumCaptures, cancellationToken);
+        if (!Directory.Exists(directory))
+            return expected.Values.All(entry => entry.Kind == 0 || ledger.MatchesRecent(entry.Key, null, cancellationToken));
+        using var files = new ConfinedReadDirectory(directory);
+        var count = 0;
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++count > RecentMaximumCaptures ||
+                !Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var artifactId))
+                return false;
+            using var stream = files.OpenRead(Path.GetFileName(path));
+            if (stream.Length is < 1 or > RecentMaximumFileBytes || bytesRead + stream.Length > RecentMaximumBytes) return false;
+            var json = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(json);
+            if (stream.ReadByte() != -1) return false;
+            bytesRead += json.Length;
+            BeforeRetainedManifestValidationForTest?.Invoke();
+            var parsed = ValidateRecentJson(history, json, requireManifest: true, expectedArtifactId: artifactId);
+            if (parsed.Kind != 1 || parsed.CaptureId is null) return false;
+            if (parsed.Exposure >= cutoff.ToUnixTimeMilliseconds()) stagedCaptures.Add(parsed.CaptureId);
+            var key = RetainedIntegrityLedger.FileKey(root, path);
+            expected.Remove(key);
+            if (ledger.HasExpectedEvidence && !ledger.MatchesRecent(key, SHA256.HashData(json), cancellationToken)) return false;
+        }
+        return expected.Values.All(entry => entry.Kind == 0 || ledger.MatchesRecent(entry.Key, null, cancellationToken));
     }
 
-    private static (int Kind, string? CaptureId, long? Exposure) ValidateRecentJson(DeploymentLocationHistory history, byte[] json, bool requireManifest)
+    private static (int Kind, string? CaptureId, long? Exposure) ValidateRecentJson(DeploymentLocationHistory history, byte[] json, bool requireManifest, Guid? expectedArtifactId = null)
     {
         var (manifest, other) = ParseRetainedManifest(json, requireManifest, strict: false);
         if (manifest is null) return (other ? 2 : 3, null, null);
+        if (expectedArtifactId is { } artifactId && manifest.Descriptor.Artifact.ArtifactId != artifactId) return (3, null, null);
         if (manifest.Descriptor.Location is { } provenance)
         {
             var snapshot = history.Snapshots.SingleOrDefault(item => item.LocationId == provenance.LocationId && item.Version == provenance.Version);
@@ -132,17 +108,17 @@ public sealed partial class ProtectedDeploymentLocationStore
     }
 
     private static bool ValidateRecentJournal(string root, DeploymentLocationHistory history, RetainedIntegrityLedger? ledger,
-        DateTimeOffset cutoff, HashSet<string> rawCaptures, ref long bytesRead, CancellationToken cancellationToken)
+        DateTimeOffset cutoff, HashSet<string> stagedCaptures, ref long bytesRead, CancellationToken cancellationToken)
     {
         var path = Path.Combine(root, "journal", "raw-ingress.db");
-        if (!File.Exists(path)) return rawCaptures.Count == 0;
+        if (!File.Exists(path)) return stagedCaptures.Count == 0;
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 1 }.ToString());
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='raw_captures';";
-        if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return rawCaptures.Count == 0;
+        if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return stagedCaptures.Count == 0;
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_raw_captures_gallery_time';";
         if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != 1) return false;
         command.CommandText = "PRAGMA index_info(ix_raw_captures_gallery_time);";
@@ -168,12 +144,11 @@ public sealed partial class ProtectedDeploymentLocationStore
             var parsed = ValidateRecentJson(history, json, requireManifest: true);
             if (!Guid.TryParse(rows.GetString(0), out var capture) || parsed.Kind != 1 ||
                 parsed.CaptureId != capture.ToString("N") || parsed.Exposure != rows.GetInt64(2)) return false;
-            rawCaptures.Remove(capture.ToString("N"));
-            if (
-                ledger is { HasExpectedEvidence: true } && !ledger.MatchesRecent(
+            stagedCaptures.Remove(capture.ToString("N"));
+            if (ledger is { HasExpectedEvidence: true } && !ledger.MatchesRecent(
                     RetainedIntegrityLedger.JournalKey(rows.GetString(0)), SHA256.HashData(json), cancellationToken)) return false;
         }
-        return rawCaptures.Count == 0;
+        return stagedCaptures.Count == 0;
     }
 
     private static byte[] AuthorityStamp(params string[] paths)

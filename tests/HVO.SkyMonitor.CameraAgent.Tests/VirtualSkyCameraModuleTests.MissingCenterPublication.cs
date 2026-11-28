@@ -36,7 +36,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var camera = device.ConfigureAwait(false);
             await device.InitializeAsync(active, token).ConfigureAwait(false);
-            var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
             var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var views = provider.GetRequiredService<SqliteCenteredViews>();
@@ -57,7 +57,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(lateOrdinal, attempt.Ordinal);
             var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(attempt.Camera, token).ConfigureAwait(false));
             Assert.IsNotNull(stream);
-            await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(provider, attempt.Camera, stream, token).ConfigureAwait(false);
             var issued = await views.ReadLastLiveAsync(attempt.Camera, token).ConfigureAwait(false);
             Assert.IsNotNull(issued, "A ready, on-time startup single must remain eligible.");
             Assert.AreEqual(normalCapture, issued.View.Base.Definition.Reference.Capture.CaptureId);
@@ -98,7 +98,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(issued.View.Base.BaseId, (await views.ReadLastLiveAsync(attempt.Camera, token)
                     .ConfigureAwait(false))?.View.Base.BaseId);
                 await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
-                await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+                await DrainCenteredCameraAsync(provider, attempt.Camera, stream, token).ConfigureAwait(false);
                 Assert.IsNull(await store.ReadCenteredWindowDispositionAsync(windowId, token).ConfigureAwait(false));
                 beforeFreezeBase = (await views.ReadLastLiveAsync(attempt.Camera, token).ConfigureAwait(false))?.View.Base.BaseId;
                 beforeFreezeCandidate = await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false);
@@ -138,9 +138,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             if (!drainBeforeFreeze)
             {
                 await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
-                await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+                await DrainCenteredCameraAsync(provider, attempt.Camera, stream, token).ConfigureAwait(false);
             }
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             var archive = Assert.ContainsSingle(await views.ReadArchiveAsync(lateCapture, token).ConfigureAwait(false));
             Assert.AreEqual(CenteredViewKind.Single, archive.Base.Definition.Kind);
             Assert.AreEqual(CenteredViewImageSource.QualifiedLinear, archive.Base.Definition.Preview.Source);
@@ -148,6 +149,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
             clock.UtcNow = clock.UtcNow.AddSeconds(16);
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             CollectionAssert.DoesNotContain((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(), windowId);
             command.CommandText = "SELECT closure_json FROM processing_centered_windows WHERE window_sha256 = $window;";
             CollectionAssert.AreEqual(frozenBytes, (byte[])(await command.ExecuteScalarAsync(token).ConfigureAwait(false))!);

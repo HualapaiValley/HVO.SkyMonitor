@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.LocalFiles;
 using System;
 using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
@@ -26,12 +27,14 @@ internal sealed class FrameProcessingWorker
     private readonly IReadOnlyList<ICaptureProcessingStep> _steps;
     private readonly ILogger _logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl;
+    private readonly SiloArtifactStorage? _silo;
 
     public FrameProcessingWorker(
         FrameProcessingChannel channel,
         IEnumerable<ICaptureProcessingStep> steps,
         ILogger logger,
-        IRawIngressRecoveryControl? rawIngressControl = null)
+        IRawIngressRecoveryControl? rawIngressControl = null,
+        SiloArtifactStorage? silo = null)
     {
         _channel = channel;
         _steps = steps?
@@ -40,6 +43,7 @@ internal sealed class FrameProcessingWorker
             .ToList() ?? throw new ArgumentNullException(nameof(steps));
         _logger = logger;
         _rawIngressControl = rawIngressControl;
+        _silo = silo;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -48,7 +52,7 @@ internal sealed class FrameProcessingWorker
         {
             try
             {
-                await ProcessItemAsync(item, _steps, _logger, cancellationToken).ConfigureAwait(false);
+                await ProcessItemAsync(item, _steps, _logger, cancellationToken, _silo).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -64,9 +68,10 @@ internal sealed class FrameProcessingWorker
         FrameProcessingItem item,
         IReadOnlyList<ICaptureProcessingStep> steps,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloArtifactStorage? silo = null)
     {
-        var context = await CreateContextAsync(item, cancellationToken).ConfigureAwait(false);
+        var context = await CreateContextAsync(item, cancellationToken, silo).ConfigureAwait(false);
         var failed = false;
         foreach (var step in steps)
         {
@@ -406,16 +411,13 @@ internal sealed class FrameProcessingWorker
                     }
                     else if (persistence is not null && rawCapture is not null &&
                         node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
-                        context.Artifacts?.Raw is { } rawArtifact)
+                        context.Artifacts?.Raw is not null)
                     {
                         context.SetHistoricalInputs(item.Execution is not null
                             ? await persistence.ReadFrozenExecutionRawInputsAsync(
                                 item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
                             : await persistence.ReadRecentRawInputsAsync(
                                 rawCapture.Manifest.Descriptor,
-                                CameraAgentRecipeExecutionAdapter.CreateArtifact(
-                                    context.Config, rawArtifact, "source", context.AcquisitionTiming,
-                                    context.ReconstructionDescriptor),
                                 rawWindow.MaximumInputCount,
                                 cancellationToken).ConfigureAwait(false));
                     }
@@ -533,7 +535,7 @@ internal sealed class FrameProcessingWorker
                             products is [{ SchemaVersion: ExposureMeasurementProducts.SchemaVersion }] &&
                             rawCapture.Manifest.CenteredExposure is not null &&
                             item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
-                            !FileSystemFaultCompatibility.IsContainmentFailure(caught))
+                            caught is not FileSystemFaultException { Kind: FileSystemFaultKind.Containment })
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             // Only a successful fixed product's publication is retried here, not source reads,
@@ -739,15 +741,12 @@ internal sealed class FrameProcessingWorker
         if (rawCapture is { } receipt)
         {
             var descriptor = receipt.Manifest.Descriptor;
-            var sidecarPath = Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json");
             var replay = item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay;
-            var sidecar = silo is null
-                ? await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false)
-                : (replay ? await silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
-                        null, cancellationToken).ConfigureAwait(false)
-                    : await ReadSiloLiveEvidenceAsync(silo.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId,
-                        receipt.CommittedManifestSha256, sidecarPath, cancellationToken)).ConfigureAwait(false))
-                    ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or staging file.");
+            var storage = silo ?? throw new InvalidOperationException("Durable capture processing requires Silo raw evidence.");
+            var sidecarRead = storage.ReadRawEvidenceAsync(descriptor.Artifact.ArtifactId, receipt.CommittedManifestSha256,
+                allowStaged: !replay, cancellationToken);
+            var sidecar = (replay ? await sidecarRead.ConfigureAwait(false) : await ReadSiloLiveEvidenceAsync(sidecarRead).ConfigureAwait(false))
+                ?? throw new FileNotFoundException("The raw evidence has no settled Silo publication or admission stage.");
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } persistedManifest)
             {
@@ -764,12 +763,10 @@ internal sealed class FrameProcessingWorker
             rawCapture = receipt;
             async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                var payload = silo is null
-                    ? await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false)
-                    : (replay ? await silo.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
-                        : await ReadSiloLiveEvidenceAsync(silo.ReadLiveRawAsync(receipt.Manifest.Descriptor,
-                            receipt.StoredFrame.AbsolutePath, token)).ConfigureAwait(false))
-                        ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or staging file.");
+                var payload = (replay
+                    ? await storage.ReadRawAsync(receipt.Manifest.Descriptor, token).ConfigureAwait(false)
+                    : await ReadSiloLiveEvidenceAsync(storage.ReadLiveRawAsync(receipt.Manifest.Descriptor, token)).ConfigureAwait(false))
+                    ?? throw new FileNotFoundException("The raw frame has no settled Silo publication or admission stage.");
                 var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
                 if (!reconstruction.IsValid || frame is null)
                 {

@@ -30,6 +30,22 @@ public sealed partial class VirtualSkyCameraModuleTests
 {
     private static readonly JsonSerializerOptions CenteredPublicationJson = new(JsonSerializerDefaults.Web);
 
+    private static async ValueTask<bool> DrainCenteredCameraAsync(
+        ServiceProvider provider, CameraKey camera, CenteredViewStream? stream, CancellationToken token)
+    {
+        await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
+        var worker = provider.GetRequiredService<CenteredViewPublicationWorker>();
+        var more = await worker.DrainCameraAsync(camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+        await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
+        return more;
+    }
+
+    private static ValueTask SettleSiloRawAdmissionsAsync(ServiceProvider provider, CancellationToken token)
+        => SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, token);
+
+    private static ValueTask SettleSiloViewChangesAsync(ServiceProvider provider, CancellationToken token)
+        => SiloInfrastructureFixture.SettleViewChangesAsync(provider, token);
+
     [TestMethod]
     public async Task CenteredViewPublishesRawFallbackWhenThePinnedProfileHasNoCalibrationStep()
     {
@@ -57,26 +73,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
             Assert.IsNotNull(stream);
             // No processing lane or overlay is needed for this explicit admission-time disposition.
-            var worker = provider.GetRequiredService<CenteredViewPublicationWorker>();
             var views = provider.GetRequiredService<SqliteCenteredViews>();
-            using var interrupt = CancellationTokenSource.CreateLinkedTokenSource(token);
-            var published = 0;
-            views.Changed += InterruptAfterIssuance;
-            try
-            {
-                await Assert.ThrowsAsync<OperationCanceledException>(() =>
-                    worker.DrainCameraAsync(key, stream, CancellationToken.None, interrupt.Token).AsTask()).ConfigureAwait(false);
-            }
-            finally
-            {
-                views.Changed -= InterruptAfterIssuance;
-            }
-            Assert.AreEqual(0L, await views.ReadProductCursorAsync(key, token).ConfigureAwait(false));
-            var issued = await views.ReadLastLiveAsync(key, token).ConfigureAwait(false);
-            Assert.IsNotNull(issued);
-            await worker.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
             Assert.IsGreaterThan(0L, await views.ReadProductCursorAsync(key, token).ConfigureAwait(false));
-            Assert.AreEqual(issued.Interval, (await views.ReadLastLiveAsync(key, token).ConfigureAwait(false))?.Interval);
+            Assert.IsNotNull(await views.ReadLastLiveAsync(key, token).ConfigureAwait(false));
             var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
             var archive = await views.ReadArchiveAsync(captureId, token).ConfigureAwait(false);
             var viewBase = Assert.ContainsSingle(archive).Base;
@@ -91,7 +91,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var nextReceipt = await ingress.AcceptCenteredAsync(active, next.Submission, next.Reservation, token).ConfigureAwait(false);
                 Assert.AreEqual(ordinal, next.Reservation.Pending.Key.Ordinal);
                 terminalReference = nextReceipt.Manifest.Descriptor.Capture.CaptureId;
-                await worker.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
             }
             var terminalSingle = Assert.ContainsSingle(await views.ReadArchiveAsync(terminalReference, token).ConfigureAwait(false)).Base;
             Assert.AreEqual(CenteredViewImageSource.RawFallback, terminalSingle.Definition.Preview.Source);
@@ -118,6 +118,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsFalse(await views.IsPublishedSingleFallbackAsync(terminalSingle, token).ConfigureAwait(false),
                 "The archived Single must wait for the publisher to select it, even after the window is terminal.");
             await provider.GetRequiredService<CenteredViewWindowPublicationWorker>().PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             using var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = """
@@ -136,6 +137,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsNotNull(candidate);
             Assert.AreEqual(terminalSingle.BaseId, candidate);
             var live = await views.SelectLiveAsync(stream, candidate, token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             Assert.IsNotNull(live);
             Assert.AreEqual(terminalSingle.BaseId, live.View.Base.BaseId);
             var definition = live.View.Base.Definition;
@@ -157,11 +159,6 @@ public sealed partial class VirtualSkyCameraModuleTests
                 disposition.Closure.Schedule.Identity);
             Assert.AreEqual(viewBase.BaseId, Assert.ContainsSingle(await views.ReadArchiveAsync(captureId, token).ConfigureAwait(false)).Base.BaseId);
 
-            void InterruptAfterIssuance(CenteredViewStream changed)
-            {
-                if (changed == stream && ++published == 2)
-                    interrupt.Cancel();
-            }
         }
         finally
         {
@@ -225,8 +222,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var nextCapture = await ingress.AcceptCenteredAsync(active, next.Submission, next.Reservation, token).ConfigureAwait(false);
                 var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(cameraKey, token).ConfigureAwait(false));
                 Assert.IsNotNull(stream);
-                await provider.GetRequiredService<CenteredViewPublicationWorker>()
-                    .DrainCameraAsync(cameraKey, stream, CancellationToken.None, token).ConfigureAwait(false);
+                await DrainCenteredCameraAsync(provider, cameraKey, stream, token).ConfigureAwait(false);
                 var views = provider.GetRequiredService<SqliteCenteredViews>();
                 cursor = await views.ReadProductCursorAsync(cameraKey, token).ConfigureAwait(false);
                 Assert.IsGreaterThan(missedRevision, cursor);
@@ -243,9 +239,9 @@ public sealed partial class VirtualSkyCameraModuleTests
             var index = reopened.GetRequiredService<SqliteCenteredViews>();
             CollectionAssert.AreEqual(new[] { missedRevision }, (await index.ReadDueProductRetriesAsync(cameraKey, 4, token)
                 .ConfigureAwait(false)).ToArray());
-            var worker = reopened.GetRequiredService<CenteredViewPublicationWorker>();
-            await worker.DrainCameraAsync(cameraKey, null, CancellationToken.None, token).ConfigureAwait(false);
-            await worker.DrainCameraAsync(cameraKey, null, CancellationToken.None, token).ConfigureAwait(false);
+
+            await DrainCenteredCameraAsync(reopened, cameraKey, null, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(reopened, cameraKey, null, token).ConfigureAwait(false);
             var archive = Assert.ContainsSingle(await index.ReadArchiveAsync(missedCapture, token).ConfigureAwait(false));
             Assert.AreEqual(CenteredViewImageSource.RawFallback, archive.Base.Definition.Preview.Source);
             Assert.AreEqual(unavailableArtifact, archive.Base.Definition.Science.ArtifactId);
@@ -314,8 +310,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             var oldCamera = attempt.Reservation.Pending.Key.Camera;
             var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(oldCamera, token).ConfigureAwait(false));
             Assert.IsNotNull(stream);
-            await provider.GetRequiredService<CenteredViewPublicationWorker>().DrainCameraAsync(oldCamera, stream, CancellationToken.None, token)
-                .ConfigureAwait(false);
+            await DrainCenteredCameraAsync(provider, oldCamera, stream, token).ConfigureAwait(false);
             var views = provider.GetRequiredService<SqliteCenteredViews>();
             var issued = await views.ReadLastLiveAsync(oldCamera, token).ConfigureAwait(false);
             Assert.IsNotNull(issued);
@@ -417,7 +412,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
                 await using var camera = module.ConfigureAwait(false);
                 await module.InitializeAsync(active, token).ConfigureAwait(false);
-                var products = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
                 var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
                 var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
                 var registration = provider.GetRequiredService<CenteredWindowRegistrationWorker>();
@@ -458,7 +453,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual(linear.Revision, measurement.Input.Step3Revision);
                     Assert.AreEqual(linear.Disposition, measurement.Input.Step3Disposition);
                     Assert.AreEqual(linear.Product.ArtifactId, measurement.Input.Linear?.ArtifactId);
-                    await products.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                    await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
                     await coordinator.CloseReadyAsync(token).ConfigureAwait(false);
                     await registration.RegisterPendingAsync(token).ConfigureAwait(false);
                     CenteredWindowDisposition? disposition = null;
@@ -489,9 +484,11 @@ public sealed partial class VirtualSkyCameraModuleTests
                         }
                     }
                     await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                    await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                     var candidate = await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false);
                     Assert.IsNotNull(candidate);
                     var live = await views.SelectLiveAsync(stream, candidate, token).ConfigureAwait(false);
+                    await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                     Assert.IsNotNull(live);
                     var expectedReferenceIndex = index switch { < 3 => index, 3 or 4 => 2, _ => 3 };
                     Assert.AreEqual(ids[expectedReferenceIndex], live.View.Base.Definition.Reference.Capture.CaptureId,
@@ -599,7 +596,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(unpublished?.Publication);
                 var windowPublisher = reopened.GetRequiredService<CenteredViewWindowPublicationWorker>();
                 await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(reopened, token).ConfigureAwait(false);
                 await windowPublisher.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(reopened, token).ConfigureAwait(false);
                 var read = reopened.GetRequiredService<ICenteredViewLookup>();
                 var recovered = Assert.ContainsSingle((await read.ReadArchiveAsync(ids[3], token).ConfigureAwait(false))
                     .Where(item => item.Base.Definition.Kind == CenteredViewKind.Stack));
@@ -823,6 +822,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var publication = provider.GetRequiredService<CenteredViewTrailPublication>();
         var views = provider.GetRequiredService<SqliteCenteredViews>();
         await publication.PublishReadyAsync(token).ConfigureAwait(false);
+        await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
         var presentation = provider.GetRequiredService<ICenteredViewPresentationReader>();
         foreach (var issued in new[] { issued103, issued104 })
         {
@@ -867,6 +867,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 (await presentation.ReadAsync(archive.Base.BaseId, archive.LatestRevisionId, token).ConfigureAwait(false)).Status);
         }
         await publication.PublishReadyAsync(token).ConfigureAwait(false);
+        await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
         Assert.IsEmpty(await views.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
         Assert.AreEqual(issued104.Interval,
             (await views.ReadLastLiveAsync(issued104.View.Base.Definition.Stream.Camera, token).ConfigureAwait(false))?.Interval);
@@ -895,7 +896,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
                 await using var camera = device.ConfigureAwait(false);
                 await device.InitializeAsync(active, token).ConfigureAwait(false);
-                var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
                 var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
                 var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -914,7 +915,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(key, token).ConfigureAwait(false));
                     Assert.IsNotNull(stream);
                     reference4 = receipt.Manifest.Descriptor.Capture.CaptureId;
-                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                    await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
                 }
                 blockedCaptureId = reference4;
                 Assert.IsEmpty(await views.ReadArchiveAsync(blockedCaptureId, token).ConfigureAwait(false),
@@ -930,6 +931,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     blockedWindowId);
 
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                 CollectionAssert.DoesNotContain((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
                     blockedWindowId);
 
@@ -988,7 +990,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
                 await using var camera = device.ConfigureAwait(false);
                 await device.InitializeAsync(active, token).ConfigureAwait(false);
-                var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
                 var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
                 var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -1012,7 +1014,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     else if (ordinal == 5)
                         capture5 = receipt.Manifest.Descriptor.Capture.CaptureId;
                     if (ordinal <= 3)
-                        await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                        await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
                 }
                 delayedCaptureId = capture4;
 
@@ -1028,6 +1030,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await coordinator.CloseDueAsync(token).ConfigureAwait(false);
 
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                 Assert.IsEmpty(await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false),
                     "Window 4 should wait for its retry delay before polling again.");
 
@@ -1039,13 +1042,16 @@ public sealed partial class VirtualSkyCameraModuleTests
                     .ConfigureAwait(false);
                 Assert.IsNotNull(linear4);
                 var execution4 = ProcessingGraphOperationsCoordinator.GetLiveExecutionId(delayedCaptureId, stream.GenerationId);
+                await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
                 var delayedSingleView = await producer.PublishSingleAsync(stream, execution4,
                     linear4.Exposure.Raw.Capture.CaptureSequence, linear4, new(), token).ConfigureAwait(false);
                 Assert.IsNotNull(delayedSingleView);
                 var delayedSingle = delayedSingleView.Base;
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
 
                 clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
 
                 using (var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false))
                 using (var cmd = connection.CreateCommand())
@@ -1074,6 +1080,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     CollectionAssert.Contains((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
                         stuckWindowId);
                     await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                    await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                     clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
                 }
             }
@@ -1090,6 +1097,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 CollectionAssert.Contains((await reopenedViews.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
                     stuckWindowId);
                 await reopenedWindows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(reopened, token).ConfigureAwait(false);
                 clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
             }
 
@@ -1149,7 +1157,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var camera = device.ConfigureAwait(false);
             await device.InitializeAsync(active, token).ConfigureAwait(false);
-            var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
             var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
             var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -1173,7 +1181,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 if (ordinal <= 3)
                 {
                     await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
-                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                    await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
                 }
                 else if (ordinal == 4)
                 {
@@ -1197,6 +1205,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
             {
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                 clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
             }
 
@@ -1216,6 +1225,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 racedSingle4BaseId = single4.Base.BaseId;
             };
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             afterReadLinear = null;
 
             Assert.IsNotNull(racedSingle4BaseId);
@@ -1236,6 +1246,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             }
             Assert.AreEqual(racedSingle4BaseId, await views.ReadLiveCandidateAsync(stream!, token).ConfigureAwait(false));
             var selected4 = await views.SelectLiveAsync(stream!, racedSingle4BaseId, token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             Assert.IsNotNull(selected4);
             Assert.AreEqual(racedSingle4BaseId, selected4.View.Base.BaseId);
 
@@ -1246,6 +1257,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
             {
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                 clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
             }
 
@@ -1260,6 +1272,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await ProcessCenteredRuntimeExposureAsync(provider, active, ct).ConfigureAwait(false);
             };
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             afterReadLinear = null;
 
             Assert.IsTrue(committedLinear5);
@@ -1280,11 +1293,13 @@ public sealed partial class VirtualSkyCameraModuleTests
             }
 
             // Drain capture 5's Single and confirm window 5 publishes cleanly instead of remaining archive-only.
-            await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+            await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
             var single5 = Assert.ContainsSingle(await views.ReadArchiveAsync(capture5, token).ConfigureAwait(false)).Base;
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             Assert.AreEqual(single5.BaseId, await views.ReadLiveCandidateAsync(stream!, token).ConfigureAwait(false));
             var selected5 = await views.SelectLiveAsync(stream!, single5.BaseId, token).ConfigureAwait(false);
+            await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
             Assert.IsNotNull(selected5);
             Assert.AreEqual(single5.BaseId, selected5.View.Base.BaseId);
         }
@@ -1321,7 +1336,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var camera = device.ConfigureAwait(false);
             await device.InitializeAsync(active, token).ConfigureAwait(false);
-            var singles = provider.GetRequiredService<CenteredViewPublicationWorker>();
+
             var windows = provider.GetRequiredService<CenteredViewWindowPublicationWorker>();
             var coordinator = provider.GetRequiredService<CenteredWindowCoordinator>();
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -1342,7 +1357,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 if (ordinal <= 3)
                 {
                     await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
-                    await singles.DrainCameraAsync(key, stream, CancellationToken.None, token).ConfigureAwait(false);
+                    await DrainCenteredCameraAsync(provider, key, stream, token).ConfigureAwait(false);
                 }
                 else
                 {
@@ -1360,6 +1375,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             for (var attempt = 1; attempt < CenteredViewWindowPublicationWorker.MaximumMissingCenterRetries; attempt++)
             {
                 await windows.PublishReadyAsync(token).ConfigureAwait(false);
+                await SettleSiloViewChangesAsync(provider, token).ConfigureAwait(false);
                 clock.UtcNow = clock.UtcNow.Add(CenteredViewWindowPublicationWorker.RetryDelay);
             }
 

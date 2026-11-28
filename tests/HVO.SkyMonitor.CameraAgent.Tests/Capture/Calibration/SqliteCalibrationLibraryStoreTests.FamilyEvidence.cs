@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -27,24 +28,27 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
             Assert.IsNull(await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
 
-            foreach (var (name, path, corrupt) in EvidenceCorruptions(root, fixture.Bundles[HighGain]))
+            var objects = CalibrationSiloFixture.Objects(root);
+            foreach (var (name, locator, corrupt) in await EvidenceCorruptionsAsync(root, fixture.Bundles[HighGain]).ConfigureAwait(false))
             {
-                var original = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-                await corrupt(original).ConfigureAwait(false);
+                var original = objects.Read(locator.Key, locator.VersionId);
+                if (corrupt is null)
+                    objects.MissOnRead = key => key == locator.Key;
+                else
+                    objects.ReadContentOverride = requested => requested == locator ? new MemoryStream(corrupt(original), writable: false) : null;
 
+                Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt,
+                    await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false), name);
                 var selected = await store.SelectFamilyMastersAsync(
                     family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false);
 
                 Assert.IsFalse(selected.IsSelected, name);
                 Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, selected.ReasonCode, name);
-                Assert.AreEqual(
-                    CalibrationFamilyReasonCodes.MasterCorrupt,
-                    await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false),
-                    name);
                 Assert.IsTrue((await store.SelectFamilyMastersAsync(
                     family, fixture.Lights[LowGain], CancellationToken.None).ConfigureAwait(false)).IsSelected, name);
 
-                await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
+                objects.ReadContentOverride = null;
+                objects.MissOnRead = null;
                 Assert.IsTrue((await store.SelectFamilyMastersAsync(
                     family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected, name);
                 Assert.IsNull(await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false), name);
@@ -69,15 +73,12 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             Assert.IsTrue((await store.SelectFamilyMastersAsync(
                 family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
 
-            // One changed byte that keeps the marker's length and write time is invisible to the selection cache, which
-            // compares only those; this is the window the regression targets. Only a forced validation reads it again.
-            var profile = Path.Combine(
-                root, fixture.Bundles[HighGain].ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var written = File.GetLastWriteTimeUtc(profile);
-            var flipped = await File.ReadAllBytesAsync(profile).ConfigureAwait(false);
-            flipped[0] ^= 0x01;
-            await File.WriteAllBytesAsync(profile, flipped).ConfigureAwait(false);
-            File.SetLastWriteTimeUtc(profile, written);
+            // Selection can reuse a recent validation. Confirmation rereads the exact profile bytes.
+            var profile = CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundles[HighGain]);
+            var flipped = FlipFirstByte(await CalibrationSiloFixture.ReadMemberAsync(root, profile,
+                CalibrationArtifactPublisher.SiloProfileRevision).ConfigureAwait(false));
+            await CalibrationSiloFixture.OverrideMemberAsync(root, profile, CalibrationArtifactPublisher.SiloProfileRevision, flipped)
+                .ConfigureAwait(false);
             Assert.IsTrue((await store.SelectFamilyMastersAsync(
                 family, fixture.Lights[HighGain], CancellationToken.None).ConfigureAwait(false)).IsSelected);
 
@@ -124,13 +125,11 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             // The earlier confirmation verifies intact evidence and is held before it caches what it verified.
             var earlier = store.ConfirmFamilyMastersAsync(high, CancellationToken.None);
             await paused.Task.ConfigureAwait(false);
-            var profile = Path.Combine(
-                root, fixture.Bundles[HighGain].ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            var written = File.GetLastWriteTimeUtc(profile);
-            var flipped = await File.ReadAllBytesAsync(profile).ConfigureAwait(false);
-            flipped[0] ^= 0x01;
-            await File.WriteAllBytesAsync(profile, flipped).ConfigureAwait(false);
-            File.SetLastWriteTimeUtc(profile, written);
+            var profile = CalibrationArtifactPublisher.BundleArtifactId(fixture.Bundles[HighGain]);
+            var flipped = FlipFirstByte(await CalibrationSiloFixture.ReadMemberAsync(root, profile,
+                CalibrationArtifactPublisher.SiloProfileRevision).ConfigureAwait(false));
+            await CalibrationSiloFixture.OverrideMemberAsync(root, profile, CalibrationArtifactPublisher.SiloProfileRevision, flipped)
+                .ConfigureAwait(false);
             Assert.AreEqual(
                 CalibrationFamilyReasonCodes.MasterCorrupt,
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
@@ -181,24 +180,22 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
             await SetPublicationStateAsync(root, fixture.Bundles[HighGain].BundleId, "published").ConfigureAwait(false);
 
-            var payload = MasterPayloadPath(root, fixture.Bundles[HighGain], CalibrationReferenceKinds.Flat);
-            var original = await File.ReadAllBytesAsync(payload).ConfigureAwait(false);
-            var flipped = original.ToArray();
-            flipped[0] ^= 0x01;
-            await File.WriteAllBytesAsync(payload, flipped).ConfigureAwait(false);
-            Assert.AreEqual(
-                CalibrationFamilyReasonCodes.MasterCorrupt,
+            var flat = LibraryMasters(fixture.Bundles[HighGain]).Single(item => item.Kind == CalibrationReferenceKinds.Flat);
+            var locator = await PayloadLocatorAsync(root, flat.ArtifactId).ConfigureAwait(false);
+            var objects = CalibrationSiloFixture.Objects(root);
+            var flipped = FlipFirstByte(objects.Read(locator.Key, locator.VersionId));
+            objects.ReadContentOverride = requested => requested == locator ? new MemoryStream(flipped, writable: false) : null;
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt,
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
-            File.Delete(payload);
-            Assert.AreEqual(
-                CalibrationFamilyReasonCodes.MasterMissing,
+            objects.ReadContentOverride = null;
+            objects.MissOnRead = key => key == locator.Key;
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterMissing,
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
-            Directory.CreateDirectory(payload);
-            Assert.AreEqual(
-                CalibrationFamilyReasonCodes.MasterUnreadable,
+            objects.MissOnRead = null;
+            objects.ReadUnavailable = key => key == locator.Key;
+            Assert.AreEqual(CalibrationFamilyReasonCodes.MasterUnreadable,
                 await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
-            Directory.Delete(payload);
-            await File.WriteAllBytesAsync(payload, original).ConfigureAwait(false);
+            objects.ReadUnavailable = null;
             Assert.IsNull(await store.ConfirmFamilyMastersAsync(high, CancellationToken.None).ConfigureAwait(false));
         }
         finally
@@ -330,9 +327,11 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 NormalizationPlanContractJson.Serialize(again));
 
             // A master that fails its bundle evidence when the plan is prepared is a visible per-input exclusion.
-            var manifest = MasterManifestPath(root, fixture.Bundles[HighGain], CalibrationReferenceKinds.Dark);
-            var original = await File.ReadAllBytesAsync(manifest).ConfigureAwait(false);
-            File.Delete(manifest);
+            var master = LibraryMasters(fixture.Bundles[HighGain]).Single(item => item.Kind == CalibrationReferenceKinds.Dark);
+            var locator = await CalibrationSiloFixture.FindMemberAsync(root, master.ArtifactId,
+                CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
+            var objects = CalibrationSiloFixture.Objects(root);
+            objects.MissOnRead = key => key == locator.Key;
             var corrupt = await NormalizationPlanFreezer.PrepareAsync(
                 store, family, GainNormalizationPolicyV1.Approved, response, inputs, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -345,7 +344,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                 await NormalizationPlanFreezer.ConfirmAsync(store, plan, CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false);
             Assert.AreEqual(CalibrationFamilyReasonCodes.MasterCorrupt, claim.ReasonCode);
-            await File.WriteAllBytesAsync(manifest, original).ConfigureAwait(false);
+            objects.MissOnRead = null;
             await NormalizationPlanFreezer.ConfirmAsync(store, plan, CancellationToken.None).ConfigureAwait(false);
         }
         finally
@@ -533,44 +532,39 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     /// The four evidence corruptions PR-1503-R1 F1 probed: a deleted or truncated master manifest, a truncated profile
     /// marker, and a flipped byte in a source payload the master was built from.
     /// </summary>
-    private static (string Name, string Path, Func<byte[], Task> Corrupt)[] EvidenceCorruptions(
-        string root,
-        CalibrationLibraryBundleV1 bundle)
+    private static async Task<(string Name, SiloExactLocator Locator, Func<byte[], byte[]>? Corrupt)[]> EvidenceCorruptionsAsync(
+        string root, CalibrationLibraryBundleV1 bundle)
     {
-        var manifest = MasterManifestPath(root, bundle, CalibrationReferenceKinds.Flat);
-        var profile = Path.Combine(root, bundle.ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        var master = LibraryMasters(bundle).Single(artifact => artifact.Kind == CalibrationReferenceKinds.Flat);
+        var manifest = await CalibrationSiloFixture.FindMemberAsync(root, master.ArtifactId,
+            CalibrationArtifactPublisher.SiloEvidenceRevision).ConfigureAwait(false);
+        var profile = await CalibrationSiloFixture.FindMemberAsync(root, CalibrationArtifactPublisher.BundleArtifactId(bundle),
+            CalibrationArtifactPublisher.SiloProfileRevision).ConfigureAwait(false);
         var source = bundle.Artifacts.First(static artifact =>
             artifact.Role == CalibrationLibraryArtifactRoles.Source && artifact.Kind == CalibrationReferenceKinds.Bias);
-        var sourcePayload = PayloadPath(root, source.ManifestRelativePath);
+        var sourcePayload = await PayloadLocatorAsync(root, source.ArtifactId).ConfigureAwait(false);
         return
         [
-            ("deleted-manifest", manifest, _ =>
-            {
-                File.Delete(manifest);
-                return Task.CompletedTask;
-            }),
-            ("truncated-manifest", manifest, original => File.WriteAllBytesAsync(manifest, original[..^1])),
-            ("truncated-profile-marker", profile, original => File.WriteAllBytesAsync(profile, original[..^1])),
-            ("flipped-source-byte", sourcePayload, original =>
-            {
-                var flipped = original.ToArray();
-                flipped[0] ^= 0x01;
-                return File.WriteAllBytesAsync(sourcePayload, flipped);
-            })
+            ("missing-manifest", manifest, null),
+            ("truncated-manifest", manifest, original => original[..^1]),
+            ("truncated-profile", profile, original => original[..^1]),
+            ("flipped-source-byte", sourcePayload, FlipFirstByte)
         ];
     }
 
-    private static string MasterManifestPath(string root, CalibrationLibraryBundleV1 bundle, string kind)
-        => Path.Combine(root, LibraryMasters(bundle).Single(artifact => artifact.Kind == kind)
-            .ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
+    private static async Task<SiloExactLocator> PayloadLocatorAsync(string root, Guid id)
+    {
+        var manifest = await CalibrationSiloFixture.ReadManifestAsync(root, id).ConfigureAwait(false);
+        return await CalibrationSiloFixture.FindMemberAsync(root, id, CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor))
+            .ConfigureAwait(false);
+    }
 
-    private static string MasterPayloadPath(string root, CalibrationLibraryBundleV1 bundle, string kind)
-        => PayloadPath(root, LibraryMasters(bundle).Single(artifact => artifact.Kind == kind).ManifestRelativePath);
-
-    private static string PayloadPath(string root, string manifestRelativePath)
-        => Path.Combine(root, string.Concat(
-            manifestRelativePath.AsSpan(0, manifestRelativePath.Length - ".json".Length), ".bin")
-            .Replace('/', Path.DirectorySeparatorChar));
+    private static byte[] FlipFirstByte(byte[] original)
+    {
+        var flipped = original.ToArray();
+        flipped[0] ^= 0x01;
+        return flipped;
+    }
 
     private static async Task SetPublicationStateAsync(string root, string bundleId, string state)
     {
@@ -662,9 +656,9 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                     SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var synthetic = await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var synthetic = await new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options))
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
-        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
+        var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System) { Silo = CalibrationSiloFixture.Storage(options.Value.RawIngressRoot) };
         _ = await store.AdoptPublishedBundleAsync(synthetic.LibraryBundle, CancellationToken.None).ConfigureAwait(false);
         return (store, synthetic.LibraryBundle, light);
     }

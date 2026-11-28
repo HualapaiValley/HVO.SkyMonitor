@@ -13,6 +13,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -94,6 +95,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             clock.UtcNow = deadline;
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             await store.InitializeAsync(token).ConfigureAwait(false);
+            await SettleSiloRawAdmissionsAsync(provider, token).ConfigureAwait(false);
             var recoveredRaw = await store.ReadReplaySourceAsync(key.CaptureId, raw.ArtifactId, token).ConfigureAwait(false);
             Assert.AreEqual(reference.Artifact.ChecksumSha256, recoveredRaw.PayloadSha256);
             Assert.AreEqual(raw.DescriptorIdentitySha256, recoveredRaw.DescriptorSha256);
@@ -115,6 +117,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsFalse(initial!.IsTerminal);
             Assert.IsFalse(journal.Released);
 
+            await provider.DisposeAsync().ConfigureAwait(false);
             using var reopened = ProcessingGraphOperationsTests.CreateProvider(root, timeProvider: clock);
             var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
             var persistence = reopened.GetRequiredService<CaptureProcessingPersistence>();
@@ -161,12 +164,15 @@ public sealed partial class VirtualSkyCameraModuleTests
         DateTimeOffset start, CameraPixelFormat format, CancellationToken token)
     {
         var file = CenteredRuntimeProfile(root, start, format) with { CenteredExposure = null };
-        // Use legacy raw admission without activating a modern processing graph.
+        // Admit to Silo without activating a processing graph.
         using var ingress = new RawCaptureIngress(provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(),
             provider.GetRequiredService<IStorageCapacityProvider>(), provider.GetRequiredService<RawIngressState>(),
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<RawIngressTelemetry>(),
             NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector(),
-            projectedSceneStaging: provider.GetRequiredService<IProjectedSceneStagingReconciler>());
+            projectedSceneStaging: provider.GetRequiredService<IProjectedSceneStagingReconciler>(),
+            silo: provider.GetRequiredService<SiloInstalledStorage>(),
+            siloSettings: provider.GetRequiredService<SiloInstalledSettings>(),
+            siloArtifacts: provider.GetRequiredService<SiloArtifactStorage>());
         await ingress.InitializeAsync(token).ConfigureAwait(false);
         await CreatePriorCenteredFixtureSchemaAsync(root, token).ConfigureAwait(false);
         var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), CenteredRuntimeCatalog(start),

@@ -405,8 +405,7 @@ public sealed class C208W3MCalibrationLibraryRetainedPerformanceTests
                     SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var syntheticStore = new SyntheticCalibrationReferenceStore(
-            options, new CameraAgentClearReferenceLoader(options));
+        var syntheticStore = new SyntheticCalibrationReferenceStore(CalibrationSiloFixture.Publisher(options));
         var synthetic = await syntheticStore.GetOrCreateAsync(
             light, model, CancellationToken.None).ConfigureAwait(false);
         var bundle = synthetic.LibraryBundle;

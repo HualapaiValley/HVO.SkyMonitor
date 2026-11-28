@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -197,7 +198,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [TestMethod]
     [DataRow("quarantine/torn.json", "{")]
     [DataRow("quarantine/invalid-v2.json", "{\"schemaVersion\":\"v2\"}")]
-    [DataRow("frames/2026/11/10/Raw/torn.json", "{")]
+    [DataRow(".silo/raw-admissions/01010101010101010101010101010101.json", "{")]
     public async Task StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem(string relative, string json)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -254,8 +255,6 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow("journal/scene-retention-cursor.json", "{\"afterRelativePath\":\"fixture\"}")]
     [DataRow("staging/projected-scenes/fixture.json", "{\"schemaVersion\":\"projected-scene-stage-v1\",\"objects\":[]}")]
     [DataRow("journal/capture-satellites/fixture/input.json", "{\"schemaVersion\":\"capture-satellite-input-v1\",\"descriptor\":{}}")]
-    [DataRow("derived/fixture/Metadata/product.json", "{\"schemaVersion\":\"metadata-v1\",\"values\":[]}")]
-    [DataRow("derived/fixture/Metadata/product.manifest.json", "{\"schemaVersion\":\"hvo-cameraagent-processing-product-v1\",\"capture\":{},\"relativeArtifactPath\":\"fixture\"}")]
     public async Task OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract(string relative, string json)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -273,12 +272,37 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    public async Task ManifestShapedOwnedJsonCannotSupplyCaptureProvenance()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (stage, json) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        var manifest = CaptureContractJson.ParseManifest(json).Document!.Manifest;
+        var wrongLocation = manifest.Descriptor.Location! with { Version = active.Version + 1 };
+        var lookalike = CaptureContractJson.Serialize(manifest with
+        {
+            Descriptor = manifest.Descriptor with { Location = wrongLocation }
+        });
+        var other = Path.Combine(_options.Value.RawIngressRoot, "journal", "manifest-shaped.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(other)!);
+        await RetainedFileMutations.WriteAllBytesAsync(other, lookalike).ConfigureAwait(false);
+        Assert.AreEqual(active, await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
+
+        await RetainedFileMutations.WriteAllBytesAsync(stage, lookalike).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task TornProductionSidecarCanReachTheRealReconcilerWithoutDeletingEvidence()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var store = CreateStore();
         var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var path = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "11", "10", "Raw", "torn.json");
+        var id = Guid.NewGuid();
+        var paths = RawIngressFileStore.GetPaths(_options.Value.RawIngressRoot, DateTimeOffset.UnixEpoch, id);
+        var path = paths.SidecarAbsolutePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await RetainedFileMutations.WriteAllTextAsync(path, "{").ConfigureAwait(false);
         Assert.AreEqual(active, await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false));
@@ -287,7 +311,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var journal = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.SqliteRawCaptureJournal(
             Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var reconciler = new HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressReconciler(_options.Value.RawIngressRoot, journal);
+        var reconciler = new RawIngressReconciler(_options.Value.RawIngressRoot, journal, siloIntents: [(id, paths)]);
         var result = await reconciler.RunAsync(_ => ValueTask.FromResult(hold.Gate.EnterIfInitialized()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(1, result.Quarantined);
         Assert.IsFalse(File.Exists(path));
@@ -336,8 +360,10 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     private async Task<(string Path, byte[] Json)> WriteSummaryCaptureAsync(DeploymentLocationSnapshot location, bool journal = false)
     {
         var original = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var paths = RawIngressFileStore.GetPaths(_options.Value.RawIngressRoot, Now, original.Descriptor.Artifact.ArtifactId);
         var manifest = original with
         {
+            RelativeArtifactPath = paths.PayloadRelativePath,
             Descriptor = original.Descriptor with
             {
                 Location = location.ToProvenance(),
@@ -348,9 +374,8 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var json = CaptureContractJson.Serialize(manifest);
         var parsed = CaptureContractJson.ParseManifest(json);
         Assert.IsTrue(parsed.IsValid, $"{parsed.Validation.ReasonCode}: {parsed.Validation.FieldPath}");
-        var directoryPath = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "11", "10", "Raw");
-        Directory.CreateDirectory(directoryPath);
-        var path = Path.Combine(directoryPath, "capture.json");
+        var path = paths.SidecarAbsolutePath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(path, json).ConfigureAwait(false);
         if (journal)
         {

@@ -206,15 +206,10 @@ The following scope limits leave every numeric floor unchanged:
   See the reproduced catalog-absent limitation in
   [catalog-f7-1188](../validation/catalog-f7-1188.md) and
   [issue-1644-candidate](../validation/issue-1644-candidate.md).
-- Only the three retired paths pinned in `scripts/coverage/policy.json` may have
-  absent sources: `ArtifactUploadManifest.cs`, `DistributionCatalogAcquirer.cs`
-  and `DistributionVerifier.cs`. Their skips name that policy. Any other missing
-  enforced source, including a rename/move, fails settings generation, the shared
-  evaluator and coverage policy on PR, push and merge-group events. Moving a file
-  requires reviewing its floor mapping; absence never implies retirement.
-  Coverage policy rejects changes to the three-entry retired list unless its
-  executable allowlist is also changed and reviewed; JSON edits alone cannot
-  exempt a renamed file.
+- Coverage skips absent sources named in `scripts/coverage/policy.json`. The
+  policy also requires the surviving local file primitives to keep their original
+  floors after their move to `HVO.SkyMonitor.LocalFiles`. Every other missing
+  enforced file fails settings generation, the evaluator and coverage policy.
 - Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
   is recorded in that PR's discussion, not a repository exception registry.
   `InstallerControlWorker`, `InstallerControlJournal` and
@@ -1334,7 +1329,7 @@ Classification matches exact project directory names.
 
 | Component | Owned paths |
 | --- | --- |
-| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Catalog.Sqlite`, `Common`, `Imaging`, `Processing`, `Storage.FileSystem`, `TestSupport`, and `Video.FFmpeg` |
+| `shared` | `src/` and `tests/` project directories for `AgentCore`, `Astronomy`, `Catalog.Sqlite`, `Common`, `Imaging`, `Processing`, `LocalFiles`, `TestSupport`, and `Video.FFmpeg` |
 | `cameraagent` | `src/HVO.SkyMonitor.CameraAgent`, `CameraAgent.Cli`, `CameraAgent.Common`, `CameraAgent.Modules.Zwo`, `CameraAgent.Replay`, `CameraAgent.ReplayRunner`, and `tests/HVO.SkyMonitor.CameraAgent.{Tests,AcceptanceTests,IntegrationTests}` |
 | `delivery` | `src/HVO.SkyMonitor.Deployment.{Cli,Contracts}`, `src/HVO.SkyMonitor.TerminalUi`, `tools/HVO.SkyMonitor.Deployment.ReleaseTool`, and `tests/HVO.SkyMonitor.Deployment.{Cli,Distribution}.Tests` |
 

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Focus;
 

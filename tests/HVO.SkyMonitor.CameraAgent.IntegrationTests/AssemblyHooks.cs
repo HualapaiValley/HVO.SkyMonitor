@@ -26,6 +26,7 @@ public sealed class AssemblyHooks
     [AssemblyCleanup]
     public static void AssemblyCleanup()
     {
-        Fixture.Dispose();
+        try { Fixture.Dispose(); }
+        finally { SiloInfrastructureFixture.ReleaseTemporaryRoots(); }
     }
 }

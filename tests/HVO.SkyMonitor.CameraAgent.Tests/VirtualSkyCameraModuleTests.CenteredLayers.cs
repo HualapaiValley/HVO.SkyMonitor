@@ -190,8 +190,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     private static async Task<CenteredView> DrainCenteredReferenceAsync(ServiceProvider provider, ExposureKey key, CancellationToken token)
     {
-        var worker = provider.GetRequiredService<CenteredViewPublicationWorker>();
-        while (await worker.DrainCameraAsync(key.Camera, null, CancellationToken.None, token).ConfigureAwait(false))
+        while (await DrainCenteredCameraAsync(provider, key.Camera, null, token).ConfigureAwait(false))
         {
         }
         var views = provider.GetRequiredService<SqliteCenteredViews>();

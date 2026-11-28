@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
-using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.LocalFiles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
@@ -44,51 +44,6 @@ internal sealed class SiloFilePayloadSpool : ISiloPayloadSpool
         _directory = root.Resolve(relativeDirectory);
         _maximumBytes = maximumBytes;
         _maximumFiles = maximumFiles;
-    }
-
-    internal static Inspection Inspect(PhysicalRoot root, string relativeState, long maximumBytes, int maximumFiles)
-    {
-        var spool = new SiloFilePayloadSpool(root, Path.Combine(relativeState, DirectoryName), maximumBytes, maximumFiles);
-        if (Directory.Exists(spool._directory))
-            spool.LoadFiles(removePartials: false);
-        else if (File.Exists(spool._directory))
-            throw new IOException("The Silo payload spool path is not a directory.");
-        return new(spool);
-    }
-
-    // Forecast staging and release in memory. Only files present at inspection are opened for verification.
-    internal sealed class Inspection(SiloFilePayloadSpool spool)
-    {
-        private readonly HashSet<string> _projected = new(StringComparer.Ordinal);
-
-        internal async ValueTask StageAsync(IReadOnlyList<SiloDraftMember> members, CancellationToken cancellationToken)
-        {
-            foreach (var member in members)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (await spool.RequiresStagingAsync(member, _projected.Contains(member.SourceToken), cancellationToken).ConfigureAwait(false))
-                {
-                    spool.Track(member.SourceToken, member.Length);
-                    _projected.Add(member.SourceToken);
-                }
-            }
-        }
-
-        internal async ValueTask<bool> MatchesAsync(SiloDraftMember member, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return _projected.Contains(member.SourceToken)
-                ? spool._files[member.SourceToken] == member.Length
-                : await spool.MatchesAsync(member.SourceToken, member.Sha256, member.Length, cancellationToken).ConfigureAwait(false);
-        }
-
-        internal void RequireWithinCapacity() => spool.RequireWithinCapacity();
-
-        internal void Release(string token)
-        {
-            _projected.Remove(token);
-            spool.Forget(token);
-        }
     }
 
     public static string TokenOf(string sha256)

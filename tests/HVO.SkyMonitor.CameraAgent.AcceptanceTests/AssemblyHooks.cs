@@ -13,4 +13,7 @@ public sealed class AssemblyHooks
     {
         ArgumentNullException.ThrowIfNull(context);
     }
+
+    [AssemblyCleanup]
+    public static void Cleanup() => SiloInfrastructureFixture.ReleaseTemporaryRoots();
 }

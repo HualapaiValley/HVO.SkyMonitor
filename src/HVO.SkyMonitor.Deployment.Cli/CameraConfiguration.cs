@@ -84,7 +84,7 @@ internal static class CameraConfiguration
                 request.TimeZoneId),
             new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(moduleOptions)),
             rig,
-            new CapturePipelineConfig(CreateProcessingSteps(generation)),
+            new CapturePipelineConfig(CreateProcessingSteps(generation, request.StorageLayout)),
             AgentId: applicationIdentity.ToString("D"))
         {
             Schedule = schedule
@@ -175,7 +175,7 @@ internal static class CameraConfiguration
     /// The processing pipeline of <paramref name="generation"/>. Generation 2 (Refs #1722) adds the cloud assessment and its
     /// presentation layer, which the overlay manifest and the presentation materializer then depend on.
     /// </summary>
-    private static List<CaptureProcessingStepConfig> CreateProcessingSteps(int generation)
+    private static List<CaptureProcessingStepConfig> CreateProcessingSteps(int generation, CameraAgentStorageLayout storageLayout)
     {
         var cloud = generation >= 2;
         var steps = new List<CaptureProcessingStepConfig>
@@ -239,17 +239,21 @@ internal static class CameraConfiguration
             cloud ? ManifestDependencies : ManifestDependenciesWithoutCloud, durable: true));
         steps.Add(Step("PresentationMaterializer", "PresentationMaterializer", 81, new { outputVariant = "installer-annotated-preview" },
             cloud ? MaterializerDependencies : MaterializerDependenciesWithoutCloud, durable: true));
+        // Older filesystem configurations are still fingerprinted by the configuration-default tests.
+        var silo = storageLayout == CameraAgentStorageLayout.Silo;
         steps.Add(Step(
             "LocalStorage",
             "Storage",
             100,
-            new { storageRoot = "/app/data/raw", retentionDays = 7, updateLatestFrame = true },
+            silo ? new { updateLatestFrame = true } :
+                new { storageRoot = "/app/data/raw", retentionDays = 7, updateLatestFrame = true },
             PresentationDependencies));
         steps.Add(Step(
             "ArchiveStorage",
             "Storage",
             110,
-            new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false },
+            silo ? new { updateLatestFrame = false, publishArchive = true } :
+                new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false },
             PresentationDependencies));
         steps.Add(Step(
             "Telemetry",

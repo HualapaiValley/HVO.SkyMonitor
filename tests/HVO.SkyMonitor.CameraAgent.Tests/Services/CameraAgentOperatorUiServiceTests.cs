@@ -528,26 +528,18 @@ public sealed partial class CameraAgentOperatorUiServiceTests
     }
 
     [TestMethod]
-    public async Task StorageReconciliation_ReturnsTheLatestRecordedPassesAsync()
+    public async Task StorageReconciliation_ReturnsTheLatestRawAdmissionCheckAsync()
     {
         var time = new FixedTimeProvider(new DateTimeOffset(2026, 9, 30, 12, 0, 0, TimeSpan.Zero));
         var rawIngress = new RawIngressState(time);
-        var processing = new CaptureProcessingState();
-        var service = CreateReadService(rawIngressState: rawIngress, captureProcessingState: processing);
+        var service = CreateReadService(rawIngressState: rawIngress);
 
         var before = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
-        rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096, IndexProjectionFailures: 3));
-        processing.RecordReconciliation(time.GetUtcNow(), new DerivedProductReconciliationSummary(120, 110, 5, 3, 1, 1, 2048));
+        rawIngress.RecordReconciliation(new RawIngressReconciliationSummary(40, 2, 1, 1, 0, 4096));
         var after = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
-        processing.RecordReconciliation(time.GetUtcNow().AddMinutes(5), null);
-        var failed = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(new CameraAgentStorageReconciliation(null, null), before.Value);
-        Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0, 3), after.Value!.RawIngress);
-        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow(), true, 120, 5, 3, 1, 1), after.Value.DerivedProducts);
-        // A failed pass replaces the last success, so the page never shows old counts as current.
-        Assert.AreEqual(new DerivedProductReconciliationReport(time.GetUtcNow().AddMinutes(5), false, 0, 0, 0, 0, 0), failed.Value!.DerivedProducts);
-        Assert.AreEqual(after.Value.RawIngress, failed.Value.RawIngress);
+        Assert.AreEqual(new CameraAgentStorageReconciliation(null), before.Value);
+        Assert.AreEqual(new RawIngressReconciliationReport(time.GetUtcNow(), 40, 2, 1, 1, 0), after.Value!.RawIngress);
     }
 
     [TestMethod]
@@ -606,6 +598,7 @@ public sealed partial class CameraAgentOperatorUiServiceTests
                 quarantined.Add(await fixture.AcceptAsync(index).ConfigureAwait(false));
             }
             var pending = await fixture.AcceptAsync(undisplayable + 1).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             await EdgeUpgradeLaneTests.ExecuteAsync(root, """
                 UPDATE capture_lane_work SET state = 'completed'
                 WHERE lane_name = 'standard'
@@ -755,15 +748,15 @@ public sealed partial class CameraAgentOperatorUiServiceTests
 
     private static CameraAgentOperatorUiService CreateReadService(
         CameraAgentHostOptions? hostOptions = null,
-        RawIngressState? rawIngressState = null,
-        CaptureProcessingState? captureProcessingState = null)
+        RawIngressState? rawIngressState = null)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
             .ReturnsAsync(AuthorizationResult.Success());
-        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, hostOptions: hostOptions,
-            rawIngressState: rawIngressState, captureProcessingState: captureProcessingState);
+        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            hostOptions: hostOptions,
+            rawIngressState: rawIngressState);
     }
 
     private static CameraAgentOperatorUiService CreateCaptureDetailService(
@@ -800,7 +793,6 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         CaptureScheduleRuntimeCoordinator? scheduleRuntime = null,
         CameraAgentHostOptions? hostOptions = null,
         RawIngressState? rawIngressState = null,
-        CaptureProcessingState? captureProcessingState = null,
         ITransientRuntimeManagement? transientRuntime = null,
         ICameraAgentProcessingCompletion? processingCompletion = null,
         CurrentSkyRefreshSetting? currentSkyRefresh = null,
@@ -829,7 +821,6 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             TimeProvider.System,
             NullLogger<CameraAgentOperatorUiService>.Instance,
             rawIngressState: rawIngressState,
-            captureProcessingState: captureProcessingState,
             processingCompletion: processingCompletion,
             currentSkyRefresh: currentSkyRefresh, retainedAstrometry: retainedAstrometry,
             centeredViewLookup: centeredViewLookup,

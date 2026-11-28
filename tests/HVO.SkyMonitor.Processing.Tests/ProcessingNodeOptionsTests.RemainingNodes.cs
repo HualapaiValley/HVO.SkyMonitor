@@ -14,10 +14,10 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "outputVariant", "\" \"")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "\"\"")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "42")]
-    [DataRow("Storage", "cameraagent-step-v2:Storage", "retentionDays", "0")]
-    [DataRow("Storage", "cameraagent-step-v2:Storage", "retentionDays", "3651")]
-    [DataRow("Storage", "cameraagent-step-v2:Storage", "storageRoot", "null")]
+    [DataRow("Storage", "cameraagent-step-v2:Storage", "publishArchive", "0")]
     [DataRow("Storage", "cameraagent-step-v2:Storage", "updateLatestFrame", "1")]
+    [DataRow("Storage", "cameraagent-step-v2:Storage", "updateLatestFrame", "null")]
+    [DataRow("Storage", "cameraagent-step-v2:Storage", "publishArchive", "\"true\"")]
     public void RemainingNodeDescriptorsRejectInvalidSourceAndDoNotRewriteIt(string alias, string version, string key, string token)
     {
         var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, version).Descriptor;
@@ -33,7 +33,6 @@ public sealed partial class ProcessingNodeOptionsTests
     [DataRow("MeasuredAstrometry", "measured-astrometry-v1", "outputVariant", "measured-astrometry-v1")]
     [DataRow("CaptureSatelliteTracks", "capture-satellite-products-v1", "outputVariant", "capture-satellites-v1")]
     [DataRow("CaptureSatelliteLayer", "predicted-satellite-tracks-v1", "inputVariant", "capture-satellites-v1")]
-    [DataRow("Storage", "cameraagent-step-v2:Storage", "storageRoot", "/tmp/camera")]
     public void RemainingNodeDescriptorsBindDefaultsAndPreserveSource(string alias, string version, string key, string expected)
     {
         var descriptor = ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, version).Descriptor;

@@ -22,8 +22,8 @@ public sealed class DiskPressureHealthCheck(StoragePressureState state) : IHealt
         }
         var pressured = snapshots.FirstOrDefault(snapshot => snapshot.IsUnderPressure);
         return Task.FromResult(pressured is null
-            ? HealthCheckResult.Healthy("Storage capacity is above configured pressure thresholds.")
+            ? HealthCheckResult.Healthy("Silo has capacity for capture admission.")
             : HealthCheckResult.Degraded(
-                $"Disk pressure at {pressured.StorageRoot}: {pressured.Capacity.AvailablePercent:F2}% available; effective retention {pressured.EffectiveRetentionDays} day(s)."));
+                $"Silo is holding capture admission for disk pressure ({pressured.Capacity.AvailablePercent:F2}% available)."));
     }
 }

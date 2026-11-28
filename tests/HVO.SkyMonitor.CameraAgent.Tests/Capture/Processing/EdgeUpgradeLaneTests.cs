@@ -54,6 +54,7 @@ public sealed class EdgeUpgradeLaneTests
             Assert.AreEqual(0L, await CountUnreleasedPinsAsync(root, first).ConfigureAwait(false));
             Assert.AreEqual(0L, (await fixture.Store.ReadOperationalStateAsync(CancellationToken.None)
                 .ConfigureAwait(false)).TerminalCount, "Abandoned work is not a terminal processing failure.");
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
 
             var second = await fixture.AcceptAsync(1).ConfigureAwait(false);
@@ -61,6 +62,7 @@ public sealed class EdgeUpgradeLaneTests
             var processed = await fixture.ProcessStandardAsync().ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Handled.Outcome, processed.Handled.Reason);
             Assert.AreEqual(second, processed.CaptureId, "The ordered lane moves past the abandoned head.");
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsFalse(await fixture.IsHeldAsync(second).ConfigureAwait(false));
         }
@@ -89,6 +91,7 @@ public sealed class EdgeUpgradeLaneTests
             Assert.AreEqual(("Expired", "processing.live-maximum-age"),
                 await ReadExecutionAsync(root, first).ConfigureAwait(false));
             Assert.AreEqual(0L, await CountUnreleasedPinsAsync(root, first).ConfigureAwait(false));
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(await fixture.IsHeldAsync(first).ConfigureAwait(false));
 
             var second = await fixture.AcceptAsync(1).ConfigureAwait(false);
@@ -119,6 +122,7 @@ public sealed class EdgeUpgradeLaneTests
                 first = await fixture.AcceptAsync(0).ConfigureAwait(false);
                 evidenceInvalid = await fixture.AcceptAsync(1).ConfigureAwait(false);
                 firstReceipt = fixture.Receipts[first];
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
                 clock.Now = clock.Now.AddSeconds(11);
                 Assert.IsNull(await fixture.Ingress.ClaimAsync(fixture.Standard, "expiry-test", fixture.Configuration,
                     CancellationToken.None).ConfigureAwait(false));
@@ -281,8 +285,7 @@ public sealed class EdgeUpgradeLaneTests
         internal async Task<bool> IsHeldAsync(Guid captureId)
         {
             var artifactId = Receipts[captureId].Manifest.Descriptor.Artifact.ArtifactId;
-            return (await Ingress.GetRetentionHoldsAsync(Root, CancellationToken.None).ConfigureAwait(false))
-                .Any(hold => hold.ArtifactId == artifactId);
+            return (await Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false)).Contains(artifactId);
         }
     }
 
@@ -378,7 +381,7 @@ public sealed class EdgeUpgradeLaneTests
         services.AddLogging();
         services.AddSingleton(clock);
         services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
