@@ -25,7 +25,7 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);
@@ -79,7 +79,7 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);

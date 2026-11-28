@@ -3,6 +3,7 @@ using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -32,7 +33,7 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -198,31 +199,18 @@ public sealed partial class DurableCaptureProcessingTests
                 if (unrelated) await historyHeld.Task.WaitAsync(timeout).ConfigureAwait(false);
             }
 
-            var reconciler = new DerivedProductReconciler(root, store);
-            var asset = Path.Combine(root, newest.PayloadRelativePath);
-            var sidecar = Path.Combine(root, newest.SidecarRelativePath);
-            byte[]? originalPayload = null;
-            byte[]? originalSidecar = null;
+            var retained = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, newest, token).ConfigureAwait(false);
             if (scenario == "repair")
             {
                 await preRepairHistoryDone.Task.WaitAsync(timeout).ConfigureAwait(false);
-                originalPayload = await File.ReadAllBytesAsync(asset, token).ConfigureAwait(false);
-                originalSidecar = await File.ReadAllBytesAsync(sidecar, token).ConfigureAwait(false);
-                var corrupt = (byte[])originalPayload.Clone();
-                corrupt[0] ^= 1;
-                await File.WriteAllBytesAsync(asset, corrupt, token).ConfigureAwait(false);
-                Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Quarantined);
-                Assert.AreEqual("Quarantined", (await store.ReadOutputByArtifactIdAsync(newest.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+                retained.FlipByte();
+                await retained.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token)
+                    .ConfigureAwait(false);
             }
             else
             {
-                await store.PlanLifecycleOperationAsync(new(
-                    Guid.NewGuid().ToString("N"), "delete", newest.OutputIdentitySha256, newest.PayloadRelativePath,
-                    newest.SidecarRelativePath, "processing-quarantine/expired-display-fit", "retention-expired", 0), token).ConfigureAwait(false);
-                _ = await reconciler.RunAsync(token).ConfigureAwait(false);
-                Assert.IsNull(await store.ReadOutputByArtifactIdAsync(newest.ArtifactId, token).ConfigureAwait(false));
+                await retained.ExpireAsync(token).ConfigureAwait(false);
             }
-            Assert.IsFalse(File.Exists(asset));
             try
             {
                 await RefreshAsync().ConfigureAwait(false);
@@ -282,7 +270,7 @@ public sealed partial class DurableCaptureProcessingTests
             if (unrelated) return;
             await page.InvokeAsync(() => Assert.IsEmpty(page.FindAll(".astrometry-calculator-result"))).ConfigureAwait(false);
 
-            if (originalPayload is not null)
+            if (scenario == "repair")
             {
                 // Let the post-invalidation layer read finish before repairing so the repair reload always
                 // starts a fresh post-repair layer read rather than skipping while _layerLoading is still true.
@@ -293,11 +281,9 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.AreEqual("Refresh measured evidence", reloadButton.TextContent.Trim());
                     Assert.IsFalse(reloadButton.HasAttribute("disabled"));
                 }).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(asset, originalPayload, token).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(sidecar, originalSidecar!, token).ConfigureAwait(false);
-                // Release the verified original bytes through the journal's availability transition.
-                // The fresh reader still checks the complete retained lineage and hashes.
-                await store.SetOutputAvailabilityAsync(newest.OutputIdentitySha256, "Available", null, token).ConfigureAwait(false);
+                retained.FlipByte();
+                await retained.RecordCopyStateAsync(SiloAvailabilityState.Restored, token)
+                    .ConfigureAwait(false);
                 await page.InvokeAsync(async () =>
                 {
                     var reloadButton = page.FindAll("button.refresh-measured-evidence").SingleOrDefault();

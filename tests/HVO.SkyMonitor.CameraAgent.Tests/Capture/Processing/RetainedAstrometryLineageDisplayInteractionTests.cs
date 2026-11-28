@@ -29,7 +29,7 @@ public sealed partial class DurableCaptureProcessingTests
             var mixedInputs = damage == "missing-associations-and-quarantined-context";
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);

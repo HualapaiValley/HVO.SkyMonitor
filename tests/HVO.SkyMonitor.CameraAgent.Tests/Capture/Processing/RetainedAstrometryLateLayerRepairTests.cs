@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -64,7 +65,7 @@ public sealed partial class DurableCaptureProcessingTests
             var positiveAfterLatest = delivery == "positive-after-latest";
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -379,24 +380,19 @@ public sealed partial class DurableCaptureProcessingTests
                 {
                     var associations = await store.ReadOutputByArtifactIdAsync(newest.Artifact.SourceArtifactIds[1], token).ConfigureAwait(false);
                     Assert.IsNotNull(associations);
-                    var associationPath = Path.Combine(root, associations.PayloadRelativePath);
-                    var reconciler = new DerivedProductReconciler(root, store);
-                    var heldAssociation = Path.Combine(root, "held-associations");
-                    File.Move(associationPath, heldAssociation);
-                    Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Missing);
+                    var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, associations, token).ConfigureAwait(false);
+                    await member.RecordCopyStateAsync(SiloAvailabilityState.Missing, token)
+                        .ConfigureAwait(false);
                     var pending = await selectedService.ReadAstrometryPublicationStateAsync(selectedIdentity, token).ConfigureAwait(false);
                     Assert.AreEqual(CameraAgentAstrometryPublicationState.Indeterminate, pending.Value);
-                    File.Move(heldAssociation, associationPath);
-                    await reconciler.RunAsync(token).ConfigureAwait(false);
+                    await member.RecordCopyStateAsync(SiloAvailabilityState.Restored, token)
+                        .ConfigureAwait(false);
                     var restored = await selectedService.ReadAstrometryPublicationStateAsync(selectedIdentity, token).ConfigureAwait(false);
                     Assert.AreEqual(CameraAgentAstrometryPublicationState.Available, restored.Value);
 
-                    var corrupt = await File.ReadAllBytesAsync(associationPath, token).ConfigureAwait(false);
-                    corrupt[0] ^= 1;
-                    await File.WriteAllBytesAsync(associationPath, corrupt, token).ConfigureAwait(false);
-                    var reconciled = await reconciler.RunAsync(token).ConfigureAwait(false);
-                    Assert.AreEqual(1, reconciled.Quarantined);
-                    Assert.AreEqual("Quarantined", (await store.ReadOutputByArtifactIdAsync(associations.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+                    member.FlipByte();
+                    await member.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token)
+                        .ConfigureAwait(false);
                 }
                 else
                 {

@@ -29,7 +29,7 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var latestOutput = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -121,7 +121,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual("retained-evidence-invalid", selected.Reason);
             Assert.IsNull(selected.Solution);
 
-            using var restartedStore = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var restartedStore = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, restartedStore);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restartedStore, restartedArtifacts);
             var restarted = await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
@@ -157,7 +157,7 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, gate).ConfigureAwait(false);

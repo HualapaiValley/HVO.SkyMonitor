@@ -1571,12 +1571,12 @@ public sealed partial class DurableCaptureDistributionTests
         internal StandardCaptureLaneHandler CreateStandardHandler(ICaptureProcessingPipelineFactory? factory = null,
             RawCaptureIngress? ingress = null)
         {
-            _processingStore ??= new SqliteCaptureProcessingStore(Options);
+            _processingStore ??= new SqliteCaptureProcessingStore(Options, Time);
             _processingTelemetry ??= new CaptureProcessingTelemetry();
             var persistence = new CaptureProcessingPersistence(Options, _processingStore, _processingTelemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(Root));
             return new StandardCaptureLaneHandler(factory ?? new EmptyPipelineFactory(), persistence, _processingTelemetry,
-                NullLogger<StandardCaptureLaneHandler>.Instance, ingress ?? Ingress);
+                NullLogger<StandardCaptureLaneHandler>.Instance, ingress ?? Ingress, timeProvider: Time);
         }
 
         internal async Task<RawCaptureReceipt> AcceptAsync(int index)

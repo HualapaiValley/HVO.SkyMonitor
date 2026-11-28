@@ -15,6 +15,7 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     private readonly Lock _gate = new();
     private readonly SortedDictionary<string, List<StoredVersion>> _objects = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _served = new(StringComparer.Ordinal);
+    private readonly HashSet<SiloExactLocator> _unavailableVersions = [];
     private int _counter;
 
     private sealed record StoredVersion(string VersionId, byte[] Bytes, IReadOnlyDictionary<string, string> Metadata);
@@ -139,6 +140,8 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
         }
         lock (_gate)
         {
+            if (_unavailableVersions.Contains(Locator(key, versionId)))
+                throw new SiloStoreUnavailableException(Descriptor.StoreId, "get " + key, writeMayHaveLanded: false);
             if (!_objects.TryGetValue(key, out var versions) || versions.Count == 0)
             {
                 return ValueTask.FromResult(new SiloOpenResult(SiloOpenStatus.NoSuchKey, null));
@@ -265,6 +268,15 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     }
 
     public void Damage(SiloExactLocator locator) => Damage(locator.Key, locator.VersionId);
+
+    public void SetVersionUnavailable(SiloExactLocator locator, bool unavailable)
+    {
+        lock (_gate)
+        {
+            if (unavailable) _unavailableVersions.Add(locator);
+            else _unavailableVersions.Remove(locator);
+        }
+    }
 
     public IReadOnlyList<string> Keys(string prefix)
     {

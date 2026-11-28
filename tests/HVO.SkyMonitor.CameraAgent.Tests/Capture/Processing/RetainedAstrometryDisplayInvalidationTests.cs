@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -34,7 +35,7 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -134,7 +135,6 @@ public sealed partial class DurableCaptureProcessingTests
                 }, timeout);
             }
 
-            var reconciler = new DerivedProductReconciler(root, store);
             if (scenario == "context-open")
             {
                 Volatile.Write(ref pauseContext, 1);
@@ -142,12 +142,10 @@ public sealed partial class DurableCaptureProcessingTests
                 try
                 {
                     await contextOpen.Task.WaitAsync(timeout).ConfigureAwait(false);
-                    var path = Path.Combine(root, contextOutput.PayloadRelativePath);
-                    var bytes = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                    bytes[0] ^= 1;
-                    await File.WriteAllBytesAsync(path, bytes, token).ConfigureAwait(false);
-                    Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Quarantined);
-                    Assert.AreEqual("Quarantined", (await store.ReadOutputByArtifactIdAsync(contextOutput.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+                    var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, contextOutput, token).ConfigureAwait(false);
+                    member.FlipByte();
+                    await member.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token)
+                        .ConfigureAwait(false);
                 }
                 finally { resumeOpen.TrySetResult(); }
                 page.WaitForAssertion(() =>
@@ -165,16 +163,10 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 var target = scenario == "context-evicted" ? contextOutput : selectedOutput;
                 var pending = holdEarlierImage ? newest : older;
-                var pendingPath = Path.Combine(root, pending.PayloadRelativePath);
-                var displaced = Path.Combine(root, "fallback.displaced");
-                File.Move(pendingPath, displaced);
-                Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Missing);
-                await store.PlanLifecycleOperationAsync(new(
-                    Guid.NewGuid().ToString("N"), "delete", target.OutputIdentitySha256, target.PayloadRelativePath,
-                    target.SidecarRelativePath, "processing-quarantine/expired-display-fit", "retention-expired", 0), token).ConfigureAwait(false);
-                _ = await reconciler.RunAsync(token).ConfigureAwait(false);
-                Assert.IsNull(await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false));
-                Assert.IsFalse(File.Exists(Path.Combine(root, target.PayloadRelativePath)));
+                var pendingMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, pending, token).ConfigureAwait(false);
+                pendingMember.SetUnavailable(true);
+                var expired = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, target, token).ConfigureAwait(false);
+                await expired.ExpireAsync(token).ConfigureAwait(false);
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
                 {
@@ -188,8 +180,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsFalse(incomplete.Completed);
                 Assert.AreEqual(!holdEarlierImage, incomplete.PreviousSummaryEvicted);
                 Assert.IsTrue(incomplete.SelectedAssessmentInvalidated);
-                File.Move(displaced, pendingPath);
-                _ = await reconciler.RunAsync(token).ConfigureAwait(false);
+                pendingMember.SetUnavailable(false);
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
                 {

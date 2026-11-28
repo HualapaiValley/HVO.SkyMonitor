@@ -37,7 +37,7 @@ public sealed partial class DurableCaptureProcessingTests
             var descriptor = f.Fixture.Manifest.Descriptor;
             var id = descriptor.Capture.CaptureId;
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
             using var numericalGate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var astrometryGraph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), numericalGate,

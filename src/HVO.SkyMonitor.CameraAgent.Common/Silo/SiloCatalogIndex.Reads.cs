@@ -365,6 +365,31 @@ internal sealed partial class SiloCatalogIndex
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! == 1;
     }
 
+    internal async ValueTask<SiloAvailabilityState?> ReadRetainedEvidenceFailureAsync(
+        string artifactIdsJson, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var disposition = await ScalarLongAsync(connection, null, """
+            SELECT COALESCE(MAX(CASE
+                WHEN r.journaled = 'conflict' OR (
+                    EXISTS (SELECT 1 FROM locators l WHERE (l.kind, l.id, l.revision) = (r.kind, r.id, r.revision)
+                        AND l.eligible = 1 AND l.copy_state = 'quarantined') AND
+                    NOT EXISTS (SELECT 1 FROM locators l WHERE (l.kind, l.id, l.revision) = (r.kind, r.id, r.revision)
+                        AND l.eligible = 1 AND l.copy_state = 'active')) THEN 3
+                WHEN r.journaled = 'policy-expired' THEN 2
+                WHEN r.disposition = 'missing' THEN 1
+                ELSE 0 END), 0)
+            FROM roles r WHERE r.kind = 'member' AND r.id IN (SELECT value FROM json_each($artifacts));
+            """, cancellationToken, ("$artifacts", artifactIdsJson)).ConfigureAwait(false);
+        return disposition switch
+        {
+            3 => SiloAvailabilityState.Quarantined,
+            2 => SiloAvailabilityState.PolicyExpired,
+            1 => SiloAvailabilityState.Missing,
+            _ => null
+        };
+    }
+
     internal async ValueTask<SiloJournalPosition?> ReadRoleExpiryAsync(SiloObjectIdentity identity, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);

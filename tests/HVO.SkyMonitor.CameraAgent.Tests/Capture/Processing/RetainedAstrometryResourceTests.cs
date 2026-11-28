@@ -192,7 +192,7 @@ public sealed partial class DurableCaptureProcessingTests
                 var f = await CreateAstrometryDurabilityFixtureAsync(root, recipe: MeasuredAstrometryFixture.PerformanceOptions)
                     .ConfigureAwait(false);
                 using var telemetry = new CaptureProcessingTelemetry();
-                using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
+                using var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
                 using var gate = new CaptureAstrometryExecutionGate();
                 var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
                 var before = Sample();

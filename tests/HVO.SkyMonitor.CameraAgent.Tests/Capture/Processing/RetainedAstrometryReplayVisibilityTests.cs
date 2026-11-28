@@ -138,7 +138,7 @@ public sealed partial class DurableCaptureProcessingTests
             await ExpectPublicArtifactAsync(measured.ArtifactId, CameraAgentArtifactReadStatus.NotFound).ConfigureAwait(false);
             await ExpectPublicArtifactAsync(rawId, CameraAgentArtifactReadStatus.Found).ConfigureAwait(false);
 
-            using var reopenedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var reopenedStore = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var reopenedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, reopenedStore);
             using var cold = new CameraAgentRetainedAstrometryService(reopenedStore, reopenedArtifacts);
             var publicReader = reopen ? CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(cold) : warmService;

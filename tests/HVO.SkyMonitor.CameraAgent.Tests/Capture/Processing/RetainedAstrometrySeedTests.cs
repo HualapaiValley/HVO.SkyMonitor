@@ -135,7 +135,7 @@ public sealed partial class DurableCaptureProcessingTests
             var current = await store.ReadAstrometryCandidatesAsync(deadline.Token).ConfigureAwait(false);
             Assert.AreEqual(published.Capture.CaptureId, current.Single().CaptureId);
 
-            using var restarted = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var restarted = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, restarted);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restarted, restartedArtifacts);
             Assert.AreEqual(latest, await restartedReader.ReadLatestAcceptedAsync(deadline.Token).ConfigureAwait(false),

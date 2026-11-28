@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -150,13 +151,14 @@ public sealed partial class DurableCaptureProcessingTests
             var capture = fit.Capture.CaptureId;
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var old = service.GetAsync(capture, deadline.Token).AsTask();
-            var sourcePath = Path.Combine(root, fixture.Fixture.Manifest.RelativeArtifactPath);
-            var savedPath = sourcePath + ".held";
+            var descriptor = fixture.Fixture.Manifest.Descriptor;
+            var raw = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor), deadline.Token).ConfigureAwait(false);
             try
             {
                 await reachedBase.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
                 // The old request has already projected the fit. Remove its real raw evidence before the re-read.
-                File.Move(sourcePath, savedPath);
+                raw.SetUnavailable(true);
                 var invalidated = await service.GetCurrentAsync(capture, deadline.Token).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, invalidated.Status, invalidated.Reason);
                 Assert.AreEqual(preview, invalidated.Presentation?.BaseArtifactId);
@@ -164,7 +166,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsNull(invalidated.Presentation.Astrometry?.Mapping);
                 Assert.IsFalse(old.IsCompleted);
 
-                File.Move(savedPath, sourcePath);
+                raw.SetUnavailable(false);
                 var repaired = await service.GetCurrentAsync(capture, deadline.Token).ConfigureAwait(false);
                 AssertMeasured(repaired);
                 Assert.IsFalse(old.IsCompleted);
@@ -173,7 +175,7 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 releaseBase.TrySetResult();
                 await old.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
-                if (File.Exists(savedPath)) File.Move(savedPath, sourcePath);
+                raw.SetUnavailable(false);
             }
             AssertMeasured(await old.ConfigureAwait(false));
 

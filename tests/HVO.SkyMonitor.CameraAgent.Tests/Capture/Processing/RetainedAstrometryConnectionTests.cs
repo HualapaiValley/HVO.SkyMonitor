@@ -19,7 +19,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var oldest = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(oldest.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(oldest.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(oldest.Fixture.Options, store, telemetry);
             var accepted = await ProduceLatestReadFixtureAsync(oldest, store, persistence, telemetry, gate).ConfigureAwait(false);

@@ -92,6 +92,12 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             ? storage.Index.IsArtifactRetainedAsync(artifactId.ToString("D"), cancellationToken)
             : ValueTask.FromResult(true);
 
+    internal ValueTask<SiloAvailabilityState?> ReadRetainedEvidenceFailureAsync(
+        IReadOnlyList<Guid> artifacts, CancellationToken cancellationToken)
+        => storage.BindingVerified
+            ? storage.Index.ReadRetainedEvidenceFailureAsync(System.Text.Json.JsonSerializer.Serialize(artifacts), cancellationToken)
+            : ValueTask.FromResult<SiloAvailabilityState?>(null);
+
     internal async ValueTask<bool> VerifyRetainedLocalPayloadAsync(Guid artifactId, string sha256, CancellationToken cancellationToken)
     {
         if (!storage.BindingVerified) return false;

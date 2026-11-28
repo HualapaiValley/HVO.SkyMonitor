@@ -22,7 +22,9 @@ public sealed partial class RollingCombinationWindowLineageTests
         Guid id;
         Guid? sourceId;
         var initialReason = recorded || (history == WindowSize - 1 && !retry) ? null : CameraAgentRunManifest.UnrecordedInputReason;
-        var prunedReason = recorded ? CameraAgentRunManifest.ArtifactEvidenceUnavailableReason : CameraAgentRunManifest.UnrecordedInputReason;
+        var prunedReason = history > 0
+            ? CameraAgentRunManifest.ArtifactEvidenceUnavailableReason
+            : CameraAgentRunManifest.UnrecordedInputReason;
         try
         {
             var configuration = CreateConfiguration(root, syntheticReferences: false);

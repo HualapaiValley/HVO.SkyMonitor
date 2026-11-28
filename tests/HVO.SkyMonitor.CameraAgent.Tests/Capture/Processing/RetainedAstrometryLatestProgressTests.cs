@@ -22,7 +22,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var old = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var writer = new SqliteCaptureProcessingStore(old.Fixture.Options);
+            using var writer = SiloInfrastructureFixture.OpenProcessingStore(old.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(old.Fixture.Options, writer, telemetry);
             var acceptedOutput = await ProduceLatestReadFixtureAsync(old, writer, persistence, telemetry, gate).ConfigureAwait(false);
@@ -36,7 +36,7 @@ public sealed partial class DurableCaptureProcessingTests
                 rejectedOutputs.Push(await ProduceLatestReadFixtureAsync(rejected, writer, persistence, telemetry, gate).ConfigureAwait(false));
             }
 
-            using var store = new SqliteCaptureProcessingStore(old.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(old.Fixture.Options);
             using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, store);
             var delayed = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,13 +82,13 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(latest, await reader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(5, artifacts.PayloadValidationReads - priorReads, "Only the accepted fit is re-verified.");
 
-            var path = Path.Combine(root, acceptedOutput.PayloadRelativePath);
-            var original = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-            await File.AppendAllTextAsync(path, " ").ConfigureAwait(false);
+            var accepted = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, acceptedOutput, CancellationToken.None)
+                .ConfigureAwait(false);
+            accepted.FlipByte();
             Assert.AreEqual(new CameraAgentLatestAstrometryRead(true),
                 await reader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false),
                 "A payload with a confirmed checksum conflict cannot supply an accepted fit.");
-            await File.WriteAllBytesAsync(path, original).ConfigureAwait(false);
+            accepted.FlipByte();
             Assert.AreEqual(latest, await reader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
 
             await EvictLatestReadFixtureAsync(store, acceptedOutput).ConfigureAwait(false);
@@ -115,7 +115,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var old = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(old.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(old.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(old.Fixture.Options, store, telemetry);
             var olderOutput = await ProduceLatestReadFixtureAsync(old, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -160,7 +160,7 @@ public sealed partial class DurableCaptureProcessingTests
             var selected = await reader.GetAsync(olderOutput.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(AstrometricAssessmentStatus.Accepted, selected.Solution?.Assessment.Status);
 
-            using var restarted = new SqliteCaptureProcessingStore(old.Fixture.Options);
+            using var restarted = SiloInfrastructureFixture.OpenProcessingStore(old.Fixture.Options);
             using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, restarted);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restarted, restartedArtifacts);
             Assert.AreEqual(new CameraAgentLatestAstrometryRead(false),

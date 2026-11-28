@@ -177,6 +177,9 @@ internal static class SiloInfrastructureFixture
         IOptions<CameraAgentHostOptions> options, SqliteCaptureProcessingStore store)
         => new(options, store, new CameraAgentPreviewEncoder(), silo: ProductStorage(options.Value.RawIngressRoot));
 
+    internal static SqliteCaptureProcessingStore OpenProcessingStore(IOptions<CameraAgentHostOptions> options)
+        => new(options, silo: ProductStorage(options.Value.RawIngressRoot));
+
     internal static ValueTask PublishRawFixtureAsync(SiloArtifactStorage storage, RawIngressJournalEntry entry,
         ArtifactManifestV2 manifest, ReadOnlyMemory<byte> pixels, CancellationToken token)
         => storage.PublishAsync(RawCaptureIngress.CreateSiloDraft(entry, manifest, "raw-1"),
@@ -227,6 +230,46 @@ internal static class SiloInfrastructureFixture
         var locator = await ReadLocalLocatorAsync(services, output.ArtifactId, output.OutputIdentitySha256, token)
             .ConfigureAwait(false);
         return services.GetRequiredService<SiloTestStore>().Read(locator.Key, locator.VersionId);
+    }
+
+    internal static ValueTask<RetainedMember> OpenMemberFixtureAsync(
+        string root, DurableProcessingOutput output, CancellationToken token)
+        => OpenMemberFixtureAsync(root, output.ArtifactId, output.OutputIdentitySha256, token);
+
+    internal static async ValueTask<RetainedMember> OpenMemberFixtureAsync(
+        string root, Guid artifactId, string revision, CancellationToken token)
+    {
+        var services = ProductStore(root);
+        var storage = services.GetRequiredService<SiloInstalledStorage>();
+        var role = await storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member, artifactId.ToString("D"), revision), token)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(role);
+        var locator = Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator;
+        return new(services, storage, new(SiloIdentityKind.Member, role.Role.Id, role.Role.Revision, role.Sha256, role.Length), locator);
+    }
+
+    internal sealed class RetainedMember(IServiceProvider services, SiloInstalledStorage storage,
+        SiloObjectIdentity identity, SiloExactLocator locator)
+    {
+        private readonly SiloTestStore _objects = services.GetRequiredService<SiloTestStore>();
+
+        internal void SetUnavailable(bool unavailable) => _objects.SetVersionUnavailable(locator, unavailable);
+
+        // Repeating the same byte flip restores the original version bytes.
+        internal void FlipByte() => _objects.Damage(locator);
+
+        internal ValueTask ExpireAsync(CancellationToken token)
+            => ExpireLocalMemberAsync(services, Guid.Parse(identity.Id), identity.Revision, token);
+
+        internal async ValueTask RecordCopyStateAsync(SiloAvailabilityState state, CancellationToken token)
+        {
+            await storage.ArchiveJournal.AppendAsync(
+                [new SiloAvailabilityRecord(SiloAvailabilityScope.Copy, identity, state,
+                    services.GetRequiredService<TimeProvider>().GetUtcNow(), "observed test copy state", locator)],
+                Guid.NewGuid().ToString("N"), token).ConfigureAwait(false);
+            await storage.Catalog.CatchUpAsync(await storage.State.ReadWriterEvidenceAsync(token).ConfigureAwait(false),
+                null, token).ConfigureAwait(false);
+        }
     }
 
     internal static async ValueTask ExpireLocalMemberAsync(

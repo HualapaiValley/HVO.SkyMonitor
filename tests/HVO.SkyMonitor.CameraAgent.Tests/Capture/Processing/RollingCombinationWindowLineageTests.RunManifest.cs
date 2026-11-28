@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -74,8 +75,14 @@ public sealed partial class RollingCombinationWindowLineageTests
                 Assert.AreEqual(JsonValueKind.Null, exported.GetProperty("captureId").ValueKind);
             }
             Assert.IsFalse(json.RootElement.GetRawText().Contains("relativePath", StringComparison.OrdinalIgnoreCase));
+            var objects = provider.GetRequiredService<SiloTestStore>();
             foreach (var reference in bundle.ReferenceManifests.Values)
-                File.Delete(Path.Combine(root, reference.RelativeArtifactPath));
+            {
+                var descriptor = reference.Descriptor;
+                var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, descriptor.Artifact.ArtifactId,
+                    CaptureContractJson.ComputeDescriptorSha256(descriptor), CancellationToken.None).ConfigureAwait(false);
+                objects.Delete(locator);
+            }
             using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();

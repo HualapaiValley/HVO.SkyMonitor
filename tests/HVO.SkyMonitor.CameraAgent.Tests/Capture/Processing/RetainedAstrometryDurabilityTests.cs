@@ -33,7 +33,7 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
-            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(fixture.Options);
             using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Options, store);
             using var service = new CameraAgentRetainedAstrometryService(store, artifacts);
             var captureId = fixture.Manifest.Descriptor.Capture.CaptureId;
@@ -85,7 +85,7 @@ public sealed partial class DurableCaptureProcessingTests
             Dictionary<Guid, byte[]> manifests;
             string identity;
             using (var telemetry = new CaptureProcessingTelemetry())
-            using (var store = new SqliteCaptureProcessingStore(f.Fixture.Options))
+            using (var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options))
             using (var gate = new CaptureAstrometryExecutionGate())
             {
                 var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, telemetry,
@@ -153,7 +153,7 @@ public sealed partial class DurableCaptureProcessingTests
                 ? await SeedUnverifiableNewerAstrometryAsync(root, f.Fixture.Manifest.Descriptor.Capture.CaptureId).ConfigureAwait(false)
                 : (Guid?)null;
             using var restartedTelemetry = new CaptureProcessingTelemetry();
-            using var restartedStore = new SqliteCaptureProcessingStore(f.Fixture.Options);
+            using var restartedStore = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
             using var restartedGate = new CaptureAstrometryExecutionGate();
             var restartedPersistence = CreatePersistence(f.Fixture.Options, restartedStore, restartedTelemetry);
             var noExecution = new CameraAgentRecipeExecutionAdapter(new FixedOutcomeExecutor(ProcessingOutcome.TerminalFailure("unexpected-refit")));
@@ -286,7 +286,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var f = await CreateAstrometryDurabilityFixtureAsync(root, "unavailable").ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(f.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(f.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(f.Fixture.Options, store, telemetry);
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item,
@@ -362,7 +362,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);

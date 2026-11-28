@@ -5,7 +5,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
@@ -45,11 +47,17 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
             // No transient stage or running live execution survives this restart. Replay must use committed evidence.
             using var reopened = Provider(root);
             await InitializeAsync(reopened, file).ConfigureAwait(false);
-            var before = await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(reopened, CancellationToken.None).ConfigureAwait(false);
+            var silo = reopened.GetRequiredService<SiloArtifactStorage>();
+            var artifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId;
+            var before = await silo.ReadRawEvidenceAsync(artifactId, receipt.CommittedManifestSha256, allowStaged: false,
+                CancellationToken.None).ConfigureAwait(false);
             await AssertSceneReplayAsync(reopened, receipt, root).ConfigureAwait(false);
-            CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false));
+            Assert.IsNotNull(before);
+            CollectionAssert.AreEqual(before, await silo.ReadRawEvidenceAsync(artifactId, receipt.CommittedManifestSha256,
+                allowStaged: false, CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(original, receipt.Manifest.CaptureGraphRevisionId);
-            AssertRawRetained(receipt);
+            Assert.IsNotNull(await silo.ReadRawAsync(receipt.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -275,7 +283,12 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
     {
         var outputs = ProcessingGraphOperationsTests.ReadProjectedSceneOutputs(root, receipt.Manifest.Descriptor.Capture.CaptureId);
         Assert.HasCount(1, outputs);
-        var payloadBefore = await File.ReadAllBytesAsync(Path.Combine(root, outputs[0].PayloadRelativePath)).ConfigureAwait(false);
+        var output = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadOutputByArtifactIdAsync(
+            ProcessingIdentity.CreateArtifactId(outputs[0].OutputIdentity), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(output);
+        var payloadBefore = await SiloInfrastructureFixture.ReadProductBytesAsync(provider, output, CancellationToken.None)
+            .ConfigureAwait(false);
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
         var registry = await Operations(provider).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
         var replay = await Operations(provider).SubmitReplayAsync(new(receipt.Manifest.Descriptor.Capture.CaptureId,
             registry.ActiveRevisionId, receipt.Manifest.Descriptor.Artifact.ArtifactId, Reason: "recover Storage skip"),
@@ -283,7 +296,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         var result = await ProcessingGraphOperationsTests.RunReplayToCompletionAsync(provider, replay.Execution.ExecutionId).ConfigureAwait(false);
         Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, result.Execution.Status, result.Execution.FailureReason);
         Assert.HasCount(1, ProcessingGraphOperationsTests.ReadProjectedSceneOutputs(root, receipt.Manifest.Descriptor.Capture.CaptureId));
-        CollectionAssert.AreEqual(payloadBefore, await File.ReadAllBytesAsync(Path.Combine(root, outputs[0].PayloadRelativePath)).ConfigureAwait(false));
+        CollectionAssert.AreEqual(payloadBefore, await SiloInfrastructureFixture.ReadProductBytesAsync(provider, output, CancellationToken.None)
+            .ConfigureAwait(false));
         AssertNoStoragePublication(root);
     }
 

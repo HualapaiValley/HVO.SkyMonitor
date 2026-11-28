@@ -48,6 +48,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
             {
                 config = Configuration(root, f);
                 receipt = await CaptureAsync(provider, config, f).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
                 var output = await ProcessAsync(provider, config).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, output.Outcome, output.Reason);
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();

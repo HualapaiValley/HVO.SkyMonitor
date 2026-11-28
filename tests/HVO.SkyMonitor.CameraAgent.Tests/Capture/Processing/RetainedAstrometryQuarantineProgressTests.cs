@@ -20,7 +20,7 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var store = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var oldest = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
@@ -165,7 +165,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(previousSummaries[2], recovered.Summary);
 
             // A fresh store must find that same fit through the unchanged cold seed.
-            using var restartedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
+            using var restartedStore = SiloInfrastructureFixture.OpenProcessingStore(first.Fixture.Options);
             using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, restartedStore);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restartedStore, restartedArtifacts);
             Assert.AreEqual(recovered.Summary, (await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary);
