@@ -112,13 +112,6 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             ? null : await storage.Index.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal ValueTask<bool> IsReferenceRetainedAsync(string path, CancellationToken cancellationToken)
-    {
-        if (!IsReference(path) || !Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var id))
-            throw new InvalidDataException("The Silo retention reference is invalid.");
-        return IsArtifactRetainedAsync(id, cancellationToken);
-    }
-
     // Raw payload and sidecar readability must come from one local index snapshot.
     internal ValueTask<bool> HasRawEvidenceAsync(ReconstructionDescriptor descriptor, CancellationToken cancellationToken) =>
         HasReadableLocalMembersAsync(descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),

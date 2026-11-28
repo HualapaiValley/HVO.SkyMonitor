@@ -165,8 +165,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     Assert.IsNotNull(state);
                     Assert.HasCount(1, state.Outputs, $"{node}: {state.Status} {state.Reason}");
                     var output = state.Outputs.Single();
-                    var payloadPath = Path.Combine(root, output.PayloadRelativePath);
-                    var product = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false));
+                    var product = ProjectedSceneJson.Parse(await SiloInfrastructureFixture
+                        .ReadArtifactBytesAsync(provider, output.ArtifactId, token).ConfigureAwait(false));
                     Assert.IsTrue(product.IsValid, product.ErrorPath);
                     var scene = product.Scene!;
                     Assert.AreEqual(expectedRecipe, output.Artifact.Recipe.Name);
