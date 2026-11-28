@@ -863,6 +863,9 @@ public sealed partial class CameraAgentArtifactServiceTests
 
         internal SiloArtifactStorage Storage => _storage;
 
+        internal ValueTask<SiloExactLocator> ReadLocalLocatorAsync(Guid artifactId, string revision, CancellationToken token)
+            => SiloInfrastructureFixture.ReadLocalLocatorAsync(_provider, artifactId, revision, token);
+
         internal ValueTask<CameraAgentLayeredPresentationResult> ReadLayersAsync(Guid captureId)
             => new CameraAgentLayeredPresentationService(_processingStore, Service).GetAsync(captureId, CancellationToken.None);
 

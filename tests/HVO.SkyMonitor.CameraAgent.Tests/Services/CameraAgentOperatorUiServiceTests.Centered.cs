@@ -7,7 +7,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Gallery;
@@ -379,10 +378,9 @@ public sealed partial class CameraAgentOperatorUiServiceTests
         var badLayerArtifactId = enriched.Revision.Manifest.Layers.Single(layer => layer.LayerKind == "scene-constellations").SourceProduct.ArtifactId;
         var badStored = await fixture.ProcessingStore.ReadOutputByArtifactIdAsync(badLayerArtifactId, token).ConfigureAwait(false);
         Assert.IsNotNull(badStored);
-        var role = await fixture.Storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member,
-            badLayerArtifactId.ToString("D"), badStored.OutputIdentitySha256), token).ConfigureAwait(false);
-        Assert.IsNotNull(role);
-        fixture.Objects.Delete(Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator);
+        var locator = await fixture.ReadLocalLocatorAsync(badLayerArtifactId, badStored.OutputIdentitySha256, token)
+            .ConfigureAwait(false);
+        fixture.Objects.Delete(locator);
 
         var partial = await presentationReader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, token).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, partial.Status);

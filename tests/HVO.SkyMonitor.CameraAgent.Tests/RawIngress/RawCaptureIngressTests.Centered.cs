@@ -1965,6 +1965,7 @@ public sealed partial class RawCaptureIngressTests
         internal CaptureLanePolicy Policy { get; }
         internal RawIngressState RawState { get; }
         internal SiloArtifactStorage? Silo { get; }
+        internal SiloInstalledStorage? InstalledSilo { get; }
         internal SqliteCalibrationLibraryStore Calibration => _services.GetRequiredService<SqliteCalibrationLibraryStore>();
 
         internal CenteredFixture(
@@ -1972,6 +1973,7 @@ public sealed partial class RawCaptureIngressTests
             int? requiredMaximumPendingCount = null, CenteredWindowWakeup? wakeup = null, IServiceProvider? siloProvider = null)
         {
             Silo = siloProvider?.GetRequiredService<SiloArtifactStorage>();
+            InstalledSilo = siloProvider?.GetRequiredService<SiloInstalledStorage>();
             Options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
@@ -1989,7 +1991,7 @@ public sealed partial class RawCaptureIngressTests
                 .AddSingleton(_ => new RawCaptureIngress(Options, new FixedCapacityProvider(long.MaxValue), RawState, clock, _rawTelemetry,
                     NullLogger<RawCaptureIngress>.Instance, fault ?? new NullRawIngressFaultInjector(),
                     Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup,
-                    silo: siloProvider?.GetRequiredService<SiloInstalledStorage>(),
+                    silo: InstalledSilo,
                     siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
                 .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
                 .AddSingleton(_ => new CalibrationLibraryProcessingInputLoader(Options, new CameraAgentClearReferenceLoader(Options)))

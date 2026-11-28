@@ -54,7 +54,7 @@ public sealed partial class RawCaptureIngressTests
 
             using var restarted = new CenteredFixture(root, siloProvider: silo);
             await restarted.Ingress.InitializeAsync(token).ConfigureAwait(false);
-            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.Silo);
+            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.InstalledSilo);
             Assert.AreEqual(initialCursor, await index.ReadProductCursorAsync(camera, token).ConfigureAwait(false));
             var reloaded = await index.ReadLastLiveAsync(camera, token).ConfigureAwait(false);
             Assert.AreEqual(initial.View.Revision.RevisionId, reloaded?.View.Revision.RevisionId);
@@ -85,7 +85,7 @@ public sealed partial class RawCaptureIngressTests
 
             // The durable transient completion can be consumed by a fresh publication reader.
             using var reopenedProcessing = new SqliteCaptureProcessingStore(restarted.Options, silo: restarted.Silo);
-            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.Silo);
+            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.InstalledSilo);
             Assert.HasCount(1, await afterRestart.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
             var persistence = new CaptureProcessingPersistence(restarted.Options, reopenedProcessing, restarted.Telemetry,
                 NullLogger<CaptureProcessingPersistence>.Instance, silo: restarted.Silo);
@@ -152,7 +152,7 @@ public sealed partial class RawCaptureIngressTests
             new CaptureLaneState(clock, setup.Options), setup.Factory, clock);
         var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
             NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
-        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance, silo: setup.Silo);
+        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance, silo: setup.InstalledSilo);
         var products = new CenteredExposureProductReader(setup.Ingress, setup.Store);
         var producer = new CenteredViewProducer(persistence, artifacts, views, setup.Options, setup.Store);
         var layers = new CenteredViewSourceLayers(setup.Store, views, new CenteredViewLayerProducer(views, persistence));
