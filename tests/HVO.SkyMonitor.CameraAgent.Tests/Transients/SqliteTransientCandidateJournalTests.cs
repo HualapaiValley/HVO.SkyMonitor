@@ -1412,8 +1412,7 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal SqliteTransientCandidateJournal CreateJournal(ITransientCandidateFaultInjector? faultInjector = null)
-            => new SqliteTransientCandidateJournal(
-                Options.Create(_options), new FixedTimeProvider(Now), faultInjector);
+            => new(Options.Create(_options), new FixedTimeProvider(Now), SiloInfrastructureFixture.ProductStorage(Root), faultInjector);
 
         internal ReconstructedJournalScope ReconstructJournal(ITransientCandidateFaultInjector? faultInjector = null)
         {
@@ -1421,6 +1420,7 @@ public sealed class SqliteTransientCandidateJournalTests
             var services = new ServiceCollection();
             services.AddSingleton<IOptions<CameraAgentHostOptions>>(Options.Create(_options));
             services.AddSingleton<TimeProvider>(new FixedTimeProvider(Now));
+            services.AddSingleton(SiloInfrastructureFixture.ProductStorage(Root));
             if (faultInjector is not null)
             {
                 services.AddSingleton(faultInjector);
@@ -1438,10 +1438,10 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal SqliteTransientRuntimeStore CreateRuntimeStore(ITransientRuntimeFaultInjector? faultInjector = null)
-            => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, faultInjector);
+            => new(Options.Create(_options), new FixedTimeProvider(Now), _telemetry, SiloInfrastructureFixture.ProductStorage(Root), faultInjector);
 
         internal SqliteTransientRuntimeStore CreateRuntimeStoreAt(DateTimeOffset utcNow)
-            => new(Options.Create(_options), new FixedTimeProvider(utcNow), _telemetry);
+            => new(Options.Create(_options), new FixedTimeProvider(utcNow), _telemetry, SiloInfrastructureFixture.ProductStorage(Root));
 
         internal async Task ReinitializeAsync(TransientOperatingMode mode, bool required)
         {
@@ -1498,21 +1498,7 @@ public sealed class SqliteTransientCandidateJournalTests
         }
 
         internal string ResolvePayload(TransientSourceEvidenceReferenceV1 source)
-            => Path.Combine(Root, "frames", source.Locator.Artifact.ArtifactId == Guid.Empty
-                ? string.Empty
-                : FindPayloadName(source.Locator.Artifact.ArtifactId));
-
-        private string FindPayloadName(Guid artifactId)
-        {
-            using var connection = new SqliteConnection($"Data Source={Path.Combine(Root, "journal", "raw-ingress.db")}");
-            connection.Open();
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT payload_relative_path FROM raw_captures WHERE raw_artifact_id = $artifact;";
-            command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
-            var relative = Convert.ToString(
-                command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture)!;
-            return Path.GetFileName(relative);
-        }
+            => RawIngressFileStore.GetPaths(Root, Now, source.Locator.Artifact.ArtifactId).PayloadAbsolutePath;
 
         private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)
         {
@@ -1553,8 +1539,9 @@ public sealed class SqliteTransientCandidateJournalTests
             var identity = new RawCaptureIdentity("agent", sequence, captureId, artifactId);
             var descriptor = RawCaptureDescriptorFactory.Create(
                 configuration, submission, identity, payloadSha256, Now);
-            var payloadRelativePath = $"frames/{sequence}.bin";
-            var sidecarRelativePath = $"frames/{sequence}.json";
+            var paths = RawIngressFileStore.GetPaths(Root, observed, artifactId);
+            var payloadRelativePath = paths.PayloadRelativePath;
+            var sidecarRelativePath = paths.SidecarRelativePath;
             var manifest = new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion,
                 descriptor,
@@ -1562,9 +1549,9 @@ public sealed class SqliteTransientCandidateJournalTests
                 null);
             var manifestJson = CaptureContractJson.Serialize(manifest);
             var manifestSha256 = CaptureContractJson.ComputeManifestSha256(manifestJson);
-            Directory.CreateDirectory(Path.Combine(Root, "frames"));
-            await File.WriteAllBytesAsync(Path.Combine(Root, payloadRelativePath), payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.Combine(Root, sidecarRelativePath), manifestJson).ConfigureAwait(false);
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, payload).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestJson).ConfigureAwait(false);
             using var connection = await OpenAsync().ConfigureAwait(false);
             using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
             using (var assignment = connection.CreateCommand())

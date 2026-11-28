@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LocalFiles;
 
@@ -227,6 +229,95 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             cancellationToken).ConfigureAwait(false))
             throw new InvalidDataException("The committed Silo raw frame has no settled source evidence.");
         return true;
+    }
+
+    internal async ValueTask VerifyLiveRawPairAsync(ReconstructionDescriptor descriptor, byte[] evidence,
+        CancellationToken cancellationToken)
+    {
+        if (await VerifyRawPairIfPublishedAsync(descriptor, evidence, cancellationToken).ConfigureAwait(false)) return;
+        var staged = await OpenRawAdmissionStageAsync(descriptor, evidence.LongLength, cancellationToken).ConfigureAwait(false);
+        if (staged is not { } streams)
+        {
+            if (await VerifyRawPairIfPublishedAsync(descriptor, evidence, cancellationToken).ConfigureAwait(false)) return;
+            throw new FileNotFoundException("The Silo raw admission has no retained source evidence.");
+        }
+
+        await using var payload = streams.Payload.ConfigureAwait(false);
+        await using var sidecar = streams.Evidence.ConfigureAwait(false);
+        var checksum = await SHA256.HashDataAsync(streams.Payload, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(Convert.ToHexString(checksum), descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+            streams.Evidence.Length != evidence.LongLength)
+            throw new InvalidDataException("The Silo raw admission stage differs from committed evidence.");
+        var stagedEvidence = new byte[evidence.Length];
+        await streams.Evidence.ReadExactlyAsync(stagedEvidence, cancellationToken).ConfigureAwait(false);
+        if (!evidence.AsSpan().SequenceEqual(stagedEvidence) || streams.Evidence.ReadByte() != -1)
+            throw new InvalidDataException("The Silo raw admission stage differs from committed evidence.");
+    }
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The caller owns both returned streams.")]
+    internal async ValueTask<(Stream Payload, Stream Evidence)> OpenLiveRawPairAsync(ReconstructionDescriptor descriptor, byte[] evidence,
+        CancellationToken cancellationToken)
+    {
+        var published = await OpenPublishedAsync().ConfigureAwait(false);
+        if (published is { } retained) return retained;
+        var staged = await OpenRawAdmissionStageAsync(descriptor, evidence.LongLength, cancellationToken).ConfigureAwait(false);
+        if (staged is { } pending) return pending;
+        // P4 may have settled and reclaimed staging between the first lookup and the file open.
+        return await OpenPublishedAsync().ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The Silo raw admission has no retained source evidence.");
+
+        async ValueTask<(Stream Payload, Stream Evidence)?> OpenPublishedAsync()
+        {
+            var id = descriptor.Artifact.ArtifactId;
+            var payload = await OpenMemberAsync(id, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                descriptor.Layout.ByteLength, descriptor.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false);
+            if (payload is null) return null;
+            try
+            {
+                var sidecar = await ReadMemberAsync(id, RawEvidenceRevision, evidence.LongLength,
+                    SiloHash.Sha256(evidence), cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidDataException("The committed Silo raw frame has no settled source evidence.");
+                return (payload, new MemoryStream(sidecar, writable: false));
+            }
+            catch
+            {
+                await payload.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+    }
+
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The caller owns both returned streams.")]
+    private async ValueTask<(Stream Payload, Stream Evidence)?> OpenRawAdmissionStageAsync(
+        ReconstructionDescriptor descriptor, long evidenceLength, CancellationToken cancellationToken)
+    {
+        var artifactId = descriptor.Artifact.ArtifactId;
+        if (!await IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false)) return null;
+        var payloadPath = StagedAdmissionPath(artifactId, ".bin");
+        var evidencePath = StagedAdmissionPath(artifactId, ".json");
+        try
+        {
+            using var directory = new ConfinedReadDirectory(Path.GetDirectoryName(payloadPath)!);
+            var payload = directory.OpenRead(Path.GetFileName(payloadPath));
+            try
+            {
+                if (payload.Length != descriptor.Layout.ByteLength)
+                    throw new InvalidDataException("The Silo raw admission stage has an invalid payload length.");
+                var evidence = directory.OpenRead(Path.GetFileName(evidencePath));
+                if (evidence.Length == evidenceLength) return (payload, evidence);
+                await evidence.DisposeAsync().ConfigureAwait(false);
+                throw new InvalidDataException("The Silo raw admission stage has an invalid evidence length.");
+            }
+            catch
+            {
+                await payload.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch (IOException) when (!File.Exists(payloadPath) || !File.Exists(evidencePath))
+        {
+            return null;
+        }
     }
 
     internal async ValueTask<byte[]?> ReadMetadataAsync(Guid artifactId, string revision, int maximumBytes, string? sha256,
