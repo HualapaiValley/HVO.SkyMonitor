@@ -5,8 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.19" />
-    <PackageVersion Include="AWSSDK.S3" Version="4.0.104.11" />
+    <PackageVersion Include="AWSSDK.Core" Version="4.0.103" />
+    <PackageVersion Include="AWSSDK.S3" Version="4.0.104.12" />
     <PackageVersion Include="AngleSharp" Version="1.8.1" />
     <PackageVersion Include="Asp.Versioning.Mvc" Version="10.2.1" />
     <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
