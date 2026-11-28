@@ -181,7 +181,74 @@ public sealed partial class SiloRetentionTests
         Assert.HasCount(1, silo.JournalRecords().OfType<SiloAvailabilityRecord>().ToArray());
     }
 
-    private sealed class ExpiredArchive(SiloExactLocator expired) : ISiloRetentionArchive
+    [TestMethod]
+    public async Task ArchiveReconciliationProjectsNewCopyBeforeSettlingLastTarget()
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false);
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        var raw = SiloHarness.Identity(silo.PublishRecord(draft.GroupId), SiloDrafts.Raw(1));
+        var local = silo.MemberLocator(draft.GroupId, raw.Id);
+        var original = silo.ReplicateToArchive(raw, local);
+        var replacement = silo.ReplicateToArchive(raw, local);
+        Assert.AreNotEqual(original.Locator, replacement.Locator);
+        await silo.AppendAsync(original).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromMinutes(2));
+        var retention = Open(silo, new TestRemoval(silo.Local));
+        await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, true, true)]), token).ConfigureAwait(false);
+        Assert.AreEqual("deleted", await SweepAsync(retention, token).ConfigureAwait(false));
+
+        silo.Archive.Delete(original.Locator);
+        var custody = new ExpiredArchive(original.Locator, async cancellationToken =>
+        {
+            // The archive receipt has reached the writer journal but has yet to reach the catalog.
+            await silo.Publisher.WithPublicationLockAsync(async () =>
+            {
+                await silo.Journal.AppendAsync([replacement], "replacement-archive-copy", cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+            Assert.IsFalse(await silo.Index.HasActiveRetentionLocatorAsync(replacement.Locator, cancellationToken).ConfigureAwait(false));
+        });
+        await retention.ReconcileArchiveAsync(custody, token).ConfigureAwait(false);
+
+        Assert.IsTrue(await silo.Index.HasActiveRetentionLocatorAsync(replacement.Locator, token).ConfigureAwait(false));
+        Assert.IsNull((await silo.Index.ReadRoleAsync(raw.Role, token).ConfigureAwait(false))!.Journaled);
+        var disposition = silo.JournalRecords().OfType<SiloExpiryDispositionRecord>().Single(record => record.Locator == original.Locator);
+        Assert.AreEqual(SiloExpiryOutcome.AlreadyAbsent, disposition.Outcome);
+        Assert.IsEmpty(silo.JournalRecords().OfType<SiloAvailabilityRecord>().ToArray());
+    }
+
+    [TestMethod]
+    [DataRow(false, 2)]
+    [DataRow(true, 2)]
+    [DataRow(true, 3)]
+    public async Task MaintenancePauseOnlyJournalsIssuedWhenItWasOpenAtPrecheck(bool useCanIssue, int closeAt)
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false)).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromMinutes(2));
+        var removal = new TestRemoval(silo.Local);
+        var retention = Open(silo, removal);
+        await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, true, true)]), token).ConfigureAwait(false);
+
+        // First allow the durable fence. Then pause at the precheck or just before dispatch.
+        var admissionChecks = 0;
+        var gateChecks = 0;
+        Assert.AreEqual("not-deleted", await retention.SweepAsync(true, NoHolds, null, token,
+            canIssue: () => !useCanIssue || ++admissionChecks < closeAt,
+            enterMaintenance: () => useCanIssue || ++gateChecks <= closeAt
+                ? new CancellationTokenSource() : null).ConfigureAwait(false));
+        var records = silo.JournalRecords().OfType<SiloExpiryAttemptRecord>().ToArray();
+        Assert.AreEqual(closeAt == 3, records.Any(record => record.Phase == "issued"));
+        Assert.AreEqual(SiloExpiryOutcome.NotDeleted, records.Single(record => record.Phase == "observed").Outcome);
+        Assert.AreEqual(0, removal.Deletes);
+        Assert.IsNull(SiloRetentionState.Read(silo.StateRoot.Root).Attempt);
+        Assert.AreEqual("deleted", await SweepAsync(retention, token).ConfigureAwait(false));
+    }
+
+    private sealed class ExpiredArchive(SiloExactLocator expired, Func<CancellationToken, Task>? beforeExpiry = null) : ISiloRetentionArchive
     {
         public ValueTask<bool> ProtectAsync(SiloObjectIdentity identity, SiloExactLocator survivor, CancellationToken cancellationToken) =>
             ValueTask.FromResult(false);
@@ -189,8 +256,12 @@ public sealed partial class SiloRetentionTests
         public ValueTask<bool> ConfirmProtectedAsync(SiloObjectIdentity identity, SiloExactLocator survivor, CancellationToken cancellationToken) =>
             ValueTask.FromResult(false);
 
-        public ValueTask<bool> IsAuthorityExpiredAsync(SiloExactLocator locator, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(locator == expired);
+        public async ValueTask<bool> IsAuthorityExpiredAsync(SiloExactLocator locator, CancellationToken cancellationToken)
+        {
+            if (locator != expired) return false;
+            if (beforeExpiry is not null) await beforeExpiry(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
     }
 
     [TestMethod]

@@ -5,7 +5,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 internal enum SiloSpacePurpose { Capture, Restore, Catalog, Cleanup }
 
 /// <summary>Physical block accounting. Available bytes already include versions, staging, and trash on the mount.</summary>
-internal readonly record struct SiloPhysicalHeadroom(long TotalBytes, long AvailableBytes, long? TrashBytes = null, StorageCapacity? StateCapacity = null);
+internal readonly record struct SiloPhysicalHeadroom(long TotalBytes, long AvailableBytes, long? TrashBytes = null,
+    StorageCapacity? StateCapacity = null, SiloReclaimRoot? ReclaimRoot = null);
+
+internal readonly record struct SiloReclaimRoot(uint DeviceMajor, uint DeviceMinor, ulong Inode, bool TracksTrash);
 
 internal sealed record SiloPhysicalAllocation(string Id, long Bytes);
 
@@ -31,7 +34,8 @@ internal sealed class SiloDiskBudget(
     long catalogReserve,
     long cleanupReserve,
     long recoveryMargin,
-    Func<SiloExactLocator, long?>? measureAllocation = null, long reclaimCaptureHourBytes = long.MaxValue, Func<long?>? measureTrash = null) : ISiloDiskBudget
+    Func<SiloExactLocator, long?>? measureAllocation = null, long reclaimCaptureHourBytes = long.MaxValue, Func<long?>? measureTrash = null,
+    Func<SiloReclaimRoot?>? measureReclaimRoot = null) : ISiloDiskBudget
 {
     internal const long GiB = 1024L * 1024 * 1024;
     private readonly object _gate = new();
@@ -56,12 +60,16 @@ internal sealed class SiloDiskBudget(
 
     public SiloPhysicalHeadroom? ObserveReclamation()
     {
+        var root = measureReclaimRoot?.Invoke();
         var trash = measureTrash?.Invoke();
+        SiloPhysicalHeadroom? sample;
         lock (_gate)
-        {
-            var sample = ObserveLocked();
-            return sample is { } observed && measureTrash is not null ? observed with { TrashBytes = trash } : sample;
-        }
+            sample = ObserveLocked();
+        // A remount between the directory walk and capacity measurement would mix two filesystems.
+        if (measureReclaimRoot is not null && (root is null || root != measureReclaimRoot())) return null;
+        return sample is { } observed
+            ? observed with { TrashBytes = measureTrash is null ? observed.TrashBytes : trash, ReclaimRoot = root ?? observed.ReclaimRoot }
+            : null;
     }
 
     private SiloPhysicalHeadroom? ObserveLocked()

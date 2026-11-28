@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Endpoints;
 
@@ -46,7 +47,7 @@ internal static class SiloRetentionEndpoints
         {
             return Results.Conflict();
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or SiloDataException or SqliteException)
         {
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }

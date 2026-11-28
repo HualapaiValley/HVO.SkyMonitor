@@ -347,6 +347,19 @@ role's last-copy expiry only when losing its last usable copy is intentional.
 Keep display and manifest policies independent of full-fidelity payloads when
 maintaining display history.
 
+| Optional setting | Effect |
+| --- | --- |
+| `CameraAgent:Silo:DataRoot` | Set this to the Silo data directory as seen by CameraAgent. A read-only mount is sufficient. On Linux, CameraAgent can then measure allocated blocks in `.minio.sys/tmp/.trash` as well as filesystem headroom. When omitted, CameraAgent uses the State filesystem's headroom and has no trash sample. Use that default when State and Silo share a filesystem. |
+| `CameraAgent:Silo:ReclaimCaptureHourBytes` | Set this positive byte count from the allocation budget for one hour of capture at the installed cadence. It defaults to half of `MaximumStagedBytes`. The pending measured-allocation limit is the smaller of this setting and 5% of Silo filesystem capacity. |
+
+After a resize or data-root change, CameraAgent starts measuring from the new
+baseline. A jump in free space or a smaller trash count at that point earns no
+reclaim credit. Pending entries can still settle on later physical progress or
+an applicable empty-trash sample. When exact allocation is unknown and trash is
+observed, CameraAgent keeps the pending count until it observes trash empty.
+This prevents a small object's allocated `xl.meta` blocks from being credited
+as several drained objects.
+
 The archive reader verifies each survivor's exact version and its non-expiring
 legal hold. Optional `CameraAgent:SiloArchive:CustodyAccessKey` and
 `CustodySecretKey` credentials can establish that hold. Scope this separate

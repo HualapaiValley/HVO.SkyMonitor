@@ -5,6 +5,82 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 public sealed partial class SiloRetentionTests
 {
     [TestMethod]
+    [DataRow(20)]
+    [DataRow(-20)]
+    [DataRow(0)]
+    public async Task ReclaimRebasesAcrossResizeOrSameSizeRootChangeAndPersistsPendingCharges(int capacityChangeGiB)
+    {
+        var token = TestContext.CancellationToken;
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1, rawRequired: false)).ConfigureAwait(false);
+        silo.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        const long allocation = 8192;
+        var physical = Healthy with { TrashBytes = null, ReclaimRoot = new(8, 1, 20, TracksTrash: false) };
+        var budget = new SiloDiskBudget(() => physical, 1, 1, 1, 1, measureAllocation: _ => allocation);
+        var removal = new TestRemoval(silo.Local);
+        var retention = Open(silo, removal, budget);
+        await retention.SetPolicyAsync(new(false, [new("raw", TimeSpan.Zero, true, true)]), token).ConfigureAwait(false);
+        Assert.AreEqual("deleted", await SweepAsync(retention, token).ConfigureAwait(false));
+        var pending = SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger!.Entries.Single();
+
+        physical = physical with
+        {
+            TotalBytes = physical.TotalBytes + capacityChangeGiB * SiloDiskBudget.GiB,
+            AvailableBytes = physical.AvailableBytes + SiloDiskBudget.GiB,
+            ReclaimRoot = capacityChangeGiB == 0 ? new(8, 2, 20, TracksTrash: false) : physical.ReclaimRoot
+        };
+        await silo.RestartAsync().ConfigureAwait(false);
+        retention = Open(silo, removal, budget);
+        Assert.AreEqual("no-eligible-versions", await SweepAsync(retention, token).ConfigureAwait(false));
+        var rebased = SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger!;
+        Assert.AreEqual(physical, rebased.Floor);
+        Assert.AreEqual(pending, rebased.Entries.Single());
+        Assert.AreEqual(0L, rebased.PartialDrainBytes);
+
+        physical = physical with { AvailableBytes = physical.AvailableBytes + allocation };
+        Assert.AreEqual("no-eligible-versions", await SweepAsync(retention, token).ConfigureAwait(false));
+        Assert.IsNull(SiloRetentionState.Read(silo.StateRoot.Root).ReclaimLedger);
+        Assert.AreEqual(1, removal.Deletes);
+    }
+
+    [TestMethod]
+    [DataRow("resize")]
+    [DataRow("new-root")]
+    [DataRow("legacy")]
+    public void ChangedCountersRequireFreshTrashEvidence(string change)
+    {
+        var prior = Healthy with { TrashBytes = 32768, ReclaimRoot = new(8, 1, 20, TracksTrash: true) };
+        var current = change switch
+        {
+            "resize" => prior with { TrashBytes = 4096, TotalBytes = prior.TotalBytes + SiloDiskBudget.GiB },
+            _ => prior with { TrashBytes = 4096, ReclaimRoot = new(8, 2, 20, TracksTrash: true) }
+        };
+        if (change == "legacy") prior = prior with { ReclaimRoot = null };
+        var now = SiloHarness.Start;
+        var pending = new SiloReclaimLedger([new("prior", new("prior-allocation", 8192))], prior, now, PartialDrainBytes: 4096);
+        var rebased = SiloReclaimLedger.Observe(pending, current, now)!;
+        Assert.AreEqual(pending.Entries.Single(), rebased.Entries.Single());
+        Assert.AreEqual(current, rebased.Floor);
+        Assert.AreEqual(0L, rebased.PartialDrainBytes);
+        Assert.IsNull(SiloReclaimLedger.Observe(rebased, current with { TrashBytes = 0 }, now));
+    }
+
+    [TestMethod]
+    public void TinyObjectMetadataDrainKeepsUnknownChargesUntilTrashIsEmpty()
+    {
+        var now = SiloHarness.Start;
+        var before = Healthy with { TrashBytes = 24576 };
+        var pending = new SiloReclaimLedger(
+            [new("first", UpperBoundBytes: 4096), new("second", UpperBoundBytes: 4096)], before, now);
+        var partiallyDrained = before with { TrashBytes = 8192 };
+        var remaining = SiloReclaimLedger.Observe(pending, partiallyDrained, now.AddMinutes(1))!;
+        CollectionAssert.AreEqual(pending.Entries.ToArray(), remaining.Entries.ToArray());
+        Assert.AreEqual(now.AddMinutes(1), remaining.LastProgressUtc);
+        Assert.IsNull(SiloReclaimLedger.Observe(remaining, partiallyDrained with { TrashBytes = 0 }, now.AddMinutes(2)));
+    }
+
+    [TestMethod]
     public void MeasuredAllocationRequiresEveryByteAndDoesNotCreditTheNextDelete()
     {
         var before = Healthy with { TrashBytes = null };
@@ -120,8 +196,8 @@ public sealed partial class SiloRetentionTests
         else
         {
             Assert.IsNotNull(after);
-            Assert.HasCount(2, after.Entries);
-            Assert.AreEqual(before.Entries[1], after.Entries[0]);
+            Assert.HasCount(3, after.Entries);
+            CollectionAssert.AreEqual(before.Entries.ToArray(), after.Entries.Take(2).ToArray());
             Assert.AreEqual(silo.Clock.GetUtcNow(), after.LastProgressUtc);
             Assert.AreEqual(4096L, after.Floor.TrashBytes);
             Assert.IsLessThan(before.Floor.AvailableBytes, after.Floor.AvailableBytes);

@@ -10,6 +10,7 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     internal async ValueTask<IReadOnlyList<SiloRetentionHold>> ReadSavedSiloViewHoldsAsync(CancellationToken cancellationToken)
     {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -26,6 +27,7 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     internal async ValueTask<IReadOnlyList<SiloSceneLineage>> ReadSiloSceneLineageAsync(CancellationToken cancellationToken)
     {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
