@@ -13,7 +13,7 @@
 <PageTitle>Health &amp; diagnostics</PageTitle>
 
 <OperationsPageHeading Eyebrow="System / bounded diagnostics" Title="Health &amp; diagnostics" HeadingId="health-heading"
-                       Description="Separate capture freshness, durable work pressure, host resources, and central dependencies without exposing sensitive payload data.">
+                       Description="Separate capture freshness, durable work pressure, and host resources without exposing sensitive payload data.">
     <Actions>
         <a class="button secondary" href="/operations/pipeline">Open pipeline</a>
         <button type="button" id="health-refresh" class="button primary" disabled="@_loading" @onclick="LoadAsync">@(_loading ? "Checking…" : "Refresh checks")</button>
@@ -48,7 +48,6 @@ else
         <div><span>Overall</span><strong>@StateText(health.Overall)</strong><small>@OverallDetail(health)</small></div>
         <div><span>Image freshness</span><strong>@ImageFreshness</strong><small>@ImageFreshnessDetail</small></div>
         <div><span>Local lanes</span><strong>@(summary is null ? "Unknown" : OperationsPage.SplitWords(summary.CaptureLanes.Value.Availability))</strong><small>@LanesDetail</small></div>
-        <div><span>Central dependency</span><strong>@CentralState</strong><small>@CentralDetail</small></div>
     </section>
 
     <div class="ops-grid three">
@@ -83,7 +82,7 @@ else
 
     <section class="ops-panel ops-grid" aria-labelledby="health-checks-heading">
         <header class="ops-panel-heading">
-            <div><h2 id="health-checks-heading">Dependency checks</h2><p>Central failures degrade integration state but never masquerade as empty data.</p></div>
+            <div><h2 id="health-checks-heading">Dependency checks</h2><p>Local acquisition, processing, and storage health.</p></div>
             <span>@FormatClock(health.EvaluatedUtc)</span>
         </header>
         <div class="ops-table-wrap">
@@ -100,7 +99,7 @@ else
                             <td>
                                 @if (check.State == SystemCheckState.Disabled)
                                 {
-                                    <span>@(check.Scope == "Central" && !health.CentralIntegrationEnabled ? "Standalone agent" : "Switched off by configuration")</span>
+                                    <span>Switched off by configuration</span>
                                 }
                                 else if (check.Href is not null)
                                 {

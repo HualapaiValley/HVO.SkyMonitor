@@ -334,7 +334,7 @@ public sealed class ProcessingExecutionPagesTests
         ConfigureDiagram(context);
         context.Services.AddSingleton(Options.Create(new CameraAgentHostOptions
         {
-            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Hybrid }
+            TransientDetection = new TransientDetectionOptions { Mode = TransientOperatingMode.Edge }
         }));
         var captured = Now.AddMinutes(-1);
         context.Services.AddSingleton<ICameraAgentTransientUiService>(new RecordedTransientUiService
@@ -654,8 +654,7 @@ public sealed class ProcessingExecutionPagesTests
         Assert.IsEmpty(cut.FindAll(".run-diagram__transient-node .status-icon.success"));
         cut.Find(".run-diagram__transient-node").Click();
         Assert.AreEqual(pending, selected);
-        Assert.HasCount(4, cut.FindAll(".ownership-zone"));
-        Assert.IsNotNull(cut.Find(".central.unavailable"));
+        Assert.HasCount(3, cut.FindAll(".ownership-zone"));
     }
 
     [TestMethod]
@@ -733,7 +732,7 @@ public sealed class ProcessingExecutionPagesTests
         {
             Detail = capture.Detail! with
             {
-                ArtifactStates = [new CameraAgentGalleryArtifactState(artifactId, "Held", "Available", [])]
+                ArtifactStates = [new CameraAgentGalleryArtifactState(artifactId, "Held")]
             }
         };
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService

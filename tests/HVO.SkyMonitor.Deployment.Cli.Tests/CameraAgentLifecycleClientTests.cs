@@ -113,7 +113,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "leased raw/lane/processing/outbox 0/0/2/0", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "leased raw/lane/processing 0/0/2", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected repeated reads before the deadline, saw {handler.RequestCount} requests");
     }
 
@@ -154,7 +154,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message,
-            "leased raw/lane/processing/outbox 0/0/2/0; archived replay pending/leased 3/1, which the drain does not wait for)",
+            "leased raw/lane/processing 0/0/2; archived replay pending/leased 3/1, which the drain does not wait for)",
             StringComparison.Ordinal);
     }
 
@@ -360,7 +360,7 @@ public sealed class CameraAgentLifecycleClientTests
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing/outbox 2/0/0/0).", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "rejected the lifecycle state read with status 404; last observed capture control 'PauseRequested' (initialized: True, leased raw/lane/processing 2/0/0).", StringComparison.Ordinal);
         Assert.AreEqual(2, handler.RequestCount);
     }
 
@@ -396,7 +396,7 @@ public sealed class CameraAgentLifecycleClientTests
             () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing/outbox 3/0/0/0)", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "last observed capture control 'Unavailable' (initialized: False, leased raw/lane/processing 3/0/0)", StringComparison.Ordinal);
         StringAssert.Contains(exception.Message, "the last state read failed: CameraAgent lifecycle state could not be read", StringComparison.Ordinal);
         Assert.IsTrue(handler.RequestCount > 1, $"expected retries before the deadline, saw {handler.RequestCount} requests");
     }
@@ -584,55 +584,6 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
-    [DataRow(404, 0)]
-    [DataRow(405, 0)]
-    [DataRow(401, 0)]
-    [DataRow(204, 403)]
-    [DataRow(204, 409)]
-    [DataRow(204, 200)]
-    public async Task CommittedOwnedResume_UsesOnlyTheAuthenticatedAtomicRoute(int capability, int commandStatus)
-    {
-        var operation = Guid.NewGuid();
-        var pause = Guid.NewGuid();
-        var resume = Guid.NewGuid();
-        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
-        {
-            Assert.AreEqual("/api/internal/deployment/lifecycle/resume-owned-upgrade", request.RequestUri!.AbsolutePath);
-            Assert.AreEqual("lifecycle-token", request.Headers.GetValues("X-HVO-Installation-Token").Single());
-            if (sequence == 1)
-            {
-                Assert.AreEqual(HttpMethod.Get, request.Method);
-                return new HttpResponseMessage((HttpStatusCode)capability);
-            }
-            Assert.AreEqual(204, capability);
-            Assert.AreEqual(HttpMethod.Post, request.Method);
-            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
-            Assert.AreEqual(operation, body.RootElement.GetProperty("upgradeOperationId").GetGuid());
-            Assert.AreEqual(pause, body.RootElement.GetProperty("pauseCommandId").GetGuid());
-            Assert.AreEqual(resume, body.RootElement.GetProperty("operationId").GetGuid());
-            Assert.AreEqual(2L, body.RootElement.GetProperty("expectedVersion").GetInt64());
-            return new HttpResponseMessage((HttpStatusCode)commandStatus)
-            {
-                Content = new StringContent("{\"state\":1,\"version\":3,\"changed\":true,\"replayed\":false,\"requestedUtc\":\"2026-09-24T00:00:00Z\",\"completedUtc\":\"2026-09-24T00:00:01Z\"}", Encoding.UTF8, "application/json")
-            };
-        });
-        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
-        Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleAsync()
-            => client.TryResumeOwnedUpgradeAsync(operation, pause, resume, 2, "lifecycle-token", CancellationToken.None);
-        if (capability == 401 || commandStatus == 403)
-        {
-            await Assert.ThrowsExactlyAsync<InstallerException>(SettleAsync);
-        }
-        else
-        {
-            var settlement = await SettleAsync();
-            Assert.AreEqual(capability == 204, settlement.Supported);
-            Assert.AreEqual(commandStatus == 200, settlement.Receipt is { Changed: true, Version: 3 });
-        }
-        Assert.AreEqual(capability == 204 ? 2 : 1, handler.RequestCount);
-    }
-
-    [TestMethod]
     public async Task RecoveryRead_ReportsCurrentAdmissionWithoutPausingOrDraining()
     {
         using var handler = new ScriptedHandler((request, _, _) =>
@@ -757,8 +708,7 @@ public sealed class CameraAgentLifecycleClientTests
               "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
-              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}{{independence}}
+              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },{{replay}}{{independence}}
               "captureSequence": {{captureSequence}}
             }
             """;

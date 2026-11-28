@@ -66,7 +66,6 @@ updates:
       - "/.devcontainer"
       - "/docker/stellarium"
       - "/src/HVO.SkyMonitor.CameraAgent"
-      - "/src/HVO.SkyMonitor.ProcessingRunner"
       - "/tools/HVO.SkyMonitor.TimeLapseBenchmark"
     schedule:
       interval: "weekly"

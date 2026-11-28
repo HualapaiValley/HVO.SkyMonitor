@@ -317,9 +317,6 @@ services:
         {
             ["CameraAgent__ConfigFilePath"] = "/app/cameraagent.deploy.json",
             ["CameraAgent__RawIngressRoot"] = "/app/data/raw",
-            ["CameraAgent__CentralIntegration__Mode"] = "Disabled",
-            ["CameraAgent__CaptureDistribution__UploadEnabled"] = "false",
-            ["CameraAgent__EnvironmentalDelivery__Enabled"] = "false",
             ["CameraAgent__TransientDetection__Mode"] = "Off",
             ["CameraAgent__Observatory__LatitudeDegrees"] = request.LatitudeDegrees.ToString("R", CultureInfo.InvariantCulture),
             ["CameraAgent__Observatory__LongitudeDegrees"] = request.LongitudeDegrees.ToString("R", CultureInfo.InvariantCulture),

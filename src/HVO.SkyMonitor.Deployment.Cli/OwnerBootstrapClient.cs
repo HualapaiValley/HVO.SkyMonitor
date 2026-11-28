@@ -28,9 +28,6 @@ internal interface IOwnerBootstrapClient
         string verificationToken,
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken);
-
-    Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
-        => throw new InstallerException("The running instance did not prove that Fleet heartbeat is disabled.");
 }
 
 internal sealed record InstallationVerificationExpectation(
@@ -77,44 +74,6 @@ internal sealed class OwnerBootstrapClient(
         : this(baseAddress, handler, protectedReadTimeout, TimeProvider.System)
     {
     }
-
-    public async Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
-    {
-        using var ownedHandler = handler is null ? new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false } : null;
-        using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
-        {
-            BaseAddress = baseAddress,
-            MaxResponseContentBufferSize = 1024 * 1024,
-            Timeout = TimeSpan.FromSeconds(5)
-        };
-        try
-        {
-            using var response = await client.GetAsync(new Uri("/health", UriKind.Relative), cancellationToken).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode)
-            {
-                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                using var document = JsonDocument.Parse(bytes);
-                if (ReportsFleetDisabled(document.RootElement)) return;
-            }
-        }
-        catch (Exception exception) when (exception is HttpRequestException or JsonException ||
-                                          exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-        {
-            throw new InstallerException("Leave-paused could not read the running instance's Fleet heartbeat state.", exception);
-        }
-        throw new InstallerException("Leave-paused requires the running instance to report that Fleet heartbeat is disabled.");
-    }
-
-    internal static bool ReportsFleetDisabled(JsonElement document)
-        => document.ValueKind == JsonValueKind.Object && document.TryGetProperty("checks", out var checks) &&
-           checks.ValueKind == JsonValueKind.Array &&
-           checks.EnumerateArray().Where(static item => HasString(item, "name", "fleet-heartbeat")).ToArray() is [var fleet] &&
-           HasString(fleet, "status", "Healthy") &&
-           HasString(fleet, "description", "Fleet heartbeat is disabled/not configured.");
-
-    private static bool HasString(JsonElement element, string name, string value)
-        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var field) &&
-           field.ValueKind == JsonValueKind.String && field.GetString() == value;
 
     public async Task WaitForHealthAsync(
         ApprovedCatalogContract expectedCatalog,

@@ -20,7 +20,7 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
 
     private static void MapMutation(RouteGroupBuilder group, string path, RawEvidenceReleaseAction action, string name)
         => group.MapPost(path, (HttpContext context, [FromBody] ReleaseRequest request,
-                [FromServices] IRawEvidenceOperations operations, [FromServices] OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
+                [FromServices] IRawEvidenceOperations operations, [FromServices] LocalOperationsTokenService tokens, CancellationToken cancellationToken)
                 => ReleaseAsync(context, request, action, operations, tokens, cancellationToken))
             .WithName(name).RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance);
@@ -28,7 +28,7 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operator reads must not expose durable storage details.")]
     private static async Task<IResult> ReadAsync(
         [FromQuery] int? pageSize, [FromQuery] string? cursor, [FromServices] IRawEvidenceOperations operations,
-        [FromServices] OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
+        [FromServices] LocalOperationsTokenService tokens, CancellationToken cancellationToken)
     {
         var size = pageSize ?? 25;
         long? position = null;
@@ -67,7 +67,7 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operator responses must not expose durable storage details.")]
     private static async Task<IResult> ReleaseAsync(
         HttpContext context, ReleaseRequest request, RawEvidenceReleaseAction action, IRawEvidenceOperations operations,
-        OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
+        LocalOperationsTokenService tokens, CancellationToken cancellationToken)
     {
         if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
             return Results.Problem(statusCode: 400, title: "The raw evidence release is invalid.");

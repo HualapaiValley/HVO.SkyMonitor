@@ -45,7 +45,7 @@ work once Batch A's #1402 handoff lands, then returns to finish it.
 | --- | --- | --- |
 | Provider | Approved: NOAA SWPC public data service, `https://services.swpc.noaa.gov/` only | No mirror, no NODD/S3 route, no third-party copy |
 | Product set | Approved: four core products (alerts, NOAA scales, planetary Kp forecast, 3-day forecast). OVATION is a fifth product whose acquisition is not in the first tranche | OVATION acquisition depends on U3 |
-| Topology | Approved (U13): one CameraAgent-local acquisition authority per deployment. Every other local consumer reads its store | A LogicHost distributor is optional future topology, never a second concurrent poller |
+| Topology | Approved (U13): one CameraAgent-local acquisition authority per deployment. Every other local consumer reads its store | One poller owns acquisition |
 | Fact model | Approved: typed host-neutral facts that keep SWPC's own kinds, scales and probabilities. No universal severity score | Shared types are a Proposed default (see "Ownership") |
 | Identity and deduplication | Approved: message identity is code, serial and issue minute; deduplication is by normalized content hash. HTTP validators are never used for deduplication | Validators may still be sent as conditional request headers |
 | Lifecycle | Approved: per-family windows; extensions, continuations, corrections, cancels and watch supersession; a 96-hour active cap | Rules are in the contract; s03 to s11 and s21 exercise them, including the 96-hour cap (s21) |

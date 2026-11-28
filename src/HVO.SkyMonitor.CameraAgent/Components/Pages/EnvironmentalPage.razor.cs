@@ -537,30 +537,6 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
                 _ => OperationsPage.SplitWords(trigger.ToString()),
             }));
 
-    internal const string OutboxNotReadText = "Not read yet";
-
-    private string OldestPendingText(EnvironmentalUiDelivery delivery)
-        => delivery.OldestPendingUtc is { } oldest ? FormatSiteTime(oldest)
-            : delivery.ExportEnabled && delivery.PendingCount is null ? OutboxNotReadText
-            : "None";
-
-    private static string PendingText(EnvironmentalUiDelivery delivery)
-    {
-        if (delivery.PendingCount is not { } pending)
-        {
-            return OutboxNotReadText;
-        }
-        var text = pending.ToString("N0", CultureInfo.InvariantCulture);
-        if (delivery.RetryCount > 0)
-        {
-            text += FormattableString.Invariant($" ({delivery.RetryCount:N0} retrying)");
-        }
-        if (delivery.QuarantineCount > 0)
-        {
-            text += FormattableString.Invariant($", {delivery.QuarantineCount:N0} quarantined");
-        }
-        return text;
-    }
 
     private static string FreshnessTone(string freshness) => freshness switch
     {

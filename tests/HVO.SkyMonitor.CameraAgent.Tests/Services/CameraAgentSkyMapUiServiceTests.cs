@@ -9,7 +9,6 @@ using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
-using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -259,7 +258,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
                     2, Now, "removed-id", null, "manual-2", 4, 31.5, -110.25, 1400, "America/Phoenix")
             ]
         };
-        var secrets = new Mock<IDeviceSecretStore>(MockBehavior.Strict);
         var authorization = CreateAuthorization(out var principal, succeeded: true);
         var service = CreateSiteService(
             principal,
@@ -268,7 +266,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
             locations,
             new CameraAgentHostOptions
             {
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 SiteMap = new SiteMapOptions
                 {
                     TileTemplate = "https://tiles.example.test/{z}/{x}/{y}.png",
@@ -277,7 +274,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
                     Zoom = 9
                 }
             },
-            secrets.Object,
             new Dictionary<string, ApplicationUser>(StringComparer.Ordinal)
             {
                 ["owner-id"] = new() { Id = "owner-id", Email = "owner@home.lan", UserName = "owner@home.lan" },
@@ -290,8 +286,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
         var site = result.Value!;
         Assert.AreSame(profiles.State, site.Profile);
         Assert.AreEqual("owner@home.lan", site.OwnerLoginEmail);
-        Assert.AreEqual(CameraAgentSiteAssignmentState.Standalone, site.Assignment.State);
-        Assert.IsNull(site.Assignment.RegistrationName);
         Assert.AreEqual(
             new CameraAgentSiteMapSettings(
                 true, "https://tiles.example.test/{z}/{x}/{y}.png", "Example tiles",
@@ -302,81 +296,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.HasCount(1, site.ActorNames);
         Assert.AreEqual("night-operator", site.ActorNames["operator-id"]);
         Assert.IsFalse(site.ActorNames.ContainsKey("removed-id"));
-        secrets.Verify(store => store.GetAsync(It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [TestMethod]
-    [DataRow("registered")]
-    [DataRow("not-registered")]
-    [DataRow("unreadable")]
-    public async Task GetSiteAsync_WithCentralIntegration_ReportsTheRegistrationAsTheCameraLastHeardItAsync(
-        string scenario)
-    {
-        var observatory = ObservatoryLocationSnapshot.Create(
-            Guid.NewGuid(), 1, DateTimeOffset.UnixEpoch, 35.347, -113.878, 520, "America/Phoenix", 1000);
-        var deployment = DeploymentLocationSnapshot.Create(
-            "hvo-observatory", 4, "gps-receiver", 3, DateTimeOffset.UnixEpoch, null,
-            35.347, -113.878, 520, "America/Phoenix");
-        var secrets = new Mock<IDeviceSecretStore>();
-        var setup = secrets.Setup(store => store.GetAsync(It.IsAny<CancellationToken>()));
-        switch (scenario)
-        {
-            case "registered":
-                setup.ReturnsAsync(new DeviceSecrets(
-                    Guid.NewGuid(), observatory.ObservatoryId, "  East dome  ", "token", "/heartbeat", 60,
-                    Now.AddHours(-1), Now.AddHours(1), "device-key", new CentralIdentityOptions(),
-                    DeploymentLocationAcknowledgment: new DeploymentLocationAcknowledgment(
-                        observatory, deployment, DeploymentLocationSourceKind.Gps,
-                        DeploymentLocationResolutionStatus.Acknowledged, "within-observatory-boundary", Now, Now)));
-                break;
-            case "not-registered":
-                setup.ReturnsAsync((DeviceSecrets?)null);
-                break;
-            default:
-                setup.ThrowsAsync(new IOException("fixture failure"));
-                break;
-        }
-        var reconciliation = new DeploymentLocationReconciliationState
-        {
-            Outcome = "acknowledged",
-            LastAttemptUtc = Now.AddMinutes(-5),
-            LastSuccessUtc = Now.AddMinutes(-5)
-        };
-        var authorization = CreateAuthorization(out var principal, succeeded: true);
-        var service = CreateSiteService(
-            principal,
-            authorization.Object,
-            new RecordingSiteProfileStore(),
-            new RecordingDeploymentLocationStore { PendingVersion = 5 },
-            new CameraAgentHostOptions(),
-            secrets.Object,
-            reconciliation: reconciliation);
-
-        var result = await service.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
-        var assignment = result.Value!.Assignment;
-        Assert.AreEqual("acknowledged", assignment.ReconciliationOutcome);
-        Assert.AreEqual(Now.AddMinutes(-5), assignment.LastAttemptUtc);
-        switch (scenario)
-        {
-            case "registered":
-                Assert.AreEqual(CameraAgentSiteAssignmentState.Registered, assignment.State);
-                Assert.AreEqual("East dome", assignment.RegistrationName);
-                Assert.AreEqual(DeploymentLocationResolutionStatus.Acknowledged, assignment.LocationReview);
-                Assert.AreEqual(4L, assignment.AcknowledgedVersion);
-                Assert.AreEqual(5L, assignment.ProposedVersion);
-                break;
-            case "not-registered":
-                Assert.AreEqual(CameraAgentSiteAssignmentState.NotRegistered, assignment.State);
-                Assert.IsNull(assignment.RegistrationName);
-                break;
-            default:
-                // An unreadable registration degrades that one fact; the rest of the page still renders.
-                Assert.AreEqual(CameraAgentSiteAssignmentState.Unavailable, assignment.State);
-                Assert.IsNull(assignment.LocationReview);
-                break;
-        }
     }
 
     [TestMethod]
@@ -729,9 +648,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
         ISiteProfileStore? profiles,
         IDeploymentLocationStore? locations = null,
         CameraAgentHostOptions? options = null,
-        IDeviceSecretStore? secrets = null,
         Dictionary<string, ApplicationUser>? users = null,
-        DeploymentLocationReconciliationState? reconciliation = null,
         OperatorSettingsFile? settingsFile = null,
         string adminEmail = "  owner@home.lan ")
     {
@@ -749,12 +666,8 @@ public sealed class CameraAgentSkyMapUiServiceTests
             NullLogger<CameraAgentSkyMapUiService>.Instance,
             profiles,
             Options.Create(options ?? new CameraAgentHostOptions
-            {
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
-            }),
+            { }),
             Options.Create(new LocalIdentityOptions { AdminEmail = adminEmail }),
-            secrets,
-            reconciliation,
             new UserManager<ApplicationUser>(
                 userStore.Object, null!, null!, null!, null!, null!, null!, null!,
                 NullLogger<UserManager<ApplicationUser>>.Instance),
@@ -812,11 +725,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             ActiveVersion: 4,
             KnownVersion: 4,
             NextVersion: 5,
-            PendingVersion: null,
             ManualSequence: 2,
-            CentralAcknowledgementRequired: false,
-            StagedAcknowledgementPending: false,
-            CandidateAwaitingAcknowledgement: false,
             Override: null,
             OverrideSupersededAtUtc: null,
             History: []);
@@ -825,7 +734,6 @@ public sealed class CameraAgentSkyMapUiServiceTests
 
         internal IReadOnlyList<ManualDeploymentLocationAuditEntry> History { get; init; } = [];
 
-        internal long? PendingVersion { get; init; }
 
         internal List<ManualDeploymentLocationRequest> Requests { get; } = [];
 
@@ -844,7 +752,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             get
             {
                 Reads++;
-                return State with { History = History, PendingVersion = PendingVersion };
+                return State with { History = History };
             }
         }
 

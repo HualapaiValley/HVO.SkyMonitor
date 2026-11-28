@@ -390,15 +390,6 @@ internal static class Program
                 $"Runtime running={result.Running}, alive={result.Alive?.ToString() ?? "unknown"}, healthy={result.Healthy?.ToString() ?? "unknown"}{readiness}")
                 .ConfigureAwait(false);
         }
-        if (result.PreservedAdmission is { } admission)
-        {
-            await Console.Out.WriteLineAsync(
-                $"Capture admission preserved: {admission.State} at version {admission.Version}, sequence {admission.CaptureSequence}, observed {admission.ObservedUtc:O}.")
-                .ConfigureAwait(false);
-            await Console.Out.WriteLineAsync(
-                $"Latest capture command #{admission.LatestCommandOrder} (key SHA-256 {admission.LatestCommandKeySha256}, {admission.LatestTarget}, changed={admission.LatestChanged}) by {admission.LatestActor} at {admission.LatestCompletedUtc:O}, version {admission.LatestResultVersion}.")
-                .ConfigureAwait(false);
-        }
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
         await WritePlanAsync(result.Plan, result.Outcome == "planned").ConfigureAwait(false);

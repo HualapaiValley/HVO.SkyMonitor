@@ -50,51 +50,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var declared = ProcessingGraphCompiler.Compile(saved).Plan!;
             Assert.AreEqual(previous, declared.Nodes.Single(static n => n.Definition.Id == "overlay").Definition.StepVersion);
             var now = DateTimeOffset.UtcNow;
-            var proposal = new ProcessingGraphDeliveryProposalV1(
-                ProcessingGraphDeliverySchemaVersions.Current, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
-                Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), initial.ActiveRevisionId,
-                operations.Capabilities.IdentitySha256, declared.DefinitionIdentitySha256, declared.PlanIdentitySha256,
-                saved, now.AddMinutes(-1), now.AddHours(1));
-            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
-            var rejected = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Rejected, rejected!.Kind,
-                "The installed v13 producer must not execute a delivered v12 plan under its old identity.");
-            Assert.AreEqual(initial.ActiveRevisionId, (await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevisionId);
-            await operations.SupersedeProposalAsync(proposal.ProposalId, CancellationToken.None).ConfigureAwait(false);
 
-            // Explicitly rebuilding the saved options as a NEW local draft binds the currently installed version.
-            // Validation/activation is required; decoding the old descriptor alone never migrates or executes it.
-            var migratedPipeline = new CapturePipelineConfig(saved.Nodes.Select(static node => new CaptureProcessingStepConfig(
-                node.StepAlias, node.Id, node.Order, node.EffectiveOptions,
-                node.Dependencies.Select(static dependency => dependency.ProducerId).ToArray(),
-                node.FailurePolicy == ProcessingGraphNodeFailurePolicy.Required, node.Enabled)).ToArray());
-            var draft = await operations.CreateRevisionAsync("saved-scene", "explicit-v13", migratedPipeline,
-                "saved-v12-create", "owner-test", null, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, draft.Lifecycle);
-            var snapshot = await operations.ReadRevisionSnapshotAsync(draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
-            var migrated = ProcessingGraphJson.Parse(snapshot!.DefinitionJson).Definition!;
-            Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion,
-                migrated.Nodes.Single(static node => node.Id == "overlay").StepVersion);
-            Assert.AreNotEqual(declared.PlanIdentitySha256, snapshot.State.SharedPlanIdentitySha256);
-            await operations.ValidateRevisionAsync(draft.RevisionId, "saved-v12-validate", "owner-test", null,
-                CancellationToken.None).ConfigureAwait(false);
-            await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "saved-v12-activate", "owner-test", null,
-                CancellationToken.None).ConfigureAwait(false);
-
-            var executed = await CaptureConstellationsAsync(provider, config, 0).ConfigureAwait(false);
-            Assert.AreEqual(draft.RevisionId, executed.RevisionId);
-            Assert.IsNotEmpty(executed.Payload.Segments);
-            Assert.IsTrue(executed.Payload.Segments.All(static segment => segment.Thickness == 5));
-            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-            foreach (var artifactId in new[] { executed.ArtifactId, executed.AnnotationArtifactId })
-            {
-                var retained = await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
-                Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, retained!.Artifact.Recipe.ImplementationVersion);
-            }
-            Assert.IsNotEmpty(executed.Annotations.Markers, "The executed scene must contain stellar predictions.");
-            Assert.IsEmpty(executed.Annotations.TextBlocks, "Unmeasured saved-draft stars must not regain historical v12 labels.");
-            CollectionAssert.AreEqual(savedBytes, ProcessingGraphJson.SerializeCanonical(saved));
-            Assert.AreEqual(declared.PlanIdentitySha256, ProcessingGraphCompiler.Compile(saved).Plan!.PlanIdentitySha256);
         }
         finally
         {

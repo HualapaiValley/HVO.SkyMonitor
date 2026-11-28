@@ -7,7 +7,7 @@ section 4. It is a GitHub pre-release, needs no CHANGELOG section, and never mov
 Pending changelog fragments carry forward to the final release. See the
 [release runbook](releases.md#cutting-a-release).
 
-Final releases and release candidates, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, follow [releases.md](releases.md).
+Final releases, betas and release candidates from `main` follow [releases.md](releases.md).
 A pre-release's version is a pre-release of the product version, `VersionPrefix` in `Directory.Build.props`
 ([The product version](releases.md#the-product-version)): `scripts/release:assets` refuses a tag for another version
 in the Build job, before anything is pushed.
@@ -223,9 +223,9 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    cat /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/image-distribution.json
    ```
 
-   For an interrupted upgrade, follow [Restore Only After an Interrupted Upgrade](deployment-installer.md#restore-only-after-an-interrupted-upgrade).
-   After commit, preserve the current captures and records and use a supported forward repair
-   or the [explicit backup and restore procedure](deployment-installer.md#backup-and-restore).
+   For an interrupted upgrade, follow [Checkpoint and image recovery](deployment-installer.md#checkpoint-and-image-recovery).
+   The fresh-install baseline supports rollback to the retained previous build on the same contract.
+   For a host on an earlier contract, provision a fresh instance on empty storage.
 
 An instance installed from an `--image-ref` has no release record. Its first upgrade from a release shows every
 upgrade note up to the target and says that the installed version is not recorded. From then on, the installer

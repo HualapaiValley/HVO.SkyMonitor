@@ -17,7 +17,7 @@ public sealed class CameraAgentImageLabelsTests
     {
         using var labels = JsonDocument.Parse("""
             {
-              "io.hvo.skymonitor.state-compatibility": 7,
+              "io.hvo.skymonitor.state-contract": 7,
               "io.hvo.skymonitor.raw-ingress-schema": null,
               "io.hvo.skymonitor.identity-migration": ["20260827053715_InitialIdentity"],
               "io.hvo.skymonitor.component": "cameraagent"
@@ -26,7 +26,7 @@ public sealed class CameraAgentImageLabelsTests
 
         var identity = CameraAgentImageLabels.Identity("archive", "sha256:abc", "sha256:abc", "arm64", null, labels.RootElement);
 
-        Assert.IsNull(identity.UpgradeCompatibility);
+        Assert.IsNull(identity.StateContract);
         Assert.IsNull(identity.RawIngressSchema);
         Assert.IsNull(identity.IdentityMigration);
         Assert.AreEqual("cameraagent", identity.Component);

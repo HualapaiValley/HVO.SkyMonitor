@@ -1,5 +1,8 @@
 # Standalone CameraAgent Course Correction
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 > Historical decision record. Issues #205 through #211 delivered this course
 > correction and its standalone acceptance gate. Imperative and future-tense
 > language below records the executed contract; it does not describe open work.

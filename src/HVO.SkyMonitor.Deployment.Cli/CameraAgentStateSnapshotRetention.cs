@@ -89,10 +89,7 @@ internal static class CameraAgentStateSnapshotRetention
             return (snapshots, operations);
         }
         operations.Add(journal.OperationId);
-        foreach (var named in new[] { journal.StateSnapshot, journal.RetainedStateSnapshot }.OfType<LifecycleStateSnapshot>())
-        {
-            snapshots.Add(named.SnapshotId);
-        }
+        if (journal.StateSnapshot is { } snapshot) snapshots.Add(snapshot.SnapshotId);
         if (journal.StateRestorePlan is { } plan) snapshots.Add(plan.SnapshotId);
         var saved = Path.Combine(paths.OperationsRoot, "lifecycle", journal.OperationId.ToString("D"), "previous-instance-manifest.json");
         if (File.Exists(saved))

@@ -619,7 +619,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 RawIngressRoot = root,
                 EnvironmentalAcquisition = new() { Enabled = true, Sources = sources }
             });
-            using var weatherOutbox = new SqliteEnvironmentalObservationOutbox();
+            using var weatherOutbox = new SqliteEnvironmentalObservationStore();
             var associations = new EnvironmentalAssociationService(weatherOutbox, weatherOutbox, weatherOptions, clock);
             var environment = new CameraAgentCloudEnvironment(associations, weatherOutbox, weatherOptions);
 
@@ -1046,7 +1046,6 @@ public sealed partial class VirtualSkyCameraModuleTests
                 new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = Path.Combine(root, "storage"),
-                    QueueForUpload = false,
                     UpdateLatestFrame = false
                 }))
         };

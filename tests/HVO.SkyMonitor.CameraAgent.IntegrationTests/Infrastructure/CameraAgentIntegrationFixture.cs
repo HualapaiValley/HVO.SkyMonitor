@@ -1,10 +1,9 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Data;
-using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Authentication;
@@ -18,10 +17,12 @@ using Microsoft.Extensions.Hosting;
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// Boots one CameraAgent with no LogicHost or external service dependencies.
+/// Boots one CameraAgent with isolated local state.
 /// </summary>
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The base WebApplicationFactory owns and disposes its derived factories.")]
     private WebApplicationFactory<Program>? _agentFactory;
     private WebApplicationFactory<Program>? _agentBaseFactory;
     private string? _configurationPath;
@@ -52,7 +53,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             JsonSerializer.Serialize(new
             {
                 deviceId = "cameraagent-integration-test",
-                verificationCode = "INTEG2TEST",
                 createdUtc = DateTimeOffset.UtcNow
             })).ConfigureAwait(false);
         _catalogFixture = CatalogFixtureInstallation.Create(
@@ -94,13 +94,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                         IntegrationUserAuthenticationHandler.SchemeName,
                         _ => { });
 
-                var drainService = services.SingleOrDefault(descriptor =>
-                    descriptor.ServiceType == typeof(IHostedService)
-                    && descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
-                if (drainService is not null)
-                {
-                    services.Remove(drainService);
-                }
                 configureServices?.Invoke(services);
             });
         });
@@ -167,8 +160,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     public void Dispose()
     {
-        _agentFactory?.Dispose();
         _agentBaseFactory?.Dispose();
+        _agentFactory = null;
+        _agentBaseFactory = null;
         _catalogFixture?.Dispose();
         if (!KeepStorageOnDispose && _storageRoot is not null && Directory.Exists(_storageRoot))
         {
@@ -178,7 +172,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
     private Dictionary<string, string?> BuildConfigurationOverrides(string provisioningRoot) => new(StringComparer.Ordinal)
     {
-        ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
         ["CameraAgent:ConfigFilePath"] = _configurationPath,
         ["CameraAgent:RawIngressRoot"] = _storageRoot,
         ["CameraAgent:DiskPressureThresholdPercent"] = "1",
@@ -194,8 +187,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         ["LocalIdentity:AdminPasswordFile"] = string.Empty,
         ["LocalIdentity:AllowMissingAdminPassword"] = "false",
         ["LocalIdentity:DatabasePath"] = Path.Combine(_storageRoot!, "cameraagent_identity.db"),
-        ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth",
-        ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1"
+        ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth"
     };
 
     private void EnsureInitialized()

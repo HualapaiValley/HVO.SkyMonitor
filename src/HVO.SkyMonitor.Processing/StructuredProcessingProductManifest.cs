@@ -103,7 +103,7 @@ public sealed record StructuredProcessingProductDescriptorV1(
         => CaptureContractValidationResult.Failure(reasonCode, path);
 }
 
-/// <summary>Structured product media types and schema versions supported end to end by edge and central hosts.</summary>
+/// <summary>Structured product media types and schema versions used by retained processing products.</summary>
 public static class StructuredProcessingProductContracts
 {
     public const string ProjectedSceneMediaType = "application/vnd.hvo.projected-scene+json";
@@ -156,7 +156,7 @@ public static class StructuredProcessingProductContracts
             MeasuredDeepSkyStackV1.MediaType or RegionalStellarVisibilityProducts.MediaType;
 }
 
-/// <summary>Versioned envelope for ordinary outbox delivery of one structured product.</summary>
+/// <summary>Versioned manifest for one structured processing product.</summary>
 public sealed record StructuredProcessingProductManifestV1(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] StructuredProcessingProductDescriptorV1 Descriptor,

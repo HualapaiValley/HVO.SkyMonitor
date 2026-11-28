@@ -391,7 +391,6 @@ public sealed class ProcessingGraphEditorPageTests
                             new FileStorageCaptureProcessingStepOptions
                             {
                                 StorageRoot = Path.Combine(root, "storage"),
-                                QueueForUpload = false,
                                 UpdateLatestFrame = false
                             }))
                     ]

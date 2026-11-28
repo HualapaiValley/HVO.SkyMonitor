@@ -440,7 +440,6 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "preview-node", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Manifest schema", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Raw retention hold", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Delivery statuses", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Dependencies", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Cloud assessment", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Mask SHA-256", StringComparison.Ordinal);

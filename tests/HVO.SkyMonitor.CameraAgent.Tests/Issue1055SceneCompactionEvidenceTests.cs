@@ -72,7 +72,6 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             ["CameraAgent:RawIngressRoot"] = canonical,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = "issue1055-production",
-            ["CameraAgent:CentralIntegration:Mode"] = "Enabled"
         }).Build();
         var services = new ServiceCollection();
         using var stageProbe = new StageProbe(Environment.GetEnvironmentVariable("HVO_ISSUE1055_STAGE_PROBE") == "1");
@@ -106,7 +105,6 @@ public sealed class Issue1055SceneCompactionEvidenceTests
             {
                 ConfigFilePath = Path.Combine(repository, "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"),
                 AgentId = "issue1055-production",
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled },
                 Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance,
                 captureAgentIdentityProvider: new EvidenceIdentityProvider());
@@ -134,12 +132,12 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                     { requireProjectedSceneDependency = true, drawConstellationLines = true, constellationIds = Constellations }),
                         DependsOn: ["preview", "scene"]),
                     new("Storage", "canonical-upload", Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = canonical, QueueForUpload = true, UpdateLatestFrame = false,
-                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] }),
+                    { StorageRoot = canonical, UpdateLatestFrame = false,
+                        Policies = [new() { Role = FrameArtifactRole.Metadata }] }),
                         DependsOn: ["$raw", "scene"]),
                     new("Storage", "archive", Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                    { StorageRoot = archive, QueueForUpload = true, UpdateLatestFrame = false,
-                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] }),
+                    { StorageRoot = archive, UpdateLatestFrame = false,
+                        Policies = [new() { Role = FrameArtifactRole.Metadata }] }),
                         DependsOn: ["$raw", "scene", "preview", "annotation"])
                 ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };

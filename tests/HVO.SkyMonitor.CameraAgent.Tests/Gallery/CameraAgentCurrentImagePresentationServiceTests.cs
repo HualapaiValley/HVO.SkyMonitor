@@ -3,7 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
-using HVO.SkyMonitor.Fleet.Contracts;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
@@ -462,15 +462,15 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             true);
 
         var unavailable = CameraAgentPresentationRuntime.Project(
-            admission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
+            admission, null, null, TimeSpan.FromMinutes(1), CaptureAvailability.Unavailable, Now);
         var starting = CameraAgentPresentationRuntime.Project(
-            admission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Initializing, Now);
+            admission, null, null, TimeSpan.FromMinutes(1), CaptureAvailability.Initializing, Now);
         var pausedAdmission = admission with
         {
             State = HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionState.Paused
         };
         var pausedUnavailable = CameraAgentPresentationRuntime.Project(
-            pausedAdmission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
+            pausedAdmission, null, null, TimeSpan.FromMinutes(1), CaptureAvailability.Unavailable, Now);
 
         Assert.AreEqual(CameraAgentPresentationSystemState.Unavailable, unavailable.System.State);
         Assert.AreEqual(CameraAgentPresentationSystemState.Starting, starting.System.State);
@@ -512,7 +512,7 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             decision,
             schedule,
             TimeSpan.FromMinutes(baseMinutes),
-            FleetAvailability.Available,
+            CaptureAvailability.Available,
             Now);
         var capture = Capture(
             1,

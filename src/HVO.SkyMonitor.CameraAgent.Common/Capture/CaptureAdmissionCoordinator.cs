@@ -6,7 +6,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
@@ -111,7 +111,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private readonly IRawCaptureIngress _rawCaptureIngress;
     private readonly SqliteCaptureControlStore _store;
     private readonly CaptureControlTelemetry _telemetry;
-    private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureRuntimeState? _captureRuntimeState;
     private readonly CaptureMaintenanceGate? _maintenance;
     private readonly bool _pauseFreshOnStartup;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
@@ -142,7 +142,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         CaptureControlTelemetry telemetry,
-        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureRuntimeState? captureRuntimeState = null,
         CaptureMaintenanceGate? maintenanceGate = null,
         CameraAgentControlStore? lifecycleControls = null)
     {
@@ -152,7 +152,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         ArgumentNullException.ThrowIfNull(telemetry);
         _rawCaptureIngress = rawCaptureIngress;
         _telemetry = telemetry;
-        _fleetRuntimeState = fleetRuntimeState;
+        _captureRuntimeState = captureRuntimeState;
         _maintenance = maintenanceGate;
         _lifecycleControls = lifecycleControls;
         var configured = options.Value;
@@ -333,21 +333,6 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             reason,
             cancellationToken);
 
-    /// <summary>Resumes only the last effective direct-upgrade pause, checked inside the resume transaction.</summary>
-    public Task<CaptureControlCommandResult> ResumeOwnedUpgradeAsync(
-        Guid upgradeOperationId, Guid pauseCommandId, Guid resumeCommandId, long expectedVersion,
-        CancellationToken cancellationToken)
-        => ExecuteCommandAsync(
-            CaptureControlTarget.Running,
-            $"lifecycle:{resumeCommandId:D}:resume-owned-upgrade",
-            expectedVersion,
-            $"installer-lifecycle:{resumeCommandId:D}",
-            $"transactional lifecycle operation {upgradeOperationId:D} resume for pause {pauseCommandId:D}",
-            cancellationToken,
-            new CapturePauseOwnership(
-                $"lifecycle:{pauseCommandId:D}:pause", null, $"installer-lifecycle:{pauseCommandId:D}",
-                $"transactional lifecycle operation {upgradeOperationId:D} pause"));
-
     /// <summary>
     /// Reads the most recent durable pause and resume commands, newest first. The read is bounded by
     /// <paramref name="limit"/> through the table's insertion order and never scans the full command history.
@@ -406,7 +391,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         try
         {
             FailClosed();
-            _fleetRuntimeState?.CaptureFailed("focus-restoration-unverified");
+            _captureRuntimeState?.CaptureFailed("focus-restoration-unverified");
         }
         finally { _commandGate.Release(); }
     }
@@ -467,7 +452,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
                 FailClosed();
-                _fleetRuntimeState?.CaptureFailed("activation-publication-failed");
+                _captureRuntimeState?.CaptureFailed("activation-publication-failed");
                 throw new CaptureAdmissionUnavailableException();
             }
             // A lifecycle claim may arrive while scheduled exposures finish draining. This is the admission boundary;
@@ -574,7 +559,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
                 FailClosed();
-                _fleetRuntimeState?.CaptureFailed("pause-publication-failed");
+                _captureRuntimeState?.CaptureFailed("pause-publication-failed");
                 _telemetry.RecordAdmissionCommand("Paused", "unavailable");
                 throw new CaptureAdmissionUnavailableException();
             }

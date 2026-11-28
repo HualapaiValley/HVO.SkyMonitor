@@ -274,10 +274,9 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     {
         var fixture = new Fixture(Epoch, Location(Epoch.AddDays(-1)), protectedStartup: true);
         await using var fixtureLifetime = fixture.ConfigureAwait(false);
-        var outbox = new Mock<IEnvironmentalObservationOutbox>();
-        _ = outbox.As<ILocalEnvironmentalObservationStore>();
+        var store = new Mock<ILocalEnvironmentalObservationStore>();
         var publisher = useProductionPublisher
-            ? fixture.CreateProductionPublisher(outbox.Object)
+            ? fixture.CreateProductionPublisher(store.Object)
             : Mock.Of<IEnvironmentalObservationPublisher>();
 
         var error = Assert.ThrowsExactly<InvalidOperationException>(() => fixture.ConstructWorker(publisher));
@@ -736,7 +735,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         await fixture.StartAndWaitForPollAsync(Epoch.AddSeconds(30)).ConfigureAwait(false);
         await fixture.StopAsync().ConfigureAwait(false);
 
-        using (var reopened = new SqliteEnvironmentalObservationOutbox())
+        using (var reopened = new SqliteEnvironmentalObservationStore())
         {
             var states = await reopened.ReadSourceStatesAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
             var attempts = await reopened.ReadAttemptsAsync(fixture.Root, 10, CancellationToken.None).ConfigureAwait(false);
@@ -791,10 +790,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly ServiceProvider _services;
-        private readonly SqliteEnvironmentalObservationOutbox _store;
+        private readonly SqliteEnvironmentalObservationStore _store;
         private readonly EnvironmentalAcquisitionTelemetry _telemetry;
-        private readonly EnvironmentalObservationDeliveryState _deliveryState = new();
-        private readonly EnvironmentalObservationDeliveryTelemetry _deliveryTelemetry;
         private readonly EnvironmentalSourceFactory _factory;
         private readonly IOptions<CameraAgentHostOptions> _options;
         private readonly EnvironmentalAcquisitionService _service;
@@ -822,16 +819,14 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             var services = new ServiceCollection();
             if (device is not null) services.AddSingleton(device);
             _services = services.BuildServiceProvider();
-            _store = new SqliteEnvironmentalObservationOutbox(timeProvider: Clock);
+            _store = new SqliteEnvironmentalObservationStore(timeProvider: Clock);
             Publisher = new RecordingPublisher(_store, Root);
             _telemetry = new EnvironmentalAcquisitionTelemetry(Clock);
-            _deliveryTelemetry = new EnvironmentalObservationDeliveryTelemetry(_deliveryState, Clock);
             _configurationPath = Path.Combine(Root, "cameraagent.json");
             _options = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = Root,
                 ConfigFilePath = _configurationPath,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix"),
                 DeploymentLocation = new DeploymentLocationOptions
                 {
@@ -911,9 +906,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                 StartupEpoch, leaseDuration, CancellationToken.None).ConfigureAwait(false);
         }
 
-        public EnvironmentalObservationPublisher CreateProductionPublisher(IEnvironmentalObservationOutbox outbox)
-            => new(new NullEnvironmentalObservationTargetResolver(), outbox, new EnvironmentalObservationDeliveryWakeup(),
-                _deliveryState, _deliveryTelemetry, _options, Clock, _telemetry);
+        public EnvironmentalObservationPublisher CreateProductionPublisher(ILocalEnvironmentalObservationStore store)
+            => new(store, _options, Clock, _telemetry);
 
         public void ConstructWorker(IEnvironmentalObservationPublisher publisher)
         {
@@ -1056,7 +1050,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         private async Task ExecuteJournalStatementAsync(string statement)
         {
             await _store.InitializeAsync(Root, CancellationToken.None).ConfigureAwait(false);
-            var path = Path.Combine(Root, ".environment", "environmental-observation-outbox.db");
+            var path = Path.Combine(Root, ".environment", "environmental-observations.db");
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
@@ -1100,7 +1094,6 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             _service.Dispose();
             Coordinator.Dispose();
             _telemetry.Dispose();
-            _deliveryTelemetry.Dispose();
             _store.Dispose();
             await _services.DisposeAsync().ConfigureAwait(false);
             if (_ownsRoot)
@@ -1133,7 +1126,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         }
     }
 
-    private sealed class SignalingScheduleStore(SqliteEnvironmentalObservationOutbox inner)
+    private sealed class SignalingScheduleStore(SqliteEnvironmentalObservationStore inner)
         : IEnvironmentalAcquisitionStateStore, IEnvironmentalLocationHeldPollStore, IEnvironmentalOnDemandCommandStore
     {
         public TaskCompletionSource ScheduleWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1192,7 +1185,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             => inner.ReleaseOnDemandAsync(root, idempotencyKey, leaseToken, cancellationToken);
     }
 
-    private sealed class RecordingPublisher(SqliteEnvironmentalObservationOutbox store, string root)
+    private sealed class RecordingPublisher(SqliteEnvironmentalObservationStore store, string root)
         : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
         public bool SupportsHeldPollSettlement => true;
@@ -1219,9 +1212,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             Facts.Enqueue(fact);
             return new EnvironmentalObservationPublishResult(
                 result.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
-                    ? EnvironmentalObservationPublishDisposition.Enqueued
-                    : EnvironmentalObservationPublishDisposition.Duplicate,
-                null);
+                    ? EnvironmentalObservationPublishDisposition.Committed
+                    : EnvironmentalObservationPublishDisposition.Duplicate);
         }
     }
 

@@ -1,5 +1,8 @@
 # Frame Facts rich-text implementation plan
 
+> Historical record of the earlier two-host topology and its qualification.
+> Use the [current project plan](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/project-plan.md) for standalone CameraAgent.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver #1552's explicitly selected, reproducible four-corner Frame Facts layer while preserving historical bytes and saved defaults.

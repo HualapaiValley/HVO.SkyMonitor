@@ -66,7 +66,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         var paused = crashBeforePause ? null :
             await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "test@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null, SourceRevision: new string('8', 40),
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract, SourceRevision: new string('8', 40),
             Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1", CatalogContract: RuntimeImageContract.CatalogContract);
         var specification = RuntimeCatalog.Get(RuntimeCatalog.DefaultCatalogId);
         var catalog = new CatalogInstallationIdentity(RuntimeCatalog.DefaultCatalogId, specification.PackageVersionPrefix + "1",

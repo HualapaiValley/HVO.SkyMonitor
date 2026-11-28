@@ -21,7 +21,7 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
         try
         {
             var clock = new Clock();
-            using var store = new SqliteEnvironmentalObservationOutbox(clock);
+            using var store = new SqliteEnvironmentalObservationStore(clock);
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "cloud",

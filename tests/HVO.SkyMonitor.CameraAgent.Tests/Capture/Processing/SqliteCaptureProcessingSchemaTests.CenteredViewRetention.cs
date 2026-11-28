@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -318,7 +317,6 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var store = new SqliteCaptureProcessingStore(fixture.Options);
         using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        using var outbox = new SqliteArtifactOutbox();
         using var calibration = new SqliteCalibrationLibraryStore(Mock.Of<IRawCaptureIngress>(), fixture.Options, TimeProvider.System);
         var log = new CenteredRetentionLog();
         var index = new SqliteCenteredViews(store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
@@ -363,7 +361,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         var holds = new CompositeProcessingRetentionHolds(
             persistence, new CameraAgentClearReferenceLoader(fixture.Options), calibration);
         using var service = new RetentionBackgroundService(Mock.Of<ICameraAgentConfigurationAccessor>(), fixture.Options,
-            TimeProvider.System, outbox, capacity, new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance,
+            TimeProvider.System, capacity, new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance,
             ingressHolds.Object, holds);
         await service.ApplyRetentionAsync(RetentionBackgroundServiceTests.CreateConfig(root), token).ConfigureAwait(false);
         var writer = checkpoint.Writer;

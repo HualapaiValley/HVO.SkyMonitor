@@ -66,7 +66,6 @@ public sealed partial class ProcessingGraphOperationsTests
                 Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {
                     StorageRoot = Path.Combine(root, "archive"),
-                    QueueForUpload = false,
                     UpdateLatestFrame = false
                 }));
             file = file with { Pipeline = file.Pipeline with { Steps = [canonical, storage] } };

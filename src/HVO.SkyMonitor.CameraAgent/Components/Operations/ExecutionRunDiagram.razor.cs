@@ -52,12 +52,11 @@ public sealed partial class ExecutionRunDiagram : SiteTimeComponent, IAsyncDispo
     private int ZoomPercent => (int)Math.Round(_zoom * 100);
     private int EdgeX => Margin + NodeWidth + ColumnGap;
     private int PublicationX => _layout.Count == 0 ? EdgeX + NodeWidth + ColumnGap : _layout.Max(static item => item.X) + NodeWidth + ColumnGap;
-    private int LogicHostX => PublicationX + NodeWidth + ColumnGap;
     private int SourceY => HeaderHeight + _sourceRow * (NodeHeight + RowGap);
     private int CloudTop => _rowsEnd + 28;
     private int TransientTop => CloudTop + (HasCloudProduct ? 0 : NodeHeight + 28);
     private int Height => TransientTop + 72 + Math.Max(1, TransientLanes.Length) * (NodeHeight + 40);
-    private int Width => Math.Max(LogicHostX + NodeWidth + Margin,
+    private int Width => Math.Max(PublicationX + NodeWidth + Margin,
         EdgeX + (CaptureLaneCount + TransientLanes.Where(static lane => lane.CandidateId is not null)
             .Select(static lane => lane.Events.Count).DefaultIfEmpty().Max()) * (NodeWidth + ColumnGap) + Margin);
     private string GraphSizeStyle => FormattableString.Invariant($"width:{Width}px;height:{Height}px;transform:scale({_zoom});");
@@ -116,7 +115,7 @@ public sealed partial class ExecutionRunDiagram : SiteTimeComponent, IAsyncDispo
             _layout.Add(new(node, rank, row, EdgeX + rank * (NodeWidth + ColumnGap), HeaderHeight + row * (NodeHeight + RowGap)));
         }
         _bands = [new(0, EdgeX, "Camera and acquisition"), new(EdgeX, PublicationX - EdgeX, "Edge processing"),
-            new(PublicationX, LogicHostX - PublicationX, "Durable publication"), new(LogicHostX, NodeWidth + Margin, "LogicHost")];
+            new(PublicationX, NodeWidth + Margin, "Durable publication")];
         var tracks = new List<GraphTrack> { new(Margin, NodeWidth) };
         tracks.AddRange(Enumerable.Range(0, rankCount).Select(rank => new GraphTrack(EdgeX + rank * (NodeWidth + ColumnGap), NodeWidth)));
         tracks.Add(new(PublicationX, NodeWidth));

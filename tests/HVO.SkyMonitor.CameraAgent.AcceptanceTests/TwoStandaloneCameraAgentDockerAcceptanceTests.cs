@@ -462,11 +462,6 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         var summary = await client.GetFromJsonAsync<CameraAgentOperationsSummary>("/api/v1/operations/summary").ConfigureAwait(false);
         Assert.IsNotNull(summary);
         Assert.AreEqual(agent.AgentId, summary.Configuration.Value.AgentId);
-        Assert.AreEqual("Disabled", summary.Configuration.Value.CentralIntegration);
-        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.PendingCount);
-        Assert.AreEqual("Disabled", summary.Heartbeat.Value.Availability);
-        Assert.AreEqual("Disabled", summary.EnvironmentalDelivery.Value.Availability);
         using var galleryPage = await client.GetAsync(new Uri("/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, galleryPage.StatusCode);
         using var detailPage = await client.GetAsync(new Uri($"/gallery/{captures[^1].CaptureId:D}", UriKind.Relative)).ConfigureAwait(false);
@@ -513,7 +508,6 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         CollectionAssert.AreEqual(ExpectedProcessingNodes, steps.Select(static step => step.GetProperty("id").GetString()).ToArray());
         var storage = steps.Single(static step => step.GetProperty("id").GetString() == "LocalStorage").GetProperty("options");
         Assert.AreEqual($"/var/lib/hvo/{agent.Name}-197", storage.GetProperty("storageRoot").GetString());
-        Assert.IsFalse(storage.GetProperty("queueForUpload").GetBoolean());
         var retentionDays = storage.GetProperty("retentionDays").GetInt32();
         Assert.AreEqual(7, retentionDays);
         return retentionDays;

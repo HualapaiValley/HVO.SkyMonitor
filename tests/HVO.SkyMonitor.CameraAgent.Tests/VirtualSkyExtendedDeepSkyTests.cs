@@ -1349,8 +1349,6 @@ public sealed class VirtualSkyExtendedDeepSkyTests
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:AgentId"] = "dso-v3-sqlite-agent",
-                ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }

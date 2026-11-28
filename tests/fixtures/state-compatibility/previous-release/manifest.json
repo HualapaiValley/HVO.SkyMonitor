@@ -13,7 +13,7 @@
     "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
     "io.hvo.skymonitor.state-compatibility": "cameraagent-state-v2"
   },
-  "note": "The previous CameraAgent release's SQLite stores, as images that rebuild each one. No release has shipped, so the current development/v1 stores stand in. Regenerate them only in the release pull request that cuts a version, with HVO_WRITE_PREVIOUS_RELEASE_FIXTURES set when running PreviousReleaseStoreReadabilityTests; an ordinary pull request that needs a different image is shipping a store the previous release cannot read.",
+  "note": "Synthetic SQLite store images retained for installer snapshot inventory and counter tests.",
   "storageRoots": [
     "/app/data/raw",
     "/app/data/archive",

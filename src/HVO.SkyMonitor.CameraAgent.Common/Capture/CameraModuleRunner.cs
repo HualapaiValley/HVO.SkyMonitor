@@ -7,7 +7,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Imaging;
@@ -27,7 +27,7 @@ internal sealed class CameraModuleRunner
     private readonly CaptureAdmissionCoordinator? _captureAdmissionCoordinator;
     private readonly IPlanetEphemeris? _planetEphemeris;
     private readonly CaptureControlTelemetry? _telemetry;
-    private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureRuntimeState? _captureRuntimeState;
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator;
     private readonly EnvironmentalCaptureTriggerBridge? _environmentalTriggers;
 
@@ -38,12 +38,12 @@ internal sealed class CameraModuleRunner
         ILogger logger,
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
-        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureRuntimeState? captureRuntimeState = null,
         CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
         EnvironmentalCaptureTriggerBridge? environmentalTriggers = null)
         : this(
             module, hostContext, timeProvider, logger, null, planetEphemeris, telemetry,
-            fleetRuntimeState, scheduleRuntimeCoordinator, environmentalTriggers)
+            captureRuntimeState, scheduleRuntimeCoordinator, environmentalTriggers)
     {
     }
 
@@ -55,7 +55,7 @@ internal sealed class CameraModuleRunner
         CaptureAdmissionCoordinator? captureAdmissionCoordinator,
         IPlanetEphemeris? planetEphemeris = null,
         CaptureControlTelemetry? telemetry = null,
-        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureRuntimeState? captureRuntimeState = null,
         CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
         EnvironmentalCaptureTriggerBridge? environmentalTriggers = null)
     {
@@ -66,7 +66,7 @@ internal sealed class CameraModuleRunner
         _captureAdmissionCoordinator = captureAdmissionCoordinator;
         _planetEphemeris = planetEphemeris;
         _telemetry = telemetry;
-        _fleetRuntimeState = fleetRuntimeState;
+        _captureRuntimeState = captureRuntimeState;
         _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
         _environmentalTriggers = environmentalTriggers;
     }
@@ -382,9 +382,9 @@ internal sealed class CameraModuleRunner
                 admission.Dispose();
                 var isStorageFailure = ex is RawIngressConflictException or IOException or InvalidDataException or
                     UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException;
-                _fleetRuntimeState?.CaptureFailed(
+                _captureRuntimeState?.CaptureFailed(
                     ex.GetType().Name,
-                    isCameraDisconnected: !isStorageFailure && FleetRuntimeState.IsCameraDisconnectException(ex),
+                    isCameraDisconnected: !isStorageFailure && CaptureRuntimeState.IsCameraDisconnectException(ex),
                     isStorageFailure: isStorageFailure,
                     isStartupStorageFailure: false);
                 // A centered dispatch can have changed the device. Only a reconciled owner can open a fresh target.
@@ -408,7 +408,7 @@ internal sealed class CameraModuleRunner
             {
                 admission.MarkNoPublicationRequired();
                 admission.Dispose();
-                _fleetRuntimeState?.CaptureFailed("null-result");
+                _captureRuntimeState?.CaptureFailed("null-result");
                 if (reservation is not null)
                     throw new InvalidOperationException("The centered exposure did not return its target evidence.");
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "null-result");
@@ -440,7 +440,7 @@ internal sealed class CameraModuleRunner
                 var ingressElapsed = await centered!.PublishCenteredAsync(centeredSubmission, reservation, cancellationToken)
                     .ConfigureAwait(false);
                 acceptedAdmission.MarkPublished();
-                _fleetRuntimeState?.CaptureSucceeded(result, acquisitionElapsed, ingressElapsed);
+                _captureRuntimeState?.CaptureSucceeded(result, acquisitionElapsed, ingressElapsed);
                 if (_scheduleRuntimeCoordinator is null)
                     targetInterval = result.NextSetpoint.NextIntervalOverride ?? targetInterval;
                 else
@@ -618,7 +618,7 @@ internal sealed class CameraModuleRunner
             }
             var ingressDuration = _timeProvider.GetElapsedTime(ingressStartedTimestamp, _timeProvider.GetTimestamp());
             var cycleDuration = _timeProvider.GetElapsedTime(moduleCallStartedTimestamp, _timeProvider.GetTimestamp());
-            _fleetRuntimeState?.CaptureSucceeded(result, moduleDuration, ingressDuration);
+            _captureRuntimeState?.CaptureSucceeded(result, moduleDuration, ingressDuration);
             _telemetry?.RecordCycle(
                 evidence,
                 result.AcquisitionTiming,

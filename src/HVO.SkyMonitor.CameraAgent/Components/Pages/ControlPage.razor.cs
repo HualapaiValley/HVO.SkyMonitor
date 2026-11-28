@@ -100,7 +100,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         : CaptureState switch
         {
             "Running" => new Banner("success", "Capture is not paused.", "The schedule and the other admission checks decide when each exposure starts."),
-            "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing and delivery of accepted work continue."),
+            "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing of accepted work continues."),
             "PauseRequested" => new Banner("running", "Capture is pausing.", "The current exposure finishes through durable ingress before capture stops."),
             "Initializing" => new Banner("running", "Capture control is starting.", "Pause and resume become available once the durable state is read."),
             _ => new Banner("failure", "Capture control is unavailable.", "Pause and resume are disabled; see Health & diagnostics."),
@@ -260,7 +260,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             paused ? ControlKind.Pause : ControlKind.Resume,
             paused ? "Pause acquisition?" : "Resume acquisition?",
             paused
-                ? "The current exposure finishes through durable ingress before another exposure is blocked. Processing and delivery of accepted work continue."
+                ? "The current exposure finishes through durable ingress before another exposure is blocked. Processing of accepted work continues."
                 : "Capture admission reopens using the current startup-validated configuration. The schedule still decides when each exposure starts.",
             paused ? "Pause" : "Resume",
             _view.Summary.CaptureControl.Value.Version,
@@ -274,7 +274,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     {
         if (_submitting || !CanDrain) return;
         _pending = new PendingControl(ControlKind.Drain, "Request graceful drain?",
-            "The installer stops new acquisition and waits for accepted processing and delivery within a bounded timeout. Capture stays paused afterward; resume is an explicit action.",
+            "The installer stops new acquisition and waits for accepted processing within a bounded timeout. Capture stays paused afterward; resume is an explicit action.",
             "Drain", _view!.Summary.CaptureControl.Value.Version, Guid.NewGuid().ToString("D"), null, "control-drain");
         OpenDialog("control-reason");
     }

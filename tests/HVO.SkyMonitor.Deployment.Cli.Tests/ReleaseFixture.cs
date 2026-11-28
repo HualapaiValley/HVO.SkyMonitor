@@ -36,7 +36,7 @@ internal sealed class ReleaseFixture : IDisposable
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> ContractLabels = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
+        ["io.hvo.skymonitor.state-contract"] = "cameraagent-silo-state-v1",
         ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
         ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
         ["io.hvo.skymonitor.raw-ingress-schema"] = "13",

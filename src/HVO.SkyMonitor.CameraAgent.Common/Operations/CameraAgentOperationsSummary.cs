@@ -1,15 +1,12 @@
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Processing;
@@ -113,61 +110,6 @@ public sealed record OperationsTimingState(
     double P95Milliseconds,
     double MaximumMilliseconds);
 
-public sealed record OperationsHeartbeatState(
-    string Availability,
-    DateTimeOffset? LastAcknowledgedUtc,
-    long PendingCount,
-    long PendingBytes,
-    long LeasedCount,
-    long RetryCount,
-    long QuarantineCount,
-    long OverflowCount,
-    long BlockedCount,
-    DateTimeOffset? OldestPendingUtc);
-
-public sealed record OperationsEnvironmentalDeliveryState(
-    string Availability,
-    DateTimeOffset? LastAcknowledgedUtc,
-    long StoredCount,
-    long StoredBytes,
-    long PendingCount,
-    long PendingBytes,
-    long LeasedCount,
-    long RetryCount,
-    long QuarantineCount,
-    long TerminalCount,
-    long OverflowCount,
-    DateTimeOffset? OldestPendingUtc);
-
-/// <summary>
-/// Bounded sanitized status for the durable graph-execution evidence export lane. Every member is a counter, a
-/// bounded reason code, or a state name; no identity, payload, path, or credential is exposed.
-/// </summary>
-public sealed record OperationsExecutionEvidenceExportState(
-    string Availability,
-    string ReasonCode,
-    long PendingCount,
-    long PendingBytes,
-    long RetryCount,
-    long QuarantineCount,
-    long AbandonedCount,
-    long AcknowledgedCount,
-    long TotalAttempts,
-    long ConflictCount,
-    long RejectCount,
-    long DrainedCount,
-    long ResyncRequestCount,
-    long SourcePrunedCount,
-    long ProjectionRejectedCount,
-    long StorageBytes,
-    long HighestSequence,
-    long AcknowledgedThroughSequence,
-    int InFlightRequests,
-    bool StoragePressure,
-    string? NegotiatedSchemaVersion,
-    DateTimeOffset? LastAcknowledgementUtc,
-    DateTimeOffset? OldestPendingUtc);
-
 public sealed record OperationsTransientWorkerState(
     string Availability,
     long PendingFrames,
@@ -186,15 +128,13 @@ public sealed record OperationsCaptureTelemetryState(
     double AverageLoopMilliseconds,
     double CapturesPerMinute,
     double DutyCycle,
-    int FramesStored,
-    int ImmediateUploadCount);
+    int FramesStored);
 
 public sealed record OperationsConfigurationState(
     bool IsCurrent,
     string ValidationStatus,
     string? AgentId,
     string? ModuleType,
-    string CentralIntegration,
     string TransientDetection);
 
 public sealed record OperationsCaptureControlState(
@@ -208,12 +148,8 @@ public sealed record CameraAgentOperationsSummary(
     OperationsSection<OperationsQueueState> RawIngress,
     OperationsSection<OperationsCaptureLanesState> CaptureLanes,
     OperationsSection<OperationsQueueState> CaptureProcessing,
-    OperationsSection<OperationsQueueState> ArtifactOutbox,
     OperationsSection<IReadOnlyList<OperationsStorageState>> Storage,
     OperationsSection<OperationsCaptureRuntimeState> CaptureRuntime,
-    OperationsSection<OperationsHeartbeatState> Heartbeat,
-    OperationsSection<OperationsEnvironmentalDeliveryState> EnvironmentalDelivery,
-    OperationsSection<OperationsExecutionEvidenceExportState> ExecutionEvidenceExport,
     OperationsSection<OperationsTransientWorkerState> TransientWorker,
     OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
     OperationsSection<OperationsConfigurationState> Configuration,
@@ -226,12 +162,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
     IOperationsQueueSnapshotRefresher operationsQueueSnapshotRefresher,
     CaptureLaneState captureLanes,
     CaptureProcessingState captureProcessing,
-    ArtifactOutboxState artifactOutbox,
     StoragePressureState storagePressure,
-    FleetRuntimeState fleetRuntime,
-    FleetHeartbeatState heartbeat,
-    EnvironmentalObservationDeliveryState environmentalDelivery,
-    ExecutionEvidenceExportState executionEvidenceExport,
+    CaptureRuntimeState captureRuntime,
     TransientWorkerState transientWorker,
     ICaptureTelemetryProvider captureTelemetry,
     ICameraAgentConfigurationAccessor configurationAccessor,
@@ -249,17 +181,12 @@ public sealed class CameraAgentOperationsSummaryProvider(
         var ingress = rawIngress.Snapshot;
         var lanes = captureLanes.Snapshot;
         var processing = captureProcessing.Snapshot;
-        var outbox = artifactOutbox.Snapshot;
         var storage = storagePressure.Snapshots;
-        var runtime = fleetRuntime.Snapshot;
-        var heartbeatSnapshot = heartbeat.Snapshot;
-        var environmental = environmentalDelivery.Snapshot;
-        var evidenceExport = executionEvidenceExport.Snapshot;
+        var runtime = captureRuntime.Snapshot;
         var transient = transientWorker.Snapshot;
         var telemetry = captureTelemetry.GetSnapshot();
         var latest = telemetry.Samples.Count == 0 ? null : telemetry.Samples[^1];
-        var centralDisabled = hostOptions.Value.CentralIntegration.Mode == CentralIntegrationMode.Disabled;
-        var transientDisabled = hostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Off or TransientOperatingMode.Central;
+        var transientDisabled = hostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Off;
         var startupConfig = configurationAccessor.IsConfigured
             ? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false)
             : null;
@@ -290,15 +217,6 @@ public sealed class CameraAgentOperationsSummaryProvider(
             Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
                 processing.Availability.ToString(), processing.PendingCount, 0, processing.LeasedCount, processing.RetryCount,
                 0, processing.TerminalCount, processing.OldestPendingUtc)),
-            Section("artifact-outbox-state", centralDisabled, outbox.EvaluatedUtc, now, new OperationsQueueState(
-                centralDisabled ? "Disabled" : outbox.Availability.ToString(),
-                centralDisabled ? 0 : outbox.PendingCount,
-                centralDisabled ? 0 : outbox.PendingBytes,
-                centralDisabled ? 0 : outbox.LeasedCount,
-                centralDisabled ? 0 : outbox.RetryCount,
-                centralDisabled ? 0 : outbox.QuarantineCount,
-                0,
-                centralDisabled ? null : outbox.OldestPendingUtc)),
             Section("storage-pressure-state", Latest(storage.Select(static item => (DateTimeOffset?)item.EvaluatedUtc)), now,
                 (IReadOnlyList<OperationsStorageState>)storage
                     .Select(item => new { Snapshot = item, Location = locations.SingleOrDefault(location => PathsEqual(location.Root, item.StorageRoot)) })
@@ -308,7 +226,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                         item.Location!.Alias, item.Snapshot.Capacity.TotalBytes, item.Snapshot.Capacity.AvailableBytes,
                         item.Snapshot.IsUnderPressure, item.Snapshot.EffectiveRetentionDays, item.Snapshot.ProbeFailure is null))
                     .ToArray()),
-            Section("fleet-runtime-state", Latest([
+            Section("capture-runtime-state", Latest([
                 runtime.Capture.LastSucceededUtc,
                 runtime.Capture.LastFailedUtc,
                 runtime.Capture.LastRecoveredUtc]), now, new OperationsCaptureRuntimeState(
@@ -317,56 +235,6 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 runtime.Timings.Select(static timing => new OperationsTimingState(
                     timing.Segment.ToString(), timing.SampleCount, timing.MedianMilliseconds,
                     timing.P95Milliseconds, timing.MaximumMilliseconds)).ToArray())),
-            Section("fleet-heartbeat-state", centralDisabled, heartbeatSnapshot.Outbox?.EvaluatedUtc, now, new OperationsHeartbeatState(
-                centralDisabled ? "Disabled" : heartbeatSnapshot.Availability.ToString(),
-                centralDisabled ? null : heartbeatSnapshot.LastAcknowledgedUtc,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.PendingCount ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.PendingBytes ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.LeasedCount ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.RetryCount ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.QuarantineCount ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.OverflowCount ?? 0,
-                centralDisabled ? 0 : heartbeatSnapshot.Outbox?.BlockedCount ?? 0,
-                centralDisabled ? null : heartbeatSnapshot.Outbox?.OldestPendingUtc)),
-            Section("environmental-delivery-state", centralDisabled, environmental.Outbox?.EvaluatedUtc, now,
-                new OperationsEnvironmentalDeliveryState(
-                    centralDisabled ? "Disabled" : environmental.Availability.ToString(),
-                    centralDisabled ? null : environmental.LastAcknowledgedUtc,
-                    centralDisabled ? 0 : environmental.Outbox?.StoredCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.StoredBytes ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.PendingCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.PendingBytes ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.LeasedCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.RetryCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.QuarantineCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.TerminalCount ?? 0,
-                    centralDisabled ? 0 : environmental.Outbox?.OverflowCount ?? 0,
-                    centralDisabled ? null : environmental.Outbox?.OldestPendingUtc)),
-            Section("execution-evidence-export-state", centralDisabled, evidenceExport.EvaluatedUtc, now,
-                new OperationsExecutionEvidenceExportState(
-                    centralDisabled ? "Disabled" : evidenceExport.Availability.ToString(),
-                    centralDisabled ? ExecutionEvidenceExportReasonCodes.Disabled : evidenceExport.ReasonCode,
-                    centralDisabled ? 0 : evidenceExport.Backlog.PendingCount,
-                    centralDisabled ? 0 : evidenceExport.Backlog.PendingBytes,
-                    centralDisabled ? 0 : evidenceExport.Backlog.RetryCount,
-                    centralDisabled ? 0 : evidenceExport.Backlog.QuarantinedCount,
-                    centralDisabled ? 0 : evidenceExport.Backlog.AbandonedCount,
-                    centralDisabled ? 0 : evidenceExport.Backlog.AcknowledgedCount,
-                    centralDisabled ? 0 : evidenceExport.Backlog.TotalAttempts,
-                    centralDisabled ? 0 : evidenceExport.ConflictUnits,
-                    centralDisabled ? 0 : evidenceExport.RejectedUnits,
-                    centralDisabled ? 0 : evidenceExport.DrainedUnits,
-                    centralDisabled ? 0 : evidenceExport.ResyncRequests,
-                    centralDisabled ? 0 : evidenceExport.Backlog.SourcePrunedEvents,
-                    centralDisabled ? 0 : evidenceExport.Backlog.ProjectionRejectedEvents,
-                    centralDisabled ? 0 : evidenceExport.Backlog.DatabaseBytes,
-                    centralDisabled ? 0 : evidenceExport.Backlog.HighestSequence,
-                    centralDisabled ? 0 : evidenceExport.Backlog.AcknowledgedThroughSequence,
-                    centralDisabled ? 0 : evidenceExport.InFlightRequests,
-                    !centralDisabled && evidenceExport.StoragePressure,
-                    centralDisabled ? null : evidenceExport.NegotiatedSchemaVersion,
-                    centralDisabled ? null : evidenceExport.LastAcknowledgementUtc,
-                    centralDisabled ? null : evidenceExport.Backlog.OldestPendingUtc)),
             Section("transient-worker-state", transientDisabled, transient.UpdatedUtc, now, new OperationsTransientWorkerState(
                 transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates,
                 TransientCandidateExtractionProfiles.EdgeV1.MaximumCandidates)),
@@ -375,11 +243,10 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 latest?.Gain, telemetry.Aggregate.AverageIntervalMilliseconds,
                 telemetry.Aggregate.AverageExposureMilliseconds, telemetry.Aggregate.AverageProcessingMilliseconds,
                 telemetry.Aggregate.AverageLoopMilliseconds, telemetry.Aggregate.CapturesPerMinute,
-                telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored,
-                telemetry.Aggregate.ImmediateUploadCount)),
+                telemetry.Aggregate.DutyCycle, telemetry.Aggregate.FramesStored)),
             Section("validated-configuration", OperationsFreshness.Static, null, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", startupConfig?.AgentId,
-                startupConfig?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
+                startupConfig?.ModuleType,
                 hostOptions.Value.TransientDetection.Mode.ToString())),
             // Archived replay shares the processing refresh but is reported apart from live processing: the
             // lifecycle drain waits on live leases only, and records replay in its continuity boundary.

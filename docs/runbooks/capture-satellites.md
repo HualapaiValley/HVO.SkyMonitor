@@ -36,13 +36,10 @@ contracts. Add both node IDs to the existing `OverlayManifest` dependencies
 and set its options `satelliteVariant` to `capture-satellites-v1-layer` and
 `satelliteStatusVariant` to `capture-satellites-v1-status`. Preserve its existing
 scene, environment and base-image dependencies. Existing `Storage` dependencies
-may include both new nodes, with `queueForUpload: false` for their layoutless
-metadata. Durable-local publication already owns their canonical copy; `Storage`
-does not create a second local copy of those outputs. Current Sky and the archive
+may include both new nodes. Durable-local publication owns the canonical copy
+of those outputs. Current Sky and the archive
 view consume the canonical retained products. Retention also protects copies in
 recorded historical archive roots made through existing publication primitives.
-The optional central reconstruction boundary is the portable typed products;
-this slice adds no upload policy or automatic secondary archive publication.
 
 Installed orbital storage and the existing local time source supply the inputs.
 Capture and replay accept normalized CelesTrak CSV/OMM snapshots and retained

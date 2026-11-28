@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,7 +14,6 @@ internal interface IDeviceIdentityStore
 
 internal sealed record DeviceIdentity(
     string DeviceId,
-    string VerificationCode,
     DateTimeOffset CreatedUtc);
 
 internal sealed class DeviceIdentityStore(
@@ -62,7 +60,6 @@ internal sealed class DeviceIdentityStore(
 
             var identity = new DeviceIdentity(
                 Guid.NewGuid().ToString("N"),
-                GenerateVerificationCode(),
                 timeProvider.GetUtcNow());
 
             await using (var stream = File.Create(path))
@@ -86,17 +83,4 @@ internal sealed class DeviceIdentityStore(
 
     public void Dispose() => mutex.Dispose();
 
-    private static string GenerateVerificationCode()
-    {
-        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        Span<char> chars = stackalloc char[10];
-        Span<byte> random = stackalloc byte[chars.Length];
-        RandomNumberGenerator.Fill(random);
-        for (var i = 0; i < chars.Length; i++)
-        {
-            chars[i] = alphabet[random[i] % alphabet.Length];
-        }
-
-        return new string(chars);
-    }
 }

@@ -65,7 +65,7 @@ public sealed partial class LifecycleContractTests
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths), _ => owner,
+            UpgradeRequest(fixture), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths), _ => owner,
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
 
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
@@ -88,7 +88,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
+                UpgradeRequest(fixture), fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
         }
         finally
@@ -102,7 +102,7 @@ public sealed partial class LifecycleContractTests
             $"{(image == CandidateImageId ? "candidate" : "original")}-up:{lifecycle.ReadBoundary().CaptureState}:resumes={lifecycle.ResumeCount}");
 
         Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
             error: TextWriter.Null)).Outcome);
 
@@ -139,7 +139,7 @@ public sealed partial class LifecycleContractTests
         try
         {
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+                UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
                 _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
         }
         finally
@@ -160,9 +160,7 @@ public sealed partial class LifecycleContractTests
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task InterruptedUpgradeWithAnUnreadableCandidateJournal_RecoversOntoItsSnapshot(bool restoreOnly)
+    public async Task InterruptedUpgradeWithAnUnreadableCandidateJournal_RecoversOntoItsSnapshot()
     {
         // The installed image and the candidate both run canonical raw-ingress schema 15. The candidate leaves a
         // journal the canonical-schema check rejects, and the installer loses power before its own recovery. Both
@@ -184,7 +182,7 @@ public sealed partial class LifecycleContractTests
         {
             if (image == CandidateImageId) ExecuteSql(RawIngressPath(fixture.Paths), "CREATE TABLE IF NOT EXISTS candidate_drift(value INTEGER);");
         };
-        var request = UpgradeRequest(fixture, assertMigration: false);
+        var request = UpgradeRequest(fixture);
         using var captured = new TemporaryDirectory();
         var images = new List<CrashImage>();
         CaptureCrashImages(fixture, captured.Path, images);
@@ -201,30 +199,15 @@ public sealed partial class LifecycleContractTests
         var crash = images.First(static image => image.Step == "journal:CandidateVerified");
         RestoreCrashImage(fixture, crash);
         Assert.IsTrue(TableExists(RawIngressPath(fixture.Paths), "candidate_drift"));
-        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         var lifecycle = new StoreBackedLifecycleClient(fixture.Paths);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            restoreOnly
-                ? request with { Resume = true, RestoreOnly = true, RecoveryOperationId = interrupted.OperationId }
-                : request with { Resume = true },
+            request with { Resume = true },
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null);
 
-        if (restoreOnly)
-        {
-            Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
-            Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-            Assert.IsFalse(TableExists(RawIngressPath(fixture.Paths), "candidate_drift"));
-            var settled = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-            Assert.AreEqual(LifecycleOperationPhase.Restored, settled.Phase);
-            Assert.IsNotNull(settled.StateSnapshotRestoredUtc);
-        }
-        else
-        {
-            Assert.AreEqual("completed", result.Outcome);
-            Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        }
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
     }
 
     [TestMethod]
@@ -246,7 +229,7 @@ public sealed partial class LifecycleContractTests
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
+            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(), _ => owner,
             fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
 
         Assert.IsFalse(ColumnExists(configured, "outbox", "migrated"), "The outbox under the configured storage root was left migrated.");
@@ -269,7 +252,7 @@ public sealed partial class LifecycleContractTests
         var lifecycle = new FakeLifecycleClient();
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "not an absolute, normalized path", StringComparison.Ordinal);
@@ -417,7 +400,7 @@ public sealed partial class LifecycleContractTests
                 if (reader.Read()) sequence = Math.Max(sequence, Math.Max(reader.GetInt64(0), reader.GetInt64(1)));
             }
             return new LifecycleContinuity(state == "running" ? "Running" : "Paused", version, sequence,
-                0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
+                0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
         }
 
         private void Move(string state)

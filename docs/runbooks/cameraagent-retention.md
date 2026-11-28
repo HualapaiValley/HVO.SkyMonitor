@@ -1,11 +1,7 @@
-# CameraAgent Retention and Outbox Recovery
+# CameraAgent Retention and Recovery
 
-CameraAgent stores capture payloads beneath each configured storage root and
-tracks upload work in `<storage-root>/outbox/artifact-outbox.db`. The SQLite WAL
-journal is authoritative for attempts, leases, retry deadlines,
-acknowledgements, quarantine, and operator disposition. Retention treats
-pending, leased, retry, and quarantined work as a durable hold on its payload,
-companion metadata, and daily index entry.
+CameraAgent retains capture payloads and their local evidence under each configured storage root.
+The raw capture journal, processing records, and transient evidence determine which payloads remain held.
 
 ## Planned Storage Policy Changes
 
@@ -13,8 +9,7 @@ Before changing Storage in the local capture profile, pause acquisition and fini
 in-flight standard processing. Drain pending standard work too if those captures
 must complete under the old policy, even for a retention-only change in the same
 directory. A profile activation does not migrate already bound or running graphs.
-Before removing an old storage root from the profile, finish its pending uploads;
-the new profile's outbox draining and retention plans follow its configured roots.
+
 
 Configured-basic refreshes from the new profile automatically. If a Named graph
 is active, reconcile and activate a matching graph before resuming capture. See
@@ -23,17 +18,12 @@ processing skips and the limits of explicit replay recovery.
 
 ## Safety Invariant
 
-After every successful retention sweep, every held outbox record still
-references an existing payload beneath the same storage root. Expiration does
-not override this hold. Once central ingestion acknowledges the manifest and
-the outbox records a validated acknowledgement, the next eligible sweep may delete a derivative. Raw
-ingress evidence remains held by `raw-ingress.db` until all required durable
+Raw ingress evidence remains held by `raw-ingress.db` until all required durable
 lane acknowledgements are recorded and no retained transient reference still
 depends on it.
 
 Retention fails closed for a storage root before deleting anything when:
 
-- legacy outbox evidence is malformed and its referenced payload cannot be identified safely;
 - a pending path is absolute or escapes the configured root;
 - a pending payload is missing;
 - cancellation is requested while pending manifests are scanned.
@@ -55,7 +45,6 @@ admitted pass has finished, including one still waiting for its storage lock; no
 pass is admitted until capture resumes.
 
 The same barrier covers every other deletion a restored database row could depend on:
-- An uploaded payload is not removed after its acknowledgement; retention removes it later, on its root's schedule.
 - A projected-scene stage is removed after its processing node commits only once capture opens. That removal waits in
   memory, so a restart forgets it, and stage ownership does not depend on it: a stage whose projected-scene node is
   durably complete belongs to no capture, and stage reconciliation removes it once capture runs. A snapshot restore
@@ -67,12 +56,11 @@ The same barrier covers every other deletion a restored database row could depen
 
 A first initialization reads the durable admission state from the journal, because admission initialization waits for
 it; a later one takes a lease without initializing admission. See
-[Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
+[Checkpoint and image recovery](deployment-installer.md#checkpoint-and-image-recovery).
 
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires
-operator investigation; do not edit the outbox database or delete evidence
-until central ingestion or an audited abandonment accounts for the artifact.
+operator investigation. Preserve the affected capture evidence.
 
 ## Disk Pressure
 
@@ -82,8 +70,8 @@ remains active until capacity reaches `DiskPressureRecoveryPercent` (default
 15%). While active, eligible history uses the smaller of its configured
 retention and `DiskPressureRetentionDays` (default one day).
 
-The current UTC day and every pending outbox payload, sidecar, and index entry
-remain protected. Probe or outbox validation failures delete nothing for that
+The current observing day and locally held payloads, sidecars, and index entries
+remain protected. Probe or hold validation failures delete nothing for that
 root. `/health` reports pressure as degraded and capacity-probe failure as
 unhealthy; transition logs record entry and recovery. This policy does not pause
 capture or discard accepted frames.
@@ -135,20 +123,6 @@ when rolling back to a reader without those indexes in its schema allowlist.
 The [journal measurements](../validation/centered-view-retention-2000.md) record
 snapshot growth and steady-state and backlog sweep costs.
 
-## Outage Recovery
-
-1. Restore LogicHost, bearer-token issuance, or network connectivity.
-2. Confirm `<storage-root>/outbox/artifact-outbox.db` and its WAL/SHM files remain intact.
-3. Confirm `/health` reports `artifact-outbox` as healthy or degraded, not unavailable.
-4. Allow the normal outbox drain to claim due records and validate structured acknowledgements.
-5. Confirm pending/retry counts and oldest age decline while acknowledged count increases.
-6. Allow the next retention sweep to remove acknowledged derivatives older than policy.
-
-Attempts and retry deadlines survive CameraAgent restart in the canonical SQLite
-outbox. A populated database with an unsupported schema or retired record shape
-fails initialization without migration or mutation and requires operator
-recovery from known canonical state.
-
 ## Restart Browsing
 
 The daily `<storage-root>/index/frames_yyyy-MM-dd.jsonl` append is the browsing
@@ -194,70 +168,6 @@ rig pipeline (`captureFailureInitialDelay`, default 250 ms, and
 cancellation interrupts either capture or backoff immediately. Structured logs
 record the failure count/delay and the subsequent recovery transition.
 
-## Upload Drain
-
-The upload drain runs outside the acquisition pipeline and processes at most
-`CameraAgent:UploadBatchSize` leased records per poll. Transport failures, 408,
-425, 429, and 5xx responses retry with persisted exponential delays between
-`UploadRetryInitialDelaySeconds` and `UploadRetryMaximumDelaySeconds`. Valid
-bounded `Retry-After` values are honored. Permanent 4xx, invalid protocol
-responses, and missing or conflicting local evidence quarantine immediately.
-Lease expiry safely returns interrupted work to discovery; LogicHost
-idempotency prevents a duplicate central record.
-
-Set `CameraAgent:UploadBandwidthLimitBytesPerSecond` to a positive value to
-limit streamed payload reads, or leave it at `0` for no application-level
-limit. LogicHost acknowledges only after payload checksum verification, object
-storage, and SQL metadata persistence. CameraAgent validates the returned
-idempotency key, artifact ID, checksum, length, and accepted schema before
-recording acknowledgement and releasing a derivative's local artifact. It does not remove an ingress-owned raw
-payload or manifest-v2 sidecar while the SQLite retention hold remains active.
-
-New work is persisted as canonical manifest v2. LogicHost accepts only canonical
-v2 capture manifests, validates the complete reconstruction descriptor, and
-acknowledges the schema version it persisted. Retired v1 manifests are rejected
-before persistence and handled as permanent quarantined upload failures.
-OAuth client-credentials bearer authentication is the supported upload mode.
-An API key, rejected bearer identity, or inactive registration results in an
-`authentication-rejected` quarantine rather than an infinite retry.
-
-To inspect artifact retries or resolve quarantined work, authenticate as the
-configured local site owner and list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
-time-limited action token returned by that owner-only API when posting a bounded
-reason code to `/api/v1/operations/outboxes/artifacts/replay` or
-`/api/v1/operations/outboxes/artifacts/abandon`; do not expose a storage root,
-SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
-for quarantined records with valid deliverable evidence. Retry records are also
-listed in the Quarantine and retry browser (`/operations/quarantine`) with their
-artifact age, age since the latest durable update, attempt count, next attempt
-and last reason. Artifact age uses the immutable manifest creation timestamp;
-the latest-update age uses the outbox status timestamp. These remain meaningful
-for newly queued archived payloads and survive retry and restart. The API names
-them `artifactAgeSeconds` and `lastUpdateAgeSeconds` beside `createdUtc` and
-`updatedUtc`. First-enqueue time is not retained by the current outbox. All retries are
-visible, so a persistent failure needs no arbitrary age threshold to become
-operable. Automatic retry and its backoff remain unchanged; retry records do not
-have a replay action.
-
-The owner may abandon either a quarantined or retry record. The terminal update
-requires that status at commit: a record already leased or acknowledged rejects
-the action without an abandonment receipt. Refresh after an active delivery
-finishes before retrying the decision. Abandonment releases the delivery hold only
-after the actor, UTC time, and reason commit to the audit table. Preserve or
-export the payload, sidecar, journal, and conflict evidence before abandonment.
-
-Artifact and environmental operator receipts and their linked audit rows are
-pruned in the same transaction that records a new disposition. Each outbox
-retains at most 10,000 of the newest receipts and no receipt older than 30 days.
-Recent retained receipts continue to provide exact idempotent replay; callers
-must treat an operation key outside that documented retention window as a new
-request and obtain a fresh opaque action token.
-
-The former `/api/v1.0/artifact-outbox/{idempotencyKey}/*` and
-`/api/v1.0/environmental-observation-outbox/{recordId}/*` routes are retired as
-an intentional security breaking change. They accepted internal durable keys
-and raw storage-root selection directly; no compatibility shim is provided.
-
 ## Raw Ingress Recovery
 
 `CameraAgent:RawIngressRoot` is mandatory and must identify persistent local
@@ -284,9 +194,8 @@ payload bytes except those of captures processing reported, described below, so
 its I/O does not scale with retained payload bytes. Evidence a crash left
 without a committed journal row is still checksummed in full before it is
 recovered. Processing, replay, window inputs, transients, time-lapses, downloads
-and uploads verify a committed payload's checksum before using it; an upload
-whose payload fails that check is quarantined as `payload-checksum-mismatch`
-without sending it. When processing finds committed evidence it cannot use, its
+verify a committed payload's checksum before using it.
+When processing finds committed evidence it cannot use, its
 lane work ends as `evidence-unavailable`, and every reconciliation from then on,
 the next startup's included, checksums that capture's payload and quarantines a
 mismatch, as startup did before. Resuming capture after a start under the
@@ -349,27 +258,18 @@ quarantine totals before resuming normal operation.
 ## Environmental Local History
 
 The authoritative targetless environmental journal is
-`<raw-ingress-root>/.environment/environmental-observation-outbox.db`. Back up
+`<raw-ingress-root>/.environment/environmental-observations.db`. Back up
 the database with its WAL and SHM files while CameraAgent is stopped or through
 a SQLite-consistent snapshot. Never edit or remove those files while the host is
 running.
 
-Schema v3 adds targetless observation history, source runtime and attempts,
-capture associations, durable on-demand commands, and independent central
-projections. Migration from v2 transactionally backfills every surviving
-delivery row and is restart-idempotent. V2 rows already deleted after central
-acknowledgement cannot be reconstructed, and migration never invents them. A
-newer schema fails closed. The journal retains WAL, `synchronous=FULL`, busy
-timeout, integrity, root containment, and symbolic-link defenses.
+The journal records observation history, source runtime and attempts, capture associations,
+and durable on-demand commands. WAL, full synchronization, integrity checks, and path
+confinement protect the store.
 
-Local history has independent age, count, byte, and batch limits. Active
-lineage, capture associations whose capture remains in `raw-ingress.db`, and
-waiting or staged central projections pin their referenced observations under
-normal and pressure retention. Once raw ingress releases a capture and its aged
-association is pruned, the corresponding observation may become eligible.
-Central acknowledgement removes only the delivery copy; it does not remove
-local history. Standalone mode remains authoritative and creates no central
-projection.
+Retention applies age, count, byte, and batch limits. Active lineage and associations
+for retained raw captures pin their observations. Once a capture is released and its
+aged association is pruned, the observation can become eligible for removal.
 
 Owner-authenticated environmental operations are:
 
@@ -387,73 +287,6 @@ SQLite IDs, storage roots, hashes, actor IDs, credentials, and operation keys
 must not appear in operator URLs or public health output. A full queue or active
 same-source command returns `429`; same-key/different-payload conflict returns
 `409`.
-
-## Execution Evidence Export
-
-The durable graph-execution evidence outbox is
-`<raw-ingress-root>/evidence/execution-evidence-outbox.db`. It is a separate
-database file from `raw-ingress.db` on purpose: an installer rollback to a
-baseline image must still open every store that image knows about, and a
-separate file is simply never opened. Back it up with its WAL and SHM files
-while CameraAgent is stopped or through a SQLite-consistent snapshot, and never
-edit those files while the host is running.
-
-The store pins schema version 1 and compares its entire `sqlite_master`
-definition against the canonical schema the first time the host opens it. A
-drifted or newer store fails closed with `export.durable-state-unavailable`. The
-check runs again on the next cycle, so archiving or repairing the file recovers
-the lane without a host restart, and the first cycle after a failed start is the
-one that retries it. Capture,
-raw ingress, live processing, publication, artifact upload, and replay continue
-unaffected, because nothing local reads this store.
-
-Recovery steps for a stalled or degraded lane:
-
-1. Read `execution-evidence-export-state` in the operations summary. Its
-   `reasonCode` names the exact bound or fault: `export.transport-unconfigured`
-   (standalone; nothing is enlisted and nothing accumulates),
-   `export.backlog-saturated`, `export.storage-saturated`,
-   `export.storage-pressure`, `export.source-pruned`,
-   `export.projection-rejected`, `export.quarantined`,
-   `export.negotiation-rejected`, `export.authentication-blocked`,
-   `export.resync-requested`, `export.acknowledgement-pending`, or
-   `export.cycle-failed`.
-2. For a saturation or pressure state, free space or raise the relevant
-   `CameraAgent:ExecutionEvidenceExport` bound. Enlistment resumes from the
-   durable cursor; nothing already enlisted was discarded.
-3. For `export.source-pruned`, source retention removed terminal executions the
-   exporter had deferred and never sealed. The counter and the log entry record
-   it; that evidence cannot be recovered and the operator decides whether to
-   widen retention or the export bounds so it does not recur. For
-   `export.projection-rejected`, an execution carried a durable value this
-   contract version cannot express or sealed above `MaximumUnitBytes`; it is
-   counted once per execution and the sweep continues past it.
-4. For quarantined units, list them with
-   `GET /api/v1/operations/outboxes/execution-evidence`, inspect one with
-   `GET /api/v1/operations/outboxes/execution-evidence/{reference}` and its
-   `/audit` page, then either
-   `POST /api/v1/operations/outboxes/execution-evidence/replay` after the cause
-   is corrected or
-   `POST /api/v1/operations/outboxes/execution-evidence/abandon` to accept the
-   loss explicitly.
-
-Reads require operations-read authorization. Both mutations additionally require
-owner operations-mutate authorization, antiforgery validation, an allow-listed
-reason code, and an `Idempotency-Key`; the same key with different intent
-returns `409`. References, cursors, and action tokens are protected and bounded,
-so sequences, origin identities, payload hashes, and SQLite IDs never appear in
-operator URLs.
-
-Retention removes only acknowledged units, and only those older than
-`AcknowledgementRetentionHours` or beyond `MaximumRetainedAcknowledgements`.
-Pending, retrying, quarantined, and abandoned units are retained until the
-receiver acknowledges them or an operator disposes of them, and the audit trail
-and operator receipts outlive the units they describe so the disposition history
-above stays readable. This lane pins no image file and holds no payload path, so
-it never blocks the disk-pressure sweep and the sweep never deletes anything it
-owns; disk pressure does pause new enlistment, which is reported as
-`export.storage-pressure` and resumes from the durable cursor with nothing
-lost.
 
 ## Soak Validation
 
@@ -501,7 +334,7 @@ a deferred observation contributes no available, missing or quarantine decision.
 The existing `HVO.SkyMonitor.CameraAgent.ProcessingGraph` meter exposes
 `camera_agent.storage.lifecycle.wait.duration` in seconds, tagged only by the bounded
 `caller` values `capture-storage`, `artifact-read`, `reconciliation`, `gallery`,
-`retention`, `outbox`, `upload`, `trail-composition` and `replay`. Acquisitions add
+`retention`, `trail-composition` and `replay`. Acquisitions add
 `storage.lifecycle.lock.acquired` events to the current diagnostic activity with
 `caller` and `wait.duration`. Debug event 8450 records each completed or canceled wait. Warning
 8451 is emitted only when the measured wait exceeds 250 ms. No path or artifact

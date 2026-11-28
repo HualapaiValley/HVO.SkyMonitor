@@ -1,5 +1,5 @@
 {
-    "agentId": "replace-with-registered-device-id",
+    "agentId": "use-local-device-id",
     "module": {
         "type": "VirtualSky",
         "options": {
@@ -240,8 +240,7 @@
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
-                "updateLatestFrame": true,
-                "queueForUpload": false
+                "updateLatestFrame": true
             }
         },
         {
@@ -252,8 +251,7 @@
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
-                "updateLatestFrame": false,
-                "queueForUpload": false
+                "updateLatestFrame": false
             }
         },
         {

@@ -41,10 +41,10 @@ The CLI validates the exact four files, database bytes and schema against the
 approved registry. It publishes the immutable package under
 `/var/lib/hvo-sky/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1`
 and updates the lineage's `current` pointer. Each installer-managed instance
-pins an explicit version. On layouts that admit catalog lifecycle commands, activate
-a new revision with `hvo-sky-install catalog select --instance-id UUID --catalog-version VERSION`.
-The [first Silo layout](../runbooks/cameraagent-silo-runtime.md#uninstall-purge-and-unsupported-operations)
-has its own supported operation list.
+pins an explicit version. Activate a new revision with
+`hvo-sky-install catalog select --instance-id UUID --catalog-version VERSION`.
+See [Silo lifecycle operations](../runbooks/cameraagent-silo-runtime.md#silo-lifecycle-operations)
+for the Silo layout.
 
 A directly configured CameraAgent uses `Catalog:Root` pointing to the lineage
 root, `Catalog:RequiredCatalogId=hyg-v44-production` and

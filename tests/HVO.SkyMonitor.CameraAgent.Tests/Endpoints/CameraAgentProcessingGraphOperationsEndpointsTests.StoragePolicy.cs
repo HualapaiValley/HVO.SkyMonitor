@@ -46,7 +46,6 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
             var detail = problem.RootElement.GetProperty("detail").GetString()!;
             StringAssert.Contains(detail, "StorageRoot", StringComparison.Ordinal);
             StringAssert.Contains(detail, "RetentionDays", StringComparison.Ordinal);
-            StringAssert.Contains(detail, "QueueForUpload", StringComparison.Ordinal);
             StringAssert.Contains(body, "capture profile", StringComparison.Ordinal);
             Assert.IsFalse(body.Contains(root, StringComparison.Ordinal), "Problem responses carry only fixed public guidance.");
             var after = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);

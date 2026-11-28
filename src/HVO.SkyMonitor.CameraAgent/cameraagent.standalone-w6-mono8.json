@@ -146,7 +146,6 @@
           "storageRoot": "/var/lib/hvo/data/agent",
           "retentionDays": 1,
           "updateLatestFrame": true,
-          "queueForUpload": false,
           "policies": []
         }
       },

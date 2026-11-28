@@ -366,26 +366,6 @@ public sealed class ExitCodeContractTests
     }
 
     [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RunAsync_DeprecatedOptionWithJson_IsAWarningInTheResultAndWithoutJsonOnStandardError()
-    {
-        using var host = new PolicyHost();
-        var services = Substituted(host, "done");
-        string[] upgrade = [.. Arguments("cameraagent upgrade"), "--migration-backward-compatible"];
-
-        var json = await RunAsync([.. upgrade, "--json"], services, CancellationToken.None);
-        var human = await RunAsync(upgrade, services, CancellationToken.None);
-
-        Assert.AreEqual(0, json.ExitCode);
-        Assert.AreEqual(string.Empty, json.Error);
-        using var document = JsonDocument.Parse(json.Output);
-        var warning = document.RootElement.GetProperty("warnings")[0];
-        Assert.AreEqual("option-deprecated", warning.GetProperty("code").GetString());
-        Assert.AreEqual(0, human.ExitCode);
-        StringAssert.StartsWith(human.Error, "Warning: --migration-backward-compatible is deprecated", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
     public async Task RunAsync_LifecycleWorkerOnceJson_ReportsAPollWithoutInventingOperationSuccess()
     {
         using var host = new PolicyHost();
@@ -434,7 +414,7 @@ public sealed class ExitCodeContractTests
 
     private static CameraAgentStatePreflightReport Report(Guid instanceId, bool compatible)
         => new(1, compatible ? "compatible" : "incompatible", instanceId, "/var/lib/hvo-sky/cameraagents/x", ImageRef, null,
-            "cameraagent-state-v2", null, "cameraagent-state-v2", compatible, [], DateTimeOffset.UtcNow);
+            "cameraagent-silo-state-v1", "cameraagent-silo-state-v1", compatible, [], DateTimeOffset.UtcNow);
 
     private static InstallationResult Installation(InstallRequest request)
     {

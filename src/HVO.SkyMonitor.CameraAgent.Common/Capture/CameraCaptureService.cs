@@ -9,7 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
@@ -29,7 +29,7 @@ public sealed class CameraCaptureService(
     IPlanetEphemeris planetEphemeris,
     CaptureControlTelemetry captureControlTelemetry,
     CaptureAdmissionCoordinator captureAdmissionCoordinator,
-    FleetRuntimeState fleetRuntimeState,
+    CaptureRuntimeState captureRuntimeState,
     IHostApplicationLifetime applicationLifetime,
     ILogger<CameraCaptureService> logger,
     CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
@@ -51,7 +51,7 @@ public sealed class CameraCaptureService(
     private readonly CaptureControlTelemetry _captureControlTelemetry = captureControlTelemetry;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureAdmissionCoordinator _captureAdmissionCoordinator = captureAdmissionCoordinator;
-    private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
+    private readonly CaptureRuntimeState _captureRuntimeState = captureRuntimeState;
     private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
@@ -197,7 +197,7 @@ public sealed class CameraCaptureService(
                 if (prepared is not null)
                     namedRigProfiles!.ReportPendingRuntimeFailure(null);
                 namedRigProfiles?.ReportActiveRuntimeFailure(null);
-                _fleetRuntimeState.ModuleAvailable();
+                _captureRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
                 runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                     captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
@@ -221,7 +221,7 @@ public sealed class CameraCaptureService(
                     _captureAdmissionCoordinator,
                     _planetEphemeris,
                     _captureControlTelemetry,
-                    _fleetRuntimeState,
+                    _captureRuntimeState,
                     _scheduleRuntimeCoordinator,
                     _environmentalTriggers);
                 await runner.RunAsync(runnerCancellation.Token).ConfigureAwait(false);
@@ -256,10 +256,10 @@ public sealed class CameraCaptureService(
                     namedRigProfiles?.ReportActiveRuntimeFailure(
                         prepared is null ? $"Active camera module initialization failed ({ex.GetType().Name}); capture unavailable."
                             : null);
-                _fleetRuntimeState.CaptureFailed(
+                _captureRuntimeState.CaptureFailed(
                     ex.GetType().Name,
                     isCameraDisconnected: !isStorageFailure && !activationFailed &&
-                                          FleetRuntimeState.IsCameraDisconnectException(ex),
+                                          CaptureRuntimeState.IsCameraDisconnectException(ex),
                     isStorageFailure: isStorageFailure,
                     isStartupStorageFailure: isStorageFailure && !moduleInitialized);
                 if (isStorageFailure)
@@ -300,9 +300,9 @@ public sealed class CameraCaptureService(
                     }
                     catch (Exception ex)
                     {
-                        _fleetRuntimeState.CaptureFailed(
+                        _captureRuntimeState.CaptureFailed(
                             ex.GetType().Name,
-                            isCameraDisconnected: FleetRuntimeState.IsCameraDisconnectException(ex));
+                            isCameraDisconnected: CaptureRuntimeState.IsCameraDisconnectException(ex));
                         _logger.CaptureLoopFailed(ex);
                         if (!stoppingToken.IsCancellationRequested)
                         {

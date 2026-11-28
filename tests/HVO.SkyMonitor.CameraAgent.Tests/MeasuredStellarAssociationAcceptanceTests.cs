@@ -290,7 +290,6 @@ public sealed class MeasuredStellarAssociationAcceptanceTests
             ["CameraAgent:RawIngressRoot"] = ingressRoot,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:AgentId"] = AgentId,
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
         }).Build());
         services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
         var provider = services.BuildServiceProvider();

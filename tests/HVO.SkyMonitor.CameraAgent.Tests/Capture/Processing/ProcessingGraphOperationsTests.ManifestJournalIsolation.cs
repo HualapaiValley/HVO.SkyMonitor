@@ -2,13 +2,11 @@ using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
-using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
-using HVO.SkyMonitor.CameraAgent.Tests.Evidence;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -28,7 +26,6 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("api")]
     [DataRow("ui")]
     [DataRow("replay")]
-    [DataRow("export")]
     public async Task CorruptOptionalManifestCountsPreserveJournalConsumersAndRecover(string consumer)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-manifest-journal");
@@ -115,48 +112,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsTrue(progress.IsSuccess, progress.Message);
                 Assert.IsNotEmpty(progress.Value!.Nodes);
                 return JsonSerializer.Serialize(progress.Value);
-            case "export":
-                var sink = new ExecutionEvidenceConformanceSink(TimeProvider.System);
-                var origin = new Mock<IExecutionEvidenceOriginProvider>();
-                origin.Setup(value => value.GetDescriptorAsync(It.IsAny<CancellationToken>())).ReturnsAsync(
-                    new ExecutionEvidenceOriginDescriptor(Guid.NewGuid(), Guid.NewGuid(), "1.0.0-journal-test"));
-                var state = new ExecutionEvidenceExportState();
-                using (var outbox = new SqliteExecutionEvidenceOutbox(TimeProvider.System))
-                using (var telemetry = new ExecutionEvidenceExportTelemetry(state, TimeProvider.System))
-                using (var exporter = new ExecutionEvidenceExportService(outbox, sink, origin.Object, new SingleExecutionEvidenceSource(operations, id), configuration,
-                    state, telemetry, new ExecutionEvidenceExportWakeup(), new StoragePressureState(),
-                    Options.Create(new CameraAgentHostOptions { RawIngressRoot = Path.Combine(root, $"export-{Guid.NewGuid():N}") }),
-                    TimeProvider.System, NullLogger<ExecutionEvidenceExportService>.Instance))
-                {
-                    await exporter.RunCycleOnceAsync(cancellationToken).ConfigureAwait(false);
-                    await exporter.RunCycleOnceAsync(cancellationToken).ConfigureAwait(false);
-                    var execution = sink.AcceptedEnvelopes.Single(envelope => envelope.Kind == ExecutionEvidenceBodyKind.GraphExecution &&
-                        envelope.Execution!.ExecutionId == id).Execution!;
-                    Assert.IsNotEmpty(execution.Nodes);
-                    return JsonSerializer.Serialize(execution);
-                }
             default: throw new AssertFailedException($"Unknown consumer {consumer}.");
         }
     }
 
-    // Sweep just the intact consuming run, even when testing another capture's corrupt
-    // descriptor. All detail/revision/provenance reads still use the real SQLite coordinator.
-    private sealed class SingleExecutionEvidenceSource(ProcessingGraphOperationsCoordinator inner, Guid id) : IExecutionEvidenceSource
-    {
-        public async ValueTask<IReadOnlyList<ProcessingGraphTerminalExecution>> ReadTerminalExecutionsAsync(
-            long afterTerminalUnixMs, string afterExecutionId, int maximumCount, CancellationToken cancellationToken)
-            => (await ((IExecutionEvidenceSource)inner).ReadTerminalExecutionsAsync(
-                afterTerminalUnixMs, afterExecutionId, maximumCount, cancellationToken).ConfigureAwait(false))
-                .Where(row => row.ExecutionId == id).ToArray();
-        public ValueTask<long?> ReadOldestTerminalExecutionKeyAsync(CancellationToken cancellationToken)
-            => ((IExecutionEvidenceSource)inner).ReadOldestTerminalExecutionKeyAsync(cancellationToken);
-        public ValueTask<long?> ReadOldestActiveExecutionKeyAsync(CancellationToken cancellationToken)
-            => ((IExecutionEvidenceSource)inner).ReadOldestActiveExecutionKeyAsync(cancellationToken);
-        public ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(Guid executionId, CancellationToken cancellationToken)
-            => inner.ReadExecutionDetailAsync(executionId, cancellationToken);
-        public ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(string revisionId, CancellationToken cancellationToken)
-            => ((IExecutionEvidenceSource)inner).ReadRevisionSnapshotAsync(revisionId, cancellationToken);
-        public ValueTask<ExecutionEvidenceAssignmentProvenanceV1?> ReadAssignmentProvenanceAsync(string revisionId, CancellationToken cancellationToken)
-            => ((IExecutionEvidenceSource)inner).ReadAssignmentProvenanceAsync(revisionId, cancellationToken);
-    }
 }

@@ -398,22 +398,6 @@ public sealed partial class ProcessingNodeOptionsTests
     }
 
     [TestMethod]
-    public void TheCanonicalCentralGraphValidatesAndRoundTripsToItsShippedBytes()
-    {
-        // The fixture is the byte-exact DefinitionJson development/v1 b13f0d0e stored for the central graph.
-        var bytes = File.ReadAllBytes(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "canonical-central-graph-rev1-b13f0d0e.json"));
-        var definition = ProcessingGraphJson.Parse(bytes).Definition!;
-
-        Assert.IsEmpty(ProcessingNodeOptionsCatalog.BuiltIn.Validate(definition));
-        var roundTripped = RoundTrip(ProcessingNodeOptionsCatalog.BuiltIn, definition);
-        CollectionAssert.AreEqual(bytes, ProcessingGraphJson.SerializeCanonical(roundTripped));
-        Assert.AreEqual(
-            ProcessingGraphJson.ComputeDefinitionIdentity(definition),
-            ProcessingGraphJson.ComputeDefinitionIdentity(roundTripped));
-    }
-
-    [TestMethod]
     public void UpgradeIsExplicitAndCoversTheWholeDraftInANewRevision()
     {
         var catalog = UpgradeCatalog(new WidthToThicknessUpgrade());

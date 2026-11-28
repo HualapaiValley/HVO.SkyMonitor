@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
-    private OperatorOutboxPage? _page;
+    private OperatorQuarantinePage? _page;
     private PendingAction? _pending;
     private IJSObjectReference? _module;
     private ElementReference _dialog;
@@ -62,7 +62,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         try
         {
             var result = await OperatorService.GetQuarantinePageAsync(
-                string.IsNullOrWhiteSpace(Kind) ? "Artifact" : Kind,
+                string.IsNullOrWhiteSpace(Kind) ? "RawEvidence" : Kind,
                 StorageAlias,
                 Cursor,
                 25,
@@ -98,7 +98,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         }
     }
 
-    private void BeginAction(OperatorOutboxActionRequest request)
+    private void BeginAction(QuarantineActionRequest request)
     {
         if (_isSubmitting)
         {
@@ -108,7 +108,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
             request.Item,
             request.Action,
             request.TriggerId,
-            request.Action == OutboxOperationAction.Replay ? request.Item.ReplayToken! : request.Item.AbandonToken!,
+            request.Action == QuarantineOperationAction.Replay ? request.Item.ReplayToken! : request.Item.AbandonToken!,
             $"ui-{Convert.ToHexString(RandomNumberGenerator.GetBytes(32))}");
         _reasonCode = ReasonCodes[0].Code;
         _commandError = null;
@@ -171,7 +171,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         _commandError = null;
         try
         {
-            var result = await OperatorService.ResolveOutboxAsync(
+            var result = await OperatorService.ResolveQuarantineAsync(
                 command.Item.Kind,
                 command.Action,
                 command.ActionToken,
@@ -194,7 +194,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
             }
             else
             {
-                _commandError = result.Message ?? "The outbox command could not be completed.";
+                _commandError = result.Message ?? "The quarantine command could not be completed.";
             }
         }
         catch (OperationCanceledException) when (_loadCancellation?.IsCancellationRequested == true)
@@ -240,7 +240,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         new Dictionary<string, object?> { ["alias"] = alias });
 
     private string SourceClass(string kind) =>
-        string.Equals(_page?.Kind ?? (string.IsNullOrWhiteSpace(Kind) ? "Artifact" : Kind), kind, StringComparison.OrdinalIgnoreCase)
+        string.Equals(_page?.Kind ?? (string.IsNullOrWhiteSpace(Kind) ? "RawEvidence" : Kind), kind, StringComparison.OrdinalIgnoreCase)
             ? "active"
             : string.Empty;
 
@@ -250,29 +250,23 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         ? "Raw evidence quarantine and audited releases"
         : _page?.Kind == "ProcessingLane"
         ? "Processing lane quarantine and acknowledgement"
-        : _page?.Kind == "Environmental"
-        ? "Environmental quarantine and terminal records"
-        : _page?.Kind == "TransientRuntime"
-            ? "Transient runtime quarantine"
-            : $"Artifact quarantine and retry / {_page?.StorageAlias ?? "no configured storage"}";
+        : "Transient runtime quarantine";
 
     private string ActionLabel => _pending?.Item.Kind == "ProcessingLane"
         ? "Acknowledge"
         : _pending?.Item.Kind == "RawEvidence"
-        ? _pending.Action == OutboxOperationAction.Abandon ? "Write off" : "Revalidate"
+        ? _pending.Action == QuarantineOperationAction.Abandon ? "Write off" : "Revalidate"
         : _pending?.Action.ToString() ?? string.Empty;
 
     private string ConfirmationDescription => _pending?.Item.Kind == "ProcessingLane"
         ? "Acknowledgement abandons this standard-lane quarantine and records the actor, reason and time. The raw capture, its bytes and the failed execution history stay unchanged. Evidence-invalid quarantines are not listed here."
         : _pending?.Item.Kind == "RawEvidence"
-        ? _pending.Action == OutboxOperationAction.Abandon
+        ? _pending.Action == QuarantineOperationAction.Abandon
             ? "Write-off records an audited terminal loss decision and stops pending capture lanes. All raw files remain preserved; capture identity cannot be reused."
             : "Revalidation checks recovered raw files against the original committed manifest and checksum. Evidence-failed standard work stays terminal; other eligible lanes may retry. Recovered raw stays preserved for explicitly requested archived replay, without deletion or rewriting."
         : _pending?.Item.Kind == "TransientRuntime"
         ? "Abandonment records an audited loss decision for this exact immutable source identity before recomputing its retention hold. Other required holds remain unchanged."
-        : _pending?.Action == OutboxOperationAction.Abandon
-            ? "Abandonment releases the durable delivery hold and stops delivery by this outbox. If delivery has already started, refresh the list and try again after it finishes."
-            : "Replay returns the item to bounded delivery using its existing durable evidence.";
+        : string.Empty;
 
     private void ClearRenderedData()
     {
@@ -313,10 +307,10 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         _pending?.Item.Kind == "ProcessingLane"
             ? [("processing-failure-acknowledged", "Processing failure acknowledged")]
             : _pending?.Item.Kind == "RawEvidence"
-            ? _pending.Action == OutboxOperationAction.Replay
+            ? _pending.Action == QuarantineOperationAction.Replay
                 ? [("evidence-restored", "Evidence restored")]
                 : [("irrecoverable-evidence", "Irrecoverable evidence"), ("operator-approved-loss", "Operator-approved loss")]
-            : _pending?.Action == OutboxOperationAction.Abandon ? AbandonReasons : ReplayReasons;
+            : _pending?.Action == QuarantineOperationAction.Abandon ? AbandonReasons : ReplayReasons;
 
     public async ValueTask DisposeAsync()
     {
@@ -340,8 +334,8 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
     }
 
     private sealed record PendingAction(
-        OperatorOutboxItem Item,
-        OutboxOperationAction Action,
+        OperatorQuarantineItem Item,
+        QuarantineOperationAction Action,
         string TriggerId,
         string ActionToken,
         string IdempotencyKey,

@@ -163,7 +163,6 @@ public sealed class CameraAgentSatellitePlanningRuntimeTests
             {
                 ["CameraAgent:RawIngressRoot"] = Path.Combine(root, "ingress"),
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:OrbitalElements:Enabled"] = "false"
             };
             if (enabled)

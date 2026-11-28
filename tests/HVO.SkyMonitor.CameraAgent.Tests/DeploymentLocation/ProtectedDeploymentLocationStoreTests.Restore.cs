@@ -48,8 +48,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -61,7 +60,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         if (fault is "pending-target" or "pending-both")
             await AddInterruptedIntentAsync("J|1", captureJson).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         using var current = CreateStore();
@@ -185,8 +184,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -199,7 +197,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         _ = await original.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         original.Dispose();
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         var staged = Path.Combine(paths.ProductRoot, "verified-archive-staging");
@@ -250,8 +248,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         }
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = stagedRaw,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = stagedRaw
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         using var restored = CreateStore();
@@ -289,8 +286,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             InstallerFiles.CreateOwnerDirectory(directory);
         _options = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw")
         });
         _protector = new DataProtectionDeploymentLocationProtector(_options);
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
@@ -304,7 +300,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         DeleteFixtureLedger();
         var history = await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
-            "sha256:" + new string('b', 64), "amd64", null);
+            "sha256:" + new string('b', 64), "amd64", null, StateContract: CameraAgentSiloBinding.StateContract);
         var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
             InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
         using var candidate = CreateStore();

@@ -16,7 +16,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task ManualRollbackAcrossLedgerBoundaryPreservesCommittedAuthority(bool plan)
+    public async Task BaselineRollbackPreservesCommittedLedgerAuthority(bool plan)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -37,10 +37,9 @@ public sealed partial class LifecycleContractTests
         var ledger = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
         fixture.Runner.OnComposeUp = image =>
         {
-            Assert.AreEqual(CandidateImageId, image);
-            if (!File.Exists(ledger)) SeedBoundaryLedger(ledger, retained, history, protector);
+            if (image == CandidateImageId && !File.Exists(ledger)) SeedBoundaryLedger(ledger, retained, history, protector);
         };
-        _ = await CameraAgentLifecycleManager.ExecuteAsync(UpgradeRequest(fixture, assertMigration: false), fixture.Runner,
+        _ = await CameraAgentLifecycleManager.ExecuteAsync(UpgradeRequest(fixture), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
             CancellationToken.None, error: TextWriter.Null);
         var committedHistory = await File.ReadAllBytesAsync(history);
@@ -49,16 +48,20 @@ public sealed partial class LifecycleContractTests
         var committedJournal = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
         var dockerCalls = fixture.Runner.InvocationCount;
 
-        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+        var rollback = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Rollback) with { DryRun = plan }, fixture.Runner,
-            null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
-        Assert.IsTrue(refusal.IsRefusal);
-        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(dockerCalls, fixture.Runner.InvocationCount);
+            _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual(plan ? "planned" : "completed", rollback.Outcome);
+        Assert.AreEqual(plan ? CandidateImageId : fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        if (plan)
+        {
+            Assert.IsTrue(fixture.Runner.InvocationCount >= dockerCalls);
+            CollectionAssert.AreEqual(committedJournal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        }
         CollectionAssert.AreEqual(committedHistory, await File.ReadAllBytesAsync(history));
         CollectionAssert.AreEqual(committedLedger, await File.ReadAllBytesAsync(ledger));
         CollectionAssert.AreEqual(committedFacts, ReadStoreFacts(fixture.Paths));
-        CollectionAssert.AreEqual(committedJournal, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual("{}", await File.ReadAllTextAsync(retained));
     }
 

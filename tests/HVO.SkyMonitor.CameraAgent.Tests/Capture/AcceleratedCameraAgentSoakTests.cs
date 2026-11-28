@@ -133,7 +133,7 @@ public sealed class AcceleratedCameraAgentSoakTests
                 Step("Storage", 100,
                     new FileStorageCaptureProcessingStepOptions
                     {
-                        StorageRoot = root, RetentionDays = 1, QueueForUpload = false, UpdateLatestFrame = false
+                        StorageRoot = root, RetentionDays = 1, UpdateLatestFrame = false
                     }),
                 Step("Telemetry", 200,
                     new TelemetryProcessingStepOptions())

@@ -1,7 +1,7 @@
 # CameraAgent Space-Weather Refresh
 
 CameraAgent keeps NOAA SWPC facts and local notice history in its own SQLite store. One
-reserved automation refreshes the configured core products. LogicHost never polls them.
+reserved automation refreshes the configured core products.
 There is no outbox, notification delivery, email, SMS, webhook, capture action or
 `IEnvironmentalSource` integration. External delivery remains under #455; terrestrial
 weather acquisition remains under #1092. Operators work through the

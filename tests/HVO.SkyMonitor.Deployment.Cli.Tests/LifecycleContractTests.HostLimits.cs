@@ -39,7 +39,6 @@ public sealed partial class LifecycleContractTests
         {
             Release = release.Folder,
             ImageSource = ReleaseImageSource.Registry,
-            MigrationBackwardCompatible = true
         };
         var before = FileSystemActivity.Snapshot(fixture.Root);
 
@@ -74,7 +73,7 @@ public sealed partial class LifecycleContractTests
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
         var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture), fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
         Assert.AreEqual(
             LifecycleOperationPhase.Committed,
@@ -84,34 +83,12 @@ public sealed partial class LifecycleContractTests
         var (ups, stops, resumes) = (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount);
 
         var refused = await Assert.ThrowsExactlyAsync<HostPrerequisiteException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false) with { Resume = true }, fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture) with { Resume = true }, fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
 
         AssertRefusedFindings(refused, [MemoryLimitUnsupported], "the resumed upgrade");
         Assert.AreEqual((ups, stops, resumes), (fixture.Runner.ComposeUpCount, fixture.Runner.ComposeStopCount, lifecycle.ResumeCount));
         FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "the resumed upgrade changed the product root");
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RestoreOnly_HostThatCannotEnforceTheMemoryLimit_ProceedsWithTheWarning()
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
-        var request = await fixture.PrepareRestoreAsync();
-        fixture.Runner.MemoryLimit = false;
-        using var error = new StringWriter();
-
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { CurrentOwnerBootstrapState = "owner-ready" },
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-
-        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
-        AssertRecoveryWarning(error.ToString(), [MemoryLimitUnsupported], "standard error", "RESTORE-ONLY RECOVERY");
-        AssertRecoveryWarning(
-            await File.ReadAllTextAsync(InstallLogPath(fixture, request.RecoveryOperationId!.Value)), [MemoryLimitUnsupported], "the install log",
-            "RESTORE-ONLY RECOVERY");
-        CollectionAssert.AreEqual(new[] { MemoryLimitUnsupported }, result.Warnings!.Select(static warning => warning.Code).ToArray());
     }
 
     /// <summary>
@@ -120,63 +97,6 @@ public sealed partial class LifecycleContractTests
     /// image from a model Docker accepts there: without its CPU limits, with every other limit. The Compose files the
     /// instance records, which restore-only authenticates, stay exactly as they were.
     /// </summary>
-    [TestMethod]
-    [DoNotParallelize]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RestoreOnly_SnapshotBackedRecoveryOnAHostThatLostCpuQuota_StartsTheOriginalWithoutCpuLimits()
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(
-            InstanceLifecycleCondition.Installed, recoveryState: true,
-            installedImage: static image => CurrentStateContract(image) with { RawIngressSchema = "15" });
-        fixture.Runner.CandidateRawIngressSchema = "15";
-        fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
-        WriteCanonicalV15RawIngressJournal(fixture.Paths);
-        ExecuteSql(RawIngressPath(fixture.Paths), "INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms) VALUES(1, 'running', 3, 0);");
-        WriteIdentityLineage(fixture.Paths);
-        foreach (var file in ComposeFileNames.Select(name => Path.Combine(fixture.Paths.ConfigRoot, "compose", name)))
-            SafeFileSystem.WriteTextAtomic(file, await File.ReadAllTextAsync(file));
-        var request = UpgradeRequest(fixture, assertMigration: false);
-        using var captured = new TemporaryDirectory();
-        var images = new List<CrashImage>();
-        CaptureCrashImages(fixture, captured.Path, images);
-        try
-        {
-            Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
-                request, fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
-                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
-        }
-        finally
-        {
-            ResetCrashHooks();
-        }
-        RestoreCrashImage(fixture, images.First(static image => image.Step == "journal:CandidateVerified"));
-        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        Assert.IsNotNull(interrupted.StateSnapshot, "The recovery must be snapshot-backed.");
-        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
-        var originalCompose = await File.ReadAllTextAsync(composePath);
-        StringAssert.Contains(originalCompose, "    cpus: \"", StringComparison.Ordinal);
-        fixture.Runner.CpuCfsQuota = false;
-        var started = fixture.Runner.StartedModels.Count;
-        using var error = new StringWriter();
-
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            request with { Resume = true, RestoreOnly = true, RecoveryOperationId = interrupted.OperationId },
-            fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
-
-        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.IsTrue(fixture.Runner.Running);
-        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(originalCompose), fixture.Runner.StartedModels.Skip(started).Single());
-        Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(composePath));
-        AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error", "RESTORE-ONLY RECOVERY");
-        AssertRecoveryWarning(
-            await File.ReadAllTextAsync(InstallLogPath(fixture, interrupted.OperationId)), [CpuQuotaUnsupported], "the install log",
-            "RESTORE-ONLY RECOVERY");
-    }
-
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task Upgrade_HostThatEnforcesTheLimits_GivesNoWarningAndKeepsNoInstallLog()
@@ -193,7 +113,6 @@ public sealed partial class LifecycleContractTests
             {
                 ImageReference = candidateReference,
                 NoDownload = true,
-                MigrationBackwardCompatible = true
             },
             fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None, error: upgradeError);
@@ -205,39 +124,6 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>Both refusals exit 3 and leave the instance untouched.</summary>
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DoNotParallelize]
-    public async Task Program_HostWithoutTheMemoryLimit_RefusesTheUpgradeAndManualRollbackWithExitThree()
-    {
-        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('a', 64)}";
-        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            candidateReference, $"sha256:{new string('b', 64)}", fixture.Uid, fixture.Gid);
-        fixture.Runner.MemoryLimit = false;
-
-        var (upgradeExit, upgradeError) = await RunProgramAsync(fixture, fixture.Request(LifecycleOperationKind.Upgrade) with
-        {
-            ImageReference = candidateReference,
-            NoDownload = true,
-            MigrationBackwardCompatible = true
-        });
-
-        Assert.AreEqual(3, upgradeExit, upgradeError);
-        StringAssert.Contains(upgradeError, MemoryLimitUnsupported, StringComparison.Ordinal);
-        StringAssert.Contains(upgradeError, "append cgroup_enable=memory", StringComparison.Ordinal);
-        StringAssert.Contains(upgradeError, "Nothing was changed.", StringComparison.Ordinal);
-
-        fixture.Runner.MemoryLimit = true;
-        await UpgradeForLimitsAsync(fixture);
-        fixture.Runner.MemoryLimit = false;
-        var (rollbackExit, rollbackError) = await RunProgramAsync(fixture, fixture.Request(LifecycleOperationKind.Rollback));
-
-        Assert.AreEqual(3, rollbackExit, rollbackError);
-        StringAssert.Contains(rollbackError, "checkpoint recovery ends at upgrade commit", StringComparison.Ordinal);
-        StringAssert.Contains(rollbackError, "Nothing was changed.", StringComparison.Ordinal);
-    }
-
     /// <summary>Makes Docker report what <paramref name="shape"/> names, and returns the findings that refuse an upgrade.</summary>
     private static string[] Degrade(FakeRunner runner, string shape)
     {

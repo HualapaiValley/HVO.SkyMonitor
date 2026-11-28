@@ -101,7 +101,6 @@ internal static class MeasuredTrailBrowserFixture
                 ["CameraAgent:RawIngressRoot"] = root,
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:TransientDetection:Mode"] = "Edge",
-                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
             }).Build());
         return services.BuildServiceProvider();
     }
@@ -164,7 +163,7 @@ internal static class MeasuredTrailBrowserFixture
                 Step("OverlayManifest", "manifest", 50, ["combined-preview", "scene-layers", "facts"], new { }),
                 new CaptureProcessingStepConfig("Storage", "storage", 100,
                     JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 3650,
-                        updateLatestFrame = false, queueForUpload = false }), DependsOn: ["$raw", "manifest"])
+                        updateLatestFrame = false }), DependsOn: ["$raw", "manifest"])
 
             ]),
             AgentId: CameraAgentKestrelFixture.AgentId);

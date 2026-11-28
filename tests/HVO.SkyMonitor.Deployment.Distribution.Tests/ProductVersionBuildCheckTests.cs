@@ -38,6 +38,8 @@ public sealed partial class ProductVersionBuildCheckTests
     [TestMethod]
     [DataRow("")]
     [DataRow("-rc.1")]
+    [DataRow("-beta.1")]
+    [DataRow("-beta.12")]
     [DataRow("-dev.3")]
     public async Task Build_GivenTheProductVersionOrAPreReleaseOfIt_IsAccepted(string preRelease)
     {
@@ -49,6 +51,8 @@ public sealed partial class ProductVersionBuildCheckTests
     [TestMethod]
     [DataRow("-p:Version=99.0.0", "Version '99.0.0' is not the product version")]
     [DataRow("-p:Version=99.0.0-rc.1", "Version '99.0.0-rc.1' is not the product version")]
+    [DataRow("-p:Version=99.0.0-beta.1", "Version '99.0.0-beta.1' is not the product version")]
+    [DataRow("-p:Version={prefix}-beta.01", "Version '{prefix}-beta.01' is not the product version")]
     [DataRow("-p:Version={prefix}-", "Version '{prefix}-' is not the product version")]
     [DataRow("-p:Version={prefix}.1", "Version '{prefix}.1' is not the product version")]
     [DataRow("-p:InformationalVersion=99.0.0", "The informational version '99.0.0' is not the version '{prefix}-dev'")]
@@ -80,6 +84,7 @@ public sealed partial class ProductVersionBuildCheckTests
         var root = Directory.CreateTempSubdirectory("hvo-product-version-");
         try
         {
+            var repository = RepositoryRoot();
             var project = Path.Combine(root.FullName, "probe.csproj");
             await File.WriteAllTextAsync(
                 project, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Library</OutputType></PropertyGroup></Project>""");
@@ -87,11 +92,12 @@ public sealed partial class ProductVersionBuildCheckTests
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                WorkingDirectory = root.FullName
+                // Resolve the SDK from the repository's global.json.
+                WorkingDirectory = repository
             };
             foreach (var argument in (string[])["msbuild", project, "-nologo", "-nodeReuse:false",
-                         $"-p:DirectoryBuildPropsPath={Path.Combine(RepositoryRoot(), "Directory.Build.props")}",
-                         $"-p:DirectoryBuildTargetsPath={Path.Combine(RepositoryRoot(), "Directory.Build.targets")}", .. arguments])
+                         $"-p:DirectoryBuildPropsPath={Path.Combine(repository, "Directory.Build.props")}",
+                         $"-p:DirectoryBuildTargetsPath={Path.Combine(repository, "Directory.Build.targets")}", .. arguments])
             {
                 start.ArgumentList.Add(argument);
             }

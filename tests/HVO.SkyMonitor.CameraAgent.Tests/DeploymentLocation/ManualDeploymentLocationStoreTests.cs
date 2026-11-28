@@ -32,9 +32,6 @@ public sealed class ManualDeploymentLocationStoreTests
         "locationId",
         "snapshots",
         "supersededAtUtc",
-        "staged",
-        "centrallyActivatedCanonicalSha256",
-        "candidate",
         "configurationSeed",
         "activatedAtUtc",
         "sourceKinds",
@@ -53,7 +50,7 @@ public sealed class ManualDeploymentLocationStoreTests
         var keyDirectory = Path.Combine(_root, "keys");
         Directory.CreateDirectory(keyDirectory);
         _protector = new DataProtectionDeploymentLocationProtector(DataProtectionProvider.Create(keyDirectory));
-        _options = CreateOptions(CentralIntegrationMode.Disabled);
+        _options = CreateOptions();
         _timeProvider = new MutableTimeProvider(Now);
     }
 
@@ -345,47 +342,6 @@ public sealed class ManualDeploymentLocationStoreTests
     }
 
     [TestMethod]
-    public async Task ApplyManualAsync_WithCentralIntegration_ProposesTheVersionAsACandidateUntilAcknowledged()
-    {
-        _options = CreateOptions(CentralIntegrationMode.Enabled);
-        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
-        using (var store = CreateStore())
-        {
-            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            var result = await store.ApplyManualAsync(
-                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(ManualDeploymentLocationStatus.Applied, result.Status);
-            Assert.IsTrue(result.State.CentralAcknowledgementRequired);
-        }
-
-        _timeProvider.UtcNow = Now.AddSeconds(1);
-        using var proposing = CreateStore();
-        var active = await proposing.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-
-        // Central integration keeps local geometry stable and exposes the manual entry for proposal.
-        Assert.AreEqual(1L, active.Version);
-        Assert.AreEqual(2L, proposing.Candidate!.Version);
-        Assert.AreEqual("Australia/Sydney", proposing.Candidate.TimeZoneId);
-        Assert.AreEqual(DeploymentLocationSourceKind.Manual, proposing.ResolveSourceKind(proposing.Candidate));
-        Assert.IsTrue(proposing.Manual.CandidateAwaitingAcknowledgement);
-        Assert.AreEqual(2L, proposing.Manual.KnownVersion);
-
-        await proposing.StageAsync(proposing.Candidate, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(1L, proposing.Active!.Version);
-        Assert.IsTrue(proposing.Manual.StagedAcknowledgementPending);
-
-        proposing.Dispose();
-        _timeProvider.UtcNow = Now.AddSeconds(2);
-        using var activated = CreateStore();
-        var acknowledged = await activated.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(2L, acknowledged.Version);
-        Assert.AreEqual("Australia/Sydney", acknowledged.TimeZoneId);
-        Assert.IsFalse(activated.Manual.StagedAcknowledgementPending);
-    }
-
-    [TestMethod]
     public async Task ApplyManualAsync_WithADifferentKeyAndTheSameExpectedVersion_ConflictsOnTheManualSequence()
     {
         using var store = CreateStore();
@@ -437,58 +393,6 @@ public sealed class ManualDeploymentLocationStoreTests
     }
 
     [TestMethod]
-    public async Task ApplyManualAsync_WhileACentralAcknowledgementIsStaged_ProposesTheEntryAsItsSuccessor()
-    {
-        _options = CreateOptions(CentralIntegrationMode.Enabled);
-        var configured = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
-        DeploymentLocationSnapshot staged;
-        using (var proposing = CreateStore())
-        {
-            _ = await proposing.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
-            _ = await proposing.ApplyManualAsync(
-                Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1, key: "first"),
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        _timeProvider.UtcNow = Now.AddSeconds(1);
-        using (var acknowledged = CreateStore())
-        {
-            _ = await acknowledged.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
-            staged = acknowledged.Candidate!;
-            await acknowledged.StageAsync(staged, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(acknowledged.Manual.StagedAcknowledgementPending);
-
-            // A second entry made while the acknowledgement is staged must not disturb it.
-            var second = await acknowledged.ApplyManualAsync(
-                Request(
-                    19.82, -155.47, 4200, "Pacific/Honolulu",
-                    expectedVersion: 2, key: "second", expectedManualSequence: 1),
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(ManualDeploymentLocationStatus.Applied, second.Status);
-            Assert.AreEqual(1L, acknowledged.Active!.Version);
-            // Version two carries the first entry, so it must not be named as this entry's pending version.
-            Assert.IsNull(second.State.PendingVersion);
-            Assert.AreEqual(3L, second.State.NextVersion);
-        }
-
-        _timeProvider.UtcNow = Now.AddSeconds(2);
-        using var restarted = CreateStore();
-        var active = await restarted.InitializeAsync(configured, CancellationToken.None).ConfigureAwait(false);
-
-        // The acknowledged version activates first; the newer entry becomes its proposed successor.
-        Assert.AreEqual(2L, active.Version);
-        Assert.AreEqual(staged.CanonicalSha256, active.CanonicalSha256);
-        Assert.AreEqual("Australia/Sydney", active.TimeZoneId);
-        Assert.AreEqual(3L, restarted.Candidate!.Version);
-        Assert.AreEqual("Pacific/Honolulu", restarted.Candidate.TimeZoneId);
-        Assert.AreEqual(2L, restarted.Manual.ActiveVersion);
-        Assert.AreEqual(3L, restarted.Manual.KnownVersion);
-        // Now the candidate does carry this entry, so the projection names its version.
-        Assert.AreEqual(3L, restarted.Manual.PendingVersion);
-        Assert.IsTrue(restarted.Manual.CandidateAwaitingAcknowledgement);
-        Assert.IsFalse(restarted.Manual.StagedAcknowledgementPending);
-    }
-
-    [TestMethod]
     public async Task ApplyManualAsync_ReplayedAfterALaterEntryReGovernsTheRecord_StillConflicts()
     {
         var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
@@ -518,37 +422,6 @@ public sealed class ManualDeploymentLocationStoreTests
         Assert.AreEqual(ManualDeploymentLocationStatus.Conflict, replay.Status);
         Assert.AreEqual(ManualDeploymentLocationContract.SupersededEntryReasonCode, replay.ReasonCode);
         Assert.AreEqual("Pacific/Honolulu", restarted.Manual.Override!.TimeZoneId);
-    }
-
-    [TestMethod]
-    public async Task Initialize_WhenCentralIntegrationIsDisabledWithAStagedVersion_ActivatesAndAppendsWithoutFailing()
-    {
-        _options = CreateOptions(CentralIntegrationMode.Enabled);
-        var first = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
-        var second = CreateSeed(-31.2733, 149.07, 1165, "Australia/Sydney");
-        using (var proposing = CreateStore())
-        {
-            _ = await proposing.InitializeAsync(first, CancellationToken.None).ConfigureAwait(false);
-        }
-        _timeProvider.UtcNow = Now.AddSeconds(1);
-        using (var candidate = CreateStore())
-        {
-            _ = await candidate.InitializeAsync(second, CancellationToken.None).ConfigureAwait(false);
-            await candidate.StageAsync(candidate.Candidate!, CancellationToken.None).ConfigureAwait(false);
-        }
-
-        // Switching central integration off leaves the staged version to activate and the changed seed to
-        // append in the same startup; the activation instant must not be mistaken for a missed window.
-        _options = CreateOptions(CentralIntegrationMode.Disabled);
-        _timeProvider.UtcNow = Now.AddSeconds(2);
-        using var restarted = CreateStore();
-        var active = await restarted.InitializeAsync(
-            CreateSeed(19.82, -155.47, 4200, "Pacific/Honolulu"), CancellationToken.None).ConfigureAwait(false);
-
-        Assert.AreEqual(3L, active.Version);
-        Assert.AreEqual("Pacific/Honolulu", active.TimeZoneId);
-        Assert.IsNull(restarted.Staged);
-        Assert.IsNull(restarted.Candidate);
     }
 
     [TestMethod]
@@ -757,11 +630,10 @@ public sealed class ManualDeploymentLocationStoreTests
     private string ManualPath()
         => Path.Combine(_options.Value.RawIngressRoot, ".location", "manual-deployment-location.v1.protected");
 
-    private IOptions<CameraAgentHostOptions> CreateOptions(CentralIntegrationMode mode)
+    private IOptions<CameraAgentHostOptions> CreateOptions()
         => Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = Path.Combine(_root, "data"),
-            CentralIntegration = new CentralIntegrationOptions { Mode = mode }
+            RawIngressRoot = Path.Combine(_root, "data")
         });
 
     private ProtectedDeploymentLocationStore CreateStore(ILogger<ProtectedDeploymentLocationStore>? logger = null)

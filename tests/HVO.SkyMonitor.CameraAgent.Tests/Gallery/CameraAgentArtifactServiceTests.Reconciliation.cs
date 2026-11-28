@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -184,9 +183,8 @@ public sealed partial class CameraAgentArtifactServiceTests
         context.BeginNode("storage", ["producer"]);
         using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         var step = new FileStorageCaptureProcessingStep(new("storage", "Storage", 100),
-            new FileStorageCaptureProcessingStepOptions { StorageRoot = fixture.Root, UpdateLatestFrame = false, QueueForUpload = false },
-            Mock.Of<ILatestFrameAccessor>(), storage, Mock.Of<IArtifactOutbox>(),
-            Options.Create(new CameraAgentHostOptions()), NullLogger<FileStorageCaptureProcessingStep>.Instance);
+            new FileStorageCaptureProcessingStepOptions { StorageRoot = fixture.Root, UpdateLatestFrame = false },
+            Mock.Of<ILatestFrameAccessor>(), storage, NullLogger<FileStorageCaptureProcessingStep>.Instance);
         await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
         var sidecar = Directory.EnumerateFiles(Path.Combine(fixture.Root, "frames"), "*.json", SearchOption.AllDirectories)
             .Single(path => !string.Equals(path, raw.SidecarPath, StringComparison.Ordinal));

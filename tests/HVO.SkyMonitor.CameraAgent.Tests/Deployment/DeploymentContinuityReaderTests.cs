@@ -31,37 +31,16 @@ public sealed class DeploymentContinuityReaderTests
     [TestMethod]
     public async Task ReadAsync_ProjectsExactDurableSequenceMetadata()
     {
-        var agentInstanceId = Guid.NewGuid();
         await ExecuteAsync("journal/raw-ingress.db", """
             CREATE TABLE raw_capture_sequences(agent_id TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL);
             INSERT INTO raw_capture_sequences VALUES ('agent-a', 17), ('agent-b', 4);
             """).ConfigureAwait(false);
-        await ExecuteAsync("outbox/artifact-outbox.db", """
-            CREATE TABLE artifact_outbox_records(record_id INTEGER PRIMARY KEY);
-            CREATE TABLE artifact_outbox_audit(audit_id INTEGER PRIMARY KEY);
-            INSERT INTO artifact_outbox_records VALUES (2), (8);
-            INSERT INTO artifact_outbox_audit VALUES (3), (11);
-            """).ConfigureAwait(false);
-        await ExecuteAsync(".fleet/fleet-status.db", $"""
-            CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, agent_instance_id TEXT, next_sequence INTEGER NOT NULL);
-            CREATE TABLE fleet_status_records(sequence INTEGER NOT NULL);
-            INSERT INTO fleet_status_metadata VALUES (1, '{agentInstanceId:N}', 23);
-            INSERT INTO fleet_status_records VALUES (18), (22);
-            """).ConfigureAwait(false);
-
         var result = await new DeploymentContinuityReader().ReadAsync(root!).ConfigureAwait(false);
 
         result.RawIngressDatabaseExists.Should().BeTrue();
         result.CaptureSequences.Should().Equal(
             new CaptureSequenceContinuity("agent-a", 17),
             new CaptureSequenceContinuity("agent-b", 4));
-        result.ArtifactOutboxDatabaseExists.Should().BeTrue();
-        result.ArtifactOutboxMaximumRecordId.Should().Be(8);
-        result.ArtifactOutboxMaximumAuditId.Should().Be(11);
-        result.FleetDatabaseExists.Should().BeTrue();
-        result.FleetAgentInstanceId.Should().Be(agentInstanceId);
-        result.FleetNextSequence.Should().Be(23);
-        result.FleetMaximumSequence.Should().Be(22);
     }
 
     [TestMethod]
@@ -71,26 +50,17 @@ public sealed class DeploymentContinuityReaderTests
 
         result.RawIngressDatabaseExists.Should().BeFalse();
         result.CaptureSequences.Should().BeEmpty();
-        result.ArtifactOutboxDatabaseExists.Should().BeFalse();
-        result.FleetDatabaseExists.Should().BeFalse();
-        result.FleetNextSequence.Should().BeNull();
     }
 
     [TestMethod]
     public async Task ReadAsync_WhenDatabaseFilesPrecedeSchema_ReturnsExplicitEmptyMetadata()
     {
         await ExecuteAsync("journal/raw-ingress.db", "CREATE TABLE startup_marker(value INTEGER);").ConfigureAwait(false);
-        await ExecuteAsync("outbox/artifact-outbox.db", "CREATE TABLE startup_marker(value INTEGER);").ConfigureAwait(false);
-        await ExecuteAsync(".fleet/fleet-status.db", "CREATE TABLE startup_marker(value INTEGER);").ConfigureAwait(false);
 
         var result = await new DeploymentContinuityReader().ReadAsync(root!).ConfigureAwait(false);
 
         result.RawIngressDatabaseExists.Should().BeTrue();
         result.CaptureSequences.Should().BeEmpty();
-        result.ArtifactOutboxDatabaseExists.Should().BeTrue();
-        result.ArtifactOutboxMaximumRecordId.Should().Be(0);
-        result.FleetDatabaseExists.Should().BeTrue();
-        result.FleetNextSequence.Should().BeNull();
     }
 
     [TestMethod]

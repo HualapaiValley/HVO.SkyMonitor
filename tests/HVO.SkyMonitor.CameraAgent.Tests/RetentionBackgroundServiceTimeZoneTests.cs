@@ -4,7 +4,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
@@ -137,7 +136,6 @@ public sealed class RetentionBackgroundServiceTimeZoneTests
             new StubConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions()),
             new FixedTimeProvider(EvaluatedUtc),
-            new SqliteArtifactOutbox(),
             new FixedCapacityProvider(50),
             new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance);

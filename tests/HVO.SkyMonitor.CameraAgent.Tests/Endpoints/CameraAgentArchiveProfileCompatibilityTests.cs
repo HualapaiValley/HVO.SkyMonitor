@@ -250,8 +250,7 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
             {
                 ConfigFilePath = filePath,
                 AgentId = legacy.AgentId,
-                Observatory = legacy.Observatory,
-                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                Observatory = legacy.Observatory
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, moduleConfigurationValidator: validation);
             var supportedSchedule = supportedConfig.Schedule!;
             var alwaysOpen = supportedSchedule with

@@ -65,7 +65,7 @@ internal static class UpgradeNotes
         {
             throw InstallerException.Refused(
                 $"{installedVersion} is installed, which is newer than the upgrade target {target.Version}. " +
-                CameraAgentLifecycleManager.ManualRollbackGuidance);
+                "Use cameraagent rollback to select the retained previous image.");
         }
         var release = ProductVersion.Release(target.Version);
         var notes = target.UpgradeNotes

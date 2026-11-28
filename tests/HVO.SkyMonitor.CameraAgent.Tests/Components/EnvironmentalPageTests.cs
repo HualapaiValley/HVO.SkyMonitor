@@ -665,71 +665,6 @@ public sealed class EnvironmentalPageTests
     }
 
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
-    public void DeliveryPolicyShowsTheOutboxOnlyWhenExportIsEnabled(bool exportEnabled)
-    {
-        using var context = new BunitContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
-        var delivery = exportEnabled
-            ? new EnvironmentalUiDelivery(true, "Degraded", Epoch.AddMinutes(-2), 3, 2, 1, Epoch.AddMinutes(-7))
-            : new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null);
-        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
-        {
-            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
-                [Source("air", EnvironmentalObservationKind.AirTemperature)],
-                storedCount: 12, storedBytes: 4096, delivery: delivery))
-        });
-
-        var cut = context.Render<EnvironmentalPage>();
-
-        cut.WaitForAssertion(() =>
-        {
-            var facts = cut.Find(".environment-delivery").TextContent;
-            var badge = cut.Find("#environment-delivery-heading").ParentElement!.NextElementSibling!.TextContent;
-            StringAssert.Contains(facts, "14 days", StringComparison.Ordinal);
-            StringAssert.Contains(facts, "12", StringComparison.Ordinal);
-            if (exportEnabled)
-            {
-                Assert.AreEqual("Degraded", badge);
-                StringAssert.Contains(facts, "3 (2 retrying), 1 quarantined", StringComparison.Ordinal);
-                Assert.IsFalse(facts.Contains("Not exported", StringComparison.Ordinal));
-            }
-            else
-            {
-                Assert.AreEqual("Local only", badge);
-                StringAssert.Contains(facts, "Not exported", StringComparison.Ordinal);
-                StringAssert.Contains(facts, "Export disabled", StringComparison.Ordinal);
-            }
-        });
-    }
-
-    [TestMethod]
-    public void DeliveryPolicyBeforeTheOutboxIsReadShowsUnknownRatherThanZero()
-    {
-        using var context = new BunitContext();
-        context.JSInterop.Mode = JSRuntimeMode.Loose;
-        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
-        {
-            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status(
-                [Source("air", EnvironmentalObservationKind.AirTemperature)],
-                delivery: new EnvironmentalUiDelivery(true, "Initializing", null, null, null, null, null)))
-        });
-
-        var cut = context.Render<EnvironmentalPage>();
-
-        cut.WaitForAssertion(() =>
-        {
-            var facts = cut.Find(".environment-delivery").QuerySelectorAll("div")
-                .ToDictionary(item => item.QuerySelector("dt")!.TextContent.Trim(), item => item.QuerySelector("dd")!.TextContent.Trim());
-            Assert.AreEqual("Initializing", cut.Find("#environment-delivery-heading").ParentElement!.NextElementSibling!.TextContent);
-            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Pending"]);
-            Assert.AreEqual(EnvironmentalPage.OutboxNotReadText, facts["Oldest pending"]);
-            Assert.AreEqual("Not yet acknowledged", facts["Last acknowledgment"]);
-        });
-    }
-
-    [TestMethod]
     public void AcquireAction_OpensTheDialogOnceThePageHasLoaded()
     {
         using var context = new BunitContext();
@@ -943,8 +878,7 @@ public sealed class EnvironmentalPageTests
         IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>? attempts = null,
         bool enabled = true,
         long storedCount = 0,
-        long storedBytes = 0,
-        EnvironmentalUiDelivery? delivery = null) => new(
+        long storedBytes = 0) => new(
             enabled,
             Epoch,
             storedCount,
@@ -952,8 +886,7 @@ public sealed class EnvironmentalPageTests
             0,
             sources,
             attempts ?? [],
-            14,
-            delivery ?? new EnvironmentalUiDelivery(false, "Disabled", null, 0, 0, 0, null));
+            14);
 
     private static EnvironmentalUiSource Source(
         string id,

@@ -40,8 +40,7 @@ internal sealed class TelemetryCaptureProcessingStep(
             context.Submission.EffectiveInterval.TotalMilliseconds,
             exposureMs,
             gain,
-            result.Mode,
-            result.RequiresImmediateUpload);
+            result.Mode);
 
         var processingSteps = context.Config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 }
             ? context.GetDependencyStepTelemetry()
@@ -68,7 +67,6 @@ internal sealed class TelemetryCaptureProcessingStep(
             Gain: gain,
             TargetFps: result.NextSetpoint.TargetFps,
             Mode: result.Mode,
-            RequiresImmediateUpload: result.RequiresImmediateUpload,
             FrameStored: result.Frame is not null,
             ProcessingLatency: result.ProcessingLatency,
             LoopDuration: context.Submission.LoopDuration,

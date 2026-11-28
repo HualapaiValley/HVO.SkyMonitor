@@ -102,7 +102,6 @@ LC_ALL=C printf -v coverage_line_percent '%.4f' "$coverage_line"
 LC_ALL=C printf -v coverage_branch_percent '%.4f' "$coverage_branch"
 require_source_reference 'X-API-Key' src/HVO.SkyMonitor.Common/Security/ApiKeyAuthenticationOptions.cs
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
-require_source_reference 'CameraAgent__CentralIntegration__Mode: Disabled' docker-compose.apps.yml
 require_source_reference 'LocalIdentity__AdminPassword:' docker-compose.apps.yml
 require_source_reference './scripts/test:silo-runtime-qualification' docs/runbooks/ci-pipeline.md
 require_source_reference "The Coverlet 10.0.1 baseline is $coverage_line_percent% line and $coverage_branch_percent% branch coverage." docs/runbooks/ci-pipeline.md

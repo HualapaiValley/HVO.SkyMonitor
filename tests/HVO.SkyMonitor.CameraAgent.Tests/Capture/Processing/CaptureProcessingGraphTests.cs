@@ -85,7 +85,7 @@ public sealed class CaptureProcessingGraphTests
             new("ProjectedScene", "scene", DependsOn: ["$raw"]),
             new("Storage", "storage", DependsOn: ["$raw", "scene"],
                 Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
-                { StorageRoot = Path.GetTempPath(), QueueForUpload = true }))) with
+                { StorageRoot = Path.GetTempPath() }))) with
         {
             Module = new CameraModuleDescriptor("VirtualSky")
         };

@@ -1,10 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
-using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Deployment.Contracts;
-using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -27,7 +25,7 @@ public sealed class MotorFocusSessionTests
     [DataRow(null, null, 100)]
     public async Task FirstMove_WithdrawnBeforeAnyTravel_VerifiesStartAndReopensCapture(int? absolute, int? steps, int? spacing)
     {
-        var fleet = new FleetRuntimeState(TimeProvider.System);
+        var fleet = new CaptureRuntimeState(TimeProvider.System);
         fleet.ModuleAvailable();
         var fixture = await FocusOwnerFixture.CreateAsync(fleet).ConfigureAwait(false);
         await using var scope = fixture.ConfigureAwait(false);
@@ -387,7 +385,7 @@ public sealed class MotorFocusSessionTests
     [TestMethod]
     public async Task Sweep_ClosesAdmissionWhenOnlyTheMotorCoordinateCanBeRestoredAtTheLowerLimit()
     {
-        var fleet = new FleetRuntimeState(TimeProvider.System);
+        var fleet = new CaptureRuntimeState(TimeProvider.System);
         fleet.ModuleAvailable();
         var fixture = await FocusOwnerFixture.CreateAsync(fleet).ConfigureAwait(false);
         await using var scope = fixture.ConfigureAwait(false);
@@ -406,7 +404,7 @@ public sealed class MotorFocusSessionTests
         Assert.AreEqual(12, motor.OpticalPosition);
         StringAssert.Contains(ended.Motor.Recovery!, "unverified", StringComparison.Ordinal);
         Assert.AreEqual(CaptureAdmissionState.Unavailable, fixture.Admission.Snapshot.State);
-        Assert.AreEqual(FleetAvailability.Unavailable, fleet.Snapshot.Capture.Availability);
+        Assert.AreEqual(CaptureAvailability.Unavailable, fleet.Snapshot.Capture.Availability);
         Assert.AreEqual("focus-restoration-unverified", fleet.Snapshot.Capture.Reason);
         Assert.IsFalse(await fixture.CaptureAdmittedWithinAsync(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false));
     }

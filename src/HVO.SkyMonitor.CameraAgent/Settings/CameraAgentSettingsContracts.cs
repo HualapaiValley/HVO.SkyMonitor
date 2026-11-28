@@ -62,7 +62,7 @@ internal enum CameraAgentSettingApplication
 [JsonConverter(typeof(JsonStringEnumConverter<CameraAgentSettingSafety>))]
 internal enum CameraAgentSettingSafety
 {
-    /// <summary>Labels only: nothing about capture, geometry or central registration reads it.</summary>
+    /// <summary>Descriptive labels, separate from capture and geometry.</summary>
     Descriptive,
 
     /// <summary>Changes what future captures record. Captures already taken never change.</summary>

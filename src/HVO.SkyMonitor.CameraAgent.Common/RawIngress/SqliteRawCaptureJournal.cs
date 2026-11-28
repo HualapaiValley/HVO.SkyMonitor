@@ -1024,8 +1024,6 @@ internal sealed partial class SqliteRawCaptureJournal(
         {
             TransientOperatingMode.Off => "off",
             TransientOperatingMode.Edge => "edge",
-            TransientOperatingMode.Central => "central",
-            TransientOperatingMode.Hybrid => "hybrid",
             _ => throw new InvalidOperationException("Transient operating mode is invalid.")
         };
         var legacyLaneExists = false;

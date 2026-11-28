@@ -71,29 +71,6 @@ internal static partial class CameraAgentStateSnapshot
         }
     }
 
-    private static async Task VerifyCurrentLegacyHistoryAsync(InstallationPaths paths, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var history = StorePath(paths.StateRoot, ProtectedLocations[0]);
-        if (!IntegrityPathExists(history, directory: false)) return;
-        // Missing ledger paths do not prove legacy eligibility. Surviving history
-        // must authenticate with existing keys and must not require established authority.
-        try
-        {
-            using var provider = IntegrityProtectionServices(paths);
-            var protector = provider.GetRequiredService<IDataProtectionProvider>().CreateProtector("CameraAgent", "DeploymentLocation", "v1");
-            using var document = JsonDocument.Parse(protector.Unprotect(
-                await File.ReadAllBytesAsync(history, cancellationToken).ConfigureAwait(false)));
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                document.RootElement.TryGetProperty("retainedIntegrityNonce", out _))
-                throw new InvalidDataException("Current history does not establish pre-ledger eligibility.");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException)
-        {
-            throw new InstallerException("Current protected history cannot authorize this historical database-only restore; restore a complete paired backup.", exception);
-        }
-    }
-
     private static bool IntegrityPathExists(string path, bool directory)
     {
         const uint directoryType = 0x4000;
@@ -123,85 +100,7 @@ internal static partial class CameraAgentStateSnapshot
         }
     }
 
-    // A failed rollback can have intentionally removed the ledger while applying
-    // its own pre-ledger S0 snapshot. Only that active operation may recover its
-    // authenticated, stopped S1 snapshot; generic missing-ledger restore still refuses.
-    internal static async Task RecoverLegacyBoundaryAuthorityAsync(InstallationPaths paths, Guid instanceId,
-        LifecycleOperationState operation, LifecycleStateSnapshot recovery, CancellationToken cancellationToken)
-    {
-        var destination = StorePath(paths.StateRoot, RetainedIntegrityStore);
-        if (File.Exists(destination)) return;
-        var target = await VerifyAsync(paths, instanceId, recovery, cancellationToken).ConfigureAwait(false);
-        var ledger = target.Databases.SingleOrDefault(static database => database.RelativePath == RetainedIntegrityStore && database.Present);
-        if (ledger is null) return;
-        if (operation.Kind != LifecycleOperationKind.Rollback || !operation.MutationStarted ||
-            operation.StateSnapshot != recovery || recovery.OperationId != operation.OperationId ||
-            operation.RetainedStateSnapshot is not { } legacy ||
-            operation.Phase is LifecycleOperationPhase.Prepared or LifecycleOperationPhase.Committed)
-            throw new InstallerException("Missing retained authority is not an active ledger-boundary rollback recovery.");
-        var prior = await VerifyAsync(paths, instanceId, legacy, cancellationToken).ConfigureAwait(false);
-        var priorRoot = SnapshotRoot(paths, legacy.OperationId, legacy.SnapshotId);
-        await VerifyLegacyBoundarySnapshotAsync(paths, priorRoot, prior, cancellationToken).ConfigureAwait(false);
-        var root = SnapshotRoot(paths, recovery.OperationId, recovery.SnapshotId);
-        using var ownership = AcquireIntegrityRestoreOwnership(paths);
-        using var services = IntegrityProtectionServices(paths);
-        var protector = services.GetRequiredService<IDataProtectionProvider>().CreateProtector("CameraAgent", "DeploymentLocation", "v1");
-        using (var source = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(root, ledger)))
-        {
-            var facts = AuthenticateLedger(source.Connection, protector, cancellationToken);
-            var history = target.ProtectedFiles?.Single(static file => file.RelativePath == ProtectedLocations[0]);
-            if (history is not { Present: true }) throw new InstallerException("Recovery snapshot has no sealed location authority.");
-            using var document = JsonDocument.Parse(protector.Unprotect(await File.ReadAllBytesAsync(
-                ProtectedSnapshotPath(root, history), cancellationToken).ConfigureAwait(false)));
-            if (!document.RootElement.TryGetProperty("retainedIntegrityNonce", out var nonce) || nonce.GetString() != facts.Metadata.Nonce)
-                throw new InstallerException("Recovery snapshot ledger does not match its sealed location authority.");
-        }
-        async Task CheckPairedTransitionAsync()
-        {
-            foreach (var relative in ProtectedLocations)
-            {
-                var before = target.ProtectedFiles!.Single(file => file.RelativePath == relative);
-                var after = prior.ProtectedFiles!.Single(file => file.RelativePath == relative);
-                var current = StorePath(paths.StateRoot, relative);
-                SafeFileSystem.EnsureSafeExistingAncestors(current);
-                var exists = File.Exists(current);
-                string? digest = null;
-                if (exists)
-                {
-                    EnsureRegularStore(current, relative);
-                    var length = new FileInfo(current).Length;
-                    if (!(before.Present && length == before.Length) && !(after.Present && length == after.Length))
-                        throw new InstallerException("Retained authority changed outside the recorded ledger-boundary rollback.");
-                    digest = await SafeFileSystem.ComputeSha256Async(current, cancellationToken).ConfigureAwait(false);
-                }
-                if (!((exists == before.Present && (!exists || digest == before.Sha256)) ||
-                      (exists == after.Present && (!exists || digest == after.Sha256))))
-                    throw new InstallerException("Retained authority changed outside the recorded ledger-boundary rollback.");
-            }
-        }
-        await CheckPairedTransitionAsync().ConfigureAwait(false);
-        // Stage beside the destination so the final rename remains atomic even
-        // when operations and instance state live on different filesystems.
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        var temporary = destination + ".boundary-recovery.tmp";
-        DiscardStaged(temporary);
-        await CopyPureAsync(root, ledger, temporary, cancellationToken).ConfigureAwait(false);
-        await CheckPairedTransitionAsync().ConfigureAwait(false);
-        File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        if (File.Exists(destination)) throw new InstallerException("Retained authority appeared during boundary recovery.");
-        // A crash during the earlier removal may have left SQLite recovery files.
-        // They must never replay over the authenticated stopped snapshot.
-        RemoveStore(destination, RetainedIntegrityStore);
-        File.Move(temporary, destination, overwrite: false);
-        SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(destination)!, paths.ProductRoot);
-        // This installs expected evidence only. A new process still must fully scrub
-        // actual files/schema; no proof is manufactured from current unchecked bytes.
-        StepCompleted("restore-boundary-authority");
-    }
 
-    // Called only after a complete archive has been verified/extracted. The archive's
-    // retained files and keys are in this disposable staged tree; database-only
-    // rollback never calls this or materializes an absent current authority.
     internal static async Task StageArchiveIntegrityAsync(InstallationPaths paths, Guid instanceId,
         LifecycleStateSnapshot snapshot, string stagedInstanceRoot, CancellationToken cancellationToken)
     {

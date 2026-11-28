@@ -25,7 +25,7 @@ public sealed partial class ProcessingNodeOptionsTests
         foreach (var key in new[] { "useRichFrameFacts", "outputVariant", "basePreviewVariant", "satelliteVariant", "sceneAnnotationVariant", "environmentVariant" })
             Assert.AreEqual(ProcessingOptionReasonCodes.UnknownOption, ProcessingNodeOptionsCodec.Encode(descriptor, Json(source),
                 new Dictionary<string, ProcessingOptionValue> { [key] = ProcessingOptionValue.FromText("changed") }).Diagnostics.Single().Code);
-        foreach (var host in new[] { ProcessingGraphHosts.CameraAgent, ProcessingGraphHosts.LogicHost })
+        foreach (var host in new[] { ProcessingGraphHosts.CameraAgent })
         {
             var graph = Graph(Node("manifest", descriptor.StepAlias, descriptor.StepVersion, source));
             var before = ProcessingGraphCompiler.Compile(graph, new(host, []));

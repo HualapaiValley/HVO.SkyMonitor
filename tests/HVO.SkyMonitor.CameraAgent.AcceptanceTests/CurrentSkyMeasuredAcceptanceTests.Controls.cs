@@ -40,10 +40,6 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.IsEmpty(prediction.Selection.SolarSystemBodies);
         Assert.AreNotEqual(canonical.SceneIdentitySha256, prediction.SceneIdentitySha256);
         Assert.AreEqual(canonical.Source, prediction.Source);
-        var canonicalUpload = await host.Services.GetRequiredService<CaptureProcessingPersistence>()
-            .FindCommittedSceneUploadAsync(astrometry.SourceDescriptor, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(canonicalUpload);
-        Assert.AreEqual(canonicalProduct.ArtifactId, canonicalUpload.Descriptor.Artifact.ArtifactId);
         var result = await contentService.OpenContentAsync(accepted.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
         await using var content = result.Content!;

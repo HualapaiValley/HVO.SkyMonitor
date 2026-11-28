@@ -27,67 +27,6 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
-    public void CentralIntegration_DefaultsToEnabled()
-    {
-        Assert.AreEqual(CentralIntegrationMode.Enabled, new CameraAgentHostOptions().CentralIntegration.Mode);
-    }
-
-    [TestMethod]
-    [DataRow(0)]
-    [DataRow(121)]
-    public void TransientDeliveryRequestTimeoutMustBeBounded(int seconds)
-    {
-        var options = new TransientDetectionOptions { DeliveryRequestTimeoutSeconds = seconds };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(
-            options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result =>
-            result.MemberNames.Contains(nameof(TransientDetectionOptions.DeliveryRequestTimeoutSeconds))));
-    }
-
-    [TestMethod]
-    public void Validate_WhenCentralIntegrationModeIsInvalid_ReturnsValidationError()
-    {
-        var options = new CameraAgentHostOptions
-        {
-            RawIngressRoot = "raw-ingress",
-            CentralIntegration = new CentralIntegrationOptions { Mode = (CentralIntegrationMode)99 }
-        };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(
-            options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CentralIntegrationOptions.Mode))));
-    }
-
-    [TestMethod]
-    [DataRow(TransientOperatingMode.Central)]
-    [DataRow(TransientOperatingMode.Hybrid)]
-    public void Validate_WhenCentralTransientModeIsConfiguredStandalone_ReturnsValidationError(
-        TransientOperatingMode mode)
-    {
-        var options = new CameraAgentHostOptions
-        {
-            RawIngressRoot = "raw-ingress",
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
-            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true },
-            TransientDetection = new TransientDetectionOptions { Mode = mode }
-        };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(
-            options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CameraAgentHostOptions.CentralIntegration))));
-    }
-
-    [TestMethod]
     public void SiteDefaults_AreValidAndKeepTheProjectionBoundAndOnlineMap()
     {
         var options = new CameraAgentHostOptions { RawIngressRoot = "raw-ingress" };
@@ -254,37 +193,6 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
-    public void CaptureLanePolicy_DisabledCentralIntegrationSuppressesConfiguredUploadLane()
-    {
-        var policy = new CaptureLanePolicy(Options.Create(new CameraAgentHostOptions
-        {
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
-            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = true }
-        }));
-
-        var upload = policy.Definitions.Single(static lane => lane.Name == "upload");
-        Assert.IsFalse(upload.Enabled);
-        Assert.IsTrue(upload.Required);
-    }
-
-    [TestMethod]
-    public void Validate_WhenUploadMaximumIsBelowInitial_ReturnsValidationError()
-    {
-        var options = new CameraAgentHostOptions
-        {
-            RawIngressRoot = "raw-ingress",
-            UploadRetryInitialDelaySeconds = 60,
-            UploadRetryMaximumDelaySeconds = 30
-        };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CameraAgentHostOptions.UploadRetryMaximumDelaySeconds))));
-    }
-
-    [TestMethod]
     public void Validate_WhenRawIngressRootIsMissing_ReturnsValidationError()
     {
         var options = new CameraAgentHostOptions();
@@ -386,30 +294,8 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
-    [DataRow(TransientOperatingMode.Central)]
-    [DataRow(TransientOperatingMode.Hybrid)]
-    public void Validate_WhenCentralDeliveryModeHasNoUploadLane_ReturnsValidationError(
-        TransientOperatingMode mode)
-    {
-        var options = new CameraAgentHostOptions
-        {
-            RawIngressRoot = "raw-ingress",
-            TransientDetection = new TransientDetectionOptions { Mode = mode },
-            CaptureDistribution = new CaptureDistributionOptions { UploadEnabled = false }
-        };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(CameraAgentHostOptions.CaptureDistribution))));
-    }
-
-    [TestMethod]
     [DataRow(TransientOperatingMode.Off, false)]
-    [DataRow(TransientOperatingMode.Central, false)]
     [DataRow(TransientOperatingMode.Edge, true)]
-    [DataRow(TransientOperatingMode.Hybrid, true)]
     public void CaptureLanePolicy_RegistersTransientLaneOnlyForEdgeModes(
         TransientOperatingMode mode,
         bool expected)
@@ -454,24 +340,4 @@ public sealed class CameraAgentHostOptionsTests
         Assert.IsNotNull(provider.GetRequiredService<ITransientRuntimeManagement>());
     }
 
-    [TestMethod]
-    public void Validate_WhenEnvironmentalRequestCanOutliveSafeLeaseWindow_ReturnsValidationError()
-    {
-        var options = new CameraAgentHostOptions
-        {
-            RawIngressRoot = "raw-ingress",
-            EnvironmentalDelivery = new EnvironmentalObservationDeliveryOptions
-            {
-                LeaseSeconds = 10,
-                RequestTimeoutSeconds = 6
-            }
-        };
-        var results = new List<ValidationResult>();
-
-        var valid = Validator.TryValidateObject(options, new ValidationContext(options), results, validateAllProperties: true);
-
-        Assert.IsFalse(valid);
-        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(
-            nameof(EnvironmentalObservationDeliveryOptions.RequestTimeoutSeconds))));
-    }
 }

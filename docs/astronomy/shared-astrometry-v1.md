@@ -7,7 +7,7 @@ Issue #1088 follows the standalone #1084/#1085/#1087 experiments. The operator a
 - `HVO.SkyMonitor.Astronomy`: input/catalog/calibration/assessment contracts, blind spherical pattern acquisition, warm local refinement, evidence identity and native pixel/sky/frame mapping
 - `HVO.SkyMonitor.Imaging`: linear source detection and Bayer reconstruction/luminance
 - No new project, native library, host reference, database, web dependency or runtime service is added
-- CameraAgent and LogicHost already consume these shared owners; no cross-host reference is introduced
+- CameraAgent consumes these shared libraries
 
 Typical flow:
 
@@ -83,7 +83,6 @@ Score0–100 combines30% fit residual,30% verification residual,20% count and20%
 1. CameraAgent: optional post-ingress Processing analyzer from calibrated linear pixels with exact raw lineage; do not block durable raw admission or mutate capture-time descriptors
 2. Processing: explicit versioned astrometry recipe and typed Metadata schema/semantic identity registration; bind catalog/calibration/settings/source identities into execution identity
 3. CameraAgent persistence: existing layoutless typed Metadata product envelope is the likely seam; source lists belong in one diagnostic artifact if retained
-4. LogicHost: use the same library/recipe through its adapter and immutable artifact reconstruction. `CentralProcessingGraphNodeRegistry` currently rejects canonical-JSON graph bindings; auxiliary-artifact dependencies are the safer existing seam pending explicit registry/catalog work
 5. Future registered stack: a separate opt-in versioned recipe, never a silent change to `rolling-mean-v1` (COMB-010)
 
 Current stacks remain unregistered arithmetic means. Edge insertion points are `RollingCombinationCaptureProcessingStep`, its compatible history selection and lineage; central points are `CentralDerivativeRecipeCatalog`, window resolver/input reader/job executor/output writer. A future registered recipe must bind ordered source frame and accepted solution identities, reference UTC/solution, mapping version, interpolation, coverage masks, rejection policy and actual integration into output identity. Preserve raw originals and transient evidence. Ordinary geometric resampling must follow linear CFA reconstruction.

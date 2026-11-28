@@ -787,9 +787,6 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         var summary = await client.GetFromJsonAsync<CameraAgentOperationsSummary>(
             new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
         Assert.IsNotNull(summary);
-        Assert.AreEqual("Disabled", summary.Configuration.Value.CentralIntegration);
-        Assert.AreEqual("Disabled", summary.ArtifactOutbox.Value.Availability);
-        Assert.AreEqual(0L, summary.ArtifactOutbox.Value.PendingCount);
         var storage = summary.Storage.Value.Single(static item => item.Alias == "raw-ingress");
         Assert.IsTrue(storage.ProbeSucceeded);
         Assert.IsFalse(storage.IsUnderPressure);

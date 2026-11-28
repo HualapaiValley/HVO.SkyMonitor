@@ -850,7 +850,7 @@ public sealed class NamedOrbitalPassCaptureTests
                     "satellite", "satellite-layer", "overlay"], Options: JsonSerializer.SerializeToElement(
                         new FileStorageCaptureProcessingStepOptions
                         {
-                            StorageRoot = storageRoot, QueueForUpload = false, UpdateLatestFrame = false
+                            StorageRoot = storageRoot, UpdateLatestFrame = false
                         }, Json))
             ])
         };
@@ -876,8 +876,6 @@ public sealed class NamedOrbitalPassCaptureTests
             ["CameraAgent:AgentId"] = Agent,
             ["CameraAgent:RawIngressRoot"] = root,
             ["CameraAgent:RawIngressReserveBytes"] = "0",
-            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
-            ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:TransientDetection:Mode"] = "Edge",
             ["CameraAgent:TransientDetection:ExposureIntegratedStarMask"] = "true",
             ["CameraAgent:TransientDetection:StarMaximumResults"] = "32768",

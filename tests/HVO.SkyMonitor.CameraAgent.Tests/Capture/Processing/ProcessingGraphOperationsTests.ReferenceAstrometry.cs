@@ -151,7 +151,7 @@ public sealed partial class ProcessingGraphOperationsTests
                         new("Storage", "archive", DependsOn: [canonicalId], Options: JsonSerializer.SerializeToElement(
                             new FileStorageCaptureProcessingStepOptions
                             {
-                                StorageRoot = Path.Combine(root, "archive"), QueueForUpload = false, UpdateLatestFrame = false
+                                StorageRoot = Path.Combine(root, "archive"), UpdateLatestFrame = false
                             }))
                     ]
                 }
@@ -516,7 +516,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Readout = fullFrame
                 },
                 Pipeline = new([new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }))],
+                    new FileStorageCaptureProcessingStepOptions { StorageRoot = root }))],
                     CapturePipelineSchemaVersions.ExplicitV2)
             };
             var compatible = full with
@@ -595,7 +595,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 config = config with
                 {
                     Pipeline = new([new("Storage", "LocalStorage", Options: JsonSerializer.SerializeToElement(
-                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false }),
+                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root }),
                         DependsOn: ["$raw"])], CapturePipelineSchemaVersions.ExplicitV2)
                 };
             }
@@ -870,7 +870,6 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, path),
             AgentId = "reference-astrometry-test",
-            CentralIntegration = new() { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
 

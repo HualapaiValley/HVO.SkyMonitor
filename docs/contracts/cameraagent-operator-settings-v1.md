@@ -15,7 +15,7 @@ names the store that keeps it, and a group is the unit of one write.
 | Group | Settings | Store | Applies |
 | --- | --- | --- | --- |
 | `site` | `site.observatoryName`, `site.cameraName`, `site.ownerName`, `site.ownerContact` | operator settings file (`CameraAgent:Site`) | at once |
-| `location` | `location.latitudeDegrees`, `location.longitudeDegrees`, `location.elevationMeters`, `location.timeZoneId` | protected deployment-location history (a new manual version) | at the next CameraAgent start; LogicHost reviews it first when central integration is on |
+| `location` | `location.latitudeDegrees`, `location.longitudeDegrees`, `location.elevationMeters`, `location.timeZoneId` | protected deployment-location history (a new manual version) | at the next CameraAgent start |
 | `skyMap` | `skyMap.maximumObjects` | operator settings file (`CameraAgent:SkyMap:MaximumObjects`) | at once |
 | `camera` | `camera.skyLighting` (VirtualSky only) | a new camera revision and a staged rig revision | at the next CameraAgent start |
 | `virtualSky` | `virtualSky.rendererCandidateCap` | operator settings file (`CameraAgent:VirtualSky:RendererCandidateCap`) | at once |
@@ -37,8 +37,7 @@ and, for a settings-file setting, its host `configurationKey`.
 - An `Enum` whose catalogue `allowedValues` is null lists its current values with each read of the values
   (`schedule.activeRevision` lists the active, draft and recent revisions).
 
-Deployment settings — paths, listeners, central integration and credentials — are not in the catalogue; the installer
-owns them.
+The installer owns deployment paths, listeners and credentials.
 
 ## Values
 

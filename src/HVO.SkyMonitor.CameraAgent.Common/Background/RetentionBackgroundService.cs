@@ -12,7 +12,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Hosting;
@@ -30,7 +29,6 @@ public sealed class RetentionBackgroundService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     IOptions<CameraAgentHostOptions> hostOptions,
     TimeProvider timeProvider,
-    IArtifactOutbox artifactOutbox,
     IStorageCapacityProvider capacityProvider,
     StoragePressureState pressureState,
     ILogger<RetentionBackgroundService> logger,
@@ -42,7 +40,6 @@ public sealed class RetentionBackgroundService(
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
     private readonly TimeProvider _timeProvider = timeProvider;
-    private readonly IArtifactOutbox _artifactOutbox = artifactOutbox;
     private readonly IStorageCapacityProvider _capacityProvider = capacityProvider;
     private readonly StoragePressureState _pressureState = pressureState;
     private readonly ILogger<RetentionBackgroundService> _logger = logger;
@@ -340,7 +337,6 @@ public sealed class RetentionBackgroundService(
             .GroupBy(static policy => $"{policy.StepId?.ToUpperInvariant()}\0{policy.Role}\0{policy.Variant}\0{policy.RecipeName}", StringComparer.Ordinal)
             .Select(static group => group
                 .OrderByDescending(static policy => policy.RetentionDays ?? 0)
-                .ThenByDescending(static policy => policy.QueueForUpload == true)
                 .First())
             .OrderBy(static policy => policy.StepId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static policy => policy.Role)
@@ -375,13 +371,6 @@ public sealed class RetentionBackgroundService(
             ? normalizedRoot : string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
         var paths = new HashSet<string>(PathComparer);
         var artifactIds = new HashSet<Guid>();
-        var outboxHolds = await _artifactOutbox.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
-        foreach (var hold in outboxHolds)
-        {
-            AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeArtifactPath, paths);
-            AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeSidecarPath, paths);
-            artifactIds.Add(hold.ArtifactId);
-        }
         if (_rawIngressHolds is not null)
         {
             var holds = _rawIngressHolds is RawCaptureIngress rawIngress

@@ -13,7 +13,6 @@ services:
       OTEL_SERVICE_NAME: hvo-camera
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:?OTEL_EXPORTER_OTLP_PROTOCOL must be set}
-      CameraAgent__CentralIntegration__Mode: Disabled
       LocalIdentity__DatabasePath: ${CAMERA_AGENT_IDENTITY_DB_PATH:-/app/App_Data/identity/cameraagent_identity.db}
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_ADMIN_EMAIL:-owner@cameraagent.local}
       LocalIdentity__AdminPassword: ${CAMERA_AGENT_ADMIN_PASSWORD:?CAMERA_AGENT_ADMIN_PASSWORD must be set}

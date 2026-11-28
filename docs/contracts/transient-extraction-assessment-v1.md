@@ -3,7 +3,7 @@
 This document defines the software-complete V1 boundary for extracting measured
 transient candidates and producing deterministic assessments. It complements
 the event/input contract and temporal-background contract; it does not define a
-CameraAgent lane, LogicHost job, persistence policy, notification policy, or
+CameraAgent lane, persistence policy, notification policy, or
 physical sensitivity claim.
 
 ## Ownership

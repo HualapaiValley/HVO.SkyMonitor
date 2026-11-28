@@ -107,7 +107,7 @@ internal sealed partial class CenteredViewProducer(
         }
 
         var trailsEnabled = hostOptions.Value.ArtifactRead.MeasuredTransientTrailsEnabled &&
-            hostOptions.Value.TransientDetection.Mode is TransientOperatingMode.Edge or TransientOperatingMode.Hybrid;
+            hostOptions.Value.TransientDetection.Mode == TransientOperatingMode.Edge;
         layers.AddRange(definition.Contributors.Select(member => Initial(
             new(TransientTrailPresentation.LayerKind, CenteredViewLayerScope.Contributor, member.Exposure.Capture.CaptureId), trailsEnabled)));
         return layers;

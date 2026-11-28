@@ -55,9 +55,10 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(InstanceLifecycleCondition.Installed)]
     [DataRow(InstanceLifecycleCondition.Uninstalled)]
-    public async Task WorkerEntryRunsOneAuthenticatedHeartbeat(InstanceLifecycleCondition condition)
+    [DataRow(InstanceLifecycleCondition.Installed, true)]
+    public async Task WorkerEntryRunsOneAuthenticatedHeartbeat(InstanceLifecycleCondition condition, bool silo = false)
     {
-        using var fixture = await LifecycleFixture.CreateAsync(condition);
+        using var fixture = silo ? await SiloFixtureAsync(condition) : await LifecycleFixture.CreateAsync(condition);
         var calls = 0;
         using var handler = new WorkerEntryHandler(async request =>
         {

@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -56,12 +55,6 @@ public sealed partial class DurableCaptureProcessingTests
             var committed = node.Outputs.Single();
             var before = await File.ReadAllBytesAsync(Path.Combine(root, committed.PayloadRelativePath)).ConfigureAwait(false);
             var beforeSidecar = await File.ReadAllBytesAsync(Path.Combine(root, committed.SidecarRelativePath)).ConfigureAwait(false);
-            var queued = new List<(string Root, StructuredProcessingProductManifestV1 Manifest)>();
-            var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
-            outbox.Setup(value => value.EnqueueAsync(It.IsAny<string>(), It.IsAny<StructuredProcessingProductManifestV1>(),
-                    It.IsAny<CancellationToken>()))
-                .Callback<string, StructuredProcessingProductManifestV1, CancellationToken>((path, manifest, _) => queued.Add((path, manifest)))
-                .Returns(ValueTask.CompletedTask);
             var context = new CaptureProcessingContext(fixture.Item.Config, fixture.Item.Submission, fixture.Item.RawCapture);
             context.BeginNode("scene", []);
             context.RegisterProcessingProduct(product);
@@ -71,22 +64,11 @@ public sealed partial class DurableCaptureProcessingTests
                 var archive = Path.Combine(root, destination);
                 var step = new FileStorageCaptureProcessingStep(
                     new CaptureProcessingStepMetadata("archive", "Storage", 100),
-                    new FileStorageCaptureProcessingStepOptions { StorageRoot = archive, QueueForUpload = true, UpdateLatestFrame = false },
-                    Mock.Of<ILatestFrameAccessor>(), Mock.Of<IFrameStorageService>(), outbox.Object,
-                    Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                    new FileStorageCaptureProcessingStepOptions { StorageRoot = archive, UpdateLatestFrame = false },
+                    Mock.Of<ILatestFrameAccessor>(), Mock.Of<IFrameStorageService>(),
                     NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
                 await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsFalse(Directory.Exists(Path.Combine(archive, "derived")));
-            }
-            Assert.HasCount(2, queued);
-            foreach (var entry in queued)
-            {
-                Assert.AreEqual(root, entry.Root);
-                Assert.AreEqual(committed.PayloadRelativePath, entry.Manifest.RelativeArtifactPath);
-                Assert.AreEqual(
-                    CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(committed.Artifact)).GetRawText(),
-                    CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(entry.Manifest.Descriptor.Artifact)).GetRawText());
-                Assert.AreEqual(product.ContentIdentitySha256, entry.Manifest.Descriptor.ContentIdentitySha256);
             }
             CollectionAssert.AreEqual(before,
                 await File.ReadAllBytesAsync(Path.Combine(root, committed.PayloadRelativePath)).ConfigureAwait(false));
@@ -94,9 +76,7 @@ public sealed partial class DurableCaptureProcessingTests
                 await File.ReadAllBytesAsync(Path.Combine(root, committed.SidecarRelativePath)).ConfigureAwait(false));
             CollectionAssert.AreEqual(beforeSidecar, committed.EvidenceJson);
             Assert.AreEqual(product.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(before));
-            outbox.Verify(value => value.EnqueueAsync(root, It.IsAny<StructuredProcessingProductManifestV1>(),
-                It.IsAny<CancellationToken>()), Times.Exactly(2));
-            outbox.VerifyNoOtherCalls();
+
         }
         finally
         {
@@ -131,11 +111,11 @@ public sealed partial class DurableCaptureProcessingTests
                 new CaptureProcessingStepConfig("Storage", "archive", Options:
                     System.Text.Json.JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                     { StorageRoot = archiveRoot, RetentionDays = 365,
-                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] })),
+                        Policies = [new() { Role = FrameArtifactRole.Metadata }] })),
                 new CaptureProcessingStepConfig("Storage", "second-archive", Options:
                     System.Text.Json.JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                     { StorageRoot = otherArchiveRoot, RetentionDays = 365,
-                        Policies = [new() { Role = FrameArtifactRole.Metadata, QueueForUpload = false }] }, WebEnumJsonOptions))]);
+                        Policies = [new() { Role = FrameArtifactRole.Metadata }] }, WebEnumJsonOptions))]);
             var now = DateTimeOffset.UtcNow;
             var revision = new ProcessingGraphRevisionSnapshot(
                 new ProcessingGraphRevisionState(new string('C', 64), "old", "1", ProcessingGraphRevisionLifecycle.Validated,

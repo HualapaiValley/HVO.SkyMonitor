@@ -116,7 +116,7 @@ uses that content-addressed image ID for both containers, and invokes
 project names. Each project
 owns a separate bridge, runtime root, catalog copy, owner secret, local Identity
 database, Data Protection directory, provisioning state, cookie, AgentId, and
-OTLP file collector. LogicHost and the shared SQL Server, Redis, and
+OTLP file collector. The shared SQL Server, Redis, and
 Mailpit services must be absent.
 
 Install the approved Production HYG package and run.

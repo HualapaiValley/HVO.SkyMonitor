@@ -99,7 +99,6 @@ public sealed partial class ProcessingGraphOperationsTests
             Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
             {
                 StorageRoot = archiveRoot,
-                QueueForUpload = false,
                 UpdateLatestFrame = false
             }));
         var configuration = baseline with

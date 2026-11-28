@@ -497,7 +497,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 result.Fact.StaleAfterUtc);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException or
-            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException or EnvironmentalObservationOutboxCapacityException)
+            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException)
         {
             return Receipt(source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.Failed, "journal-unavailable", null, started);
         }

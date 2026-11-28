@@ -35,7 +35,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     public async Task AnnotationEnvironmentLinesReadOnlyConfiguredKindsAndKeepTheRestMissing()
     {
         // NWS-only shape: AirTemperature is the one configured kind among the six default selected kinds.
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         await CommitAsync(store, Fact(Guid.Parse("17840000-0000-0000-0000-000000000001"),
             EnvironmentalObservationKind.AirTemperature, 21.5)).ConfigureAwait(false);
         var acquisition = EnvironmentSelectionAcquisition([EnvironmentalObservationKind.AirTemperature]);
@@ -56,7 +56,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     public async Task AnnotationEnvironmentLinesWithNoSelectedKindConfiguredDoNotReadAssociations()
     {
         // SQM-only shape: none of the six default selected kinds has a configured source.
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var acquisition = EnvironmentSelectionAcquisition([EnvironmentalObservationKind.SkyQuality]);
         var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
         _ = await fixture.Associations.AssociateAsync(
@@ -79,7 +79,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     public async Task AnnotationEnvironmentLinesInsideTheConfiguredPolicyAreUnchanged()
     {
         // Control: every selected kind is configured, so the full selection is requested as before.
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         await CommitAsync(store, Fact(Guid.Parse("17840000-0000-0000-0000-000000000002"),
             EnvironmentalObservationKind.AirTemperature, 21.5)).ConfigureAwait(false);
         var acquisition = EnvironmentSelectionAcquisition(DefaultAnnotationKinds);
@@ -102,7 +102,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task AnnotationEnvironmentLinesStillWaitForAPendingConfiguredAssociation()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var acquisition = EnvironmentSelectionAcquisition([EnvironmentalObservationKind.AirTemperature]);
         var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
         var reads = new CountingAssociationStore(store);
@@ -125,7 +125,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task AnnotationEnvironmentLinesStillRejectConflictingDurablePolicies()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var acquisition = EnvironmentSelectionAcquisition([EnvironmentalObservationKind.AirTemperature]);
         var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
         await AssociateAirTemperatureAsync(fixture).ConfigureAwait(false);
@@ -147,7 +147,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task FrameFactsSelectionOutsideThePolicyRetainsMissingFactsLikeDisabledAcquisition()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var temperature = Fact(Guid.Parse("17840000-0000-0000-0000-000000000003"),
             EnvironmentalObservationKind.AirTemperature, 21.5);
         await CommitAsync(store, temperature).ConfigureAwait(false);
@@ -205,7 +205,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [TestMethod]
     public async Task FrameFactsSelectionWithNoConfiguredKindDoesNotReadAssociations()
     {
-        using var store = new SqliteEnvironmentalObservationOutbox(new FixedTimeProvider(Epoch.AddMinutes(1)));
+        using var store = new SqliteEnvironmentalObservationStore(new FixedTimeProvider(Epoch.AddMinutes(1)));
         var acquisition = EnvironmentSelectionAcquisition([EnvironmentalObservationKind.SkyQuality]);
         var fixture = await CreateFixtureAsync(store, acquisition).ConfigureAwait(false);
         var reads = new CountingAssociationStore(store);
@@ -243,7 +243,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     }
 
     private PresentationMetadataFactsBuilder CreateBuilder(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         ILocalEnvironmentalAssociationStore associations,
         EnvironmentalAcquisitionOptions acquisition)
     {
@@ -255,7 +255,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     }
 
     private AnnotationHarness CreateAnnotationStep(
-        SqliteEnvironmentalObservationOutbox store,
+        SqliteEnvironmentalObservationStore store,
         ILocalEnvironmentalAssociationStore associations,
         EnvironmentalAcquisitionOptions acquisition,
         IReadOnlyList<EnvironmentalObservationKind> kinds)

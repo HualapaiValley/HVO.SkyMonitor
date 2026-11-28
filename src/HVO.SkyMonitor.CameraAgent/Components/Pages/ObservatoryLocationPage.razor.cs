@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
 /// <summary>
 /// The Operations "Observatory &amp; location" section: the active deployment location with an optional
-/// browser-loaded map, the local site profile, the LogicHost assignment, the active catalog and rig, and a
+/// browser-loaded map, the local site profile, the active catalog and rig, and a
 /// paged preview of the sky the active rig sees at one instant.
 /// </summary>
 public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncDisposable
@@ -641,10 +641,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         ManualDeploymentLocationStatus.Applied =>
             $"Recorded the location draft. The next CameraAgent start appends it as location version "
             + $"{result.State.NextVersion}; captures already recorded keep version {result.State.ActiveVersion}."
-            + (result.State.CentralAcknowledgementRequired
-                ? " Central integration is on, so the new version is proposed to LogicHost first "
-                  + "and activates only after LogicHost acknowledges it."
-                : string.Empty),
+,
         ManualDeploymentLocationStatus.Replayed =>
             "This location draft was already recorded. No additional location version was created.",
         _ => "These coordinates already govern this deployment, so no new version was created."
@@ -706,21 +703,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         get
         {
             var observer = _state!.Observer;
-            if (_manual is { CandidateAwaitingAcknowledgement: true, PendingVersion: { } proposed } candidate)
-            {
-                return new("warning", "Central review pending.",
-                    $"LogicHost has not yet acknowledged location version {proposed}. Local geometry version "
-                    + $"{candidate.ActiveVersion} remains active and capture continues normally.");
-            }
-            if (_manual is { StagedAcknowledgementPending: true } || observer.StagedAcknowledgementPending)
-            {
-                var staged = _manual?.PendingVersion is { } version ? $"Location version {version}" : "A new location version";
-                return new("running", "Acknowledged version staged.",
-                    $"{staged} was acknowledged by LogicHost and activates at the next CameraAgent start. "
-                    + $"Version {_manual?.ActiveVersion ?? observer.Version} governs until then.",
-                    AppliesAtRestart: true);
-            }
-            if (_manual is { Override.PendingRestart: true, PendingVersion: null } waiting)
+            if (_manual is { Override.PendingRestart: true } waiting)
             {
                 return new("running", "Local draft awaiting restart.",
                     $"Location version {waiting.NextVersion} was recorded {Timestamp(waiting.Override!.RecordedAtUtc)} "
@@ -815,36 +798,6 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         => string.Create(
             CultureInfo.InvariantCulture,
             $"left: calc(50% + {tile.Left:F1}px); top: calc(50% + {tile.Top:F1}px)");
-
-    private (string Css, string Text) AssignmentChip => _site?.Assignment switch
-    {
-        null => ("warning", "Unavailable"),
-        { State: CameraAgentSiteAssignmentState.Standalone } => ("pending", "Standalone"),
-        { State: CameraAgentSiteAssignmentState.NotRegistered } => ("warning", "Not registered"),
-        { State: CameraAgentSiteAssignmentState.Unavailable } => ("warning", "Unavailable"),
-        { ProposedVersion: not null } => ("warning", "Review"),
-        { LocationReview: DeploymentLocationResolutionStatus.Acknowledged } => ("success", "Location acknowledged"),
-        { LocationReview: DeploymentLocationResolutionStatus.Rejected } => ("failure", "Location rejected"),
-        _ => ("running", "Pending")
-    };
-
-    private string AssignmentLead => _site?.Assignment.State switch
-    {
-        CameraAgentSiteAssignmentState.Standalone => "This camera runs without LogicHost.",
-        CameraAgentSiteAssignmentState.Registered => "Received during device registration.",
-        _ => "Read-only view of what LogicHost has told this camera."
-    };
-
-    internal static string LocationReviewText(DeploymentLocationResolutionStatus? status) => status switch
-    {
-        DeploymentLocationResolutionStatus.Acknowledged => "Acknowledged by LogicHost",
-        DeploymentLocationResolutionStatus.Rejected => "Rejected by LogicHost",
-        DeploymentLocationResolutionStatus.Pending => "Awaiting LogicHost review",
-        _ => "Not reported"
-    };
-
-    private static string RegistrationHref
-        => OperationsSectionCatalog.Sections.First(section => section.Slug == "registration").Href;
 
     private NamedRigRevision? ActiveRig => _rigCatalog?.Revisions.FirstOrDefault(
         revision => revision.RevisionId == _rigCatalog.Selection.ActiveRevisionId);

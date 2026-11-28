@@ -32,8 +32,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var configuration = await LoadCanonicalConfigurationAsync().ConfigureAwait(false);
         var locationOptions = Options.Create(new CameraAgentHostOptions
         {
-            RawIngressRoot = root,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+            RawIngressRoot = root
         });
         using (var locations = new ProtectedDeploymentLocationStore(
             locationOptions, new DataProtectionDeploymentLocationProtector(locationOptions), TimeProvider.System,

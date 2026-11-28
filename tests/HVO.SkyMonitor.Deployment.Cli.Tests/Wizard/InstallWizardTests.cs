@@ -37,7 +37,8 @@ public sealed class InstallWizardTests
     [DataRow("Location", new[] { "--latitude", "35", "--longitude", "-114", "--elevation", "1300", "--time-zone", "UTC" }, false)]
     [DataRow("Location", new[] { "--latitude", "35", "--longitude", "-114", "--elevation", "1300" }, true)]
     [DataRow("Limits", new[] { "--cpus", "2", "--memory", "4g", "--replay-profile", "in-process" }, false)]
-    [DataRow("Limits", new[] { "--cpus", "2", "--memory", "4g" }, true)]
+    [DataRow("Limits", new[] { "--cpus", "2", "--memory", "4g" }, false)]
+    [DataRow("Limits", new[] { "--cpus", "2", "--memory", "4g", "--storage-layout", "filesystem" }, true)]
     [DataRow("Owner", new[] { "--owner-email", "a@example.test", "--generate-password" }, false)]
     [DataRow("Owner", new[] { "--owner-email", "a@example.test", "--password-file", "/srv/hvo/password" }, false)]
     [DataRow("Owner", new[] { "--owner-email", "a@example.test" }, true)]
@@ -102,7 +103,7 @@ public sealed class InstallWizardTests
         [
             "cameraagent", "install", "--friendly-name", "North", "--image-source", "registry", "--bind-address", "0.0.0.0",
             "--latitude", "35", "--longitude", "-114", "--elevation", "1300", "--cpus", "3", "--memory", "6g",
-            "--password-file", "/srv/hvo/password"
+            "--password-file", "/srv/hvo/password", "--storage-layout", "filesystem"
         ]);
 
         var software = (SoftwarePage)driver.Page;
@@ -186,8 +187,6 @@ public sealed class InstallWizardTests
         driver.Replace("3");
         driver.Press(Key.Tab);
         driver.Replace("6g");
-        driver.Press(Key.Tab);
-        driver.Press(Key.CursorDown);
         driver.NextTo<OwnerPage>();
         driver.Replace("admin@example.test");
         driver.Press(Key.Tab);
@@ -205,17 +204,22 @@ public sealed class InstallWizardTests
             {"schemaVersion":1,"instanceId":"{{WizardHost.InstanceId:D}}","friendlyName":"North Camera","ownerEmail":"admin@example.test",
              "bindAddress":"0.0.0.0","port":5140,"catalogBundle":"{{Catalog}}","release":"{{Release}}","imageSource":"registry",
              "latitudeDegrees":35.2,"longitudeDegrees":-114.1,"elevationMeters":1300,"timeZoneId":"America/Phoenix",
-             "acknowledgePlaintextHttp":true,"generatePassword":true,"replayProfile":"LocalRunner","cpus":3,"memory":"6g"}
+             "acknowledgePlaintextHttp":true,"generatePassword":true,"cpus":3,"memory":"6g"}
             """);
         var fromWizard = Request(host, driver.Session.Arguments(driver.Session.AnswersPath));
         var fromFile = Request(host, ["cameraagent", "install", "--answers", file.Path]);
         Assert.AreEqual(fromFile, fromWizard);
+        Assert.AreEqual(CameraAgentStorageLayout.Silo, fromWizard.StorageLayout);
         CollectionAssert.AreEqual(new[] { "cameraagent", "install", "--answers", host.AnswersPath }, driver.Session.Arguments(host.AnswersPath));
 
         // The saved file is the operator's only, in a folder that is theirs only, and holds no secret.
         Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(host.AnswersPath));
         Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(Path.GetDirectoryName(host.AnswersPath)!));
-        Assert.AreEqual(InstallAnswers.Read(file.Path) with { }, InstallAnswers.Read(host.AnswersPath));
+        Assert.AreEqual(InstallAnswers.Read(file.Path) with
+        {
+            ReplayProfile = CameraAgentReplayProfile.InProcess,
+            StorageLayout = CameraAgentStorageLayout.Silo
+        }, InstallAnswers.Read(host.AnswersPath));
         Assert.DoesNotContain("password\"", File.ReadAllText(host.AnswersPath).Replace("generatePassword", string.Empty, StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase);
 
         // The plan the wizard showed is the one --plan makes for that file.
@@ -269,7 +273,7 @@ public sealed class InstallWizardTests
         Assert.AreEqual("1.5", a.Latitude);
         Assert.AreEqual("2.5", a.Cpus);
         Assert.AreEqual(OwnerPasswordChoice.File, a.Password);
-        Assert.AreEqual(CameraAgentReplayProfile.LocalRunner, a.ReplayProfile);
+        Assert.AreEqual(CameraAgentReplayProfile.InProcess, a.ReplayProfile);
         Assert.AreEqual(ReleaseImageSource.Registry, a.ImageSource);
         Assert.AreEqual(Release, a.Release);
 
@@ -277,6 +281,33 @@ public sealed class InstallWizardTests
         Assert.AreEqual(WizardHost.InstanceId, given.Session.Answers.InstanceId, "the command line wins");
         Assert.AreEqual("from --instance-id", given.Session.InstanceIdSource);
         Assert.AreEqual(OwnerPasswordChoice.Generate, given.Session.Answers.Password);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("silo")]
+    [DataRow("filesystem")]
+    public void SavedSiloInputsApplyOnlyToSilo(string layout)
+    {
+        using var host = new WizardHost();
+        Directory.CreateDirectory(Path.GetDirectoryName(host.AnswersPath)!);
+        File.WriteAllText(host.AnswersPath, $$"""
+            {"schemaVersion":1,"instanceId":"{{WizardHost.InstanceId:D}}","friendlyName":"Saved Camera",
+             "storageLayout":"Silo","siloImageArchive":"/srv/silo.tar",
+             "siloArchiveEndpoint":"https://archive.example","siloArchiveBucket":"hvo-archive",
+             "siloArchiveCaFile":"/srv/ca.pem","siloArchiveCredentialFile":"/srv/archive-credential"}
+            """);
+        var session = new InstallWizardSession(
+            ["cameraagent", "install", "--storage-layout", layout], host.Services, host.Terminal, WizardHost.Version);
+        Assert.IsNotNull(session.Saved, session.SavedProblem);
+
+        var answers = session.ToAnswers();
+        string?[] inputs = [answers.SiloImageArchive, answers.SiloArchiveEndpoint, answers.SiloArchiveBucket,
+            answers.SiloArchiveCaFile, answers.SiloArchiveCredentialFile];
+        string?[] expected = layout == "silo"
+            ? ["/srv/silo.tar", "https://archive.example", "hvo-archive", "/srv/ca.pem", "/srv/archive-credential"]
+            : [null, null, null, null, null];
+        CollectionAssert.AreEqual(expected, inputs);
     }
 
     [TestMethod]

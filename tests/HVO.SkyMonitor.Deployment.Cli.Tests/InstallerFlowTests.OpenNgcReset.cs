@@ -140,7 +140,7 @@ public sealed partial class InstallerFlowTests
         var runner = OpenNgcLifecycleRunner(paths, manifest);
         var lifecycle = new OpenNgcInstallerLifecycleClient();
         var operation = new LifecycleRequest(LifecycleOperationKind.Upgrade, first.InstanceId, request.ProductRoot, false, false, false)
-        { AllowTestProductRoot = true, ImageReference = OpenNgcUpgradeReference, MigrationBackwardCompatible = true };
+        { AllowTestProductRoot = true, ImageReference = OpenNgcUpgradeReference };
         var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(operation, runner, _ => lifecycle, _ => owner,
             RuntimeUid, RuntimeGid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
@@ -151,18 +151,18 @@ public sealed partial class InstallerFlowTests
         var bundle = Environment.GetEnvironmentVariable("HVO_OPENNGC_CATALOG_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle)) Assert.Inconclusive("HVO_OPENNGC_CATALOG_BUNDLE is required for the public OpenNGC installer flow contract.");
         var installed = await CatalogLifecycleManager.ExecuteAsync(operation with
-        { Operation = LifecycleOperationKind.CatalogInstall, InstanceId = null, ImageReference = null, MigrationBackwardCompatible = false, CatalogBundle = bundle },
+        { Operation = LifecycleOperationKind.CatalogInstall, InstanceId = null, ImageReference = null, CatalogBundle = bundle },
             runner, RuntimeUid, RuntimeGid, CancellationToken.None);
         var selected = installed.Catalog!;
         var selection = await CameraAgentLifecycleManager.ExecuteAsync(operation with
-        { Operation = LifecycleOperationKind.CatalogSelect, ImageReference = null, MigrationBackwardCompatible = false, CatalogVersion = selected.PackageVersion },
+        { Operation = LifecycleOperationKind.CatalogSelect, ImageReference = null, CatalogVersion = selected.PackageVersion },
             runner, _ => lifecycle, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None);
         Assert.AreEqual(selected, selection.DeepSkyCatalog);
         manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
         Assert.IsNull(manifest.PreviousImage, "The incompatible retained image rollback must have been retired.");
         SafeFileSystem.WriteTextAtomic(Path.Combine(paths.StateRoot, "raw", "reset-sentinel"), "Disposable runtime state.");
         var uninstall = await CameraAgentLifecycleManager.ExecuteAsync(operation with
-        { Operation = LifecycleOperationKind.Uninstall, ImageReference = null, MigrationBackwardCompatible = false }, runner, _ => lifecycle, null,
+        { Operation = LifecycleOperationKind.Uninstall, ImageReference = null }, runner, _ => lifecycle, null,
             RuntimeUid, RuntimeGid, CancellationToken.None);
         Assert.AreEqual(InstanceLifecycleCondition.Uninstalled, uninstall.LifecycleCondition);
         return (paths, runner, selected);

@@ -13,14 +13,6 @@ internal interface ICameraAgentLifecycleClient
     Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
-    Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
-        => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
-    Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
-        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
-        => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
-    Task<(bool Supported, LifecycleResumeReceipt? Receipt)> TryResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
-        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
-        => throw new InstallerException("The candidate's atomic owned resume capability could not be verified.");
 }
 
 internal sealed record LifecycleContinuity(
@@ -33,8 +25,6 @@ internal sealed record LifecycleContinuity(
     long LaneLeased,
     long ProcessingPending,
     long ProcessingLeased,
-    long OutboxPending,
-    long OutboxLeased,
     bool CaptureInitialized = true,
     long ReplayPending = 0,
     long ReplayLeased = 0,
@@ -58,7 +48,6 @@ internal sealed class CameraAgentLifecycleClient(
     HttpMessageHandler? handler = null,
     LifecycleBudgets? budgets = null) : ICameraAgentLifecycleClient
 {
-    private static readonly Uri OwnedUpgradeResumeRoute = new("/api/internal/deployment/lifecycle/resume-owned-upgrade", UriKind.Relative);
     private readonly LifecycleBudgets _budgets = budgets ?? LifecycleBudgets.Default;
 
     // Lifecycle commands target a durable capture-control state rather than a
@@ -142,52 +131,6 @@ internal sealed class CameraAgentLifecycleClient(
             cancellationToken, commandId, expectedVersion).ConfigureAwait(false))!;
     }
 
-    public async Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
-    {
-        if (await ReadOwnedUpgradeResumeCapabilityAsync(verificationToken, cancellationToken).ConfigureAwait(false) == HttpStatusCode.NoContent)
-            return;
-        throw new InstallerException("The predecessor does not provide authenticated atomic signed restore-only admission. Capture remains paused.");
-    }
-
-    private async Task<HttpStatusCode> ReadOwnedUpgradeResumeCapabilityAsync(string verificationToken, CancellationToken cancellationToken)
-    {
-        using var client = CreateClient(verificationToken);
-        try
-        {
-            using var response = await WithBudgetAsync(_budgets.ReadTimeout,
-                token => client.GetAsync(OwnedUpgradeResumeRoute, token), cancellationToken).ConfigureAwait(false);
-            return response.StatusCode;
-        }
-        catch (Exception exception) when (exception is BudgetExceededException or HttpRequestException)
-        {
-            throw new InstallerException("The predecessor's atomic signed restore-only admission could not be verified.", exception);
-        }
-    }
-
-    public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> TryResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
-        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
-    {
-        var capability = await ReadOwnedUpgradeResumeCapabilityAsync(verificationToken, cancellationToken).ConfigureAwait(false);
-        // An absent route is a supported outcome. Authentication, server and transport failures leave the commit pending.
-        if (capability is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
-            return (false, null);
-        if (capability != HttpStatusCode.NoContent)
-            throw new InstallerException("The candidate's atomic owned resume capability could not be verified.");
-        using var client = CreateClient(verificationToken);
-        var receipt = await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
-                cancellationToken, commandId, expectedVersion, pauseCommandId: pauseCommandId, preserveOnConflict: true)
-            .ConfigureAwait(false);
-        return (true, receipt);
-    }
-
-    public async Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
-        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
-    {
-        using var client = CreateClient(verificationToken);
-        return (await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
-            cancellationToken, commandId, expectedVersion, pauseCommandId: pauseCommandId).ConfigureAwait(false))!;
-    }
-
     private async Task<LifecycleResumeReceipt?> PostCommandAsync(
         HttpClient client,
         string action,
@@ -196,9 +139,7 @@ internal sealed class CameraAgentLifecycleClient(
         CancellationToken cancellationToken,
         Guid? retainedCommandId = null,
         long? expectedVersion = null,
-        Guid? commandIdentity = null,
-        Guid? pauseCommandId = null,
-        bool preserveOnConflict = false)
+        Guid? commandIdentity = null)
     {
         var commandId = commandIdentity ?? retainedCommandId ?? Guid.NewGuid();
         var payload = new Dictionary<string, object>
@@ -211,12 +152,6 @@ internal sealed class CameraAgentLifecycleClient(
         };
         if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;
         var route = new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative);
-        if (pauseCommandId is { } pause)
-        {
-            route = OwnedUpgradeResumeRoute;
-            payload["upgradeOperationId"] = operationId;
-            payload["pauseCommandId"] = pause;
-        }
         try
         {
             while (true)
@@ -252,7 +187,6 @@ internal sealed class CameraAgentLifecycleClient(
                         throw new InstallerException("CameraAgent recovery receipt does not match the retained pause version.");
                     return receipt;
                 }
-                if (preserveOnConflict && response.StatusCode == HttpStatusCode.Conflict) return null;
                 if (!IsTransientCommandStatus(response.StatusCode))
                 {
                     throw new InstallerException(
@@ -355,9 +289,9 @@ internal sealed class CameraAgentLifecycleClient(
                 // inputs at submission and never builds a scene from the mounted catalog, and a host stop returns
                 // in-flight replay to its queue without consuming an attempt.
                 if (state.CaptureState == "Paused" && state.CaptureInitialized && state.RawLeased == 0 && state.LaneLeased == 0 &&
-                    state.ProcessingLeased == 0 && state.OutboxLeased == 0 &&
+                    state.ProcessingLeased == 0 &&
                     (!requireEmpty || state.QueuesObserved && state.RawPending == 0 && state.LanePending == 0 &&
-                        state.ProcessingPending == 0 && state.OutboxPending == 0))
+                        state.ProcessingPending == 0))
                 {
                     return state;
                 }
@@ -388,7 +322,7 @@ internal sealed class CameraAgentLifecycleClient(
     // Archived replay is reported but never waited for, so it is named only when present.
     private static string Describe(LifecycleContinuity state)
         => $"last observed capture control '{state.CaptureState}' (initialized: {state.CaptureInitialized}, " +
-            $"leased raw/lane/processing/outbox {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}/{state.OutboxLeased}" +
+            $"leased raw/lane/processing {state.RawLeased}/{state.LaneLeased}/{state.ProcessingLeased}" +
             (state.ReplayPending > 0 || state.ReplayLeased > 0
                 ? $"; archived replay pending/leased {state.ReplayPending}/{state.ReplayLeased}, which the drain does not wait for)"
                 : ")");
@@ -487,7 +421,6 @@ internal sealed class CameraAgentLifecycleClient(
         var raw = Value(root, "rawIngress");
         var lanes = Value(root, "captureLanes");
         var processing = Value(root, "captureProcessing");
-        var outbox = Value(root, "artifactOutbox");
         // A CameraAgent image that predates the archived-replay section omits it; its replay is reported as none.
         var replay = root.TryGetProperty("archivedReplay", out var replaySection)
             ? replaySection.GetProperty("value")
@@ -502,8 +435,6 @@ internal sealed class CameraAgentLifecycleClient(
             lanes.GetProperty("leasedCount").GetInt64(),
             processing.GetProperty("pendingCount").GetInt64(),
             processing.GetProperty("leasedCount").GetInt64(),
-            outbox.GetProperty("pendingCount").GetInt64(),
-            outbox.GetProperty("leasedCount").GetInt64(),
             // A CameraAgent image that predates the operations summary omits the
             // flag; treating it as initialized deliberately keeps that image's
             // fast-fail contract on "Unavailable".
@@ -514,7 +445,7 @@ internal sealed class CameraAgentLifecycleClient(
             // annotate from whichever catalog is mounted when it runs.
             root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean(),
             QueueObserved(root, "rawIngress") && QueueObserved(root, "captureLanes") &&
-            QueueObserved(root, "captureProcessing") && QueueObserved(root, "artifactOutbox"));
+            QueueObserved(root, "captureProcessing"));
     }
 
     private static bool QueueObserved(JsonElement root, string name)

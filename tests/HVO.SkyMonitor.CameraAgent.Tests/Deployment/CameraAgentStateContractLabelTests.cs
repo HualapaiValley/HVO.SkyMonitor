@@ -1,0 +1,98 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.Deployment.Contracts;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
+
+[TestClass]
+[TestCategory("Unit")]
+[TestProperty("Area", "Deployment")]
+public sealed class CameraAgentStateContractLabelTests
+{
+    [TestMethod]
+    public void Dockerfile_DeclaresTheFreshInstallStateContract()
+    {
+        var labels = ReadImageLabels();
+
+        Assert.AreEqual(CameraAgentSiloBinding.StateContract, labels["io.hvo.skymonitor.state-contract"]);
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.state-compatibility"));
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.minimum-compatible-revision"));
+        Assert.IsFalse(labels.ContainsKey("io.hvo.skymonitor.raw-ingress-migration"));
+    }
+
+    [TestMethod]
+    public void Dockerfile_DeclaresTheRawIngressSchemaTheRuntimeRequires()
+    {
+        var labels = ReadImageLabels();
+
+        Assert.AreEqual(
+            SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
+            labels["io.hvo.skymonitor.raw-ingress-schema"]);
+    }
+
+    [TestMethod]
+    public void Dockerfile_DeclaresTheCanonicalIdentityMigrationLineage()
+    {
+        var labels = ReadImageLabels();
+        var migrationsRoot = Path.Combine(
+            RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Data", "Migrations");
+        var migrations = Directory.EnumerateFiles(migrationsRoot, "*.cs")
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(static name => name is not null && !name.EndsWith(".Designer", StringComparison.Ordinal) &&
+                                  !name.EndsWith("ModelSnapshot", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // The unreleased CameraAgent component keeps exactly one canonical initial migration; a replaced baseline
+        // must move the declared boundary with it.
+        Assert.AreEqual(1, migrations.Length, string.Join(", ", migrations));
+        Assert.AreEqual(migrations[0], labels["io.hvo.skymonitor.identity-migration"]);
+    }
+
+    [TestMethod]
+    public void Dockerfile_DeclaresTheCatalogManifestVersionTheProductionBundlePublishes()
+    {
+        var labels = ReadImageLabels();
+
+        var declared = int.Parse(labels["io.hvo.skymonitor.catalog-manifest-version"], CultureInfo.InvariantCulture);
+        Assert.AreEqual(CatalogSnapshotResolver.SupportedManifestVersion, declared);
+        Assert.AreEqual("hvo-approved-catalogs-v4", labels["io.hvo.skymonitor.catalog-contract"]);
+        Assert.AreEqual(
+            ApprovedCatalogSpecifications.Get("openngc-production").ManifestVersion,
+            declared);
+        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion <= declared);
+        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-openngc-production").ManifestVersion <= declared);
+    }
+
+    internal static Dictionary<string, string> ReadImageLabels()
+    {
+        var dockerfile = File.ReadAllText(
+            Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile"));
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        // A value is double-quoted, and a quote or backslash in it is escaped with a backslash, as in the JSON of the
+        // state-contracts label.
+        foreach (Match match in Regex.Matches(
+                     dockerfile,
+                     "^\\s*(?:LABEL\\s+)?(io\\.hvo\\.skymonitor\\.[a-z-]+)=\"((?:[^\"\\\\]|\\\\.)*)\"",
+                     RegexOptions.Multiline | RegexOptions.CultureInvariant,
+                     TimeSpan.FromSeconds(5)))
+        {
+            labels[match.Groups[1].Value] = Regex.Replace(
+                match.Groups[2].Value, "\\\\(.)", "$1", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+        }
+        Assert.IsTrue(labels.Count >= 8, $"expected the full CameraAgent label set; found {labels.Count}");
+        return labels;
+    }
+
+    internal static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+        {
+            directory = directory.Parent;
+        }
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+}

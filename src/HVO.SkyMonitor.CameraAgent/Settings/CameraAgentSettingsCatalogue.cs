@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Settings;
 /// command line build their forms from it. Each group is kept in exactly one store and is the unit of one write.
 /// </summary>
 /// <remarks>
-/// Deployment settings (paths, listeners, central integration, credentials) are not here: the installer owns them.
+/// Deployment settings (paths, listeners, credentials) are not here: the installer owns them.
 /// </remarks>
 internal static class CameraAgentSettingsCatalogue
 {
@@ -219,12 +219,11 @@ internal static class CameraAgentSettingsCatalogue
     [
         new(SiteGroup, "Site profile",
             "Names and contact details that label this camera in the workspace. They stay on this CameraAgent; " +
-            "capture, geometry and LogicHost registration never read them.",
+            "capture geometry uses the protected coordinates.",
             SettingsFileStore, [ObservatoryName, CameraName, OwnerName, OwnerContact]),
         new(LocationGroup, "Deployment location",
             "The coordinates and time zone schedules, projection and capture evidence use. A change is recorded as a new " +
-            "local version that activates at the next CameraAgent start; with central integration on, LogicHost " +
-            "reviews it first. Values a change leaves out keep the coordinates that govern the next start.",
+            "local version that activates at the next CameraAgent start. Values a change leaves out keep the coordinates that govern the next start.",
             DeploymentLocationStore, [Latitude, Longitude, Elevation, TimeZone]),
         new(SkyMapGroup, "Sky map",
             "The catalog depth the sky map and virtual sky captures project.",

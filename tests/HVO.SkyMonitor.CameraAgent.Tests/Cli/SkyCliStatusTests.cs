@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli;
 public sealed class SkyCliStatusTests
 {
     [TestMethod]
-    public async Task Status_ShowsCaptureQueuesStorageAndLogicHostAsRowsAsync()
+    public async Task Status_ShowsCaptureQueuesAndStorageAsRowsAsync()
     {
         using var harness = new CliHarness();
 
@@ -22,11 +22,9 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "Capture:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "Running", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "4.0 captures/min", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "Artifact outbox: 2 pending (4.0 KiB), 0 quarantined", StringComparison.Ordinal);
+        StringAssert.Contains(result.Out, "Raw ingress:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "Storage raw:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "120.0 GiB free of 500.0 GiB", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "LogicHost:", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "Enabled; heartbeat Available, last acknowledged 2026-10-18T19:29:50Z", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "As of:", StringComparison.Ordinal);
         Assert.DoesNotContain(", Healthy", result.Out, StringComparison.Ordinal);
         Assert.DoesNotContain(", Accepting", result.Out, StringComparison.Ordinal);

@@ -1,7 +1,7 @@
 # Processing Recipes v1
 
 `HVO.SkyMonitor.Processing` is the host-neutral execution boundary for canonical
-image recipes. CameraAgent and LogicHost supply immutable inputs and explicit
+image recipes. CameraAgent supplies immutable inputs and explicit
 context, invoke `IProcessingRecipeExecutor`, and retain ownership of scheduling,
 persistence, transport, retries, and durable state.
 
@@ -207,19 +207,10 @@ missing/stale state remains explicit. The algorithm receives no simulator scenar
 provenance, expected coverage, fixture labels, or truth masks. See
 `cloud-assessment-v1.md` for the compound product contract.
 
-## Host Adapters
+## CameraAgent adapter
 
-CameraAgent maps canonical products back into its legacy role-keyed
-`FrameArtifactSet` only as a compatibility view and retains full products and
-outcomes on `CaptureProcessingContext`. LogicHost validates a reconstruction
-descriptor and checksum before invoking the same executor, including ordered
-multi-source windows. Both adapters derive compatibility from equivalent
-capture-time profile versions, processing-profile hashes, effective exposure,
-gain/offset, and temperature setpoint rather than measured temperature. Neither
-adapter owns a durable graph or worker lifecycle in this phase.
-
-CameraAgent persists layoutless metadata with a separate versioned local product
-manifest under `derived/`; it does not fabricate a `CameraFrame`. LogicHost processing
-inputs retain durable binding names so configured reference artifacts reach the same
-auxiliary-input identity envelope. Central automatic cloud scheduling requires a
-configured durable reference designation and frozen environmental context.
+CameraAgent maps canonical products into its role-keyed `FrameArtifactSet` view
+and retains full products and outcomes in `CaptureProcessingContext`.
+Compatibility uses the capture-time profile version, processing-profile hash,
+effective exposure, gain, offset and temperature setpoint. Layoutless metadata
+uses a local product manifest under `derived/`.

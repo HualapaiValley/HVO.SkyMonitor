@@ -19,7 +19,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     [DataRow("cardinalValue")]
     public async Task SceneIntensityEditsReachRealProducerAndClearingReconstructsPalette(string key)
     {
-        using var store = new SqliteEnvironmentalObservationOutbox();
+        using var store = new SqliteEnvironmentalObservationStore();
         var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
         var position = EquatorialPrecession.PrecessToJ2000(
             CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(80, 45), Epoch, 0, 0), Epoch);

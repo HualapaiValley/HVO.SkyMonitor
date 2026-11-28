@@ -287,6 +287,7 @@ public sealed partial class InstallerFlowTests
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-resources-{Guid.NewGuid():N}");
         return (new InstallRequest
         {
+            StorageLayout = CameraAgentStorageLayout.Filesystem,
             AllowTestProductRoot = true,
             InstanceId = instanceId,
             FriendlyName = "Limits Camera",
