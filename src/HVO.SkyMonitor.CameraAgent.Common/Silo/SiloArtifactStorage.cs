@@ -15,8 +15,6 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
 
     internal bool BindingVerified => storage.BindingVerified;
 
-    internal static bool IsReference(string path) => path.StartsWith("silo/", StringComparison.Ordinal);
-
     internal static string RawReference(Guid id, string extension) => $"silo/raw/{id:N}{extension}";
 
     public async ValueTask PublishProcessingAsync(string groupId, ReconstructionDescriptor raw, IReadOnlyList<SiloArtifactInput> outputs,

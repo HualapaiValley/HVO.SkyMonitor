@@ -110,8 +110,10 @@ public sealed partial class DurableCaptureProcessingTests
                 return latest;
             };
 
-            // Establish the unavailable headline and the still-renderable selected frame with real I/O.
-            using (var inaccessible = File.Open(Path.Combine(root, older.PayloadRelativePath), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            // Establish the unavailable headline and the still-renderable selected frame with an unavailable Silo copy.
+            var inaccessible = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, older, token).ConfigureAwait(false);
+            inaccessible.SetUnavailable(true);
+            try
             {
                 using var page = context.Render<CurrentSkyPage>();
                 await CheckSelectedAsync().ConfigureAwait(false);
@@ -123,8 +125,8 @@ public sealed partial class DurableCaptureProcessingTests
                     StringAssert.Contains(page.Find(".latest-measured-solution").TextContent, "temporarily unavailable", StringComparison.Ordinal);
                 }, timeout);
 
-                // Release the older file before advancing the actual page's next periodic refresh.
-                await inaccessible.DisposeAsync().ConfigureAwait(false);
+                // Restore the older copy before advancing the actual page's next periodic refresh.
+                inaccessible.SetUnavailable(false);
                 for (var tick = 1; tick <= 2; tick++)
                 {
                     selectedStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -154,6 +156,10 @@ public sealed partial class DurableCaptureProcessingTests
                     page.WaitForAssertion(() => StringAssert.Contains(page.Find(".latest-measured-solution").TextContent,
                         earlier.SolutionIdentitySha256, StringComparison.Ordinal), timeout);
                 }
+            }
+            finally
+            {
+                inaccessible.SetUnavailable(false);
             }
 
             async Task CheckSelectedAsync()

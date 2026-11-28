@@ -68,6 +68,7 @@ public sealed partial class DurableCaptureProcessingTests
             var pause = true;
             var failOldestOpen = false;
             var temporaryFailures = 0;
+            var oldestMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, oldest, token).ConfigureAwait(false);
             delayed.Setup(service => service.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .Returns(async (Guid artifactId, CancellationToken requestToken) =>
                 {
@@ -84,11 +85,18 @@ public sealed partial class DurableCaptureProcessingTests
                         return await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
 
                     failOldestOpen = false;
-                    using var exclusive = File.Open(Path.Combine(root, oldest.PayloadRelativePath), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-                    var result = await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
-                    Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
-                    temporaryFailures++;
-                    return result;
+                    oldestMember.SetUnavailable(true);
+                    try
+                    {
+                        var result = await artifacts.OpenContentAsync(artifactId, requestToken).ConfigureAwait(false);
+                        Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
+                        temporaryFailures++;
+                        return result;
+                    }
+                    finally
+                    {
+                        oldestMember.SetUnavailable(false);
+                    }
                 });
 
             using var service = CreateUnpooledAstrometryReader(store, delayed.Object);

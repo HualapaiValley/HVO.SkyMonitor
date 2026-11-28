@@ -122,8 +122,9 @@ public sealed partial class DurableCaptureProcessingTests
             StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
             await page.InvokeAsync(() => page.Find($"input[data-layer-target='{residual.DomGroupId}']").ChangeAsync(true)).ConfigureAwait(false);
 
-            var latestPath = Path.Combine(root, newest.PayloadRelativePath);
-            using (File.Open(latestPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            var latest = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, newest, token).ConfigureAwait(false);
+            latest.SetUnavailable(true);
+            try
             {
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
@@ -133,6 +134,10 @@ public sealed partial class DurableCaptureProcessingTests
                     AssertTools(available: true);
                     Assert.HasCount(1, page.FindAll(".astrometry-calculator-result"));
                 }, timeout);
+            }
+            finally
+            {
+                latest.SetUnavailable(false);
             }
 
             if (scenario == "context-open")
@@ -230,9 +235,12 @@ public sealed partial class DurableCaptureProcessingTests
     {
         var descriptor = fixture.Fixture.Manifest.Descriptor;
         var root = fixture.Fixture.Options.Value.RawIngressRoot;
+        var bytes = await SiloInfrastructureFixture.ProductStorage(root).ReadRawAsync(descriptor, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(bytes);
         var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
             ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256, descriptor.Artifact.MediaType,
-            descriptor.Layout, await File.ReadAllBytesAsync(Path.Combine(root, fixture.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false),
+            descriptor.Layout, bytes,
             descriptor.Artifact.CreatedUtc, descriptor.Controls.EffectiveExposure, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor),
             descriptor.Capture.CaptureSequence, descriptor.Artifact.SourceArtifactIds, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc)
         { CaptureId = descriptor.Capture.CaptureId, DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };

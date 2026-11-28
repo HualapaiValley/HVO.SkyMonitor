@@ -299,7 +299,8 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
             }, TimeSpan.FromSeconds(5));
 
-            using (File.Open(olderPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            fallback.SetUnavailable(true);
+            try
             {
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
@@ -308,6 +309,10 @@ public sealed partial class DurableCaptureProcessingTests
                     StringAssert.Contains(summary, "Showing the previously verified result", StringComparison.Ordinal);
                     StringAssert.Contains(summary, earlier.SolutionIdentitySha256, StringComparison.Ordinal);
                 }, TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                fallback.SetUnavailable(false);
             }
         }
         finally { Directory.Delete(root, recursive: true); }
