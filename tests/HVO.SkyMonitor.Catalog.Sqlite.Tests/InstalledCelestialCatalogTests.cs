@@ -26,12 +26,12 @@ internal sealed class InstalledCelestialCatalogTests
         var logger = new RecordingLogger<SqliteCelestialCatalog>();
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(Configuration(("Catalog:Root", "missing"),
-            ("Catalog:RequiredCatalogId", "hyg-v42-production"),
+            ("Catalog:RequiredCatalogId", "hyg-v44-production"),
             ("Catalog:RequiredPackageKind", "Production")));
         services.AddSingleton<ILogger<SqliteCelestialCatalog>>(logger);
         services.AddInstalledCelestialCatalog();
         services.AddSingleton<IConfiguration>(Configuration(("Catalog:Root", installation.Root),
-            ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
+            ("Catalog:RequiredCatalogId", "hyg-v44-fixture"),
             ("Catalog:RequiredPackageKind", "fixture")));
         using var provider = services.BuildServiceProvider();
 
@@ -55,13 +55,13 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual("InstalledCatalogSnapshotResolved", entry.EventId.Name);
         Assert.AreEqual(LogLevel.Information, entry.Level);
         Assert.AreEqual(CatalogSnapshotPackageKind.Fixture, entry.Properties["Kind"]);
-        Assert.AreEqual("hyg-v42-fixture", entry.Properties["CatalogId"]);
+        Assert.AreEqual("hyg-v44-fixture", entry.Properties["CatalogId"]);
         Assert.AreEqual("explicit-manifest-v2", entry.Properties["CatalogIdentitySource"]);
-        Assert.AreEqual("4.2-fixture.1", entry.Properties["CatalogVersion"]);
-        Assert.AreEqual("2", entry.Properties["SchemaVersion"]);
-        Assert.AreEqual("3", entry.Properties["PreprocessingVersion"]);
+        Assert.AreEqual("4.4-fixture.1", entry.Properties["CatalogVersion"]);
+        Assert.AreEqual("3", entry.Properties["SchemaVersion"]);
+        Assert.AreEqual("4", entry.Properties["PreprocessingVersion"]);
         Assert.AreEqual(snapshot.DatabaseSha256, entry.Properties["DatabaseSha256"]);
-        Assert.AreEqual(9L, entry.Properties["RowCount"]);
+        Assert.AreEqual(16L, entry.Properties["RowCount"]);
         Assert.HasCount(9, entry.Properties);
         Assert.IsFalse(entry.Message.Contains(installation.Root, StringComparison.Ordinal));
     }
@@ -104,7 +104,7 @@ internal sealed class InstalledCelestialCatalogTests
             Resolve(Configuration(("Catalog:RequiredPackageKind", "Fixture"))));
         StringAssert.Contains(missingRoot.Message, "Catalog:Root", StringComparison.Ordinal);
         Assert.ThrowsExactly<InvalidOperationException>(() =>
-            Resolve(Configuration(("Catalog:Root", " "), ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
+            Resolve(Configuration(("Catalog:Root", " "), ("Catalog:RequiredCatalogId", "hyg-v44-fixture"),
                 ("Catalog:RequiredPackageKind", "Fixture"))));
 
         var missingCatalogId = Assert.ThrowsExactly<InvalidOperationException>(() =>
@@ -114,16 +114,16 @@ internal sealed class InstalledCelestialCatalogTests
 
         var missingKind = Assert.ThrowsExactly<InvalidOperationException>(() =>
             Resolve(Configuration(("Catalog:Root", installation.Root),
-                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"))));
+                ("Catalog:RequiredCatalogId", "hyg-v44-fixture"))));
         StringAssert.Contains(missingKind.Message, "Catalog:RequiredPackageKind", StringComparison.Ordinal);
 
         Assert.ThrowsExactly<InvalidOperationException>(() =>
             Resolve(Configuration(("Catalog:Root", installation.Root),
-                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
+                ("Catalog:RequiredCatalogId", "hyg-v44-fixture"),
                 ("Catalog:RequiredPackageKind", "0"))));
         Assert.ThrowsExactly<InvalidOperationException>(() =>
             Resolve(Configuration(("Catalog:Root", installation.Root),
-                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
+                ("Catalog:RequiredCatalogId", "hyg-v44-fixture"),
                 ("Catalog:RequiredPackageKind", " fixture "))));
     }
 
@@ -145,7 +145,7 @@ internal sealed class InstalledCelestialCatalogTests
     {
         using var installation = CatalogSnapshotResolverTests.CreateInstallation();
         var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            installation.Root, "hyg-v42-fixture")
+            installation.Root, "hyg-v44-fixture")
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture
         });
@@ -166,7 +166,7 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual("Production celestial catalog snapshot is installed.", production.Description);
         Assert.HasCount(9, fixture.Data);
         Assert.AreEqual("Fixture", fixture.Data["Kind"]);
-        Assert.AreEqual("hyg-v42-fixture", fixture.Data["CatalogId"]);
+        Assert.AreEqual("hyg-v44-fixture", fixture.Data["CatalogId"]);
         Assert.AreEqual(snapshot.SnapshotVersion, fixture.Data["PackageVersion"]);
         Assert.AreEqual("explicit-manifest-v2", fixture.Data["CatalogIdentitySource"]);
         Assert.AreEqual(snapshot.DatabaseSha256, fixture.Data["DatabaseSha256"]);

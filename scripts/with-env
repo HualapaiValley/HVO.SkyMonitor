@@ -8,9 +8,7 @@ source "$repo_root/.devcontainer/load-repo-env.sh"
 runtime_data_root="$(realpath -m "${HVO_RUNTIME_DATA_ROOT:-$repo_root/data}")"
 
 if [[ "$*" == *"HVO.SkyMonitor.CameraAgent"* ]]; then
-    export Catalog__Root="$runtime_data_root/catalog"
-    export Catalog__RequiredCatalogId="hyg-v42-production"
-    export Catalog__RequiredPackageKind="Production"
+    export Catalog__Root="${Catalog__Root:-$runtime_data_root/catalogs/hyg-v44-production}"
     export CameraAgent__RawIngressRoot="$runtime_data_root/agent"
 fi
 

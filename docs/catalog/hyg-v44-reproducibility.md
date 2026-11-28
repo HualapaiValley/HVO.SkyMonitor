@@ -134,9 +134,9 @@ anything under `scripts/catalog/` or `tests/fixtures/catalog/`, and on every pus
 to those branches, manual dispatch and release qualification. The job acquires
 both inputs with `scripts/catalog/fetch-hyg-v44-openngc-inputs.sh`, which checks
 them against the pins above before the regression reads them, and it also
-rebuilds the three catalog test fixtures under both connection defaults with
-`scripts/catalog/test-fixture-reproducibility.sh`. The HYG 4.2 counterpart,
-`scripts/catalog/test-hyg-v42-reproducibility.sh`, runs in **Catalog Contracts**
+rebuilds the two catalog test fixtures under both connection defaults with
+`scripts/catalog/test-fixture-reproducibility.sh`. **Catalog Contracts** invokes
+`scripts/catalog/test-hyg-v44-reproducibility.sh` with just the pinned HYG input
 for every full-mode head, on the input that job has already fetched and
 verified. None of these runs in the `development/v1` profile. The
 [CI pipeline runbook](../runbooks/ci-pipeline.md#catalog-reproducibility) has

@@ -149,9 +149,8 @@ component_lane() {
   fi
 }
 
-# The catalog reproducibility regressions build catalogs, so they follow their own selection only in full mode. A
-# reduced plan may still name a catalog-recipe path (tests/fixtures/catalog/SOURCE.md is allowlisted documentation)
-# and, like every other build in that mode, must not run them.
+# The catalog reproducibility regressions build catalogs, so they follow their own selection only in full mode.
+# The allowlisted HYG 4.4 and composed OpenNGC fixture source notes also set catalog_recipe in reduced mode.
 catalog_reproducibility="false"
 [[ "$full_mode" != "true" || "${plan[catalog_recipe]}" != "true" ]] || catalog_reproducibility="true"
 

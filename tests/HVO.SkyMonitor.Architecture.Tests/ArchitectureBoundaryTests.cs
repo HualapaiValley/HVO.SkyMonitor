@@ -43,7 +43,8 @@ public sealed partial class ArchitectureBoundaryTests
     // dependency rule is asserted by LocalFilesBoundaryIsNarrowWhenPresent.
     private const string LocalFiles = "HVO.SkyMonitor.LocalFiles";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
-    private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
+    private const int FixtureCatalogLength = 20_480;
+    private const string FixtureCatalogSha256 = "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682";
 
     private static readonly string[] ProjectSearchDirectories = ["src", "tests", "scripts", "tools"];
 
@@ -2373,7 +2374,7 @@ public sealed partial class ArchitectureBoundaryTests
             var testAssemblyName = testAssembly.GetName().Name!;
             File.Copy(testAssembly.Location, Path.Combine(output, "renamed-test.dll"));
             File.Copy(
-                Path.Combine(snapshot.Graph.Root, "tests", "fixtures", "catalog", "hyg-v42-bright-stars.sqlite"),
+                Path.Combine(snapshot.Graph.Root, "tests", "fixtures", "catalog", "hyg-v44-subset.sqlite"),
                 Path.Combine(output, "renamed-catalog.dat"));
             File.WriteAllText(Path.Combine(output, "catalog-package.json"),
                 """{"package":{"kind":"fixture"}}""");
@@ -2390,6 +2391,7 @@ public sealed partial class ArchitectureBoundaryTests
             var violations = FindForbiddenPublishArtifacts(output, Set(TestSupport, testAssemblyName));
 
             Assert.HasCount(6, violations);
+            CollectionAssert.Contains(violations, "File 'renamed-catalog.dat' contains the test catalog fixture.");
             Assert.IsTrue(violations.Any(violation => violation.Contains(testAssemblyName, StringComparison.Ordinal)));
             Assert.IsTrue(violations.Any(violation => violation.Contains("MSTest", StringComparison.Ordinal)));
         }
@@ -2498,7 +2500,7 @@ public sealed partial class ArchitectureBoundaryTests
                 }
             }
 
-            if (new FileInfo(file).Length == 16_384 &&
+            if (new FileInfo(file).Length == FixtureCatalogLength &&
                 string.Equals(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))),
                     FixtureCatalogSha256, StringComparison.Ordinal))
             {

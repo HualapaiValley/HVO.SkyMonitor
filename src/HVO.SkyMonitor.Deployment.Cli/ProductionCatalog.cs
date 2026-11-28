@@ -8,11 +8,11 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// The installer's view of the approved production catalogs (issue #521). Every constant comes from the reviewed
 /// registry embedded in <c>HVO.SkyMonitor.Catalog.Sqlite</c>; a bundle, manifest or retained record can only name an
-/// approved specification. HYG 4.2 remains the default for a fresh install that does not supply a catalog.
+/// approved specification. HYG 4.4 is the default for a fresh install that does not supply a catalog.
 /// </summary>
 internal static class ProductionCatalog
 {
-    public const string DefaultCatalogId = "hyg-v42-production";
+    public const string DefaultCatalogId = "hyg-v44-production";
 
     public static ApprovedCatalogSpecificationSet Specifications { get; } = new(
         ApprovedCatalogSpecifications.All.Select(ToContract));

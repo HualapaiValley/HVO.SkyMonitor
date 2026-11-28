@@ -664,7 +664,7 @@ public sealed partial class LifecycleContractTests
     public async Task LifecycleControlToken_MissingOrMismatchedMirrorIsRejectedWithoutMutation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-token-{Guid.NewGuid():N}");
-        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV44.CatalogId);
         Directory.CreateDirectory(Path.Combine(paths.ConfigRoot, "lifecycle-control"));
         Directory.CreateDirectory(Path.Combine(paths.ConfigRoot, "secrets"));
         var tokenPath = Path.Combine(paths.ConfigRoot, "lifecycle-control", "token");
@@ -776,16 +776,16 @@ public sealed partial class LifecycleContractTests
     public async Task CatalogGarbageCollect_InterruptedDeletionRequiresExactResumeRequest()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-gc-{Guid.NewGuid():N}");
-        var paths = InstallationPaths.Create(root, Guid.Empty, HygV42.CatalogId);
+        var paths = InstallationPaths.Create(root, Guid.Empty, HygV44.CatalogId);
         var versionsRoot = Path.Combine(paths.CatalogRoot, "versions");
-        var version = "hyg-v4.2-p3-s2-r2";
+        var version = "hyg-v4.4-p4-s3-r2";
         var operationId = Guid.NewGuid();
         var tombstoneName = $".gc-{version}-{operationId:N}";
         var tombstone = Path.Combine(versionsRoot, tombstoneName);
         Directory.CreateDirectory(tombstone);
         Directory.CreateDirectory(paths.OperationsRoot);
-        Directory.CreateDirectory(Path.Combine(versionsRoot, HygV42.PackageVersion));
-        Directory.CreateSymbolicLink(Path.Combine(paths.CatalogRoot, "current"), $"versions/{HygV42.PackageVersion}");
+        Directory.CreateDirectory(Path.Combine(versionsRoot, HygV44.PackageVersion));
+        Directory.CreateSymbolicLink(Path.Combine(paths.CatalogRoot, "current"), $"versions/{HygV44.PackageVersion}");
         await File.WriteAllTextAsync(Path.Combine(tombstone, "remaining"), "remaining");
         foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).Prepend(root))
             File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -800,7 +800,7 @@ public sealed partial class LifecycleContractTests
             CatalogVersion = version
         };
         var catalog = new CatalogInstallationIdentity(
-            HygV42.CatalogId, version, "2", "3", new string('a', 64), 1, 1,
+            HygV44.CatalogId, version, "3", "4", new string('a', 64), 1, 1,
             paths.CatalogRoot, new string('b', 64), "test");
         await SafeFileSystem.WriteJsonAtomicAsync(
             Path.Combine(paths.OperationsRoot, $"catalog-gc-{operationId:N}.json"),
@@ -811,7 +811,7 @@ public sealed partial class LifecycleContractTests
             CancellationToken.None);
         try
         {
-            var wrongRequest = request with { CatalogVersion = "hyg-v4.2-p3-s2-r3" };
+            var wrongRequest = request with { CatalogVersion = "hyg-v4.4-p4-s3-r3" };
             await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
                 wrongRequest, new FakeRunner(daemon), null, null, uid, gid, CancellationToken.None));
             Assert.IsTrue(Directory.Exists(tombstone));
@@ -893,12 +893,12 @@ public sealed partial class LifecycleContractTests
             LifecycleOperationKind.CatalogSelect, instanceId, InstallRequest.DefaultProductRoot,
             dryRun: false, resume: true, json: false)
         {
-            CatalogVersion = "hyg-v4.2-p3-s2-r2"
+            CatalogVersion = "hyg-v4.4-p4-s3-r2"
         };
         var image = new ImageInstallationIdentity(
             "registry", $"cameraagent@sha256:{new string('a', 64)}", $"sha256:{new string('b', 64)}", "amd64", null);
         var original = new CatalogInstallationIdentity(
-            HygV42.CatalogId, HygV42.PackageVersion, "2", "3", new string('c', 64), 1, 1,
+            HygV44.CatalogId, HygV44.PackageVersion, "3", "4", new string('c', 64), 1, 1,
             "/catalog", new string('d', 64), "test");
         var candidate = original with { PackageVersion = request.CatalogVersion };
         var operation = new LifecycleOperationState(
@@ -968,7 +968,7 @@ public sealed partial class LifecycleContractTests
         // still fails if the check is removed or moved after the pause. The candidate is synthetic: after candidate
         // validation the selection reads only its identity, never its files, until the check has passed.
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        const string candidateVersion = "hyg-v4.4-p4-s3-r2";
         var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidateVersion };
         var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
@@ -997,16 +997,14 @@ public sealed partial class LifecycleContractTests
     [DataRow(true)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge(bool silo)
     {
-        var catalogId = silo ? "hyg-v44-production" : HygV42.CatalogId;
-        var bundleVariable = silo ? "HVO_HYG_V44_CATALOG_BUNDLE" : "HVO_PRODUCTION_CATALOG_BUNDLE";
         // Deliberately environment-gated; see the note in InstallerFlowTests. The full-qualification Unit lane in
         // ci.yml restores the catalog bundle and asserts it exists before exporting this variable, so a skip there
         // means the restore broke. Development v1 Build and Unit does not restore the bundle and skips this test;
         // CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation covers the refusal there.
-        var bundle = Environment.GetEnvironmentVariable(bundleVariable);
-        if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive($"Set {bundleVariable} to run catalog transitions.");
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         using var fixture = silo
-            ? await SiloFixtureAsync(InstanceLifecycleCondition.Installed, catalogId, seedCatalogSelection: false)
+            ? await SiloFixtureAsync(InstanceLifecycleCondition.Installed, seedCatalogSelection: false)
             : await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());
         var selectedReferenceRoot = Path.Combine(fixture.Paths.CatalogReferencesRoot, selected.PackageVersion);
@@ -1015,7 +1013,7 @@ public sealed partial class LifecycleContractTests
             Path.Combine(selectedReferenceRoot, "installed.json"), selected,
             DeploymentJsonContext.Default.CatalogInstallationIdentity, CancellationToken.None);
 
-        var previousVersion = ProductionCatalog.Get(catalogId).PackageVersionPrefix + "2";
+        const string previousVersion = "hyg-v4.4-p4-s3-r2";
         var selectedVersionRoot = Path.Combine(fixture.Paths.CatalogRoot, "versions", selected.PackageVersion);
         var previousVersionRoot = Path.Combine(fixture.Paths.CatalogRoot, "versions", previousVersion);
         Directory.CreateDirectory(previousVersionRoot);
@@ -1027,12 +1025,18 @@ public sealed partial class LifecycleContractTests
         await File.WriteAllTextAsync(
             previousManifestPath, previousManifestJson.Replace(selected.PackageVersion, previousVersion, StringComparison.Ordinal));
         var previousSnapshot = CatalogSnapshotResolver.Resolve(
-            ProductionCatalog.ResolverOptions(fixture.Paths.CatalogRoot, catalogId, previousVersion));
+            ProductionCatalog.ResolverOptions(fixture.Paths.CatalogRoot, HygV44.CatalogId, previousVersion));
         var previous = ProductionCatalog.ToIdentity(previousSnapshot, fixture.Paths.CatalogRoot);
         var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None, allowSiloLayout: silo);
+        var retainedImage = fixture.Manifest.Image with { ImageId = $"sha256:{new string('6', 64)}" };
+        var installed = fixture.Manifest with
+        {
+            Catalog = previous,
+            PreviousImage = retainedImage,
+            PreviousComposeModelSha256 = fixture.Manifest.ComposeModelSha256
+        };
         await SafeFileSystem.WriteJsonAtomicAsync(
-            fixture.Paths.ManifestPath, fixture.Manifest with { Catalog = previous },
-            DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+            fixture.Paths.ManifestPath, installed, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
         await SafeFileSystem.WriteJsonAtomicAsync(
             fixture.Paths.ResultPath, result with { Catalog = previous },
             DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
@@ -1066,166 +1070,61 @@ public sealed partial class LifecycleContractTests
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
 
-        var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
-            fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
-            _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-        Assert.AreEqual(previous.PackageVersion, rollbackResult.Catalog!.PackageVersion);
-        Assert.AreEqual(2, fixture.Runner.ComposeUpCount);
-        Assert.AreEqual(2, fixture.Runner.ComposeRestartCount);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task CatalogSelect_CrossLineage_SelectsSideBySideRootAndRollsBackExactly()
-    {
-        // Environment-gated like the single-lineage transition. The HYG 4.4 bundle is retained as local evidence
-        // until its publication is approved, so CI restores only the 4.2 bundle and this transition skips there.
-        var originalBundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
-        var candidateBundle = Environment.GetEnvironmentVariable("HVO_HYG_V44_CATALOG_BUNDLE");
-        if (string.IsNullOrEmpty(originalBundle) || string.IsNullOrEmpty(candidateBundle))
-            Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE and HVO_HYG_V44_CATALOG_BUNDLE to run cross-lineage transitions.");
-        using var fixture = await LifecycleFixture.CreateAsync(
-            InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
-        const string candidateCatalogId = "hyg-v44-production";
-        var candidatePaths = fixture.Paths.WithCatalog(candidateCatalogId);
-        var original = CatalogInstaller.Install(originalBundle, fixture.Paths.CatalogRoot, Guid.NewGuid());
-        var candidate = CatalogInstaller.Install(candidateBundle, candidatePaths.CatalogRoot, Guid.NewGuid());
-        Assert.AreEqual(candidateCatalogId, candidate.CatalogId);
-        foreach (var (lineagePaths, identity) in new[] { (fixture.Paths, original), (candidatePaths, candidate) })
-        {
-            var referenceRoot = Path.Combine(lineagePaths.CatalogReferencesRoot, identity.PackageVersion);
-            Directory.CreateDirectory(referenceRoot);
-            await SafeFileSystem.WriteJsonAtomicAsync(
-                Path.Combine(referenceRoot, "installed.json"), identity,
-                DeploymentJsonContext.Default.CatalogInstallationIdentity, CancellationToken.None);
-        }
-        var originalRoot = Fingerprint(fixture.Paths.CatalogRoot);
-        var legacyImage = fixture.Manifest.Image;
-        var image = legacyImage with { CatalogContract = "hvo-approved-catalogs-v1" };
-        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
-        var secrets = Path.Combine(fixture.Paths.ConfigRoot, "secrets");
-        var environmentPath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "instance.env");
-        fixture.Runner.ConfigureRuntime(
-            fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
-            fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
-        var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidate.PackageVersion };
-
-        // An image that declares only the 4.2 lineage cannot resolve the 4.4 catalog, so the selection is refused
-        // before any journal entry, secret, or environment change.
-        await WriteSelectionAsync(legacyImage, previousImage: null);
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None));
-        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
-        Assert.AreEqual(HygV42.CatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
-        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
-
-        await WriteSelectionAsync(image, image with { ImageId = $"sha256:{new string('6', 64)}" });
-        // A 4.2 capture whose processing has not committed would be re-annotated under 4.4 on retry, so the
-        // selection is refused at the drained boundary and the exact 4.2 selection is restored and resumed.
-        var pendingSelection = new FakeLifecycleClient { DrainedProcessingPending = 3 };
-        var selectionRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => pendingSelection, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None));
-        StringAssert.StartsWith(selectionRefusal.Message,
-            "Catalog selection refused: CameraAgent still has 3 capture-processing item(s) pending or awaiting retry",
-            StringComparison.Ordinal);
-        StringAssert.EndsWith(selectionRefusal.Message, "The prior exact selection was restored.", StringComparison.Ordinal);
-        Assert.AreEqual(1, pendingSelection.ResumeCount);
-        Assert.AreEqual(original, (await ReadManifestAsync()).Catalog);
-        Assert.AreEqual(HygV42.CatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
-        Assert.AreEqual(original.PackageVersion, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredPackageVersion")));
-        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={fixture.Paths.CatalogRoot}");
-
-        var selected = await CameraAgentLifecycleManager.ExecuteAsync(
-            request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
-
-        Assert.AreEqual(candidate, selected.Catalog);
-        Assert.AreEqual(candidateCatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
-        Assert.AreEqual(candidate.PackageVersion, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredPackageVersion")));
-        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={candidatePaths.CatalogRoot}");
-        var committed = await ReadManifestAsync();
-        Assert.AreEqual(candidate, committed.Catalog);
-        Assert.AreEqual(original, committed.PreviousCatalog);
-        // The retained image rollback is bound to the 4.2 root, so crossing lineages retires it.
-        Assert.IsNull(committed.PreviousImage);
-        Assert.IsNull(committed.PreviousComposeModelSha256);
-        Assert.IsTrue(File.Exists(Path.Combine(
-            fixture.Paths.CatalogReferencesRoot, original.PackageVersion, "historical", $"cameraagent-{fixture.InstanceId:D}.json")));
-        CollectionAssert.AreEquivalent(originalRoot, Fingerprint(fixture.Paths.CatalogRoot));
-
-        // The reverse: 4.4 processing work awaiting retry refuses the rollback and keeps 4.4 selected.
         var pendingRollback = new FakeLifecycleClient { DrainedProcessingPending = 1 };
         var rollbackRefusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
-            _ => pendingRollback, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+            _ => pendingRollback, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
+            CancellationToken.None));
         StringAssert.StartsWith(rollbackRefusal.Message,
             "Catalog rollback refused: CameraAgent still has 1 capture-processing item(s) pending or awaiting retry",
             StringComparison.Ordinal);
         Assert.AreEqual(1, pendingRollback.ResumeCount);
-        Assert.AreEqual(candidate, (await ReadManifestAsync()).Catalog);
-        Assert.AreEqual(candidateCatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
-        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={candidatePaths.CatalogRoot}");
+        Assert.AreEqual(selected.PackageVersion, await File.ReadAllTextAsync(settingPath));
 
-        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
+        var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner,
             _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
-
-        Assert.AreEqual(original, rolledBack.Catalog);
-        Assert.AreEqual(HygV42.CatalogId, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredCatalogId")));
-        Assert.AreEqual(original.PackageVersion, await File.ReadAllTextAsync(Path.Combine(secrets, "Catalog__RequiredPackageVersion")));
-        CollectionAssert.Contains(await File.ReadAllLinesAsync(environmentPath), $"HVO_CATALOG_ROOT={fixture.Paths.CatalogRoot}");
-        var restored = await ReadManifestAsync();
-        Assert.AreEqual(original, restored.Catalog);
-        Assert.AreEqual(candidate, restored.PreviousCatalog);
-        Assert.IsTrue(File.Exists(Path.Combine(
-            candidatePaths.CatalogReferencesRoot, candidate.PackageVersion, "historical", $"cameraagent-{fixture.InstanceId:D}.json")));
-        CollectionAssert.AreEquivalent(originalRoot, Fingerprint(fixture.Paths.CatalogRoot));
-        // Each refusal recreates the original selection once during exact restoration; neither restarts a candidate.
-        Assert.AreEqual(4, fixture.Runner.ComposeUpCount);
+        Assert.AreEqual(previous.PackageVersion, rollbackResult.Catalog!.PackageVersion);
+        var restored = await CameraAgentLifecycleManager.ReadManifestAsync(
+            fixture.Paths.ManifestPath, CancellationToken.None, allowSiloLayout: silo);
+        Assert.AreEqual(retainedImage, restored.PreviousImage);
+        Assert.AreEqual(installed.ComposeModelSha256, restored.PreviousComposeModelSha256);
+        Assert.AreEqual(selected, restored.PreviousCatalog);
+        Assert.AreEqual(fixture.Paths.CatalogRoot, restored.Catalog.InstallRoot);
+        Assert.AreEqual(3, fixture.Runner.ComposeUpCount);
         Assert.AreEqual(2, fixture.Runner.ComposeRestartCount);
-
-        async Task WriteSelectionAsync(ImageInstallationIdentity selectedImage, ImageInstallationIdentity? previousImage)
-        {
-            fixture.Runner.CatalogContract = selectedImage.CatalogContract!;
-            await SafeFileSystem.WriteJsonAtomicAsync(
-                fixture.Paths.ManifestPath,
-                fixture.Manifest with
-                {
-                    Catalog = original,
-                    Image = selectedImage,
-                    PreviousImage = previousImage,
-                    PreviousComposeModelSha256 = previousImage is null ? null : fixture.Manifest.ComposeModelSha256
-                },
-                DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
-            await SafeFileSystem.WriteJsonAtomicAsync(
-                fixture.Paths.ResultPath, result with { Catalog = original, Image = selectedImage },
-                DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
-        }
-
-        async Task<InstanceManifest> ReadManifestAsync()
-            => JsonSerializer.Deserialize(
-                await File.ReadAllTextAsync(fixture.Paths.ManifestPath), DeploymentJsonContext.Default.InstanceManifest)!;
-
-        static Dictionary<string, string> Fingerprint(string root)
-            => Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
-                .ToDictionary(
-                    path => Path.GetRelativePath(root, path),
-                    path => new FileInfo(path).LinkTarget is { } target
-                        ? $"link:{target}"
-                        : File.Exists(path)
-                            ? Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)))
-                            : "directory");
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UninstallAsync_HygV44InstanceUsesItsOwnLineageAndPreservesState()
+    public async Task CatalogTransition_RefusesAnotherStarLineageAndMissingPreviousRevision()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var lifecycle = new FakeLifecycleClient();
+
+        var selection = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogSelect) with
+            {
+                CatalogVersion = "hyg-v4.4-openngc-v20260501-p5-s4-r1"
+            }, fixture.Runner, _ => lifecycle, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(selection.Message, "installed catalog lineage", StringComparison.Ordinal);
+        var rollback = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogRollback), fixture.Runner, _ => lifecycle, null,
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(rollback.Message, "No previous catalog revision", StringComparison.Ordinal);
+
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(0, lifecycle.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UninstallAsync_ComposedInstanceUsesItsOwnLineageAndPreservesState()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
-            InstanceLifecycleCondition.Installed, catalogId: "hyg-v44-production");
-        StringAssert.EndsWith(fixture.Paths.CatalogRoot, Path.Combine("catalogs", "hyg-v44-production"), StringComparison.Ordinal);
+            InstanceLifecycleCondition.Installed, catalogId: "hyg-v44-openngc-production");
+        StringAssert.EndsWith(fixture.Paths.CatalogRoot, Path.Combine("catalogs", "hyg-v44-openngc-production"), StringComparison.Ordinal);
         fixture.Runner.ConfigureRuntime(
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
@@ -1242,7 +1141,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(fixture.Manifest.Catalog, result.Catalog);
         Assert.IsTrue(File.Exists(stateSentinel));
         Assert.AreEqual(1, fixture.Runner.ComposeDownCount);
-        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Paths.ProductRoot, "catalogs", HygV42.CatalogId)));
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Paths.ProductRoot, "catalogs", HygV44.CatalogId)));
     }
 
     [TestMethod]
@@ -1696,7 +1595,7 @@ public sealed partial class LifecycleContractTests
     public async Task CatalogGarbageCollection_RefusedSelectionHoldsNoReference()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        const string candidateVersion = "hyg-v4.4-p4-s3-r2";
         var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
         var refused = new LifecycleOperationState(
             DeploymentSchemaVersions.LifecycleOperation, Guid.NewGuid(), LifecycleOperationKind.CatalogSelect,
@@ -1725,7 +1624,7 @@ public sealed partial class LifecycleContractTests
     public async Task CatalogGarbageCollection_LegacyBackupManifestHoldsItsCatalog()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        const string backedUpVersion = "hyg-v4.2-p3-s2-r2";
+        const string backedUpVersion = "hyg-v4.4-p4-s3-r2";
         Assert.IsFalse(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, backedUpVersion, CancellationToken.None));
         var backupsRoot = Path.Combine(fixture.Paths.OperationsRoot, "backups");
         var backupRoot = Path.Combine(backupsRoot, Guid.NewGuid().ToString("D"));
@@ -2260,7 +2159,7 @@ public sealed partial class LifecycleContractTests
             bool seedCatalogSelection = true,
             string? daemonArchitecture = null,
             bool recoveryState = false,
-            string catalogId = HygV42.CatalogId,
+            string catalogId = HygV44.CatalogId,
             Func<ImageInstallationIdentity, ImageInstallationIdentity>? installedImage = null)
         {
             // Every approved catalog is a valid selection; the fixture records the pinned identity of the requested
@@ -2318,7 +2217,7 @@ public sealed partial class LifecycleContractTests
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}",
                 daemonArchitecture, null, StateContract: CameraAgentStateContract.Current, SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
-                CatalogContract: catalogId == HygV42.CatalogId ? "hyg-v42-production-p3-s2" : "hvo-approved-catalogs-v1",
+                CatalogContract: CameraAgentImageContract.CatalogContract,
                 ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null,
                 RawIngressSchema: recoveryState ? "13" : "12",
                 IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
@@ -2519,7 +2418,7 @@ public sealed partial class LifecycleContractTests
             }
             return labels;
         }
-        public string CatalogContract { get; set; } = "hyg-v42-production-p3-s2";
+        public string CatalogContract { get; set; } = CameraAgentImageContract.CatalogContract;
         public Action? OnCandidateInspect { get; set; }
         public Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>>? Sudo { get; set; }
         public int SudoCount { get; private set; }

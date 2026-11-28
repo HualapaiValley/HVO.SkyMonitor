@@ -20,7 +20,7 @@ VERSION="1.2.0-dev.3"
 FINAL_VERSION="1.2.0"
 COMMIT="0123456789abcdef0123456789abcdef01234567"
 RELEASE_URL="https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v${VERSION}"
-CATALOG="hyg-v4.2-p3-s2-r1.bundle"
+CATALOG="hyg-v4.4-p4-s3-r1.bundle"
 PI_DESCRIPTION="Linux on aarch64, Debian GNU/Linux 12 (bookworm), Raspberry Pi 5 Model B Rev 1.0 (linux-arm64)"
 # The real commands install.sh and the fakes use; everything else on the PATH is a fake, or missing.
 REAL_TOOLS="cat tr awk sed grep tail head dirname mktemp rm rmdir cp mv chmod mkdir ln wc find date gzip"
@@ -76,14 +76,14 @@ printf '{}\n' >"${SUITE}/release/release.json"
 # catalog_archive <archive> <member>...: a catalog archive as the release tool writes it, read-only files under
 # <catalog>/ with no folder entries, holding the named members of ${SUITE}/catalog-source.
 mkdir -p "${SUITE}/catalog-source/${CATALOG}"
-printf '{"package":{"version":"hyg-v4.2-p3-s2-r1"}}\n' >"${SUITE}/catalog-source/${CATALOG}/manifest.json"
-printf 'catalog\n' >"${SUITE}/catalog-source/${CATALOG}/hyg_v42.sqlite"
+printf '{"package":{"version":"hyg-v4.4-p4-s3-r1"}}\n' >"${SUITE}/catalog-source/${CATALOG}/manifest.json"
+printf 'catalog\n' >"${SUITE}/catalog-source/${CATALOG}/hyg_v44.sqlite"
 catalog_archive() {
   local archive=$1
   shift
   tar -czf "${archive}" -C "${SUITE}/catalog-source" --owner=0 --group=0 --mode=0444 --no-recursion "$@"
 }
-catalog_archive "${SUITE}/release/${CATALOG}.tar.gz" "${CATALOG}/hyg_v42.sqlite" "${CATALOG}/manifest.json"
+catalog_archive "${SUITE}/release/${CATALOG}.tar.gz" "${CATALOG}/hyg_v44.sqlite" "${CATALOG}/manifest.json"
 (cd "${SUITE}/release" && sha256sum -- * >SHA256SUMS)
 
 # A Raspberry Pi 5 with the 64-bit Raspberry Pi OS and Docker, run by a person in the docker group, and the release's
@@ -452,7 +452,7 @@ test_a_pi_is_checked_and_the_installer_downloaded_verified_and_started() {
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\[cameraagent\]\[install\]\[--friendly-name\]\[North sky\]\[--port\]\[5130\]\[--release\]\[$(re "${WORK}/tmp")/hvo-sky-install\.[A-Za-z0-9]{8}/release\]\[--image-source\]\[registry\]\[--catalog-bundle\]\[$(re "${CATALOG_DIR}")\]$"
   assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   assert_installer "terminal=no"
   assert_no_download_folder_left
 }
@@ -734,7 +734,7 @@ test_from_a_folder_works_offline_and_never_asks_ghcr() {
   assert_not_called "ghcr.io"
   assert_nothing_downloaded
   assert_installer "args=[cameraagent][install][--port][5130][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   assert_output_contains "ok    ${CATALOG}.tar.gz's SHA-256 is the one SHA256SUMS lists"
 }
 
@@ -788,7 +788,7 @@ test_from_a_folder_without_arguments_installs() {
   assert_status 0
   assert_output_contains "skymonitor-cameraagent-${VERSION}-linux-arm64.oci.tar: the installer loads CameraAgent's image from it"
   assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   assert_not_called "ghcr.io"
   assert_nothing_downloaded
 }
@@ -836,7 +836,7 @@ test_online_without_arguments_installs() {
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
   assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
 }
 
 test_online_an_install_gets_the_release_s_small_files_and_never_its_image_archive() {
@@ -850,7 +850,7 @@ test_online_an_install_gets_the_release_s_small_files_and_never_its_image_archiv
   assert_not_called ".oci.tar"
   assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]\\[--port\\]\\[5130\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
   assert_installer "release-files=SHA256SUMS hvo-sky-install-linux-arm64 hvo-sky-linux-arm64 ${CATALOG}.tar.gz release.json "
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   assert_no_download_folder_left
 }
 
@@ -1086,7 +1086,7 @@ test_a_catalog_holding_a_link_starts_nothing() {
 test_the_catalog_is_unpacked_where_a_second_run_finds_it_again() {
   install_sh -- cameraagent install
   assert_status 0
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   printf 'left by hand\n' >"${CATALOG_DIR}/stray"
   chmod 0500 "${CATALOG_DIR}"
 
@@ -1094,7 +1094,7 @@ test_the_catalog_is_unpacked_where_a_second_run_finds_it_again() {
   install_sh -- cameraagent install
   assert_status 0
   assert_installer_matches "\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
   [ -z "$(find "${WORK}/home/.cache/hvo-sky/catalogs" -mindepth 1 -maxdepth 1 -name '.*')" ] || fail_test "a staging folder was left"
 }
 
@@ -1313,7 +1313,7 @@ test_a_folder_link_pointed_elsewhere_during_the_checks_changes_nothing() {
   assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
   ! grep -q "from-the-new-target" "${FAKE_STATE_DIR}/installer.log" || fail_test "the installer was given the new target"
   assert_output_not_contains "${WORK}/other"
-  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_installer "catalog-files=hyg_v44.sqlite manifest.json "
 }
 
 # The resolved path itself turned into a link while the machine is checked (the folder moved away, a link to another

@@ -47,30 +47,11 @@ installation or automatic default replacement is performed.
 
 ## Installed CameraAgent
 
-A current CameraAgent image declares `hvo-approved-catalogs-v3` and catalog
-manifest version 4. That label is a ceiling: manifest 2 HYG catalogs and the
-manifest 3 composed catalog stay selected across the upgrade, and manifest 3 or 4
-is accepted only for a bundle the embedded registry approves. Upgrade from an
-image labeled with a lower manifest version snapshots the small databases because
-the label changed. The catalog checksums do not.
-
-Import the verified composed bundle, then select it. The bundle directory is
-the output of `scripts/catalog/bundle-hyg-v44-openngc.sh` for package
-`hyg-v4.4-openngc-v20260501-p5-s4-r1`. `catalog install` refuses a bundle whose
-files, hashes, lengths or lineage differ from the registry. Do not edit the
-bundle to make the check pass.
-
-```bash
-hvo-sky-install catalog install \
-  --catalog-bundle /owner-private/hyg-v4.4-openngc-v20260501-p5-s4-r1
-hvo-sky-install catalog select \
-  --instance-id <uuid> \
-  --catalog-version hyg-v4.4-openngc-v20260501-p5-s4-r1
-```
-
-Select while `config/camera-module.json` still matches the configuration
-SHA-256 recorded in the instance manifest. Installation verification compares
-those bytes. Do this before editing that file.
+Use a fresh CameraAgent installation declaring `hvo-approved-catalogs-v4`.
+Provide the verified composed bundle from `scripts/catalog/bundle-hyg-v44-openngc.sh`
+using the CameraAgent install command's `--catalog-bundle` option. The installer
+validates the manifest, lineage, payload hashes and lengths. Later catalog
+selection and rollback use revisions of the same composed lineage.
 
 Curated positions stay off until `curatedAnnotations` is enabled. On the
 installer VirtualSky profile, add the object to the `ProjectedScene` step's
@@ -102,11 +83,6 @@ identity refuses until that file matches the recorded hash again. Leave the
 edited file in place only when that later command is expected to be reconciled,
 or restore the previous file after the draft is active and do not apply the
 draft that would return the pipeline to the restored file.
-
-An image that still declares `hvo-approved-catalogs-v1` refuses this catalog.
-Roll the catalog back to the previous manifest 2 lineage before rolling the
-image back to that contract. The OpenNGC selection and the general NGC/M/IC
-layer controls remain #1388.
 
 Real-image staging uses acquisition midpoint, effective deployment location,
 actual layout and the capture rig. Curated geometry is then retained with its

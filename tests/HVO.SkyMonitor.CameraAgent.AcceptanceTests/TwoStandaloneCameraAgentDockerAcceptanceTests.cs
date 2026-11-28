@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
 {
-    private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
+    private const string ExpectedCatalogSha256 = "2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321";
     private static readonly int WarmupCaptureCount = ReadPositiveInteger("HVO_ISSUE_197_WARMUP_CAPTURES", 5, 1);
     private static readonly int MeasuredCaptureCount = ReadPositiveInteger("HVO_ISSUE_197_MEASURED_CAPTURES", 30, 3);
     private static readonly FrameArtifactRole[] ExpectedRoles =
@@ -446,7 +446,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
             $"{agent.Name} did not sustain the declared five-second cadence.");
 
         var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            agent.CatalogRoot, "hyg-v42-production"));
+            agent.CatalogRoot, "hyg-v44-production"));
         Assert.AreEqual(ExpectedCatalogSha256, snapshot.DatabaseSha256, ignoreCase: true);
         Assert.IsEmpty(Directory.EnumerateFiles(agent.CatalogRoot, "*.db-*", SearchOption.AllDirectories).ToArray());
         var catalogInode = await StatInodeAsync(snapshot.DatabasePath).ConfigureAwait(false);
@@ -788,7 +788,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
                 {
                     var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                     if (body.Contains("Production celestial catalog snapshot is installed", StringComparison.Ordinal) &&
-                        body.Contains("119625", StringComparison.Ordinal) &&
+                        body.Contains("119613", StringComparison.Ordinal) &&
                         !body.Contains(ExpectedCatalogSha256, StringComparison.OrdinalIgnoreCase))
                     {
                         return;

@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Diagnostics;
 using System.IO.Compression;
 using HVO.SkyMonitor.AgentCore;
@@ -31,7 +33,7 @@ public sealed class ProjectedSceneContractTests
         var parsed = ProjectedSceneJson.Parse(bytes);
 
         Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
-        Assert.AreEqual("8CA0DAD64766F9F009AD89A3C1834C3EE9E08A6297C7E8584441C08A29CCD1E2", scene.SceneIdentitySha256);
+        Assert.AreEqual("F840B8B1B970898DC68C2ADD15EA0B08FBFD17BF14CB4C49664518644228463E", scene.SceneIdentitySha256);
         Assert.AreEqual(scene.SceneIdentitySha256, parsed.Scene!.SceneIdentitySha256);
         Assert.AreEqual(ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge, scene.CoordinateConvention);
         StringAssert.Contains(ProjectedSceneImageTransformV1.OperationOrder, "crop-bin", StringComparison.Ordinal);
@@ -105,6 +107,22 @@ public sealed class ProjectedSceneContractTests
             var parsed = ProjectedSceneJson.Parse(Encoding.UTF8.GetBytes(candidate));
             Assert.IsFalse(parsed.IsValid, candidate);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("catalogId")]
+    [DataRow("checksumSha256")]
+    public async Task ParseRefusesScenesMissingCatalogIdentity(string field)
+    {
+        var visible = await BuildSceneAsync(ProjectionModel.Perspective).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted, visible, Readout(200, 200), Source(),
+            "calibration-v1", visible.Request.ProjectionVersion);
+        var json = JsonNode.Parse(ProjectedSceneJson.Serialize(scene))!;
+        Assert.IsTrue(json["catalog"]!.AsObject().Remove(field));
+
+        Assert.IsFalse(ProjectedSceneJson.Parse(JsonSerializer.SerializeToUtf8Bytes(json)).IsValid);
     }
 
     [TestMethod]
@@ -464,7 +482,7 @@ public sealed class ProjectedSceneContractTests
         var parsed = ProjectedSceneJson.Parse(bytes);
 
         Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
-        Assert.AreEqual("F511AAB2C08AF453B7F2344F5DB575F1A63C3867EA10DD3368B63AFC7C7EC089", scene.SceneIdentitySha256);
+        Assert.AreEqual("85BD33C2A08C0BBF076973A3109C1ACE0BA573041D152F468B0697465C39B3DD", scene.SceneIdentitySha256);
         CollectionAssert.AreEqual(
             Enumerable.Range(0, scene.Segments.Count).ToArray(),
             scene.Segments.Select(static segment => segment.PartIndex).ToArray());
@@ -529,7 +547,7 @@ public sealed class ProjectedSceneContractTests
     public void ExistingSceneProvenanceRemainsAdditivelyCompatible()
     {
         var legacy = new SceneProvenance(
-            "scene", "rig", "catalog", "1", new string('A', 64), "fisheye", "projection", "astronomy", "sensor");
+            "scene", "rig", "catalog", "1", new string('A', 64), "fisheye", "projection", "astronomy", "sensor", CatalogId: "test-catalog");
 
         Assert.AreEqual("scene", legacy.SceneId);
         Assert.IsNull(legacy.SceneUtc);

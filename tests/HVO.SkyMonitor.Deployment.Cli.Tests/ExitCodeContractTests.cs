@@ -45,7 +45,7 @@ public sealed class ExitCodeContractTests
         ("cameraagent backup", ["cameraagent", "backup", "--instance-id", Id]),
         ("cameraagent restore", ["cameraagent", "restore", Archive, "--instance-id", Id]),
         ("catalog install", ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle"]),
-        ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.2-p3-s2-r1"]),
+        ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.4-p4-s3-r1"]),
         ("catalog rollback", ["catalog", "rollback", "--instance-id", Id]),
         ("catalog gc", ["catalog", "gc", "--dry-run"]),
         ("host set-product-root", ["host", "set-product-root", "/srv/data/hvo-skymonitor"])
@@ -419,7 +419,7 @@ public sealed class ExitCodeContractTests
     private static InstallationResult Installation(InstallRequest request)
     {
         var catalog = new CatalogInstallationIdentity(
-            HygV42.CatalogId, "hyg-v4.2-p3-s2-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/x",
+            HygV44.CatalogId, "hyg-v4.4-p4-s3-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/x",
             new string('a', 64), "local-offline");
         return new InstallationResult(
             1, InstallationOutcome.Installed, Guid.NewGuid(), request.InstanceId ?? Guid.NewGuid(), Guid.NewGuid(),

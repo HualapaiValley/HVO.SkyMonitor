@@ -39,7 +39,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var submission = CreateSubmission(0, CameraPixelFormat.Mono16, DateTimeOffset.UnixEpoch.AddDays(1));
             var frame = submission.Result.Frame!;
             var capturedScene = new SceneProvenance("scene", "rig", "HYG", "fixture", new string('a', 64), "Perspective", "p1", "a1", "s1",
-                CaptureGraphRevisionId: initial.ActiveRevisionId);
+                CaptureGraphRevisionId: initial.ActiveRevisionId, CatalogId: "test-catalog");
             submission = submission with { Result = submission.Result with { Frame = frame with { Metadata = frame.Metadata with { Scene = capturedScene } } } };
             var binding = await provider.GetRequiredService<IRawCaptureIngress>().PrepareGraphBindingAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(initial.ActiveRevisionId, binding!.Revision.State.RevisionId, "An exposure already rendered under a graph keeps that immutable revision after activation changes.");

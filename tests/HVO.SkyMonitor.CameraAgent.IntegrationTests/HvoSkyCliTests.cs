@@ -89,7 +89,7 @@ public sealed class HvoSkyCliTests
                 Assert.AreEqual("CameraAgent", document.GetProperty("application").GetProperty("name").GetString());
                 Assert.AreEqual("ApiKey", document.GetProperty("caller").GetProperty("credential").GetString());
                 Assert.AreEqual("ReadWrite", document.GetProperty("caller").GetProperty("access").GetString());
-                Assert.AreEqual("hyg-v42-fixture", document.GetProperty("catalog").GetProperty("catalogId").GetString());
+                Assert.AreEqual("hyg-v44-fixture", document.GetProperty("catalog").GetProperty("catalogId").GetString());
                 Assert.IsFalse(document.GetProperty("restart").GetProperty("supervised").GetBoolean());
                 started = document.GetProperty("host").GetProperty("processStartedUtc").GetDateTimeOffset();
             }

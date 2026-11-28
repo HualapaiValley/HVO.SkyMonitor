@@ -427,7 +427,7 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
-| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact, followed by the offline HYG 4.2 reproducibility regression on the input that build fetched and verified (see [Catalog Reproducibility](#catalog-reproducibility)). Skipped in classified reduced mode. |
+| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG 4.4 production catalog contracts, retained as a one-day workflow artifact, followed by the offline HYG 4.4 reproducibility regression on the input that build fetched and verified (see [Catalog Reproducibility](#catalog-reproducibility)). Skipped in classified reduced mode. |
 | **Catalog Reproducibility** | Full-mode hosted rebuild of the three catalog test fixtures and of the approved HYG 4.4 and OpenNGC catalogs from their pinned, verified inputs, under both SQLite `secure_delete` connection defaults. Runs when the classifier's `catalog_recipe` output selects it; otherwise its planned `skipped` result is required. |
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability and deprecation policy, and pinned .NET tools. The 45-minute qualification job budget covers formatting, the control contracts, and the package audit. |
 | **Deployment Contracts** | The installer qualification checks and Silo qualifier containment fixture run whenever the classifier selects deployment. The classifier also selects the exhaustive catalog and disposable offline installer suites for affected paths. Pushes, merge groups and manual full qualification run both suites. |
@@ -486,9 +486,9 @@ successful, explicit `false` skips it. It takes a few seconds.
 Two full-qualification jobs hold the approved catalog bytes to their recipes (Refs #1701, Refs #1773, Refs #1774). Neither
 regression runs in the `development/v1` profile.
 
-**Catalog Contracts** runs for every full-mode head. After it has built the HYG 4.2 contracts it runs
-`scripts/catalog/test-hyg-v42-reproducibility.sh` on `build/hyg_v42.csv.gz`, the compressed input that build fetched
-and verified, so the regression downloads nothing. It builds HYG 4.2 four more times, twice with the incoming SQLite
+**Catalog Contracts** runs for every full-mode head. After it has built the HYG 4.4 contracts it runs
+`scripts/catalog/test-hyg-v44-reproducibility.sh` on `build/hyg_v44.csv.gz`, the compressed input that build fetched
+and verified, so the regression downloads nothing. It builds HYG 4.4 four more times, twice with the incoming SQLite
 `secure_delete` connection default forced OFF and twice with it forced ON, and requires the approved database hash and
 byte-identical bundle files each time. It runs before the contracts are uploaded.
 
@@ -514,17 +514,16 @@ The two offline steps come first, so an upstream outage cannot hide a fixture re
 
 The job runs when the plan is full mode and the classifier's `catalog_recipe` output is `true`. On a pull request that
 output is `true` when the change adds, modifies, deletes or renames a path under `scripts/catalog/` or
-`tests/fixtures/catalog/`, at any depth. Nothing else selects it on a pull request: not the `scripts/catalog:*` entry
-points, not the catalog adapter's sources, and not the job's own wiring in `ci.yml`, `scripts/ci:classify` or
-`scripts/ci:require`. Pushes to `main` and `release/**`, manual dispatches and the release workflow's qualification
-call always select it, and so do missing commits, empty ranges, failed or malformed diffs and missing or non-regular
-tree entries. A reduced-mode plan never runs it, including one that names the allowlisted
-`tests/fixtures/catalog/SOURCE.md`. `Required CI` requires the job to be `success` exactly when a full-mode plan
-selects it and `skipped` otherwise, and rejects a non-pull-request plan that does not select it.
+`tests/fixtures/catalog/`, at any depth. Pushes to `main` and `release/**`, manual dispatches and the release
+workflow's qualification call always select it, and so do missing commits, empty ranges, failed or malformed
+diffs and missing or non-regular tree entries. A change limited to allowlisted documentation, including
+`tests/fixtures/catalog/SOURCE-v44.md` or `tests/fixtures/catalog/SOURCE-v44-openngc.md`, stays in reduced mode.
+`Required CI` requires `success` when a full-mode plan selects the job and `skipped` for other pull request plans.
+It rejects a non-pull-request plan that omits the job.
 
 ### SQLite identity line
 
-Every catalog builder (`build-hyg-v42.sh`, `build-hyg-v44.sh` and `build-hyg-v44-openngc.sh`) prints one line before
+Every catalog builder (`build-hyg-v44.sh` and `build-hyg-v44-openngc.sh`) prints one line before
 it fetches, verifies or builds anything, and before its version gate can reject the tool. The line comes from
 `hyg_print_sqlite_identity` in `scripts/catalog/catalog-common.sh`:
 
@@ -539,7 +538,7 @@ as it does for the isolated CLI from `install-sqlite-3.45.1.sh`, the line also c
 
 Because the builders print it, every job that builds a catalog records the tool in its log without wiring of its own:
 Catalog Contracts, the ARM64 advisory's catalog job, and the release and pre-release asset builds, which reach
-`build-hyg-v42.sh` through `scripts/release:assets`. Both callers send the builder's output to stderr, so the line
+`build-hyg-v44.sh` through `scripts/release:assets`. Both callers send the builder's output to stderr, so the line
 survives the `>/dev/null` on the Catalog Contracts build step. A runner-image change that replaces the CLI therefore
 shows as a different line rather than having to be inferred.
 
@@ -549,13 +548,11 @@ Two limits apply when reading the line:
   that library shows in the version line's source ID and in the `secure_delete` value, not in the hash.
 - The reproducibility regressions run the builders through a wrapper that forces the connection default. Their
   builder lines name the wrapper and the forced value. The HYG 4.4 and fixture regressions print the wrapped tool's
-  own line first; for HYG 4.2 the Catalog Contracts build step has already printed it.
+  own line first.
 
 ### Runtime
 
-Measured on `hvo-dev-02` on 2026-11-11 with Ubuntu's `sqlite3` 3.45.1, while other work was running on the host:
-the HYG 4.2 regression added to Catalog Contracts took 9 seconds, and the Catalog Reproducibility steps took under
-4 minutes together, nearly all of it the HYG 4.4 and OpenNGC regression. Catalog Contracts keeps its 10-minute
+Catalog Contracts keeps its 10-minute
 timeout. Catalog Reproducibility has a 20-minute timeout. Neither job has run on a hosted runner yet; record its
 duration from the first full-qualification run and adjust only if that run needs it.
 
@@ -981,7 +978,7 @@ accept evidence only when the run's `head_sha` matches. See the command and revi
 responsibility in [CameraAgent ARM64 CI Runner](cameraagent-arm64-ci.md#workload-boundary).
 There is no pull-request trigger; the advisory is not aggregated by `Required CI`.
 
-The hosted x64 job builds the approved HYG 4.2 and standalone OpenNGC bundles
+The hosted x64 job builds the approved HYG 4.4 and standalone OpenNGC bundles
 from pinned public inputs. Before archiving the catalog for native transfer, it
 replays the native restore with synthetic fixtures and copies of the approved
 bundles. The replay checks same-run retry and refusal of changed database bytes
@@ -999,7 +996,7 @@ can reuse a retained artifact from an earlier attempt of the same run at the
 same commit.
 
 On ARM64 the workflow performs a CameraAgent Release build, Docker-disabled
-Unit subset, `linux-arm64` publish/ELF validation, native container build, HYG 4.2
+Unit subset, `linux-arm64` publish/ELF validation, native container build, HYG 4.4
 catalog install, and bounded VirtualSky smoke. It retains checksums, image
 identity, host resource and thermal samples, installation verification, capture
 evidence, SQLite checks, logs, and cleanup state for 30 days. Provisioning,
@@ -1248,7 +1245,7 @@ receives current-head CI. A lightweight classifier uses the
 pull request's base and head commits and selects reduced mode only when every
 changed path is an added or modified member of this allowlist:
 
-- `docs/**`, except the production bundle inputs `docs/catalog/hyg-v42-attribution.md` and `docs/catalog/hyg-v42-license.md`
+- `docs/**`, except the production bundle inputs `docs/catalog/hyg-v44-attribution.md` and `docs/catalog/hyg-v44-license.md`
 - `.agents/skills/*/SKILL.md`; supporting scripts and other resources fail
   closed to the complete matrix
 - `.devcontainer/**`
@@ -1259,7 +1256,8 @@ changed path is an added or modified member of this allowlist:
 - `.github/copilot-instructions.md` and `.github/pull_request_template.md`
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
-- `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
+- `tests/fixtures/catalog/SOURCE-v44.md`, `tests/fixtures/catalog/SOURCE-v44-openngc.md` and
+  `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
 - `scripts/test:devcontainer`
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
 resolves the devcontainer definition after unsetting GitHub-token and Git-identity
@@ -1286,9 +1284,9 @@ closed deployment path map is:
 - `scripts/ci:classify`, `scripts/ci:require`, `scripts/test:ci-classification`,
   `scripts/release:*`, and `scripts/lib/**`
 - `scripts/qualify:silo-runtime`, `scripts/test:silo-runtime-qualification`, `scripts/test:deployment-installer`, and `scripts/test:deployment-installer-qualification`
-- `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
+- `scripts/catalog/**` and `scripts/infra:operation-lock`
 - `deploy/**`
-- `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
+- `tests/fixtures/catalog/hyg-v44-subset.sqlite`
 - `src/HVO.SkyMonitor.CameraAgent/Dockerfile`
 - `src/HVO.SkyMonitor.Deployment.Cli/**`, `src/HVO.SkyMonitor.Deployment.Contracts/**`, `tests/HVO.SkyMonitor.Deployment.*.Tests/**`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool/**`
 - `src/HVO.SkyMonitor.TerminalUi/**`, which is compiled into the installer: it selects the installer suite, which runs the published installer on a terminal (`scripts/lib/published-installer-terminal.py`)
@@ -1370,10 +1368,10 @@ and CameraAgent Migrations. Quality runs in every mode.
 | `src/HVO.SkyMonitor.Deployment.*`, `src/HVO.SkyMonitor.TerminalUi`, the release tool, its release-validation shell/JQ helpers, or their tests | no for project paths; yes for repository-root scripts | delivery for project paths; complete for repository-root scripts | yes — release validation selects the installer suite |
 | `deploy/**`, `scripts/catalog*`, or the other non-project deployment inputs | yes | every lane claimed by the complete matrix | yes |
 | `THIRD-PARTY-NOTICES.md` or a `docs/validation/*.json` a project copies | yes | every lane claimed by the complete matrix | no |
-| HYG v42 or v44 attribution or license input | yes | every lane claimed by the complete matrix | no |
+| HYG 4.4 attribution or license input | yes | every lane claimed by the complete matrix | no |
 | CameraAgent `Dockerfile` or selected configuration sample | no | cameraagent | yes |
 | CI, classifier, coverage, package, toolchain, solution, or architecture-test input | yes | every lane claimed by the complete matrix | yes for the deployment-contract inputs; the rest run every other gate |
-| `tests/fixtures/**`, including the shared HYG v42 catalog fixture | yes | every lane claimed by the complete matrix | yes for the HYG v42 fixture |
+| `tests/fixtures/**`, including the shared HYG 4.4 catalog fixture | yes | every lane claimed by the complete matrix | yes for the HYG 4.4 fixture |
 | Deleted, renamed, type-changed, missing, empty, or unclassifiable path | yes | every lane claimed by the complete matrix | yes |
 | Push to `main`/`release/**` or manual dispatch | yes | every lane claimed by the complete matrix | yes |
 

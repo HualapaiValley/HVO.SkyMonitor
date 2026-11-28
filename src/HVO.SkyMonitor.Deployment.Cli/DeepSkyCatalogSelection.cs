@@ -35,7 +35,7 @@ internal static class DeepSkyCatalogSelection
             CatalogLifecycleManager.ValidateInstalled(paths, candidate);
             CameraAgentInstaller.EnsureImageSupportsCatalog(manifest.Image, candidate.CatalogId);
         }
-        else if (manifest.Image.CatalogContract != CameraAgentImageContract.IndependentCatalogContract)
+        else if (manifest.Image.CatalogContract != CameraAgentImageContract.CatalogContract)
             throw new InstallerException("Independent deep-sky selection requires a compatible CameraAgent image.");
         if (retained is null || !retained.MutationStarted)
             await CameraAgentLifecycleManager.ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);

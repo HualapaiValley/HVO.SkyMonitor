@@ -509,7 +509,7 @@ from the campaign's bound commit.
 ```bash
 ./scripts/record:cameraagent-final-head-components-535 \
   --bound-head <40-char-sha> \
-  --catalog-bundle <verified-hyg-v42-bundle> \
+  --catalog-bundle <verified-hyg-v44-bundle> \
   --output-dir TestResults/issue-535/<head>/<campaign>/components
 ```
 

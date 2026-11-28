@@ -324,7 +324,7 @@ schema version. The members are those `--config` reads, under the same names:
   "ownerEmail": "owner@example.org",
   "bindAddress": "127.0.0.1",
   "port": 5130,
-  "catalogBundle": "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle",
+  "catalogBundle": "/srv/hvo/hyg-v4.4-p4-s3-r1.bundle",
   "imageReference": "sha256:<loaded-image-id>",
   "latitudeDegrees": 35.2,
   "longitudeDegrees": -114.1,
@@ -492,8 +492,7 @@ image the instance now runs; the image itself changes only with `cameraagent upg
 
 The installer generates `camera-module.json` from the installed answers and its own
 defaults, and the instance's records bind the canonical identity of that file. When a
-newer installer's defaults differ, for example the cloud assessment steps the
-installer added after `v0.9.1-dev.11`, a re-run compares the instance's configuration
+newer installer's defaults differ, a re-run compares the instance's configuration
 with what each generation of defaults the installer knows writes for the installed
 answers, and sorts every difference into one of three classes:
 
@@ -572,7 +571,7 @@ production product root.
   "schemaVersion": 1,
   "product": "HVO.SkyMonitor",
   "productRoot": "/var/lib/hvo-sky",
-  "installerVersion": "0.9.0-dev+<commit>",
+  "installerVersion": "0.10.0-beta.1+<commit>",
   "updatedUtc": "2026-10-18T03:00:00+00:00",
   "instances": [
     {
@@ -649,7 +648,7 @@ hvo-sky-install cameraagent install \
   --friendly-name "North All-Sky Camera" \
   --bind-address 127.0.0.1 \
   --port 5130 \
-  --catalog-bundle /srv/hvo/hyg-v4.2-p3-s2-r1.bundle \
+  --catalog-bundle /srv/hvo/hyg-v4.4-p4-s3-r1.bundle \
   --image-ref sha256:<loaded-image-id> \
   --latitude 35.2 \
   --longitude -114.1 \
@@ -929,7 +928,7 @@ operator-supplied image.
 ```bash
 hvo-sky-install cameraagent install \
   --release /srv/hvo/releases/1.2.0-dev.3 \
-  --catalog-bundle /srv/hvo/releases/1.2.0-dev.3/catalog/hyg-v4.2-p3-s2-r1.bundle \
+  --catalog-bundle /srv/hvo/releases/1.2.0-dev.3/catalog/hyg-v4.4-p4-s3-r1.bundle \
   --friendly-name "North All-Sky Camera" \
   --owner-email admin@home.lan \
   --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
@@ -2641,7 +2640,9 @@ that no matching interrupted purge exists.
 The CLI cannot see a tree that was moved out of `cameraagents`. That is why the
 disposition is required, and the operator who supplies it is attesting removal.
 
-Catalog versions are explicit per instance:
+### Catalog lifecycle
+
+Catalog versions are explicit per instance.
 
 ```bash
 hvo-sky-install catalog install --catalog-bundle /owner-private/catalog.bundle
@@ -2650,33 +2651,26 @@ hvo-sky-install catalog rollback --instance-id <uuid>
 hvo-sky-install catalog gc --catalog-version <version>
 ```
 
-Each approved catalog ID has its own root,
-`<productRoot>/catalogs/<catalogId>/versions/<package-version>`, so HYG 4.2
-(`hyg-v42-production`) and HYG 4.4 (`hyg-v44-production`) install side by side.
-`install` takes the catalog ID from the bundle manifest and refuses an ID,
-package version, lineage or hash that the embedded approved-catalog registry
-does not name. It never changes a selection. Package versions are unique across
-lineages, so `--catalog-version` names exactly one root. A `select` that changes
-the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
-mount and reauthenticates the Compose model. A current image declares
-`hvo-approved-catalogs-v3` (manifest reader 4) and can select HYG 4.2, HYG 4.4,
-retained `hyg-v44-openngc-production`, and independent `openngc-production`.
-The release default remains HYG 4.2; HYG 4.4 requires separate adoption approval.
-An image declaring `hvo-approved-catalogs-v2` reads the older HYG/composed lineages
-but refuses the standalone deep-sky package. OpenNGC has its own selected/previous
-identity and read-only mount: install its bundle with `catalog install`, select
-`openngc-v20260501-p6-s5-r1` with `catalog select --instance-id UUID --catalog-version VERSION`,
-and restore its previous selection with `catalog rollback --instance-id UUID --catalog-family deep-sky`.
-To disable the family independently of previous-selection history, run
-`hvo-sky-install catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
-Changing this family preserves the selected star package. Both families' selected,
-previous, backup, historical and interrupted-operation references protect collection. An image declaring `hvo-approved-catalogs-v1` can
-select the two HYG lineages and refuses the composed catalog. An unknown
-catalog-contract label is refused. Cross-lineage selection retires the retained image
-rollback and pins the previous identity as a historical reference. `rollback`
-returns to the previous selection across lineages. The exact identities and
-selection behavior are documented in
-[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
+Each approved catalog ID has its own root at
+`<productRoot>/catalogs/<catalogId>/versions/<package-version>`. The default
+for a fresh install is HYG 4.4 (`hyg-v44-production`). Supply the composed bundle
+at fresh install to use that lineage. CameraAgent declares `hvo-approved-catalogs-v4`.
+
+`catalog install` validates the bundle against the registry and publishes an
+immutable revision. `catalog select` selects a different verified revision of
+the instance's installed star lineage. `catalog rollback` restores the previous
+revision of that lineage and refuses if none exists. Both transitions refuse
+while capture-processing work is pending or awaiting retry. This is the
+catalog rollback baseline for later releases. The previous revision stays
+pinned for retained captures. [HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)
+
+Standalone OpenNGC has an independent selection, previous selection and
+read-only mount. Install its bundle with `catalog install`, select a version
+with `catalog select --instance-id UUID --catalog-version VERSION`, and restore
+its previous selection with `catalog rollback --instance-id UUID --catalog-family deep-sky`.
+To disable it, use `catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
+Each family's selected, previous, backup, historical and interrupted-operation
+references protect revisions from collection.
 
 Mutating garbage collection requires one explicit version. A dry run without a
 version plans collection across every installed approved catalog ID. It fails closed on

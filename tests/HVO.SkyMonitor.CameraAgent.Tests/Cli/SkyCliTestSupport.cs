@@ -534,7 +534,7 @@ internal static class Fake
         schemaVersion = 1,
         application = new { name = "CameraAgent", version = "0.9.0-test", revision = new string('b', 40), informationalVersion = "0.9.0-test+" + new string('b', 40) },
         host = new { runtime = ".NET 10.0.13", runtimeIdentifier = "linux-arm64", processStartedUtc = started, uptimeSeconds = 600.0 },
-        catalog = new { catalogId = "hyg-v42-production", catalogVersion = "4.2", rowCount = 118218 },
+        catalog = new { catalogId = "hyg-v44-production", catalogVersion = "4.4", rowCount = 119613 },
         restart = new { supervised, requested },
         caller = new { credential = "ApiKey", apiKeyId = CliHarness.KeyId, access }
     };

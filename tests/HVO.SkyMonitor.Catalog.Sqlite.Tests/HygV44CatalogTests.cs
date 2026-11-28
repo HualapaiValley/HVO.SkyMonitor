@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 /// <summary>
 /// Schema 3 (HYG 4.4, issue #521) reader and resolver contracts over the checked-in subset fixture, plus guards that
-/// schema 2 (HYG 4.2) keeps exactly its prior meaning.
+/// schema 2 (legacy fixed-J2000) keeps exactly its prior meaning.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -17,7 +17,6 @@ internal sealed class HygV44CatalogTests
     private const string FixtureCatalogId = "hyg-v44-fixture";
     private const string SnapshotVersion = "hyg-v44-fixture-1";
     private static readonly string FixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite");
-    private static readonly string LegacyFixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite");
     private static readonly string[] ThetaOneOrionis = ["26155", "26156", "26159"];
 
     [TestMethod]
@@ -129,25 +128,12 @@ internal sealed class HygV44CatalogTests
     }
 
     [TestMethod]
-    public void SchemaTwoKeepsItsLegacyMeaning()
-    {
-        var catalog = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
-            LegacyFixturePath, Checksum(LegacyFixturePath), "2", "3"));
-
-        Assert.AreSame(CatalogSemantics.LegacyFixedJ2000, catalog.Semantics);
-        Assert.IsFalse(catalog.TryGetDetails("32263", out _));
-        Assert.IsEmpty(catalog.FindByAlias("Sirius"));
-    }
-
-    [TestMethod]
     public void SchemaVersionsCannotBeSubstitutedForEachOther()
     {
         Assert.ThrowsExactly<InvalidDataException>(() =>
             _ = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(FixturePath, FixtureChecksum, "2", "3")));
         Assert.ThrowsExactly<InvalidDataException>(() =>
             _ = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(FixturePath, FixtureChecksum, "3", "3")));
-        Assert.ThrowsExactly<InvalidDataException>(() => _ = new SqliteCelestialCatalog(new SqliteCelestialCatalogOptions(
-            LegacyFixturePath, Checksum(LegacyFixturePath), "3", "4")));
     }
 
     [TestMethod]
@@ -208,7 +194,7 @@ internal sealed class HygV44CatalogTests
     }
 
     [TestMethod]
-    [DataRow("hyg_v42.sqlite", "3", "4", DisplayName = "wrong-database-name")]
+    [DataRow("wrong.sqlite", "3", "4", DisplayName = "wrong-database-name")]
     [DataRow("hyg_v44.sqlite", "2", "3", DisplayName = "schema-two-pair")]
     [DataRow("hyg_v44.sqlite", "3", "3", DisplayName = "unsupported-pair")]
     [DataRow("hyg_v44.sqlite", "2", "4", DisplayName = "unsupported-schema")]

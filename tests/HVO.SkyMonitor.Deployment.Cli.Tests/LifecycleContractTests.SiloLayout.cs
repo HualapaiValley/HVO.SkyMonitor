@@ -211,7 +211,7 @@ public sealed partial class LifecycleContractTests
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned fixture shares the created fixture's root and runner and is disposed by the caller.")]
     private static async Task<LifecycleFixture> SiloFixtureAsync(
-        InstanceLifecycleCondition condition, string catalogId = HygV42.CatalogId, bool seedCatalogSelection = true)
+        InstanceLifecycleCondition condition, string catalogId = HygV44.CatalogId, bool seedCatalogSelection = true)
     {
         var fixture = await LifecycleFixture.CreateAsync(
             condition, seedCatalogSelection: seedCatalogSelection, catalogId: catalogId);

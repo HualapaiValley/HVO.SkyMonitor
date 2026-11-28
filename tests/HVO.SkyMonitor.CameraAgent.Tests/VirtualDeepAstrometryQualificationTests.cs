@@ -263,7 +263,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
         VirtualAstrometryQualificationTests.RequireRevision();
         var snapshot = VirtualAstrometryQualificationTests.Snapshot();
         var stars = snapshot.Catalog.Query(new CatalogQuery(7, 100000));
-        Assert.HasCount(15598, stars);
+        Assert.HasCount(15597, stars);
         var family = VirtualAstrometryFixture.Family;
         var defaults = new AstrometricSolverOptions();
         var search = new CoreSolverOptions(defaults.MinimumFocalScale, defaults.MaximumFocalScale, defaults.FocalScaleStep,

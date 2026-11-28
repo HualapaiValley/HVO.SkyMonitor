@@ -98,7 +98,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var root = Path.Combine(scratchRoot ?? temporaryRoot, rootName);
         Directory.CreateDirectory(root);
         var catalog = CatalogFixtureInstallation.Create(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"),
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite"),
             Path.Combine(root, "catalog"));
         var configPath = Path.Combine(root, "cameraagent.browser.json");
         var template = await File.ReadAllTextAsync(
@@ -155,7 +155,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["InstallationVerification:Token"] = InstallationVerificationToken,
             ["LifecycleControl:Token"] = LifecycleControlToken,
             ["Catalog:Root"] = catalog.Root,
-            ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
+            ["Catalog:RequiredCatalogId"] = "hyg-v44-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = configPath,
             ["CameraAgent:RawIngressRoot"] = root,
@@ -172,7 +172,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         if (productionCatalogRoot is not null)
         {
             overrides["Catalog:Root"] = productionCatalogRoot;
-            overrides["Catalog:RequiredCatalogId"] = "hyg-v42-production";
+            overrides["Catalog:RequiredCatalogId"] = "hyg-v44-production";
             overrides["Catalog:RequiredPackageKind"] = "Production";
         }
 

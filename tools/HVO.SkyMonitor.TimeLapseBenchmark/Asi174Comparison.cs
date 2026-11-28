@@ -34,9 +34,9 @@ internal static partial class Program
     {
         if (Directory.Exists(root)) throw new ArgumentException("Use a fresh output directory.");
         Directory.CreateDirectory(root);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production")
+        var snapshot = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production")
         {
-            ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1"
+            ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1"
         });
         const int width = 1936, height = 1216, count = 180;
         var start = DateTimeOffset.Parse("2026-10-13T07:00:00Z", CultureInfo.InvariantCulture);

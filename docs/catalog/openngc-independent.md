@@ -2,8 +2,7 @@
 
 Refs #1388
 
-The OpenNGC catalog is a separate read-only SQLite snapshot. HYG 4.2 and HYG
-4.4 remain star catalogs. Selecting either family must preserve the other
+The OpenNGC catalog is a separate read-only SQLite snapshot. HYG 4.4 supplies the default star catalog. Selecting either family must preserve the other
 family's selection and immutable evidence. The composed HYG/OpenNGC lineage
 remains readable for retained captures; it is not the new deep-sky package.
 
@@ -12,7 +11,7 @@ remains readable for retained captures; it is not the new deep-sky package.
 The standalone package uses catalog ID `openngc-production`, schema 5,
 preprocessing 6 and manifest 4. It contains catalog metadata and the four
 existing deep-sky tables, with no star tables or constellation topology. Its
-row count means deep-sky objects. Registry version 3 pins the serializer,
+row count means deep-sky objects. Registry version 4 pins the serializer,
 database, source inputs, transformations, counts and retained notices. Earlier
 approved packages keep their identities. Unknown or altered packages fail
 closed. Production checksums come from two offline builds of the pinned public
@@ -122,7 +121,7 @@ OpenNGC attribution. Existing archived scenes keep their own geometry and input
 identity. The selection cache holds at most 32 plans per immutable catalog, each
 with at most 128 candidates; caps are applied before view-dependent geometry. Plans prioritize Messier membership, then featured objects, angular size, known V magnitude and canonical ID so alphabetical IC rows cannot exhaust the default budget.
 
-Releases build approved HYG 4.2 and standalone OpenNGC by default. HYG 4.4 remains held for separate release approval; registry membership alone does not approve that adoption. The release
+Releases build approved HYG 4.4 and standalone OpenNGC by default. The release
 tool accepts `--catalog-bundle` for stars and `--deep-sky-catalog-bundle` for
 OpenNGC. The shell bootstrap selects the star bundle and leaves deep-sky
 installation/selection explicit; release assembly itself installs nothing.

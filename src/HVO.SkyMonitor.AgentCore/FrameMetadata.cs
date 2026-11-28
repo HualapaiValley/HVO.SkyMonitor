@@ -23,7 +23,7 @@ public sealed record SceneProvenance(
     string RigProfileVersion,
     string CatalogName,
     string CatalogVersion,
-    string CatalogChecksumSha256,
+    [property: JsonRequired] string CatalogChecksumSha256,
     string ProjectionModel,
     string ProjectionAlgorithmVersion,
     string AstronomyAlgorithmVersion,
@@ -52,11 +52,20 @@ public sealed record SceneProvenance(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneStageIdentitySha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] VirtualExposureProvenance? VirtualExposure = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectedSceneSchemaVersion = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogId = null,
+    [property: JsonRequired] string? CatalogId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CatalogPackageVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogSnapshotIdentity? DeepSkyCatalog = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CaptureGraphRevisionId = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CaptureGraphRevisionId = null) : IJsonOnDeserialized
 {
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (string.IsNullOrWhiteSpace(CatalogId) ||
+            CatalogChecksumSha256 is not { Length: 64 } || !CatalogChecksumSha256.All(Uri.IsHexDigit))
+        {
+            throw new JsonException("Scene provenance requires a catalog ID and SHA-256 checksum.");
+        }
+    }
+
     public const string RetainedProjectedSceneSchemaVersion = "projected-scene-v1";
     /// <summary>Retained scene schema emitted only when the scene carries resolved footprints.</summary>
     public const string ResolvedFootprintProjectedSceneSchemaVersion = "projected-scene-v2";

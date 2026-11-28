@@ -387,7 +387,7 @@ public sealed class ProgramOutputTests
         var imageId = $"sha256:{new string('a', 64)}";
         var plan = DeploymentPlan.Of([new DeploymentPlanItem(DeploymentPlanAction.Change, "container", "cameraagent", "upgrade")]);
         var catalog = new CatalogInstallationIdentity(
-            "hyg-v42", "hyg-v4.2-p3-s2-r1", "1", "1", new string('b', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg",
+            "hyg-v44-production", "hyg-v4.4-p4-s3-r1", "1", "1", new string('b', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg",
             new string('b', 64), "local-offline");
         var deepSkyCatalog = new CatalogInstallationIdentity(
             "openngc", "openngc-v1.0-r1", "1", "1", new string('d', 64), 1, 1, "/var/lib/hvo-sky/catalogs/openngc",
@@ -419,7 +419,7 @@ public sealed class ProgramOutputTests
             $"Operation: Upgrade / {operationId:D}",
             $"Instance: {instanceId:D} / Installed",
             $"Image: {imageId}",
-            "Catalog: hyg-v42 / hyg-v4.2-p3-s2-r1",
+            "Catalog: hyg-v44-production / hyg-v4.4-p4-s3-r1",
             "Deep-sky catalog: openngc / openngc-v1.0-r1",
             "Runtime running=True, alive=True, healthy=False (/health HTTP 503)",
             "Preserved: /var/lib/hvo-sky/cameraagents/a/state",

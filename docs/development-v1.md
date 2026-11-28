@@ -215,7 +215,7 @@ The operator-approved #1142 split keeps these checks off the short path:
 | Deployment qualification | Existing selected Deployment Contracts job |
 
 The catalog reproducibility regressions are full-qualification only as well
-(Refs #1774): Catalog Contracts rebuilds HYG 4.2 and Catalog Reproducibility
+(Refs #1774): Catalog Contracts rebuilds HYG 4.4 and Catalog Reproducibility
 rebuilds HYG 4.4, OpenNGC and the catalog test fixtures, each under both SQLite
 `secure_delete` defaults. Neither required v1 check runs them or reads the
 classifier's `catalog_recipe` output; see

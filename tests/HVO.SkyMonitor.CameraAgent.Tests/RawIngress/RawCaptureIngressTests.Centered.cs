@@ -1425,7 +1425,7 @@ public sealed partial class RawCaptureIngressTests
         {
             var path = Path.Combine(root, "journal", "raw-ingress.db");
             var instance = Guid.NewGuid();
-            var paths = Installer.InstallationPaths.Create(root, instance, "hyg-v42-production");
+            var paths = Installer.InstallationPaths.Create(root, instance, "hyg-v44-production");
             var files = new Installer.CameraAgentStateDatabaseView(Path.Combine(root, "identity.db"), path);
             var requirements = new Installer.CameraAgentStateRequirements(Installer.CameraAgentStateContract.Current, null, 17, null);
             Assert.HasCount(0, Evaluate(requirements));
@@ -1776,6 +1776,8 @@ public sealed partial class RawCaptureIngressTests
     {
         private readonly InMemoryCelestialCatalog _catalog = new([star]);
 
+        public string CatalogId => "centered-test";
+        public string CatalogPackageVersion => "centered-test-1";
         public CatalogMetadata Metadata { get; } = new("centered-study", "fixture", new Uri("https://example.invalid/catalog"),
             new string('A', 64), "fixture", "2");
 

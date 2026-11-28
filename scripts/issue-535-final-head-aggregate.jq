@@ -459,7 +459,7 @@ def ci_job_expectations:
    "combined-integration":"skipped","delivery-component":"skipped","required":"success"};
 
 def ci_artifact_expectations:
-  {"hyg-v42-contracts":"catalog-contracts","package-audit":"quality",
+  {"hyg-v44-contracts":"catalog-contracts","package-audit":"quality",
    "deployment-contract-logs":"deployment-contracts","unit-test-evidence":"unit",
    "integration-test-evidence":"integration","architecture-unit-evidence":"architecture",
    "architecture-test-evidence":"architecture","publish-evidence":"architecture",

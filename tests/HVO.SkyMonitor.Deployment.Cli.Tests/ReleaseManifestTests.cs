@@ -41,7 +41,7 @@ public sealed partial class ReleaseManifestTests
             $"sha256:{new string('e', 64)}", $"sha256:{new string('f', 64)}"), archive);
         Assert.IsNull(image.ArchiveFor("linux/amd64"));
         Assert.AreEqual(
-            "hvo-sky-install-linux-arm64 install.sh skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar hyg-v4.2-p3-s2-r1.bundle.tar.gz",
+            "hvo-sky-install-linux-arm64 install.sh skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar hyg-v4.4-p4-s3-r1.bundle.tar.gz",
             string.Join(' ', manifest.Assets.Select(static asset => asset.Name)));
         Assert.IsNull(manifest.Assets[1].Platform);
         Assert.AreEqual("1.0.0 1.1.0 1.2.0", UpgradeNotesTests.Versions(manifest.UpgradeNotes));
@@ -221,7 +221,7 @@ public sealed partial class ReleaseManifestTests
     [DataRow("asset-size-negative", "hvo-sky-install-linux-arm64's size is not a number of bytes")]
     [DataRow("asset-size-zero", "hvo-sky-install-linux-arm64's size is not a number of bytes")]
     [DataRow("asset-sha256", "hvo-sky-install-linux-arm64's sha256 is not 64 lowercase hex digits")]
-    [DataRow("asset-files", "hyg-v4.2-p3-s2-r1.bundle.tar.gz's files are not an object of file names and their SHA-256")]
+    [DataRow("asset-files", "hyg-v4.4-p4-s3-r1.bundle.tar.gz's files are not an object of file names and their SHA-256")]
     public void Parse_MalformedMember_IsRefusedWithTheReason(string fault, string reason)
         => AssertRefused(Document(root => Break(root, fault)), reason);
 
@@ -536,7 +536,7 @@ public sealed partial class ReleaseManifestTests
             case "asset-size-negative": installer["size"] = -1; break;
             case "asset-size-zero": installer["size"] = 0; break;
             case "asset-sha256": installer["sha256"] = new string('C', 64); break;
-            case "asset-files": Asset(root, "hyg-v4.2-p3-s2-r1.bundle.tar.gz")["files"] = new JsonObject { ["manifest.json"] = "x" }; break;
+            case "asset-files": Asset(root, "hyg-v4.4-p4-s3-r1.bundle.tar.gz")["files"] = new JsonObject { ["manifest.json"] = "x" }; break;
             default: throw new ArgumentOutOfRangeException(nameof(fault), fault, null);
         }
     }

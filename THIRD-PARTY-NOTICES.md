@@ -63,8 +63,7 @@ Source: https://github.com/ofrohn/d3-celestial/tree/v0.7.32/data
 
 ## HYG Database
 
-HVO.SkyMonitor includes a derived bright-star subset of the HYG Database 4.2 for
-offline virtual-camera operation and deterministic tests.
+HVO.SkyMonitor includes a derived HYG Database 4.4 subset for deterministic tests.
 
 Copyright (c) David Nash and the catalog contributors.
 
@@ -74,8 +73,8 @@ License: https://creativecommons.org/licenses/by-sa/4.0/
 Source: https://astronexus.com/projects/hyg
 
 The included SQLite subset, its source rows, checksum, and reproducible
-derivation are documented in `tests/fixtures/catalog/SOURCE.md` and
-`docs/catalog/hyg-v42.md`. Modifications and redistributions of the catalog data
+derivation are documented in `tests/fixtures/catalog/SOURCE-v44.md` and
+`docs/catalog/hyg-v44.md`. Modifications and redistributions of the catalog data
 remain subject to the same attribution and ShareAlike terms.
 
 ## OpenNGC

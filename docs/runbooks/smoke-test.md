@@ -3,12 +3,12 @@
 ## Full-Resolution Standalone CameraAgent
 
 The opt-in full-resolution smoke from #171 starts a standalone CameraAgent. It loads `cameraagent.standalone-production-smoke.json`, rejects all
-central HTTP traffic, and requires an installed Production HYG 4.2 catalog. The
+central HTTP traffic, and requires an installed Production HYG 4.4 catalog. The
 checked-in `appsettings.StandaloneProductionSmoke.json` supplies the standalone
 host boundary when running the CameraAgent directly with
 `DOTNET_ENVIRONMENT=StandaloneProductionSmoke`. The checked-in deployment pair
-uses the instance `state/` root for both raw ingress and derivative storage and
-the selected `/var/lib/hvo-sky/catalogs/hyg-v42-production` installation.
+uses the instance `state/` root for CameraAgent state and
+the selected `/var/lib/hvo-sky/catalogs/hyg-v44-production` installation.
 Use an installed local Silo binding. Set `CameraAgent__RawIngressRoot` to
 the writable application state directory for that installation. See the
 [Silo runtime runbook](cameraagent-silo-runtime.md).
@@ -31,17 +31,8 @@ DeviceProvisioning__StateDirectory=/var/lib/hvo-sky/cameraagents/<instance-uuid>
   dotnet run --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
-Build and install the pinned catalog only when the approved package is not
-already present:
-
-```bash
-./scripts/catalog/build-hyg-v42.sh --fetch \
-  --install-root /var/lib/hvo-sky/catalogs/hyg-v42-production \
-  ./artifacts/hyg-v42
-```
-
-The last argument is an operator-chosen build output directory that must not
-already exist, as in [production catalog installation](../catalog/production-install.md).
+Build and install the pinned catalog using the
+[production catalog procedure](../catalog/production-install.md).
 
 Run the smoke against the installation root, not a bundle or SQLite file.
 
@@ -57,7 +48,7 @@ three campaign scripts now validate the shape and refuse the version directory b
 name at the point of the mistake.
 
 ```bash
-HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v42-production \
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v44-production \
   ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
@@ -102,7 +93,7 @@ rerun before classifying a failure as host interference or as a runtime
 regression. The budget itself is not relaxed for busy hosts.
 
 The gate fails closed on package kind, version, manifest/schema/preprocessing
-versions, database SHA-256/length, and 119,625-row identity. It retains a
+versions, database SHA-256/length, and 119,613-row identity. It retains a
 sanitized full-frame annotated JPEG and JSON manifest for each of five
 independent, approximately one-minute trials below
 `TestResults/issue-171/production-smoke`, including the
@@ -133,7 +124,7 @@ Install the approved Production HYG package and run.
 directory below `versions/`:
 
 ```bash
-HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v42-production \
+HVO_CATALOG_PERF_ROOT=/var/lib/hvo-sky/catalogs/hyg-v44-production \
 HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6 \
   ./scripts/test:cameraagent-dual-standalone-smoke
 ```

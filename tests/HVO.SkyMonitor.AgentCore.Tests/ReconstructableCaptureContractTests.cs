@@ -23,7 +23,7 @@ public sealed class ReconstructableCaptureContractTests
             EphemerisModelVersion: "ephemeris-v1", ConstellationTopologyVersion: "topology-v1",
             ConstellationIds: ["ORI"], RigProfileHashSha256: new string('B', 64),
             ProjectionCalibrationVersion: "calibration-v1", SceneUtc: DateTimeOffset.UnixEpoch,
-            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64));
+            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64), CatalogId: "test-catalog");
         var legacy = original with { Scene = scene };
         var compact = original with { Scene = scene.WithoutProjectedGeometry() };
         var oldBytes = CaptureContractJson.Serialize(legacy);
@@ -61,7 +61,7 @@ public sealed class ReconstructableCaptureContractTests
             new string('D', 64), "rig-v1", "catalog", "1", new string('A', 64), "Perspective", "projection-v1",
             "astronomy-v1", "sensor-v1", RigProfileHashSha256: new string('B', 64),
             SceneUtc: DateTimeOffset.UnixEpoch, ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1",
-            ProjectedSceneStageKey: new string('C', 64)).WithoutProjectedGeometry();
+            ProjectedSceneStageKey: new string('C', 64), CatalogId: "test-catalog").WithoutProjectedGeometry();
         var valid = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]) with { Scene = scene };
         Assert.IsTrue(valid.Validate().IsValid);
         var invalid = valid with
@@ -174,7 +174,7 @@ public sealed class ReconstructableCaptureContractTests
                 DateTimeOffset.UnixEpoch.AddSeconds(10),
                 DateTimeOffset.UnixEpoch.AddSeconds(14),
                 4,
-                parameters));
+                parameters), CatalogId: "test-catalog");
         var enriched = original with { Scene = scene };
 
         var encoded = CaptureContractJson.Serialize(enriched);
@@ -235,7 +235,7 @@ public sealed class ReconstructableCaptureContractTests
             "projection-v1",
             "astronomy-v1",
             "sensor-v1",
-            TransientScenario: transient);
+            TransientScenario: transient, CatalogId: "test-catalog");
         var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
         var enriched = original with { Scene = scene };
 

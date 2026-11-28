@@ -209,7 +209,7 @@ expect_builder_named_tool_first() {
 }
 
 printf 'not a catalog input\n' > "$work/bogus-input"
-for builder in build-hyg-v42.sh build-hyg-v44.sh build-hyg-v44-openngc.sh; do
+for builder in build-hyg-v44.sh build-hyg-v44-openngc.sh; do
     if [[ "$builder" == build-hyg-v44-openngc.sh ]]; then
         arguments=(--hyg-bundle "$work/absent-bundle" --openngc-source "$work/absent-openngc")
         input_refusal="bundle is missing or is not a directory"
@@ -231,29 +231,29 @@ for builder in build-hyg-v42.sh build-hyg-v44.sh build-hyg-v44-openngc.sh; do
     expect_builder_named_tool_first "$builder with an input it refuses" "$input_refusal" "$work/out-$builder-input"
 done
 
-# The two jobs that build the release lineage reach build-hyg-v42.sh through a caller that discards or redirects
-# stdout. ci.yml runs prepare-hyg-v42-contracts.sh with stdout sent to /dev/null, so the line has to arrive on
+# The two jobs that build the release lineage reach build-hyg-v44.sh through a caller that discards or redirects
+# stdout. ci.yml runs prepare-hyg-v44-contracts.sh with stdout sent to /dev/null, so the line has to arrive on
 # stderr; run it exactly that way. The rejected version stops the builder before --fetch can open a connection.
 reset_fake
 export HVO_FAKE_SQLITE_VERSION='9.99.9 2099-01-01 00:00:00 stand-in (64-bit)\n'
 set +e
-PATH="$work/fake:$PATH" "$SCRIPT_DIR/prepare-hyg-v42-contracts.sh" "$work/contracts" > /dev/null 2> "$work/stderr"
+PATH="$work/fake:$PATH" "$SCRIPT_DIR/prepare-hyg-v44-contracts.sh" "$work/contracts" > /dev/null 2> "$work/stderr"
 identity_status=$?
 set -e
 : > "$work/stdout"
-[[ "$identity_status" != 0 ]] || fail "prepare-hyg-v42-contracts.sh: accepted a sqlite3 the version gate rejects"
+[[ "$identity_status" != 0 ]] || fail "prepare-hyg-v44-contracts.sh: accepted a sqlite3 the version gate rejects"
 [[ "$(grep -Ec -- "$identity_line" "$work/stderr")" == 1 ]] ||
-    fail "prepare-hyg-v42-contracts.sh: the identity line did not reach stderr exactly once with stdout discarded"
+    fail "prepare-hyg-v44-contracts.sh: the identity line did not reach stderr exactly once with stdout discarded"
 grep -Fq -- "sqlite3 $HYG_REQUIRED_SQLITE_VERSION is required; found 9.99.9" "$work/stderr" ||
-    fail "prepare-hyg-v42-contracts.sh: the version gate did not stop the build"
+    fail "prepare-hyg-v44-contracts.sh: the version gate did not stop the build"
 cases=$((cases + 1))
 
 # scripts/release:assets publishes four executables and an image before it reaches the catalog, so it cannot be run
 # here. What can be held is the line that makes release and prerelease print the identity: the catalog is built by
-# build-hyg-v42.sh, with its stdout kept in the job log.
+# build-hyg-v44.sh, with its stdout kept in the job log.
 # shellcheck disable=SC2016 # The release script's own variable is matched literally.
-grep -Fxq -- '    ./scripts/catalog/build-hyg-v42.sh --fetch "$work/catalog-build" >&2' "$REPO_ROOT/scripts/release:assets" ||
-    fail "scripts/release:assets no longer builds the catalog through build-hyg-v42.sh with its output in the log"
+grep -Fxq -- '    ./scripts/catalog/build-hyg-v44.sh --fetch "$work/catalog-build" >&2' "$REPO_ROOT/scripts/release:assets" ||
+    fail "scripts/release:assets no longer builds the catalog through build-hyg-v44.sh with its output in the log"
 cases=$((cases + 1))
 
 printf 'SQLite identity test passed: %s cases.\n' "$cases"

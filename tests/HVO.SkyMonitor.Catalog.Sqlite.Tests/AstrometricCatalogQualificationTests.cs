@@ -24,14 +24,14 @@ internal sealed class AstrometricCatalogQualificationTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(root), "Supply the verified offline installation; this qualification cannot skip missing catalog evidence.");
         var startupClock = Stopwatch.StartNew();
         var startupAllocated = GC.GetTotalAllocatedBytes(precise: true);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v42-production"));
+        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v44-production"));
         var startupMs = startupClock.Elapsed.TotalMilliseconds;
         startupAllocated = GC.GetTotalAllocatedBytes(precise: true) - startupAllocated;
-        Assert.AreEqual(119625L, snapshot.RowCount);
-        Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
+        Assert.AreEqual(119613L, snapshot.RowCount);
+        Assert.AreEqual("2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321", snapshot.DatabaseSha256);
 
         var reports = new List<object>();
-        foreach (var (magnitude, expectedCount) in new[] { (5d, 1637), (5.5, 2865), (7d, 15598) })
+        foreach (var (magnitude, expectedCount) in new[] { (5d, 1637), (5.5, 2865), (7d, 15597) })
         {
             var all = await snapshot.Catalog.QueryCandidatesAsync(new(magnitude)).ConfigureAwait(false);
             Assert.HasCount(expectedCount, all);

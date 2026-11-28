@@ -331,7 +331,7 @@ test -f "$instance_root/config/camera-module.json"
 test -f "$instance_root/config/owner-bootstrap/temporary-password"
 test -n "$(ls -A "$instance_root/config/secrets")"
 test ! -f "$instance_root/state/deployment/installation-result.json"
-test -d "$root/product/catalogs/hyg-v42-production"
+test -d "$root/product/catalogs/hyg-v44-production"
 for bind_source in identity data-protection provisioning raw archive replay-runner; do
   if [ "$bind_source" = identity ]; then
     test "$(ls -A "$instance_root/state/$bind_source")" = appsettings.local.json

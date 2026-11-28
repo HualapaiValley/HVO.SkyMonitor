@@ -56,7 +56,7 @@ magnitudes and cancellation. Installed DI reuses the same catalog cache for the
 astrometry contract. Shared solver regression tests preserve standalone
 identity and reject incompatible package provenance for warm refinement.
 
-The explicit full-snapshot gate requires an offline, resolver-validated HYG 4.2
+The explicit full-snapshot gate requires an offline, resolver-validated HYG 4.4
 installation. Missing evidence fails; the test never falls back to fixture data
 or downloads a catalog. Build/install a private test bundle using the existing
 [catalog runbook](../catalog/production-install.md), then run:
@@ -71,7 +71,7 @@ dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sql
 ```
 
 This manual gate checks the approved database hash and independent known counts
-(1,637 at magnitude 5; 2,865 at 5.5; 15,598 at 7), exact-cap/one-over-cap behavior,
+(1,637 at magnitude 5; 2,865 at 5.5; 15,597 at 7), exact-cap/one-over-cap behavior,
 package provenance and solver refusal of an overflowing production selection.
 It compares the existing full candidate query followed by honest bounded
 materialization with the new bounded adapter: concurrency 1, 5 warmups and 30

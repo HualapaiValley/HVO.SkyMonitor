@@ -9,11 +9,11 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 [DoNotParallelize]
 internal sealed class SqliteCelestialCatalogTests
 {
-    private const string FixtureChecksum = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
+    private const string FixtureChecksum = "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682";
     private static readonly string[] ExpectedBoundedIds = ["32263", "30365", "69451"];
     private static readonly string[] ExpectedCandidateIds =
-        ["32263", "30365", "69451", "71456", "90979", "24549", "24378", "27919", "7574"];
-    private static readonly string FixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite");
+        ["32263", "30365", "69451", "71456", "90979", "27919"];
+    private static readonly string FixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite");
 
     [TestMethod]
     public void InternalTestClassSupportsReflectionConstruction()
@@ -174,7 +174,7 @@ internal sealed class SqliteCelestialCatalogTests
 
             var result = catalog.Query(new CatalogQuery(1, 100));
 
-            Assert.HasCount(9, result);
+            Assert.HasCount(6, result);
             Assert.IsFalse(File.Exists(path));
         }
         finally
@@ -270,7 +270,7 @@ internal sealed class SqliteCelestialCatalogTests
         {
             var catalog = new SqliteCelestialCatalog(CreateOptions(path, originalChecksum));
 
-            Assert.AreEqual(9, catalog.ObjectCount);
+            Assert.AreEqual(16, catalog.ObjectCount);
             Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
             Assert.AreEqual(originalChecksum, Checksum(path));
         }
@@ -371,14 +371,14 @@ internal sealed class SqliteCelestialCatalogTests
     {
         var catalog = CreateCatalog();
 
-        Assert.AreEqual("HYG bright-star test fixture", catalog.Metadata.Name);
-        Assert.AreEqual("4.2-fixture.1", catalog.Metadata.Version);
+        Assert.AreEqual("HYG 4.4 subset test fixture", catalog.Metadata.Name);
+        Assert.AreEqual("4.4-fixture.1", catalog.Metadata.Version);
         Assert.AreEqual("https://codeberg.org/astronexus/hyg", catalog.Metadata.SourceUrl.AbsoluteUri);
         Assert.AreEqual(FixtureChecksum, catalog.Metadata.Checksum);
         Assert.AreEqual("CC BY-SA 4.0", catalog.Metadata.License);
-        Assert.AreEqual("2", catalog.Metadata.SchemaVersion);
-        Assert.AreEqual("3", catalog.PreprocessingVersion);
-        Assert.AreEqual(9, catalog.ObjectCount);
+        Assert.AreEqual("3", catalog.Metadata.SchemaVersion);
+        Assert.AreEqual("4", catalog.PreprocessingVersion);
+        Assert.AreEqual(16, catalog.ObjectCount);
         Assert.AreEqual(FixturePath, catalog.Options.DatabasePath);
     }
 
@@ -456,8 +456,8 @@ internal sealed class SqliteCelestialCatalogTests
         Assert.IsEmpty(none);
         Assert.HasCount(1, candidatesAtBoundary);
         Assert.IsEmpty(noCandidates);
-        Assert.HasCount(9, all);
-        Assert.HasCount(9, allCandidates);
+        Assert.HasCount(15, all);
+        Assert.HasCount(15, allCandidates);
     }
 
     [TestMethod]
@@ -502,7 +502,7 @@ internal sealed class SqliteCelestialCatalogTests
                 command.ExecuteNonQuery();
             }
 
-            Assert.HasCount(9, catalog.Query(new CatalogQuery(1, 100)));
+            Assert.HasCount(6, catalog.Query(new CatalogQuery(1, 100)));
         }
         finally
         {
@@ -516,8 +516,8 @@ internal sealed class SqliteCelestialCatalogTests
     private static SqliteCelestialCatalogOptions CreateOptions(
         string path,
         string checksum,
-        string schemaVersion = "2",
-        string preprocessingVersion = "3")
+        string schemaVersion = "3",
+        string preprocessingVersion = "4")
         => new(path, checksum, schemaVersion, preprocessingVersion);
 
     private static string CopyFixture()

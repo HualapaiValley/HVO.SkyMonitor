@@ -26,7 +26,6 @@ readonly DOCS=(
     docs/runbooks/releases.md
     docs/runbooks/prereleases.md
     docs/catalog/production-install.md
-    docs/catalog/hyg-v42.md
     docs/planning/standalone-cameraagent-course-correction.md
     docs/validation/ci-reduced-mode.md
     docs/validation/issue-331-production-like-install-findings.md
@@ -108,7 +107,7 @@ require_source_reference './scripts/test:silo-runtime-qualification' docs/runboo
 require_source_reference "The Coverlet 10.0.1 baseline is $coverage_line_percent% line and $coverage_branch_percent% branch coverage." docs/runbooks/ci-pipeline.md
 require_source_reference "aggregate baseline is $coverage_line_percent percent line and $coverage_branch_percent percent branch" docs/planning/performance-validation.md
 # shellcheck disable=SC2016 # Backticks are literal Markdown.
-require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
+require_source_reference 'canonical builder for package `hyg-v4.4-p4-s3-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
 require_source_reference 'name: Catalog Contracts' .github/workflows/ci.yml
 require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml

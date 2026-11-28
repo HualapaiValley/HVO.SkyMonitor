@@ -123,7 +123,7 @@ public sealed partial class InstallerFlowTests
 
     private static Dictionary<string, string> OpenNgcImageLabels() => new(ReleaseFixture.ContractLabels)
     {
-        ["io.hvo.skymonitor.catalog-contract"] = CameraAgentImageContract.IndependentCatalogContract,
+        ["io.hvo.skymonitor.catalog-contract"] = CameraAgentImageContract.CatalogContract,
         ["io.hvo.skymonitor.catalog-manifest-version"] = "4",
         ["org.opencontainers.image.revision"] = new string('a', 40)
     };
@@ -135,7 +135,7 @@ public sealed partial class InstallerFlowTests
     private static LifecycleContractTests.FakeRunner OpenNgcLifecycleRunner(InstallationPaths paths, InstanceManifest manifest)
     {
         var runner = new LifecycleContractTests.FakeRunner(manifest.DockerDaemon)
-        { CatalogContract = CameraAgentImageContract.IndependentCatalogContract };
+        { CatalogContract = CameraAgentImageContract.CatalogContract };
         runner.ConfigureRuntime(paths, manifest.Image.ImmutableReference, manifest.Image.ImageId,
             OpenNgcUpgradeReference, $"sha256:{new string('d', 64)}", RuntimeUid, RuntimeGid);
         foreach (var label in OpenNgcImageLabels()) runner.CandidateLabels[label.Key] = label.Value;

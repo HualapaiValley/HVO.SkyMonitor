@@ -141,7 +141,7 @@ jobs_projection="$(jq -ce --arg head "$bound_head" --argjson map "$job_map" --ar
     else sort_by(.key) end' --argjson ENV_RUN "$(jq '.id' "$run_file")" "$jobs_file")" || fail 'Required job projection is invalid.'
 
 expected_artifacts='{
-  "hyg-v42-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts",
+  "hyg-v44-contracts":"catalog-contracts","package-audit":"quality","deployment-contract-logs":"deployment-contracts",
   "unit-test-evidence":"unit","integration-test-evidence":"integration","architecture-unit-evidence":"architecture",
   "architecture-test-evidence":"architecture","publish-evidence":"architecture","coverage-report":"coverage"}'
 jq -e --argjson expected "$expected_artifacts" '

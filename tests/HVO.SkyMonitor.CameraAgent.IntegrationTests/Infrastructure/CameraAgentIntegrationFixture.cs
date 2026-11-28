@@ -62,7 +62,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 createdUtc = DateTimeOffset.UtcNow
             })).ConfigureAwait(false);
         _catalogFixture = CatalogFixtureInstallation.Create(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v44-subset.sqlite"));
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
         var transientEpochUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToUniversalTime();
         var template = await File.ReadAllTextAsync(
@@ -238,7 +238,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         // The shared host must never stop itself: a restart request is refused as unsupervised, wherever the tests run.
         ["CameraAgent:Restart:Supervised"] = "false",
         ["Catalog:Root"] = _catalogFixture?.Root,
-        ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
+        ["Catalog:RequiredCatalogId"] = "hyg-v44-fixture",
         ["Catalog:RequiredPackageKind"] = "Fixture",
         ["DeviceProvisioning:StateDirectory"] = provisioningRoot,
         ["LocalIdentity:AdminEmail"] = "owner@cameraagent.integration",
