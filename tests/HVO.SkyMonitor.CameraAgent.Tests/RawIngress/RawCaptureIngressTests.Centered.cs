@@ -1966,16 +1966,17 @@ public sealed partial class RawCaptureIngressTests
         internal RawCaptureIngress Ingress { get; }
         internal CaptureLanePolicy Policy { get; }
         internal RawIngressState RawState { get; }
-        internal SiloArtifactStorage? Silo { get; }
-        internal SiloInstalledStorage? InstalledSilo { get; }
+        internal SiloArtifactStorage Silo { get; }
+        internal SiloInstalledStorage InstalledSilo { get; }
         internal SqliteCalibrationLibraryStore Calibration => _services.GetRequiredService<SqliteCalibrationLibraryStore>();
 
         internal CenteredFixture(
             string root, IRawIngressFaultInjector? fault = null, TimeProvider? timeProvider = null,
             int? requiredMaximumPendingCount = null, CenteredWindowWakeup? wakeup = null, IServiceProvider? siloProvider = null)
         {
-            Silo = siloProvider?.GetRequiredService<SiloArtifactStorage>();
-            InstalledSilo = siloProvider?.GetRequiredService<SiloInstalledStorage>();
+            siloProvider ??= SiloInfrastructureFixture.ProductStore(root);
+            Silo = siloProvider.GetRequiredService<SiloArtifactStorage>();
+            InstalledSilo = siloProvider.GetRequiredService<SiloInstalledStorage>();
             Options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
@@ -1994,7 +1995,7 @@ public sealed partial class RawCaptureIngressTests
                     NullLogger<RawCaptureIngress>.Instance, fault ?? new NullRawIngressFaultInjector(),
                     Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup,
                     silo: InstalledSilo,
-                    siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
+                    siloSettings: siloProvider.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
                 .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
                 .BuildServiceProvider();
             Factory = new(_services,

@@ -28,15 +28,16 @@ public sealed partial class DurableCaptureProcessingTests
             objects.FailBeforeLanding = key => key.StartsWith("m/", StringComparison.Ordinal);
             for (var attempt = 1; attempt <= 2; attempt++)
             {
-                await Assert.ThrowsExactlyAsync<SiloStoreUnavailableException>(async () =>
-                    await FrameProcessingWorker.ProcessGraphItemAsync(
-                        fixture.Item, graph, persistence, telemetry, attempt, NullLogger.Instance,
-                        CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+                var blocked = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, graph, persistence, telemetry, attempt, NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, blocked.Outcome);
+                Assert.AreEqual("silo-store-unavailable", blocked.Reason);
                 var durable = await store.ReadNodeAsync(captureId, "metadata", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsTrue(durable is null || durable.Outputs.Count == 0, "An unsettled Silo publication cannot commit an output.");
             }
             Assert.IsNotNull(step.Product);
-            var key = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Metadata, step.Product.ChecksumSha256.ToLowerInvariant());
+            var key = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Metadata, SiloHash.Sha256(step.Product.Payload.Span));
             var version = Assert.ContainsSingle(objects.VersionsOf(key));
             objects.FailBeforeLanding = null;
             var settled = await FrameProcessingWorker.ProcessGraphItemAsync(

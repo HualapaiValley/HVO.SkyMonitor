@@ -721,9 +721,8 @@ public sealed partial class DurableCaptureProcessingTests
                 rawManifestJson,
                 fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
                 fixture.Manifest.Descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
-            Assert.IsGreaterThan(0, reconciliation.Available);
             using var artifactService = new CameraAgentArtifactService(
-                fixture.Options, store, new CameraAgentPreviewEncoder());
+                fixture.Options, store, new CameraAgentPreviewEncoder(), silo: persistence.Silo);
             var openedManifest = await artifactService.OpenContentAsync(
                 manifestOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedManifest.Status);
