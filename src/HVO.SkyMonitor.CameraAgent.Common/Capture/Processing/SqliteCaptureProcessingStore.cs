@@ -3008,7 +3008,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         return inserted;
     }
 
-    private static bool OutputEvidenceMatches(
+    internal static bool OutputEvidenceMatches(
         byte[] existing,
         byte[] requested,
         bool allowProducerAlias)

@@ -638,8 +638,16 @@ internal sealed partial class CaptureProcessingPersistence(
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
-            await PersistSiloOutputsAsync(rawCapture.Manifest.Descriptor, outputs, products, node.Id, execution?.ExecutionId, cancellationToken)
-                .ConfigureAwait(false);
+            if (execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay && silo is not null)
+            {
+                await PublishReplayOutputsAsync(rawCapture.Manifest.Descriptor, node.Id, execution.ExecutionId,
+                    outputs, products, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await PersistSiloOutputsAsync(rawCapture.Manifest.Descriptor, outputs, products, node.Id, execution?.ExecutionId,
+                    cancellationToken).ConfigureAwait(false);
+            }
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
             var inputEvidence = context.GetCurrentInputEvidence();
             var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
@@ -718,6 +726,38 @@ internal sealed partial class CaptureProcessingPersistence(
                 $"Reconstruction descriptor does not match the stored artifact ({validation.ReasonCode ?? "descriptor.mismatch"}).",
                 nameof(descriptor));
         }
+    }
+
+    private async ValueTask PublishReplayOutputsAsync(ReconstructionDescriptor raw, string nodeId, Guid executionId,
+        IReadOnlyList<DurableProcessingOutput> outputs, IReadOnlyList<ProcessingProduct> products,
+        CancellationToken cancellationToken)
+    {
+        var storage = silo ?? throw new InvalidOperationException("Replay output publication requires Silo storage.");
+        var newOutputs = new List<DurableProcessingOutput>(outputs.Count);
+        var newProducts = new List<ProcessingProduct>(outputs.Count);
+        for (var index = 0; index < outputs.Count; index++)
+        {
+            var output = outputs[index];
+            var existing = await _store.ReadOutputByArtifactIdAsync(output.ArtifactId, cancellationToken).ConfigureAwait(false);
+            if (existing is null || existing.EvidenceJson.AsSpan().SequenceEqual(output.EvidenceJson))
+            {
+                newOutputs.Add(output);
+                newProducts.Add(products[index]);
+                continue;
+            }
+
+            // A replay may associate the same immutable raster with a different node alias.
+            // Its existing Silo member and evidence keep their original producer and version.
+            if (existing.Capture.CaptureId != raw.Capture.CaptureId ||
+                existing.OutputIdentitySha256 != output.OutputIdentitySha256 ||
+                !SqliteCaptureProcessingStore.OutputEvidenceMatches(existing.EvidenceJson, output.EvidenceJson, allowProducerAlias: true) ||
+                !await storage.VerifyMemberAsync(existing.ArtifactId, existing.OutputIdentitySha256,
+                    products[index].Payload.Length, output.Artifact.ChecksumSha256, cancellationToken).ConfigureAwait(false) ||
+                !await storage.VerifyMemberAsync(existing.ArtifactId, SiloArtifactStorage.ProductEvidenceRevision,
+                    existing.EvidenceJson.LongLength, SiloHash.Sha256(existing.EvidenceJson), cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("A replay output identity conflicts with retained Silo evidence.");
+        }
+        await PersistSiloOutputsAsync(raw, newOutputs, newProducts, nodeId, executionId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask PersistSiloOutputsAsync(ReconstructionDescriptor raw, List<DurableProcessingOutput> outputs,
