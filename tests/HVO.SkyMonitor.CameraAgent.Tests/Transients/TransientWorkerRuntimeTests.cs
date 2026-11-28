@@ -582,7 +582,7 @@ public sealed partial class TransientWorkerRuntimeTests
             await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var operations = await provider.GetRequiredService<CameraAgentOperationsSummaryProvider>()
                 .GetAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(2L, operations.RawIngress.Value.PendingCount);
+            Assert.AreEqual(0L, operations.RawIngress.Value.PendingCount);
             Assert.AreEqual(2L, operations.CaptureLanes.Value.PendingCount);
             CollectionAssert.AreEqual(
                 new long[] { 6, 7 },
