@@ -225,13 +225,13 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             Interlocked.Increment(ref _evidenceValidationReads);
             var evidence = await silo.ReadMemberAsync(row.ArtifactId, raw ? SiloArtifactStorage.RawEvidenceRevision : SiloArtifactStorage.ProductEvidenceRevision,
                 row.EvidenceJson.LongLength, SiloHash.Sha256(row.EvidenceJson), cancellationToken).ConfigureAwait(false);
-            if (evidence is null) return new(CameraAgentArtifactReadStatus.Unavailable);
+            if (evidence is null) return await UnreadableSiloContentAsync(silo, row.ArtifactId, cancellationToken).ConfigureAwait(false);
             var validated = raw ? ValidateRaw(row, evidence) : ValidateProcessing(row, evidence);
             if (forPreview && PreviewStatus(validated) is { } previewStatus) return new(previewStatus);
             Interlocked.Increment(ref _payloadValidationReads);
             var stream = await silo.OpenMemberAsync(row.ArtifactId, row.IdentitySha256,
                 validated.ByteLength, validated.ChecksumSha256, cancellationToken).ConfigureAwait(false);
-            if (stream is null) return new(CameraAgentArtifactReadStatus.Unavailable);
+            if (stream is null) return await UnreadableSiloContentAsync(silo, row.ArtifactId, cancellationToken).ConfigureAwait(false);
             var content = new CameraAgentArtifactContentStream(stream, validated.ArtifactId,
                 validated.CaptureId, validated.Role, validated.MediaType, validated.ByteLength, validated.ChecksumSha256.ToUpperInvariant(),
                 CreateFileName(validated.ArtifactId, validated.MediaType), validated.Descriptor, validated.EncodedWidth, validated.EncodedHeight)
@@ -255,6 +255,12 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             return new(CameraAgentArtifactReadStatus.Unavailable);
         }
     }
+
+    private static async ValueTask<CameraAgentArtifactContentResult> UnreadableSiloContentAsync(
+        SiloArtifactStorage silo, Guid artifactId, CancellationToken cancellationToken)
+        => new(await silo.IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false)
+            ? CameraAgentArtifactReadStatus.Unavailable
+            : CameraAgentArtifactReadStatus.Gone);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoding failures are converted to a sanitized retrieval status.")]
     public async ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(

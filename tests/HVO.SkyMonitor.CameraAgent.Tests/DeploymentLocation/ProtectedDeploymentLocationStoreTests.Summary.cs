@@ -272,6 +272,29 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    public async Task ManifestShapedOwnedJsonCannotSupplyCaptureProvenance()
+    {
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var store = CreateStore();
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (stage, json) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+        var manifest = CaptureContractJson.ParseManifest(json).Document!.Manifest;
+        var wrongLocation = manifest.Descriptor.Location! with { Version = active.Version + 1 };
+        var lookalike = CaptureContractJson.Serialize(manifest with
+        {
+            Descriptor = manifest.Descriptor with { Location = wrongLocation }
+        });
+        var other = Path.Combine(_options.Value.RawIngressRoot, "journal", "manifest-shaped.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(other)!);
+        await RetainedFileMutations.WriteAllBytesAsync(other, lookalike).ConfigureAwait(false);
+        Assert.AreEqual(active, await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
+
+        await RetainedFileMutations.WriteAllBytesAsync(stage, lookalike).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await store.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task TornProductionSidecarCanReachTheRealReconcilerWithoutDeletingEvidence()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");

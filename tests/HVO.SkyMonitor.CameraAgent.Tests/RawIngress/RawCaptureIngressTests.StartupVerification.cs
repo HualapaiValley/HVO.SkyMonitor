@@ -139,7 +139,7 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(0L, reads.BytesRead, "Startup read a committed payload.");
         Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
 
-        await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
+        await ReportThroughStandardLaneAsync(root, restarted, configuration).ConfigureAwait(false);
         Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
         Assert.IsTrue(File.Exists(payload));
 
@@ -189,7 +189,7 @@ public sealed partial class RawCaptureIngressTests
         using (var reporting = CreateIngress(root, new RawIngressState(TimeProvider.System), maintenanceGate: hold.Gate))
         {
             await reporting.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            await ReportThroughStandardLaneAsync(reporting, configuration).ConfigureAwait(false);
+            await ReportThroughStandardLaneAsync(root, reporting, configuration).ConfigureAwait(false);
             if (paused)
             {
                 await reporting.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -263,7 +263,7 @@ public sealed partial class RawCaptureIngressTests
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(2, logger.Snapshot.Count(entry => entry.EventId == 2041), "The pass cleared a report made while it ran.");
 
-            await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
+            await ReportThroughStandardLaneAsync(root, restarted, configuration).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
@@ -304,7 +304,7 @@ public sealed partial class RawCaptureIngressTests
             var reads = new PayloadReadCounter();
             using var restarted = CreateIngress(root, state, reads);
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
+            await ReportThroughStandardLaneAsync(root, restarted, configuration).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.IsFalse(File.Exists(payload), "The reported evidence was never quarantined.");
@@ -446,8 +446,9 @@ public sealed partial class RawCaptureIngressTests
             using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System), reads);
             var lease = await ingress.ClaimAsync(StandardLane, "reconciliation-race", configuration, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(lease);
-            using var standard = new StandardCaptureLaneHandler(
-                new RawReadingPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(ProcessingOptions(root));
+            using var standard = CreateRawReadingLane(root, ingress, store, telemetry);
             var result = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual("evidence-unavailable", result.Reason);
 
@@ -479,16 +480,30 @@ public sealed partial class RawCaptureIngressTests
     /// Runs the capture's standard lane work as the lane worker does: loading the raw frame verifies its checksum, the
     /// handler reports the evidence unavailable, and the lane's terminal outcome is recorded.
     /// </summary>
-    private static async Task ReportThroughStandardLaneAsync(RawCaptureIngress ingress, CameraModuleConfig configuration)
+    private static async Task ReportThroughStandardLaneAsync(string root, RawCaptureIngress ingress, CameraModuleConfig configuration)
     {
         var lease = await ingress.ClaimAsync(StandardLane, "processing-test", configuration, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(lease);
-        using var standard = new StandardCaptureLaneHandler(
-            new RawReadingPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var store = new SqliteCaptureProcessingStore(ProcessingOptions(root));
+        using var standard = CreateRawReadingLane(root, ingress, store, telemetry);
         var result = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual("evidence-unavailable", result.Reason);
         Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure,
             await ingress.FailAsync(lease, result, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    private static IOptions<CameraAgentHostOptions> ProcessingOptions(string root)
+        => Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+
+    private static StandardCaptureLaneHandler CreateRawReadingLane(string root, RawCaptureIngress ingress,
+        SqliteCaptureProcessingStore store, CaptureProcessingTelemetry telemetry)
+    {
+        var options = ProcessingOptions(root);
+        var persistence = new CaptureProcessingPersistence(options, store, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(root));
+        return new StandardCaptureLaneHandler(new RawReadingPipelineFactory(), persistence, telemetry,
+            NullLogger<StandardCaptureLaneHandler>.Instance, ingress, options);
     }
 
     private sealed class RawReadingPipelineFactory : ICaptureProcessingPipelineFactory

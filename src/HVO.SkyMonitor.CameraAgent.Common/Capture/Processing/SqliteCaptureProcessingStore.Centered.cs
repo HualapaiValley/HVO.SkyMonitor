@@ -307,6 +307,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         return observed || holdsRecovered;
     }
 
+    internal async ValueTask<bool> IsCenteredProductExpiredAsync(Guid artifactId, CancellationToken cancellationToken)
+        => _silo is { } silo && !await silo.IsArtifactRetainedAsync(artifactId, cancellationToken).ConfigureAwait(false);
+
     internal async Task<ExposureProductLookup?> ReadCenteredProductAsync(
         ExposureKey key, ExposureProductSlot slot, CancellationToken cancellationToken)
     {

@@ -1294,14 +1294,11 @@ public sealed partial class ProtectedDeploymentLocationStore(
         using (attribution?.Measure(ReadStage.Hash)) digest = RetainedManifestValidationIndex.Hash(manifestJson);
         var known = parsedKind?.Invoke(digest) is { } kind
             ? (RetainedManifestValidationIndex.ProofKind?)kind : summary.Find(digest);
-        if (known is not null)
+        if (known is not null && !(requireManifest && known == RetainedManifestValidationIndex.ProofKind.OtherJson))
         {
             attribution?.AddCacheHit();
-            if (requireManifest && known == RetainedManifestValidationIndex.ProofKind.OtherJson)
-            {
-                if (strict) throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
-                return (digest, 3);
-            }
+            if (!requireManifest && known == RetainedManifestValidationIndex.ProofKind.Artifact)
+                return (digest, (int)RetainedManifestValidationIndex.ProofKind.OtherJson);
             return (digest, (int)known.Value);
         }
         ArtifactManifestV2? manifest;
@@ -1340,7 +1337,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
                  root.TryGetProperty("descriptor", out _) && root.TryGetProperty("relativeArtifactPath", out _));
             if (!requireManifest && !claimsManifest) return (null, true);
             var manifest = CaptureContractJson.ParseManifest(bytes).Document?.Manifest;
-            if (manifest is not null) return (manifest, false);
+            // Owned JSON is an integrity-ledger entry. Only the journal and Silo admission
+            // sidecars are authorities for the provenance of a capture.
+            if (manifest is not null) return requireManifest ? (manifest, false) : (null, true);
         }
         catch (JsonException) { }
         // Startup lets reconciliation and recovery UI inspect invalid/torn sidecars. The protected

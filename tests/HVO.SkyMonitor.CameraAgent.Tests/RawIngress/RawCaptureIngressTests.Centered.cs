@@ -1264,14 +1264,9 @@ public sealed partial class RawCaptureIngressTests
                     .Single(item => item.Slot.SchemaVersion == "centered-fixture-metadata-v1");
                 Assert.AreEqual(ExposureProductAvailability.Available, original.Availability);
                 Assert.IsNotNull(original.Product?.ContentIdentitySha256);
-                var saved = await setup.Store.ReadOutputByArtifactIdAsync(original.Product.ArtifactId, token).ConfigureAwait(false);
-                Assert.IsNotNull(saved);
-                Assert.IsTrue(await setup.Store.PlanLifecycleOperationAsync(new("delete:centered-metadata", "delete",
-                    original.Product.OutputIdentitySha256, saved.PayloadRelativePath, saved.SidecarRelativePath,
-                    "processing-deletion-tombstones/centered-metadata", "retention-expired", 0), token).ConfigureAwait(false));
-                await new DerivedProductReconciler(root, setup.Store).RunAsync(token).ConfigureAwait(false);
-                Assert.IsFalse(File.Exists(Path.Combine(root, saved.PayloadRelativePath)));
-                Assert.IsFalse(File.Exists(Path.Combine(root, saved.SidecarRelativePath)));
+                var silo = SiloInfrastructureFixture.ProductStore(root);
+                await SiloInfrastructureFixture.ExpireLocalMemberAsync(silo, original.Product.ArtifactId,
+                    original.Product.OutputIdentitySha256, token).ConfigureAwait(false);
             }
 
             using var restarted = new CenteredFixture(root);
@@ -1285,9 +1280,9 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsNotNull(original.Revision);
             var ordered = await reopened.ReadProductsAfterAsync(key.Camera, original.Revision.Value - 1, 1, token).ConfigureAwait(false);
             Assert.AreEqual(exact, ordered.Single());
-            var gallery = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder());
+            using var gallery = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder(), silo: restarted.Silo);
             var open = await gallery.OpenContentAsync(original.Product!.ArtifactId, token).ConfigureAwait(false);
-            Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, open.Status);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Gone, open.Status);
         }
         finally { DeleteRoot(root); }
     }
@@ -1431,17 +1426,20 @@ public sealed partial class RawCaptureIngressTests
             Assert.HasCount(0, Evaluate(requirements));
 
             RawCaptureReceipt original;
-            // This raw-only predecessor has no processing schema or astrometry index.
-            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            // Seed current Silo admissions before simulating a schema-version mismatch.
+            var silo = SiloInfrastructureFixture.ProductStore(root);
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System), siloProvider: silo))
             {
                 var config = CenteredConfiguration("camera") with { CenteredExposure = null };
                 original = (await ingress.AcceptAsync(config, CenteredSubmission(Timestamp(1)), token).ConfigureAwait(false))!;
             }
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
-                await ExecuteTestSqlAsync(connection, DropCenteredSchemaSql + "PRAGMA user_version=16;").ConfigureAwait(false);
+                await ExecuteTestSqlAsync(connection, "PRAGMA user_version=16;").ConfigureAwait(false);
             Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
 
-            using (var setup = new CenteredFixture(root))
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+                await ExecuteTestSqlAsync(connection, "PRAGMA user_version=17;").ConfigureAwait(false);
+            using (var setup = new CenteredFixture(root, siloProvider: silo))
                 await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
