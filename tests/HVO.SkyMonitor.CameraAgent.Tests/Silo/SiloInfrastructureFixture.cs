@@ -95,7 +95,8 @@ internal static class SiloInfrastructureFixture
             var clock = provider.GetRequiredService<TimeProvider>();
             var storage = new SiloInstalledStorage(installed, options, clock, provider.GetService<ISiloFaults>(),
                 provider.GetService<Func<ISiloObjectStore, ISiloObjectStore>>(),
-                new SiloInstalledStore(installed, bucket.Store, _ => ValueTask.FromResult(true)), payloadSpool: null);
+                new SiloInstalledStore(installed, bucket.Store, _ => ValueTask.FromResult(true)), payloadSpool: null,
+                capacity: new InMemoryStoreCapacity());
             try
             {
                 storage.VerifyReadinessAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
@@ -108,6 +109,12 @@ internal static class SiloInfrastructureFixture
             }
         });
         return services;
+    }
+
+    // The in-memory store's capacity must not depend on the mount hosting its temporary journal and spool.
+    private sealed class InMemoryStoreCapacity : IStorageCapacityProvider
+    {
+        public StorageCapacity GetCapacity(string path) => new(100 * SiloDiskBudget.GiB, 80 * SiloDiskBudget.GiB);
     }
 
     internal static async ValueTask SettleRawAdmissionsAsync(IServiceProvider services, CancellationToken token)
