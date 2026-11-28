@@ -113,7 +113,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
                 new("right-trail", 401, true), acquired[2].Pin.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
             Assert.IsNotNull(current);
             Assert.HasCount(2, current.Revision.Manifest.Layers);
-            using var artifactsReader = new CameraAgentArtifactService(options, reopenedStore, new CameraAgentPreviewEncoder());
+            using var artifactsReader = SiloInfrastructureFixture.OpenArtifactReader(options, reopenedStore);
             var reader = new CenteredViewPresentationReader(reopenedViews, artifactsReader);
             var rendered = await reader.ReadAsync(current.Base.BaseId, current.Revision.RevisionId, token).ConfigureAwait(false);
             Assert.IsNotNull(rendered.Presentation, rendered.Status.ToString());

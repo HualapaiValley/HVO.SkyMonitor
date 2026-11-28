@@ -40,7 +40,7 @@ public sealed partial class DurableCaptureProcessingTests
                     output.Artifact.SourceArtifactIds[0]));
             }
 
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var selected = new CameraAgentRetainedAstrometryService(store, artifacts);
             var expected = CameraAgentLatestAstrometry.FromVerified(await selected.GetAsync(oldest.Capture.CaptureId, token).ConfigureAwait(false));
             Assert.IsNotNull(expected);
@@ -155,7 +155,7 @@ public sealed partial class DurableCaptureProcessingTests
             var next = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
                 reference: await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false), prior: (1, 1)).ConfigureAwait(false);
             var newest = await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             ICameraAgentRetainedAstrometryService service = reader;
             var expectedOld = CameraAgentLatestAstrometry.FromVerified(await service.GetAsync(oldest.Capture.CaptureId, token).ConfigureAwait(false));

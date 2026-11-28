@@ -248,9 +248,8 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                 .ConfigureAwait(false);
             if (cloudNode is { Outputs.Count: 1 })
             {
-                var payloadPath = Path.Combine(
-                    root, cloudNode.Outputs[0].PayloadRelativePath.Replace('/', Path.DirectorySeparatorChar));
-                var parsed = CloudAssessmentJson.Parse(await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
+                var parsed = CloudAssessmentJson.Parse(await SiloInfrastructureFixture.ReadProductBytesAsync(
+                    provider, cloudNode.Outputs[0], CancellationToken.None).ConfigureAwait(false));
                 Assert.IsNotNull(parsed.Assessment);
                 reasonCodes = parsed.Assessment.ReasonCodes;
                 precipitationStatus = parsed.Assessment.Environment?.PrecipitationStatus.ToString();

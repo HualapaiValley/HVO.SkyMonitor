@@ -32,7 +32,7 @@ public sealed partial class DurableCaptureProcessingTests
                 _ = await ProduceLatestReadFixtureAsync(rejected, store, persistence, telemetry, gate).ConfigureAwait(false);
             }
 
-            using var unpooledArtifacts = new CameraAgentArtifactService(oldest.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var unpooledArtifacts = SiloInfrastructureFixture.OpenArtifactReader(oldest.Fixture.Options, store);
             using var unpooled = CreateUnpooledAstrometryReader(store, unpooledArtifacts);
             var expected = await unpooled.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(expected.Completed);
@@ -45,7 +45,7 @@ public sealed partial class DurableCaptureProcessingTests
                 expected.Summary.MidpointUtc);
             Assert.AreEqual(7L, unpooledArtifacts.JournalConnectionOpens, "Two rejections and five accepted-fit inputs.");
 
-            using var artifacts = new CameraAgentArtifactService(oldest.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(oldest.Fixture.Options, store);
             using var pooled = new CameraAgentRetainedAstrometryService(store, artifacts,
                 () => captured = artifacts.BeginRetainedHistoryRead());
             Assert.AreEqual(expected, await pooled.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));

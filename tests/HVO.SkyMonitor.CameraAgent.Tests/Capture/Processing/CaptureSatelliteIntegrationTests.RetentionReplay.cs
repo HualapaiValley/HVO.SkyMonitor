@@ -30,8 +30,9 @@ public sealed partial class CaptureSatelliteIntegrationTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
             var node = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadNodeAsync(
                 raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
-            var input = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root,
-                node!.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+            var retained = node!.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
+            var input = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                provider, retained.ArtifactId, CancellationToken.None).ConfigureAwait(false));
             var path = Directory.GetFiles(Path.Combine(root, "journal", "capture-satellites"), "header.json", SearchOption.AllDirectories).Single();
             var header = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path).ConfigureAwait(false))!;
             header["rawPayloadPath"] = "missing.bin";
@@ -66,6 +67,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 if (csvSnapshot)
                     await InstallCsvSnapshotAsync(provider, TestContext.CancellationToken).ConfigureAwait(false);
                 raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, TestContext.CancellationToken).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
                 var original = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadNodeAsync(
                     raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
@@ -75,18 +77,18 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     raw.Manifest.Descriptor.Capture.CaptureId, "satellite-layer", TestContext.CancellationToken).ConfigureAwait(false);
                 var layerOutput = layerNode!.Outputs.Single(p => p.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion);
                 originalLayerChecksum = layerOutput.Artifact.ChecksumSha256;
-                var layer = PresentationLayerPayloadJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, layerOutput.PayloadRelativePath),
+                var layer = PresentationLayerPayloadJson.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, layerOutput.ArtifactId,
                     TestContext.CancellationToken).ConfigureAwait(false)).Payload;
                 Assert.IsNotNull(layer);
                 Assert.IsNotEmpty(layer.Segments);
                 var sourceOutput = layerNode.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.SourceSchema);
-                using var layerSource = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, sourceOutput.PayloadRelativePath),
+                using var layerSource = JsonDocument.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, sourceOutput.ArtifactId,
                     TestContext.CancellationToken).ConfigureAwait(false));
                 Assert.AreEqual(hideObjectLabels, layerSource.RootElement.TryGetProperty("ObjectLabelsHidden", out var flag) && flag.GetBoolean());
                 if (hideObjectLabels) Assert.HasCount(1, layer.TextBlocks);
                 if (csvSnapshot)
                 {
-                    using var product = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath),
+                    using var product = JsonDocument.Parse(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, prediction.ArtifactId,
                         TestContext.CancellationToken).ConfigureAwait(false));
                     var manifest = product.RootElement.GetProperty("input").GetProperty("snapshotManifest");
                     Assert.AreEqual(CsvFixtureManifest, manifest.GetProperty("manifestSha256").GetString());

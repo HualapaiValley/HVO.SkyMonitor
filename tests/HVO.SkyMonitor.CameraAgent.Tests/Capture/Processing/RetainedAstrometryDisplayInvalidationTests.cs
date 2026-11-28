@@ -50,7 +50,7 @@ public sealed partial class DurableCaptureProcessingTests
             var contextOutput = await store.ReadOutputByArtifactIdAsync(newest.Artifact.SourceArtifactIds[3], token).ConfigureAwait(false);
             Assert.IsNotNull(contextOutput);
 
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var selectedReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var layerService = new CameraAgentLayeredPresentationService(store, artifacts, persistence: persistence, astrometry: selectedReader);
             var contextOpen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

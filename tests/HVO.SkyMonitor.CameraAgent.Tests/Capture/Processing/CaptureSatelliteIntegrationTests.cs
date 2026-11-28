@@ -62,10 +62,12 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.IsNotNull(layerNode);
                 Assert.HasCount(2, layerNode.Outputs);
                 checksums = node.Outputs.ToDictionary(static p => p.Artifact.Variant, static p => p.Artifact.ChecksumSha256);
-                var evidence = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                var input = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
+                var evidence = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(
+                    provider, input.ArtifactId, CancellationToken.None).ConfigureAwait(false));
                 var prediction = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, prediction.PayloadRelativePath)).ConfigureAwait(false);
+                var bytes = await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, prediction.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false);
                 var independentRaw = f.Raw with
                 {
                     ArtifactId = receipt.Manifest.Descriptor.Artifact.ArtifactId,
@@ -99,7 +101,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.IsNotNull(node);
                 foreach (var product in node.Outputs)
                     Assert.AreEqual(checksums[product.Artifact.Variant], ProcessingIdentity.ComputePayloadSha256(
-                        await File.ReadAllBytesAsync(Path.Combine(root, product.PayloadRelativePath)).ConfigureAwait(false)));
+                        await SiloInfrastructureFixture.ReadArtifactBytesAsync(restarted, product.ArtifactId, CancellationToken.None).ConfigureAwait(false)));
                 var presentation = await restarted.GetRequiredService<ICameraAgentLayeredPresentationService>()
                     .GetAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, presentation.Status, presentation.Reason);
@@ -250,10 +252,12 @@ public sealed partial class CaptureSatelliteIntegrationTests
                     "satellite", CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(node);
                 if (frozen is not null)
-                    CollectionAssert.AreEqual(frozen, await File.ReadAllBytesAsync(Path.Combine(root,
-                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).PayloadRelativePath)).ConfigureAwait(false));
-                CollectionAssert.AreEqual(frozenInput, await File.ReadAllBytesAsync(Path.Combine(root,
-                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
+                    CollectionAssert.AreEqual(frozen, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                        node.Outputs.Single(p => p.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion).ArtifactId,
+                        CancellationToken.None).ConfigureAwait(false));
+                CollectionAssert.AreEqual(frozenInput, await SiloInfrastructureFixture.ReadArtifactBytesAsync(second,
+                    node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).ArtifactId,
+                    CancellationToken.None).ConfigureAwait(false));
             }
         }
         finally { Directory.Delete(root, true); }

@@ -47,7 +47,7 @@ public sealed partial class DurableCaptureProcessingTests
             var captureId = selected.Capture.CaptureId;
             var baseArtifactId = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
 
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var layerReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var historyRequests = 0;
             var historyHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

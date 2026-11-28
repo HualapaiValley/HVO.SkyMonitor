@@ -32,7 +32,7 @@ public sealed partial class DurableCaptureProcessingTests
             var second = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
                 reference: await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false), prior: (1, 1)).ConfigureAwait(false);
             var newest = await ProduceLatestReadFixtureAsync(second, store, persistence, telemetry, gate).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var expectedOlder = CameraAgentLatestAstrometry.FromVerified(await reader.GetAsync(older.Capture.CaptureId, token).ConfigureAwait(false));
             var expectedNewest = (await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary;
@@ -77,7 +77,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsTrue(quarantinedFiles.All(path => !File.Exists(path)));
 
             using var reopenedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var reopenedArtifacts = new CameraAgentArtifactService(first.Fixture.Options, reopenedStore, new CameraAgentPreviewEncoder());
+            using var reopenedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, reopenedStore);
             using var reopenedReader = new CameraAgentRetainedAstrometryService(reopenedStore, reopenedArtifacts);
             ICameraAgentRetainedAstrometryService service = reopen ? reopenedReader : reader;
             for (var attempt = 0; attempt < 2; attempt++)
@@ -134,7 +134,7 @@ public sealed partial class DurableCaptureProcessingTests
             var third = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 121,
                 reference: await MeasuredAstrometryFixture.CreateAtAsync(40).ConfigureAwait(false), prior: (61, 2)).ConfigureAwait(false);
             var newest = await ProduceLatestReadFixtureAsync(third, store, persistence, telemetry, gate).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var referenceReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var expectedNewest = CameraAgentLatestAstrometry.FromVerified(await referenceReader.GetAsync(newest.Capture.CaptureId, token).ConfigureAwait(false));
             var expectedOlder = CameraAgentLatestAstrometry.FromVerified(await referenceReader.GetAsync(older.Capture.CaptureId, token).ConfigureAwait(false));

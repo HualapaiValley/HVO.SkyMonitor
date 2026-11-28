@@ -355,6 +355,7 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 Assert.IsNotNull(receipt);
                 receipts.Add(receipt);
             }
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
 
             // The operator activates one family whose members are those acquisitions.
             var light = receipts[^1].Manifest.Descriptor;

@@ -62,7 +62,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 .ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(node);
             var retained = node.Outputs.Single(output => output.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
-            var input = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root, retained.PayloadRelativePath))
+            var input = CaptureSatelliteProducts.ParseInput(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, retained.ArtifactId, CancellationToken.None)
                 .ConfigureAwait(false));
             Assert.AreEqual(timing, input.Descriptor.Timing);
             Assert.AreEqual(exposure, input.Descriptor.Timing.ExposureEndedUtc - input.Descriptor.Timing.ExposureStartedUtc);
@@ -71,7 +71,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 ExposureJsonOptions);
             Assert.AreEqual(timing, plan!.Descriptor.Timing);
             var statusOutput = node.Outputs.Single(output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
-            var status = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(Path.Combine(root, statusOutput.PayloadRelativePath))
+            var status = CaptureSatelliteProducts.ParseStatus(await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider, statusOutput.ArtifactId, CancellationToken.None)
                 .ConfigureAwait(false));
             Assert.AreEqual(timing.ExposureStartedUtc, status.Exposure.StartUtc);
             Assert.AreEqual(timing.ExposureEndedUtc, status.Exposure.EndUtc);

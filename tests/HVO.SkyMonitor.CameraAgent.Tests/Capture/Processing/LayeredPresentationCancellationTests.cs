@@ -29,7 +29,7 @@ public sealed partial class DurableCaptureProcessingTests
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
             var manifest = (await store.ReadCaptureProductsAsync(capture, OverlayManifestV1.CurrentSchemaVersion, 2, CancellationToken.None)
                 .ConfigureAwait(false)).Single();
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var observed = Channel.CreateUnbounded<Task<CameraAgentArtifactContentResult>>();
             var opens = new ConcurrentQueue<Task<CameraAgentArtifactContentResult>>();
             var decoratingArtifacts = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -129,7 +129,7 @@ public sealed partial class DurableCaptureProcessingTests
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var fit = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, numericalGate).ConfigureAwait(false);
             var preview = await ProduceRetainedDisplayBaseAsync(fixture, persistence, telemetry).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var astrometry = new CameraAgentRetainedAstrometryService(store, artifacts);
             var reachedBase = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseBase = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

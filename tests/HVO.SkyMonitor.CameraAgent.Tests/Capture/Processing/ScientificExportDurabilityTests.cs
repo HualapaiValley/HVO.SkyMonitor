@@ -46,7 +46,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var astrometry = new CameraAgentRetainedAstrometryService(store, artifacts);
             using var site = new SettingsFileSiteProfileStore(fixture.Fixture.Options,
                 NullLogger<SettingsFileSiteProfileStore>.Instance);

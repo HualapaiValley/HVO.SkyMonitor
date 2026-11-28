@@ -38,7 +38,7 @@ public sealed partial class DurableCaptureProcessingTests
             var newest = await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false);
             var baseArtifact = await ProduceRetainedDisplayBaseAsync(next, persistence, telemetry).ConfigureAwait(false);
             var captureId = newest.Capture.CaptureId;
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var layerRead = new AsyncLocal<bool>();
             (TaskCompletionSource Entered, TaskCompletionSource Release)? checkpoint = null;
             var wrapper = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);

@@ -34,7 +34,7 @@ public sealed partial class DurableCaptureProcessingTests
                 solutions.Add(await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false));
             }
 
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var selectedReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var previousSummaries = new List<CameraAgentLatestAstrometry>();
             foreach (var solution in solutions)
@@ -166,7 +166,7 @@ public sealed partial class DurableCaptureProcessingTests
 
             // A fresh store must find that same fit through the unchanged cold seed.
             using var restartedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var restartedArtifacts = new CameraAgentArtifactService(first.Fixture.Options, restartedStore, new CameraAgentPreviewEncoder());
+            using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, restartedStore);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restartedStore, restartedArtifacts);
             Assert.AreEqual(recovered.Summary, (await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false)).Summary);
         }

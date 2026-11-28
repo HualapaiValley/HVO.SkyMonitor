@@ -203,7 +203,7 @@ public sealed partial class DurableCaptureProcessingTests
                 var producerElapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
                 var produced = Sample();
-                using var artifactReader = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
+                using var artifactReader = SiloInfrastructureFixture.OpenArtifactReader(f.Fixture.Options, store);
                 started = Stopwatch.GetTimestamp();
                 using var astrometryReader = new CameraAgentRetainedAstrometryService(store, artifactReader);
                 var view = await astrometryReader.GetAsync(f.Fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);

@@ -294,7 +294,8 @@ public sealed class AnnotationEnvironmentSourceTests
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, retained.Artifact.Role);
         Assert.AreEqual(grant.Evidence, retained.Descriptor!.RetainedScheduleAdmission);
         Assert.AreEqual(TimeSpan.Zero, retained.Descriptor.RetainedEffectiveInterval);
-        using var gallery = new CameraAgentArtifactService(options, reopenedStore, new CameraAgentPreviewEncoder());
+        using var gallery = new CameraAgentArtifactService(options, reopenedStore, new CameraAgentPreviewEncoder(),
+            silo: reopenedProvider.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.Silo.SiloArtifactStorage>());
         var opened = await gallery.OpenContentAsync(retained.ArtifactId, token).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, opened.Status);
         Assert.IsNotNull(opened.Content);

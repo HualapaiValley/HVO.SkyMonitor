@@ -34,18 +34,22 @@ public sealed partial class DurableCaptureProcessingTests
             await journal.ReserveIdentityAsync(descriptor.Capture.AgentId,
                 captureId, descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             var manifestBytes = CaptureContractJson.Serialize(fixture.Manifest);
-            await journal.CommitAsync(new RawIngressJournalEntry(
+            var entry = new RawIngressJournalEntry(
                 descriptor.Capture.AgentId, descriptor.Capture.CaptureSequence, captureId, descriptor.Artifact.ArtifactId,
                 CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
                 descriptor.Artifact.ChecksumSha256, descriptor.Layout.ByteLength, fixture.Manifest.RelativeArtifactPath,
                 Path.ChangeExtension(fixture.Manifest.RelativeArtifactPath, ".json"), manifestBytes,
-                descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
+                descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc);
+            await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
             var persistence = CreatePersistence(fixture.Options, store, telemetry);
+            var pixels = fixture.Item.Submission.Result.Frame!.PixelData;
+            await SiloInfrastructureFixture.PublishRawFixtureAsync(persistence.Silo, entry, fixture.Manifest, pixels,
+                CancellationToken.None).ConfigureAwait(false);
             var raw = new ProcessingArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw,
                 descriptor.Artifact.Variant, ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
-                descriptor.Artifact.MediaType, descriptor.Layout, await File.ReadAllBytesAsync(Path.Combine(root, "raw.bin")).ConfigureAwait(false),
+                descriptor.Artifact.MediaType, descriptor.Layout, pixels,
                 descriptor.Artifact.CreatedUtc, descriptor.Controls.EffectiveExposure,
                 CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor), descriptor.Capture.CaptureSequence,
                 descriptor.Artifact.SourceArtifactIds, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc);
@@ -73,7 +77,7 @@ public sealed partial class DurableCaptureProcessingTests
                 _ => node
             }).ToArray());
 
-            using var artifacts = new CameraAgentArtifactService(fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Options, store);
             var missingService = new CameraAgentLayeredPresentationService(store, artifacts);
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.NotRetained,
                 (await missingService.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false)).Status);
@@ -154,7 +158,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(1, originals.Count);
             var originalOutput = await store.ReadOutputByArtifactIdAsync(originals[0].ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(originalOutput);
-            var originalBytes = await File.ReadAllBytesAsync(Path.Combine(root, originalOutput.PayloadRelativePath)).ConfigureAwait(false);
+            var originalBytes = await ReadProductPartAsync(root, originalOutput).ConfigureAwait(false);
 
             var source = new TransientSourceEvidenceReferenceV1(TransientSourceEvidenceReferenceV1.CurrentSchemaVersion,
                 Guid.NewGuid(), new(TransientWholeArtifactLocatorV1.CurrentSchemaVersion, TransientSourceLocatorKind.WholeArtifact,
@@ -245,7 +249,7 @@ public sealed partial class DurableCaptureProcessingTests
             var trailLayer = first.Presentation.Layers.Single(layer => layer.Kind == TransientTrailPresentation.LayerKind);
             Assert.IsFalse(trailLayer.EnabledByDefault);
             Assert.AreNotEqual(originals[0].ArtifactId, first.Presentation.ManifestArtifactId);
-            CollectionAssert.AreEqual(originalBytes, await File.ReadAllBytesAsync(Path.Combine(root, originalOutput.PayloadRelativePath)).ConfigureAwait(false));
+            CollectionAssert.AreEqual(originalBytes, await ReadProductPartAsync(root, originalOutput).ConfigureAwait(false));
             Assert.AreEqual(1, (await store.ReadCaptureProductsAsync(captureId, OverlayManifestV1.CurrentSchemaVersion, 2,
                 CancellationToken.None).ConfigureAwait(false)).Count);
             var repeatedComposition = await persistence.PublishTrailCompositionAsync(captureId, originals[0].ArtifactId,
@@ -275,7 +279,7 @@ public sealed partial class DurableCaptureProcessingTests
             var savedOutput = await store.ReadOutputByArtifactIdAsync(saved.Receipt.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(savedOutput);
             CollectionAssert.Contains(savedOutput.Artifact.SourceArtifactIds.ToArray(), first.Presentation.ManifestArtifactId);
-            var savedBytes = await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false);
+            var savedBytes = await ReadProductPartAsync(root, savedOutput).ConfigureAwait(false);
 
             // R1005-1-F1: a read that already projected the shown evidence and is still in flight must not validate a
             // save requested after newer evidence was committed.
@@ -298,11 +302,11 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(CameraAgentPresentationMaterializationStatus.Conflict, interleaved.Status, interleaved.Reason);
             var heldRead = await inFlight.ConfigureAwait(false);
             Assert.AreEqual(first.Presentation.ManifestIdentitySha256, heldRead.Presentation!.ManifestIdentitySha256);
-            CollectionAssert.AreEqual(savedBytes, await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false));
+            CollectionAssert.AreEqual(savedBytes, await ReadProductPartAsync(root, savedOutput).ConfigureAwait(false));
             var stale = await materializer.SaveFrozenAsync(captureId, first.Presentation.ManifestIdentitySha256,
                 [trailLayer.IdentitySha256], "operator-test", CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentPresentationMaterializationStatus.Conflict, stale.Status);
-            CollectionAssert.AreEqual(savedBytes, await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false));
+            CollectionAssert.AreEqual(savedBytes, await ReadProductPartAsync(root, savedOutput).ConfigureAwait(false));
             var updated = await presentations.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreNotEqual(first.Presentation.ManifestIdentitySha256, updated.Presentation!.ManifestIdentitySha256);
             Assert.AreEqual("ConfirmedMeteor", updated.Presentation.TrailEvidence!.Trails.Single().State);
@@ -326,19 +330,19 @@ public sealed partial class DurableCaptureProcessingTests
             var multipleManifestOutput = await store.ReadOutputByArtifactIdAsync(multiple.Presentation.ManifestArtifactId,
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(multipleManifestOutput);
-            var multipleManifest = LayeredPresentationJson.ParseManifest(await File.ReadAllBytesAsync(
-                Path.Combine(root, multipleManifestOutput.PayloadRelativePath)).ConfigureAwait(false)).Document!;
+            var multipleManifest = LayeredPresentationJson.ParseManifest(
+                await ReadProductPartAsync(root, multipleManifestOutput).ConfigureAwait(false)).Document!;
             var multipleTrailOutput = await store.ReadOutputByArtifactIdAsync(multipleManifest.Layers.Single(
                 layer => layer.LayerKind == TransientTrailPresentation.LayerKind).SourceProduct.ArtifactId,
                 CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(multipleTrailOutput);
-            var multiplePayload = PresentationLayerPayloadJson.Parse(await File.ReadAllBytesAsync(
-                Path.Combine(root, multipleTrailOutput.PayloadRelativePath)).ConfigureAwait(false)).Payload!;
+            var multiplePayload = PresentationLayerPayloadJson.Parse(
+                await ReadProductPartAsync(root, multipleTrailOutput).ConfigureAwait(false)).Payload!;
             Assert.AreEqual(2, multiplePayload.Segments.Count);
             Assert.AreEqual(1, multiplePayload.Segments.Count(segment => segment.Stroke is null));
             Assert.AreEqual(1, multiplePayload.Segments.Count(segment => segment.Stroke is not null));
             Assert.AreEqual(0, multiplePayload.Ellipses.Count);
-            await File.WriteAllTextAsync(Path.Combine(root, multipleTrailOutput.PayloadRelativePath), "{}").ConfigureAwait(false);
+            await SubstituteProductPartAsync(root, multipleTrailOutput, "{}"u8.ToArray()).ConfigureAwait(false);
             var corrupted = await presentations.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, corrupted.Status, corrupted.Reason);
             Assert.AreEqual(originals[0].ArtifactId, corrupted.Presentation!.ManifestArtifactId);
@@ -351,7 +355,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(originals[0].ArtifactId, temporarilyUnavailable.Presentation!.ManifestArtifactId);
             Assert.AreEqual("Unavailable", temporarilyUnavailable.Presentation.TrailEvidence!.State);
             Assert.IsFalse(temporarilyUnavailable.Presentation.TrailEvidence.Reason!.Contains("private fixture", StringComparison.Ordinal));
-            CollectionAssert.AreEqual(savedBytes, await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false));
+            CollectionAssert.AreEqual(savedBytes, await ReadProductPartAsync(root, savedOutput).ConfigureAwait(false));
         }
         finally
         {

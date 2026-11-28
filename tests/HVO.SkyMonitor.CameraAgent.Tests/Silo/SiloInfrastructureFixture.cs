@@ -173,6 +173,16 @@ internal static class SiloInfrastructureFixture
     internal static SiloArtifactStorage ProductStorage(string root)
         => ProductStore(root).GetRequiredService<SiloArtifactStorage>();
 
+    internal static CameraAgentArtifactService OpenArtifactReader(
+        IOptions<CameraAgentHostOptions> options, SqliteCaptureProcessingStore store)
+        => new(options, store, new CameraAgentPreviewEncoder(), silo: ProductStorage(options.Value.RawIngressRoot));
+
+    internal static ValueTask PublishRawFixtureAsync(SiloArtifactStorage storage, RawIngressJournalEntry entry,
+        ArtifactManifestV2 manifest, ReadOnlyMemory<byte> pixels, CancellationToken token)
+        => storage.PublishAsync(RawCaptureIngress.CreateSiloDraft(entry, manifest, "raw-1"),
+            (member, readToken) => SiloArtifactStorage.OpenMemoryAsync(
+                member.Role == "raw" ? pixels : entry.ManifestJson, readToken), token);
+
     internal static async ValueTask<DurableProcessingOutput> PublishMetadataFixtureAsync(
         SiloArtifactStorage storage, ReconstructionDescriptor descriptor, string producer, ProcessingProduct product,
         CancellationToken token)
@@ -209,6 +219,14 @@ internal static class SiloInfrastructureFixture
             .ReadRoleAsync(new(SiloIdentityKind.Member, artifactId.ToString("D"), revision), token).ConfigureAwait(false);
         Assert.IsNotNull(role);
         return Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator;
+    }
+
+    internal static async ValueTask<byte[]> ReadProductBytesAsync(
+        IServiceProvider services, DurableProcessingOutput output, CancellationToken token)
+    {
+        var locator = await ReadLocalLocatorAsync(services, output.ArtifactId, output.OutputIdentitySha256, token)
+            .ConfigureAwait(false);
+        return services.GetRequiredService<SiloTestStore>().Read(locator.Key, locator.VersionId);
     }
 
     internal static async ValueTask ExpireLocalMemberAsync(

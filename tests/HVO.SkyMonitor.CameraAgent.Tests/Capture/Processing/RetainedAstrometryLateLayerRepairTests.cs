@@ -68,7 +68,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var gate = new CaptureAstrometryExecutionGate();
             var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(fixture, store, persistence, telemetry, gate).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var latestReader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var initialOlderHistory = incomingPointFirst
                 ? await CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(latestReader)

@@ -91,7 +91,7 @@ public sealed partial class DurableCaptureProcessingTests
         var expected = JsonSerializer.Deserialize<PoolingBenchmarkIdentity>(await File.ReadAllTextAsync(expectedFile).ConfigureAwait(false))!;
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
         using var store = new SqliteCaptureProcessingStore(options);
-        using var artifacts = new CameraAgentArtifactService(options, store, new CameraAgentPreviewEncoder());
+        using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(options, store);
         using var reader = CreateReader();
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         using var process = Process.GetCurrentProcess();

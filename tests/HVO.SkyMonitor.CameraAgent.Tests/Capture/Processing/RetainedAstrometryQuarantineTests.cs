@@ -52,7 +52,7 @@ public sealed partial class DurableCaptureProcessingTests
             }
 
             var path = Path.Combine(root, target.PayloadRelativePath);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var intermittent = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             var failNextOpen = false;
             var faults = 0;
@@ -122,7 +122,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNull(selected.Solution);
 
             using var restartedStore = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
-            using var restartedArtifacts = new CameraAgentArtifactService(fixture.Fixture.Options, restartedStore, new CameraAgentPreviewEncoder());
+            using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, restartedStore);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restartedStore, restartedArtifacts);
             var restarted = await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsTrue(restarted.Completed);
@@ -166,7 +166,7 @@ public sealed partial class DurableCaptureProcessingTests
                 captureSequence: 61, reference: reference, prior: (1, 1)).ConfigureAwait(false);
             var newest = await ProduceLatestReadFixtureAsync(next, store, persistence, telemetry, gate).ConfigureAwait(false);
 
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(reader);
             var evidence = (await service.GetRetainedAstrometryAsync(newest.Capture.CaptureId, token).ConfigureAwait(false)).Value!;

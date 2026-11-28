@@ -37,7 +37,7 @@ public sealed partial class DurableCaptureProcessingTests
                 captureSequence: 61, reference: reference, prior: (1, 1)).ConfigureAwait(false);
             _ = await ProduceLatestReadFixtureAsync(newer, store, persistence, telemetry, gate).ConfigureAwait(false);
 
-            using var artifacts = new CameraAgentArtifactService(old.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(reader);
             var clock = Stopwatch.StartNew();
@@ -108,7 +108,7 @@ public sealed partial class DurableCaptureProcessingTests
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);
             var newer = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 captureSequence: 61, reference: reference, prior: (1, 1)).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
 
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -136,7 +136,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(published.Capture.CaptureId, current.Single().CaptureId);
 
             using var restarted = new SqliteCaptureProcessingStore(first.Fixture.Options);
-            using var restartedArtifacts = new CameraAgentArtifactService(first.Fixture.Options, restarted, new CameraAgentPreviewEncoder());
+            using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, restarted);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restarted, restartedArtifacts);
             Assert.AreEqual(latest, await restartedReader.ReadLatestAcceptedAsync(deadline.Token).ConfigureAwait(false),
                 "A fresh store must rebuild the same accepted fit, identity and midpoint from the retained journal.");
@@ -153,7 +153,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
             using var store = new SqliteCaptureProcessingStore(fixture.Options, faultInjector: new AstrometrySeedFailure());
-            using var artifacts = new CameraAgentArtifactService(fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Options, store);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
 
             Assert.AreEqual(new CameraAgentLatestAstrometryRead(false),

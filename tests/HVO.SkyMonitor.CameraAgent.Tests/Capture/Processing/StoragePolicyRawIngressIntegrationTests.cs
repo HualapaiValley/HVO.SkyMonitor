@@ -56,8 +56,13 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
                 Assert.AreEqual(reconciled, receipt.Manifest.CaptureGraphRevisionId);
                 var result = await ProcessNextAsync(restarted, current).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
-                var rootB = Path.Combine(root, "storage-b");
-                Assert.IsTrue(Directory.EnumerateFiles(rootB, "*.json", SearchOption.AllDirectories).Any(), "Matching profile publication resumes.");
+                var store = restarted.GetRequiredService<SqliteCaptureProcessingStore>();
+                var preview = await store.ReadNodeAsync(receipt.Manifest.Descriptor.Capture.CaptureId, "preview", CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(preview);
+                var output = Assert.ContainsSingle(preview.Outputs);
+                Assert.IsNotEmpty(await SiloInfrastructureFixture.ReadProductBytesAsync(restarted, output, CancellationToken.None)
+                    .ConfigureAwait(false), "Matching profile publication resumes.");
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
                     await Operations(restarted).RollbackRevisionAsync(namedId,
                         (await Operations(restarted).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false)).StateVersion,

@@ -374,7 +374,7 @@ internal sealed partial class RawCaptureIngress
         }
     }
 
-    private static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision)
+    internal static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision)
     {
         var artifact = entry.ArtifactId.ToString("D");
         var payloadSha = SiloCenteredViews.LowerHex(entry.PayloadSha256);

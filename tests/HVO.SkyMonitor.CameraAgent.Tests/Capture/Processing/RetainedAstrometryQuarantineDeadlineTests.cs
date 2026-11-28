@@ -21,7 +21,7 @@ public sealed partial class DurableCaptureProcessingTests
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(first.Fixture.Options);
             using var gate = new CaptureAstrometryExecutionGate();
-            using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(first.Fixture.Options, store);
             var persistence = CreatePersistence(first.Fixture.Options, store, telemetry);
             var older = await ProduceLatestReadFixtureAsync(first, store, persistence, telemetry, gate).ConfigureAwait(false);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false);

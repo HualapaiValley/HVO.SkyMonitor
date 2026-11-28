@@ -299,10 +299,7 @@ public sealed partial class DurableCaptureDistributionTests
         Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
         Assert.AreEqual(receipt.CommittedManifestSha256, lease.Context.RawCapture.CommittedManifestSha256);
         var pipelineFactory = new RecordingLegacyAutoIncludePipelineFactory();
-        using var handler = new StandardCaptureLaneHandler(
-            pipelineFactory,
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var handler = fixture.CreateStandardHandler(pipelineFactory);
 
         var result = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
 
@@ -522,10 +519,7 @@ public sealed partial class DurableCaptureDistributionTests
             SecondaryLanes = [new SecondaryCaptureLaneOptions { Name = "secondary", Enabled = true }]
         }, transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         var secondary = new GatedLaneHandler("secondary");
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration),
@@ -583,10 +577,7 @@ public sealed partial class DurableCaptureDistributionTests
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var fault = new OneShotLaneFaultInjector(CaptureLaneFaultPoint.BeforeHandler);
         var logger = new EventIdLogger<CaptureDistributionService>();
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration),
             fixture.Ingress,
@@ -1062,8 +1053,7 @@ public sealed partial class DurableCaptureDistributionTests
         });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var store = new OneShotRenewalFailureStore(fixture.Store);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         var handler = new CancellationThenSuccessHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, store, fixture.Policy,
@@ -1094,8 +1084,7 @@ public sealed partial class DurableCaptureDistributionTests
         });
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         var store = new FailingClaimStore(fixture.Store);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, store, fixture.Policy,
             [standard], standard, fixture.Options, TimeProvider.System,
@@ -1157,8 +1146,7 @@ public sealed partial class DurableCaptureDistributionTests
         using var fixture = CreateFixture(new CaptureDistributionOptions(), fault);
         await fixture.AcceptAsync(0).ConfigureAwait(false);
         await fixture.AcceptAsync(1).ConfigureAwait(false);
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         using var service = new CaptureDistributionService(
             new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
             [standard], standard, fixture.Options, fixture.Time,
@@ -1290,8 +1278,7 @@ public sealed partial class DurableCaptureDistributionTests
             var fault = new OneShotLaneFaultInjector(point);
             using var fixture = CreateFixture(new CaptureDistributionOptions(), fault);
             await fixture.AcceptAsync(0).ConfigureAwait(false);
-            using var standard = new StandardCaptureLaneHandler(
-                new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+            using var standard = fixture.CreateStandardHandler();
             using var service = new CaptureDistributionService(
                 new ConfigurationAccessor(fixture.Configuration), fixture.Ingress, fixture.Store, fixture.Policy,
                 [standard], standard, fixture.Options, fixture.Time,
@@ -1377,10 +1364,7 @@ public sealed partial class DurableCaptureDistributionTests
             },
             configuration: configuration,
             transient: new TransientDetectionOptions { Mode = TransientOperatingMode.Edge, Required = true });
-        using var standard = new StandardCaptureLaneHandler(
-            new EmptyPipelineFactory(),
-            NullLogger<StandardCaptureLaneHandler>.Instance,
-            fixture.Ingress);
+        using var standard = fixture.CreateStandardHandler();
         var gate = blockedLane is null ? null : new GatedLaneHandler(blockedLane);
         ICaptureLaneHandler transient = blockedLane == "transient" ? gate! : new SuccessfulLaneHandler("transient");
         ICaptureLaneHandler secondary = blockedLane == "secondary" ? gate! : new SuccessfulLaneHandler("secondary");
@@ -1547,6 +1531,8 @@ public sealed partial class DurableCaptureDistributionTests
     internal sealed class Fixture : IDisposable
     {
         private bool _ingressDisposed;
+        private SqliteCaptureProcessingStore? _processingStore;
+        private CaptureProcessingTelemetry? _processingTelemetry;
 
         internal Fixture(
             string root,
@@ -1581,6 +1567,17 @@ public sealed partial class DurableCaptureDistributionTests
         internal CaptureLaneState LaneState { get; }
         internal CaptureLaneTelemetry LaneTelemetry { get; }
         internal CameraModuleConfig Configuration { get; }
+
+        internal StandardCaptureLaneHandler CreateStandardHandler(ICaptureProcessingPipelineFactory? factory = null,
+            RawCaptureIngress? ingress = null)
+        {
+            _processingStore ??= new SqliteCaptureProcessingStore(Options);
+            _processingTelemetry ??= new CaptureProcessingTelemetry();
+            var persistence = new CaptureProcessingPersistence(Options, _processingStore, _processingTelemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(Root));
+            return new StandardCaptureLaneHandler(factory ?? new EmptyPipelineFactory(), persistence, _processingTelemetry,
+                NullLogger<StandardCaptureLaneHandler>.Instance, ingress ?? Ingress);
+        }
 
         internal async Task<RawCaptureReceipt> AcceptAsync(int index)
         {
@@ -1668,6 +1665,8 @@ public sealed partial class DurableCaptureDistributionTests
             }
             Telemetry.Dispose();
             LaneTelemetry.Dispose();
+            _processingStore?.Dispose();
+            _processingTelemetry?.Dispose();
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))
             {

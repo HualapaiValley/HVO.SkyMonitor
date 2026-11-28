@@ -37,7 +37,7 @@ public sealed partial class DurableCaptureProcessingTests
             }
 
             using var store = new SqliteCaptureProcessingStore(old.Fixture.Options);
-            using var artifacts = new CameraAgentArtifactService(old.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, store);
             var delayed = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var reads = new List<Guid>();
@@ -123,7 +123,7 @@ public sealed partial class DurableCaptureProcessingTests
             var newer = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
                 reference: reference, prior: (1, 1)).ConfigureAwait(false);
             var newerOutput = await ProduceLatestReadFixtureAsync(newer, store, persistence, telemetry, gate).ConfigureAwait(false);
-            using var artifacts = new CameraAgentArtifactService(old.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, store);
             var interrupted = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             var interruptNextOpen = false;
             var observedUnavailable = false;
@@ -161,7 +161,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(AstrometricAssessmentStatus.Accepted, selected.Solution?.Assessment.Status);
 
             using var restarted = new SqliteCaptureProcessingStore(old.Fixture.Options);
-            using var restartedArtifacts = new CameraAgentArtifactService(old.Fixture.Options, restarted, new CameraAgentPreviewEncoder());
+            using var restartedArtifacts = SiloInfrastructureFixture.OpenArtifactReader(old.Fixture.Options, restarted);
             using var restartedReader = new CameraAgentRetainedAstrometryService(restarted, restartedArtifacts);
             Assert.AreEqual(new CameraAgentLatestAstrometryRead(false),
                 await restartedReader.ReadLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));

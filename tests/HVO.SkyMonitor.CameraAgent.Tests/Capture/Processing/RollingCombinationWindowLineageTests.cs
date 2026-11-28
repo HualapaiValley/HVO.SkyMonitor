@@ -234,6 +234,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                 "revision-reference-test",
                 null,
                 CancellationToken.None).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var replay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     receipt.Manifest.Descriptor.Capture.CaptureId,
@@ -355,6 +356,7 @@ public sealed partial class RollingCombinationWindowLineageTests
                 .ConfigureAwait(false);
             var descriptor = receipt.Manifest.Descriptor;
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var replay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     descriptor.Capture.CaptureId,
