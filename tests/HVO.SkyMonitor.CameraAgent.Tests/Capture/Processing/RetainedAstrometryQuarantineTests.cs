@@ -164,7 +164,8 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsTrue(earlier.MidpointUtc < latest.MidpointUtc);
 
             using var serializedReads = new SemaphoreSlim(1, 1);
-            using var context = new BunitContext();
+            var context = new BunitContext();
+            await using var contextLifetime = context.ConfigureAwait(false);
             var ui = CurrentSkyPageTests.Configure(context);
             ui.CurrentImageHandler = _ => ValueTask.FromResult(
                 OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(CurrentSkyPageTests.AstrometryImage(evidence)));

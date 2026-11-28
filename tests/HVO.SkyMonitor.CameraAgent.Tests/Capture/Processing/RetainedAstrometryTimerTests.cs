@@ -70,7 +70,8 @@ public sealed partial class DurableCaptureProcessingTests
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), token).ConfigureAwait(false);
             Assert.AreEqual(1, reconciled.Quarantined);
 
-            using var context = new BunitContext();
+            var context = new BunitContext();
+            await using var contextLifetime = context.ConfigureAwait(false);
             context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
                 .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);

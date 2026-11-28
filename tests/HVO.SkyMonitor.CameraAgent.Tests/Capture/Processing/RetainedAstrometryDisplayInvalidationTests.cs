@@ -84,7 +84,8 @@ public sealed partial class DurableCaptureProcessingTests
             var association = firstLayers.Presentation.Layers.Single(x => x.Kind == AstrometricDiagnosticPresentation.AssociationsLayer);
             var residual = firstLayers.Presentation.Layers.Single(x => x.Kind == AstrometricDiagnosticPresentation.ResidualsLayer);
 
-            using var context = new BunitContext();
+            var context = new BunitContext();
+            await using var contextLifetime = context.ConfigureAwait(false);
             var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
             module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);

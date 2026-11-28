@@ -140,7 +140,8 @@ public sealed partial class DurableCaptureProcessingTests
             var offerStaleReplacement = renewedBeforeHistory ? 1 : 0;
             var heldCancellation = CancellationToken.None;
             var allowFreshLayers = 0;
-            using var context = new BunitContext();
+            var context = new BunitContext();
+            await using var contextLifetime = context.ConfigureAwait(false);
             context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
                 .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);
