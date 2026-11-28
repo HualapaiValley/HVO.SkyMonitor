@@ -42,7 +42,7 @@ COPY src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj /src/src/HVO.S
 COPY src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj /src/src/HVO.SkyMonitor.Catalog.Sqlite/
 COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj /src/src/HVO.SkyMonitor.Imaging/
 COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj /src/src/HVO.SkyMonitor.Processing/
-COPY src/HVO.SkyMonitor.Storage.FileSystem/HVO.SkyMonitor.Storage.FileSystem.csproj /src/src/HVO.SkyMonitor.Storage.FileSystem/
+COPY src/HVO.SkyMonitor.LocalFiles/HVO.SkyMonitor.LocalFiles.csproj /src/src/HVO.SkyMonitor.LocalFiles/
 COPY src/HVO.SkyMonitor.Video.FFmpeg/HVO.SkyMonitor.Video.FFmpeg.csproj /src/src/HVO.SkyMonitor.Video.FFmpeg/
 COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj /src/src/HVO.SkyMonitor.Common/
 COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj /src/src/HVO.SkyMonitor.CameraAgent.Common/
