@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -9,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
-using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -34,9 +32,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         try
         {
             Directory.CreateDirectory(root);
-            var runtimeModule = JsonNode.Parse(before.RootElement.GetRawText())!;
-            InstallerCameraModuleFixture.ConfigureSiloStorage(runtimeModule);
-            await File.WriteAllTextAsync(runtimePath, runtimeModule.ToJsonString()).ConfigureAwait(false);
+            File.Copy(path, runtimePath);
             var loader = new FileCameraAgentConfigurationLoader(options, NullLogger<FileCameraAgentConfigurationLoader>.Instance);
             var baseline = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             var ingress = new InstallerLightingJournal(root);

@@ -67,9 +67,16 @@ public sealed class ConfigurationTests
             window.GetProperty("end").GetProperty("kind").GetString() == nameof(CaptureScheduleBoundaryKind.Sunrise)));
         Assert.IsFalse(generated.Json.Contains("example.invalid", StringComparison.Ordinal));
         Assert.IsFalse(generated.Json.Contains("/workspaces", StringComparison.Ordinal));
-        CollectionAssert.AreEqual(
-            ExpectedArchiveDependencies,
-            Dependencies(steps.Single(static step => step.GetProperty("id").GetString() == "ArchiveStorage")));
+        var localStorage = steps.Single(static step => step.GetProperty("id").GetString() == "LocalStorage");
+        var archiveStorage = steps.Single(static step => step.GetProperty("id").GetString() == "ArchiveStorage");
+        CollectionAssert.AreEqual(ExpectedArchiveDependencies, Dependencies(archiveStorage));
+        var localOptions = localStorage.GetProperty("options");
+        Assert.AreEqual(1, localOptions.EnumerateObject().Count());
+        Assert.IsTrue(localOptions.GetProperty("updateLatestFrame").GetBoolean());
+        var archiveOptions = archiveStorage.GetProperty("options");
+        Assert.AreEqual(2, archiveOptions.EnumerateObject().Count());
+        Assert.IsFalse(archiveOptions.GetProperty("updateLatestFrame").GetBoolean());
+        Assert.IsTrue(archiveOptions.GetProperty("publishArchive").GetBoolean());
         CollectionAssert.AreEquivalent(
             ExpectedTelemetryDependencies,
             Dependencies(steps.Single(static step => step.GetProperty("id").GetString() == "Telemetry")));
@@ -85,6 +92,15 @@ public sealed class ConfigurationTests
             .GetProperty("options");
         Assert.AreEqual(0.9997, preview.GetProperty("whitePercentile").GetDouble());
         Assert.AreEqual(8.0, preview.GetProperty("asinhStrength").GetDouble());
+    }
+
+    [TestMethod]
+    public async Task Install_RefusesRetiredFilesystemStorageBeforePreflight()
+    {
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+            new InstallRequest { StorageLayout = CameraAgentStorageLayout.Filesystem }, CancellationToken.None));
+        Assert.IsTrue(exception.IsRefusal);
+        StringAssert.Contains(exception.Message, "Install a fresh CameraAgent instance with Silo.", StringComparison.Ordinal);
     }
 
     private static string[] Dependencies(JsonElement step)

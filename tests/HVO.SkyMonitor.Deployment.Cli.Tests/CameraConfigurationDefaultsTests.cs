@@ -29,8 +29,7 @@ public sealed class CameraConfigurationDefaultsTests
         "output in tests/fixtures/installer-configuration-defaults.";
 
     /// <summary>
-    /// Each shipped generation's canonical identity for <see cref="IlluminationModeTests.Request"/> with omitted lighting,
-    /// oldest first. The last is the installer's current default-configuration hash.
+    /// Each shipped filesystem generation's frozen canonical identity with omitted lighting, oldest first.
     /// </summary>
     internal static readonly (string Id, string Sha256)[] FrozenGenerations =
     [
@@ -39,8 +38,10 @@ public sealed class CameraConfigurationDefaultsTests
         ("installer-defaults-2", "4b668bf691defcf0a5ce57f9e68adb9851d82110dae42e2e3b9812b9acd661a1")
     ];
 
-    /// <summary>The installer's current default-configuration hash: that of the newest frozen generation.</summary>
+    /// <summary>The canonical identity of the newest frozen filesystem generation.</summary>
     internal static string CurrentFrozenSha256 => FrozenGenerations[^1].Sha256;
+
+    private static InstallRequest FrozenRequest => IlluminationModeTests.Request(null) with { StorageLayout = CameraAgentStorageLayout.Filesystem };
 
     /// <summary>The application identity the frozen fixtures were written for.</summary>
     internal static readonly Guid FixtureIdentity = Guid.Parse("5afd133a-ddd2-4d1a-975b-a957c29784a5");
@@ -60,15 +61,15 @@ public sealed class CameraConfigurationDefaultsTests
         Assert.AreEqual(FrozenGenerations[^1].Id, CameraConfigurationDefaults.Current.Id);
 
         // What the installer writes now is the newest entry's output, and that output is still the frozen one.
-        var written = CameraConfiguration.Generate(IlluminationModeTests.Request(null), ApplicationIdentity);
+        var written = CameraConfiguration.Generate(FrozenRequest, ApplicationIdentity);
         Assert.AreEqual(CurrentFrozenSha256, written.Sha256, AddAGeneration);
         Assert.AreEqual(
-            CameraConfigurationDefaults.Current.Generate(IlluminationModeTests.Request(null), ApplicationIdentity),
+            CameraConfigurationDefaults.Current.Generate(FrozenRequest, ApplicationIdentity),
             written);
         foreach (var (id, sha256) in FrozenGenerations)
         {
             var generation = CameraConfigurationDefaults.Shipped.Single(candidate => candidate.Id == id);
-            Assert.AreEqual(sha256, generation.Generate(IlluminationModeTests.Request(null), ApplicationIdentity).Sha256,
+            Assert.AreEqual(sha256, generation.Generate(FrozenRequest, ApplicationIdentity).Sha256,
                 $"{id}: {AddAGeneration}");
         }
     }
@@ -84,7 +85,7 @@ public sealed class CameraConfigurationDefaultsTests
         foreach (var generation in CameraConfigurationDefaults.Shipped)
         {
             var fixture = File.ReadAllText(Path.Combine(folder, $"{generation.Id}.camera-module.json"));
-            var written = generation.Generate(IlluminationModeTests.Request(null), FixtureIdentity);
+            var written = generation.Generate(FrozenRequest, FixtureIdentity);
 
             Assert.AreEqual(fixture, written.Json + "\n", $"{generation.Id}: {AddAGeneration}");
             Assert.AreEqual(written.Sha256, CanonicalSha256(fixture));
@@ -226,7 +227,7 @@ public sealed class CameraConfigurationDefaultsTests
         {
             using var scope = CameraConfigurationDefaults.Use([CameraConfigurationDefaults.Shipped[0]]);
             await Task.Yield();
-            return CameraConfiguration.Generate(IlluminationModeTests.Request(null), ApplicationIdentity).Sha256;
+            return CameraConfiguration.Generate(FrozenRequest, ApplicationIdentity).Sha256;
         }
 
         Assert.AreEqual(FrozenGenerations[0].Sha256, await UnderTheFirstGenerationAsync());
@@ -237,7 +238,7 @@ public sealed class CameraConfigurationDefaultsTests
             Assert.AreEqual("installer-defaults-1", CameraConfigurationDefaults.Current.Id);
         }
         Assert.AreSame(CameraConfigurationDefaults.Shipped, CameraConfigurationDefaults.Known);
-        Assert.AreEqual(CurrentFrozenSha256, CameraConfiguration.Generate(IlluminationModeTests.Request(null), ApplicationIdentity).Sha256);
+        Assert.AreEqual(CurrentFrozenSha256, CameraConfiguration.Generate(FrozenRequest, ApplicationIdentity).Sha256);
     }
 
     [TestMethod]

@@ -26,10 +26,7 @@ public sealed class IlluminationModeTests
         using var document = JsonDocument.Parse(generated.Json);
 
         Assert.IsFalse(document.RootElement.GetProperty("module").GetProperty("options").TryGetProperty("illuminationMode", out _));
-        // The installer's default-configuration hash is the newest configuration-default generation's (Refs #1779): it
-        // moves only with a new named generation. The request identity includes the baseline's default Silo layout.
-        Assert.AreEqual(CameraConfigurationDefaultsTests.CurrentFrozenSha256, generated.Sha256, CameraConfigurationDefaultsTests.AddAGeneration);
-        Assert.AreEqual("4b668bf691defcf0a5ce57f9e68adb9851d82110dae42e2e3b9812b9acd661a1", CameraConfigurationDefaultsTests.CurrentFrozenSha256);
+        // The request identity includes the baseline's default Silo layout.
         Assert.AreEqual(CameraConfigurationDefaults.Current.Generate(request, ApplicationIdentity).Sha256, generated.Sha256);
         Assert.AreEqual(CameraAgentStorageLayout.Silo, request.StorageLayout);
         Assert.AreEqual("8bf1972014afe42e5d514063ca5315711d5080f82aab2cb957c0e14a2051626b",

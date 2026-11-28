@@ -321,8 +321,6 @@
         "id": "LocalStorage",
         "order": 100,
         "options": {
-          "storageRoot": "/app/data/raw",
-          "retentionDays": 7,
           "updateLatestFrame": true
         },
         "dependsOn": [
@@ -343,9 +341,8 @@
         "id": "ArchiveStorage",
         "order": 110,
         "options": {
-          "storageRoot": "/app/data/archive",
-          "retentionDays": 30,
-          "updateLatestFrame": false
+          "updateLatestFrame": false,
+          "publishArchive": true
         },
         "dependsOn": [
           "$raw",

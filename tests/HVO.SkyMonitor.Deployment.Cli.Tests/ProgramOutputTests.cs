@@ -71,11 +71,11 @@ public sealed class ProgramOutputTests
           --longitude <degrees>                  The camera's longitude (default 0).
           --elevation <metres>                   The camera's elevation (default 0).
           --time-zone <zone>                     The camera's IANA time zone (default UTC).
-          --replay-profile <profile>             Where archived replay runs: in-process (default) or local-runner.
+          --replay-profile in-process            CameraAgent runs archived replay in process.
           --illumination-mode <mode>             VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
           --cpus <count>                         The container's CPU limit.
           --memory <size>                        The container's memory limit, such as 4g.
-          --storage-layout <layout>              A new instance's storage: silo (default) or explicit filesystem.
+          --storage-layout silo                  A new instance uses Silo storage.
           --silo-image-archive <path>            With silo: a docker save archive of the pinned Silo image, verified before it is loaded.
           --silo-archive-endpoint <url>          With silo: the optional archive Silo's https:// endpoint, verified read-only.
           --silo-archive-bucket <name>           The archive bucket, which must be versioned.

@@ -808,9 +808,6 @@ hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
 - The PIDs limit stays at 256 and is not set by the operator. It bounds runaway
   process and thread creation rather than capacity, and the .NET runtime adds
   only about one thread for each CPU it is given.
-- The optional [local replay runner](#local-replay-runner) keeps its own 0.5 CPU,
-  2 GiB and 64 PID limits. They bound one sandboxed replay at a time and are not
-  changed by these options.
 
 Install and `install --plan` (`--dry-run`) check the limits against the host Docker runs on
 before anything is created (see [Host Prerequisites](#host-prerequisites)). A
@@ -1434,85 +1431,12 @@ Three paths stay outside the check:
   image on the new catalog. Before a catalog transition, make sure the running
   CameraAgent image is the one the deployment retains.
 
-## Local Replay Runner
+## Archived Replay
 
-Silo is the default for fresh installations and runs archived replay in the
-CameraAgent process. Select the optional long-lived local process boundary
-with the explicit filesystem layout:
-
-```bash
-hvo-sky-install cameraagent install \
-  --storage-layout filesystem \
-  --replay-profile local-runner \
-  <other-required-inputs>
-```
-
-`--replay-profile in-process` is the explicit form of the default. The selected
-profile is part of the retained installation request and rendered Compose model;
-changing it requires a new converged installation rather than an ad hoc Compose
-edit. The LocalRunner topology uses the distinct `cameraagent-compose-v3`
-contract; legacy and current in-process installations remain on
-`cameraagent-compose-v2`. Development Compose wrappers remain
-in-process only.
-
-The local-runner profile starts the self-contained replay executable from the
-same immutable CameraAgent image. CameraAgent still owns SQLite replay leases,
-frozen input selection, graph orchestration, output publication, and stale-lease
-fencing. Only one built-in recipe invocation and its declared immutable payloads
-cross the owner-only Unix socket at a time. Live processing never uses the
-runner.
-
-The installer generates a 256-bit authentication key under `config/secrets`,
-mounts only that secret and the shared socket directory into the runner, disables
-its network, drops all capabilities, enables `no-new-privileges`, and does not
-mount CameraAgent raw, archive, catalog, identity, provisioning, or SQLite state.
-The protocol additionally authenticates each replay job against its execution,
-graph, node, durable-attempt, lease, and deadline metadata and verifies input and
-output checksums.
-
-Runner absence, saturation, authentication/capability mismatch, heartbeat loss,
-or disconnect never falls back to in-process execution after the local-runner
-profile has been selected. The replay returns to pending with reason
-`processing.replay-runner-unavailable` without consuming a replay attempt.
-Malformed output is a retryable execution failure and consumes the normal
-bounded attempt budget, but output checksums, semantic role, ordered recipe lineage,
-recipe identity, and lease fencing prevent it from being committed. Already
-committed nodes remain fenced and reusable. Confirm that the
-`replay-runner` Compose service is running, that both services share
-`/run/hvo-replay`, and that the owner-only authentication-key file exists. A
-healthy executable reports protocol, recipe, architecture, and warmup evidence
-without opening the service socket:
-
-```bash
-docker compose exec replay-runner \
-  /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities
-```
-
-The container health check authenticates the running socket with the same
-owner-only key. Run the same probe manually with:
-
-```bash
-docker compose exec replay-runner \
-  /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner --probe
-```
-
-Loopback TCP exists for explicitly secured non-Compose environments, but Unix
-sockets are the deployment default. TCP rejects non-loopback endpoints and both
-transports require a 32-to-4096-byte authorization key when the external profile
-is active.
-
-LocalRunner performance evidence is intentionally split by concern. The manual
-`LocalReplayRunnerPerformanceTests.W1W2AndW6SizedPreviewInProcessAndLocalRunnerEvidence`
-campaign isolates process-boundary overhead, durable backlog/drain, runner outage,
-and live-preemption behavior using a single Preview recipe at W1, W2, and W6 frame
-dimensions. It is supplemental evidence, not the canonical W6 workload. Run
-`scripts/test:cameraagent-standalone-211` separately for the full 14-node
-`cameraagent.standalone-w6.json` graph, production catalog, calibration and
-environment prerequisites, rendered outputs, isolation, recovery, and canonical
-W6 performance disposition defined in
-[`performance-validation.md`](../planning/performance-validation.md).
-The current campaign checks the isolated test network with an external denial
-probe. Previous evidence includes the probe built into the retired delivery client.
+Silo is required for fresh installations. CameraAgent runs archived replay in
+process using exact retained Silo versions. The installer defaults to
+`--storage-layout silo --replay-profile in-process`. Use the existing archive
+and retention controls to preserve the inputs you intend to replay.
 
 ## Persistent State
 
