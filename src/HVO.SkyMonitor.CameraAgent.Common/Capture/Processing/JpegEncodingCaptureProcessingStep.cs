@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Imaging;
@@ -18,14 +19,14 @@ internal sealed class JpegEncodingCaptureProcessingStep(
 
     public string RecipeName => BuiltInProcessingRecipes.JpegEncoding;
 
-    public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
+    public FrameArtifactRole OutputRole => Options.SourceRole ?? FrameArtifactRole.AnnotatedPreview;
 
     public string OutputVariant => Options.OutputVariant;
 
     public string? OutputMediaType => "image/jpeg";
 
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.AnnotatedPreview };
+        new HashSet<FrameArtifactRole> { options.SourceRole ?? FrameArtifactRole.AnnotatedPreview };
 
     public override async ValueTask ProcessAsync(
         CaptureProcessingContext context,
@@ -33,7 +34,7 @@ internal sealed class JpegEncodingCaptureProcessingStep(
     {
         ArgumentNullException.ThrowIfNull(context);
         var source = context.GetDependencyArtifacts().SingleOrDefault(
-            static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview);
+            artifact => artifact.Role == OutputRole);
         if (source is null)
         {
             return;
@@ -78,8 +79,12 @@ public sealed class JpegEncodingProcessingStepOptions : IValidatableObject
     [Range(1, 16384)]
     public int? MaximumDimension { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FrameArtifactRole? SourceRole { get; init; }
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        yield break;
+        if (SourceRole is not (null or FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview))
+            yield return new ValidationResult("JPEG encoding requires a Preview or AnnotatedPreview source.", [nameof(SourceRole)]);
     }
 }

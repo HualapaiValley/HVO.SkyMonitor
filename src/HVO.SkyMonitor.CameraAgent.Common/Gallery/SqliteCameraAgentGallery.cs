@@ -146,7 +146,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             row.CaptureId, cancellationToken).ConfigureAwait(false);
         var artifactStates = capture.Artifacts.Select(artifact => new CameraAgentGalleryArtifactState(
             artifact.ArtifactId,
-            artifact.Role == FrameArtifactRole.Raw
+            artifact.AvailabilityReason == "policy-expired" ? "Policy expired"
+                : artifact.Role == FrameArtifactRole.Raw
                 ? row.RetentionHold ? "Held" : "Released"
                 : retention.TryGetValue(artifact.ArtifactId, out var held)
                     ? held ? "Held" : "Unpinned"
@@ -1213,7 +1214,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         }
 
         var nodesByCapture = processing.Nodes.ToLookup(static node => node.CaptureId);
-        return rows.Select(row => ProjectCapture(
+        var captures = rows.Select(row => ProjectCapture(
             row,
             nodesByCapture[row.CaptureId],
             processing.TruncatedNodeCaptures.Contains(row.CaptureId),
@@ -1221,6 +1222,18 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             unavailable,
             canonicalSceneQueryUnavailable ? "ProjectionUnavailable" :
                 CanonicalSceneAvailability(row.CaptureId, nodesByCapture[row.CaptureId], canonicalScenes))).ToArray();
+        if (_silo is null || captures.Length == 0) return captures;
+
+        var expired = await _silo.ReadPolicyExpiredArtifactsAsync(captures.SelectMany(static capture =>
+            capture.Artifacts.Select(static artifact => artifact.ArtifactId)).ToArray(), cancellationToken).ConfigureAwait(false);
+        if (expired.Count == 0) return captures;
+
+        return captures.Select(capture => capture with
+        {
+            Artifacts = capture.Artifacts.Select(artifact => expired.Contains(artifact.ArtifactId)
+                ? artifact with { Availability = "Expired", AvailabilityReason = "policy-expired" }
+                : artifact).ToArray()
+        }).ToArray();
     }
 
     private static string CanonicalSceneAvailability(

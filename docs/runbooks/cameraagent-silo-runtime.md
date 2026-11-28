@@ -353,6 +353,117 @@ legal hold. Optional `CameraAgent:SiloArchive:CustodyAccessKey` and
 credential to legal-hold updates on the intended versions. The archive owner
 manages subsequent release of the physical legal hold.
 
+### Capture storage profiles
+
+Add `captureProfiles` to the body of `PUT /policy`. Silo journals the policy and
+applies it to retained captures as well as new ones. A weekly or date-exception
+window ID from the capture's admission evidence takes precedence over its
+`Day`, `Twilight`, or `Night` condition. The condition uses retained
+acquisition evidence when available. Otherwise CameraAgent uses the geometric
+solar altitude at exposure start for the capture's verified deployment-location
+version. Day begins at 0°, night includes −12° and below, and twilight lies
+between. A capture with no matching evidence uses the global role and tier rules.
+
+Each profile rule selects a role and can narrow it by `mediaType`, `variant`,
+or both. The most specific matching rule wins, with a named variant taking
+precedence over a media-type-only rule. Unspecified roles use the global rules.
+The age begins at the Silo publication's recorded time. A zero age makes the
+role eligible as soon as its holds release. A profile rule authorizes expiry
+of the last copy, so inspect `GET /dry-run` with `expiryHeld` still enabled
+before enabling expiry.
+
+This example keeps JPEG previews for seven days after daytime captures. It
+releases full-size and packed presentation copies after their holds settle.
+The `centered-archive` rule gives a Storage step's archive selection one hour
+of required dependency protection. Use a longer interval if that selection
+must remain reopenable longer.
+
+```json
+{
+  "expiryHeld": true,
+  "roles": [],
+  "captureProfiles": [
+    {
+      "name": "daytime",
+      "skyConditions": ["Day"],
+      "variants": [
+        { "role": "raw", "maximumAge": "00:00:00" },
+        { "role": "calibrated", "maximumAge": "00:00:00" },
+        { "role": "combined", "maximumAge": "00:00:00" },
+        { "role": "preview", "maximumAge": "00:00:00" },
+        { "role": "annotatedPreview", "maximumAge": "00:00:00" },
+        { "role": "preview", "mediaType": "image/jpeg", "maximumAge": "7.00:00:00" },
+        { "role": "annotatedPreview", "mediaType": "image/jpeg", "maximumAge": "7.00:00:00" },
+        { "role": "centered-view", "maximumAge": "7.00:00:00" },
+        { "role": "centered-archive", "maximumAge": "01:00:00" }
+      ]
+    }
+  ]
+}
+```
+
+Use `"windowIds": ["morning"]` to bind a profile to a configured schedule
+window named `morning`. Window IDs and variant names are case-sensitive.
+Profile role and media-type matches are case-insensitive.
+
+#### JPEG output in the capture graph
+
+Use the `JpegEncoding` processing step with `durable-local` publication for
+each presentation output. This example takes its packed inputs from the
+installer graph's `CombinedPreview` and `PresentationMaterializer` nodes.
+Add the JPEG node IDs to the Storage node's dependencies if its archive
+selection should include them.
+
+```json
+[
+  {
+    "id": "PreviewJpeg",
+    "type": "JpegEncoding",
+    "order": 82,
+    "dependsOn": ["CombinedPreview"],
+    "publication": { "persistence": "durable-local" },
+    "options": { "sourceRole": "Preview", "outputVariant": "preview-jpeg", "jpegQuality": 85 }
+  },
+  {
+    "id": "AnnotatedPreviewJpeg",
+    "type": "JpegEncoding",
+    "order": 83,
+    "dependsOn": ["PresentationMaterializer"],
+    "publication": { "persistence": "durable-local" },
+    "options": { "outputVariant": "annotated-preview-jpeg", "jpegQuality": 85 }
+  }
+]
+```
+
+`sourceRole` defaults to `AnnotatedPreview`, and JPEG quality accepts 1–100.
+Use `memory-only` for packed intermediates when they are needed only inside
+the graph. Keep them durable if an operator must render those exact layers
+again from the packed pixels. Raw, calibrated, and combined artifacts retain
+their original precision. The centered live view preview has its own JPEG
+encoding and retains the quality recorded with the view.
+
+#### Holds and reopening
+
+Every accepted capture first commits its raw bytes and evidence durably. The
+initial Silo publication is required even for a zero-age raw rule. Pending lanes,
+recent inputs, in-flight centered windows and their actual stack contributors,
+replay choices, pending publication, and exact restore leases can extend the
+time bytes remain. A shared Silo version remains while any reference needs it.
+Archive replication and archive-owner custody apply independently. CameraAgent
+records role expiry only after all authoritative copies are proven absent under
+the authorized intent. Archive detail identifies settled roles as **Policy
+expired**.
+
+With the example policy, a single or stack and each of its published layer
+revisions can be reopened for seven days from that revision's publication.
+During that period the manifest holds its exact required preview, closed-window
+evidence, displayed science, and required layers. A current live revision or
+an explicitly saved selection pins that exact revision beyond the age limit.
+A later layer revision has its own publication time and hold. Optional science
+and the source inputs needed to recompute a view can expire sooner once their
+own holds release. Set a longer age or pin exact revisions to keep those
+sources. The archive owner must honor applicable holds when expiring copies.
+
 ## Credentials
 
 | Credential | Where | Seen by |

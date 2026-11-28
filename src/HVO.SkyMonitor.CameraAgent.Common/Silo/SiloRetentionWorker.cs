@@ -20,6 +20,8 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
     SiloArchiveWorker archive, CaptureSatelliteWorkStore satelliteWork, TimeProvider clock, ILogger<SiloRetentionWorker> logger)
     : BackgroundService, ICameraAgentSiloRetention
 {
+    private const int MaximumSweepsPerTick = 8;
+
     public bool Ready => storage.BindingVerified && raw.SiloAdmissionsReady;
 
     public ValueTask SetPolicyAsync(CameraAgentSiloRetentionPolicy policy, CancellationToken cancellationToken)
@@ -29,7 +31,8 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
         if (policy.Roles.Count > 128 || policy.Roles.Any(static item => item is null))
             throw new ArgumentException("Invalid Silo role policies.", nameof(policy));
         return storage.Retention.SetPolicyAsync(new(policy.ExpiryHeld, policy.Roles.Select(static role =>
-            new SiloRoleRetention(role.Role, role.MaximumAge, role.ExpireUnderPressure, role.AllowLastCopyExpiry)).ToArray()),
+            new SiloRoleRetention(role.Role, role.MaximumAge, role.ExpireUnderPressure, role.AllowLastCopyExpiry)).ToArray(),
+            policy.CaptureProfiles),
             cancellationToken);
     }
 
@@ -82,6 +85,10 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             try
             {
                 status = await RunAsync(stoppingToken).ConfigureAwait(false);
+                // A presentation-only capture can release several versions per exposure.
+                // Each pass reevaluates holds, fenced operations and the physical reclaim budget.
+                for (var sweep = 1; sweep < MaximumSweepsPerTick && status is "deleted" or "already-absent"; sweep++)
+                    status = await RunAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -149,7 +156,8 @@ internal sealed partial class SiloRetentionWorker(SiloInstalledStorage storage, 
             canIssue: () => controls?.AdmissionHeld != true,
             lifecycle: RawIngressLifecycleLock.ForRoot(root),
             enterMaintenance: maintenance.TryEnterIfInitialized,
-            reclaimAuxiliary: token => ReclaimSatelliteWorkAsync(root, controls, token));
+            reclaimAuxiliary: token => ReclaimSatelliteWorkAsync(root, controls, token),
+            storageLifecycle: StorageLifecycleLock.ForRoot(root));
     }
 
     private async ValueTask ReclaimSatelliteWorkAsync(string root, CameraAgentControlStore? controls, CancellationToken cancellationToken)

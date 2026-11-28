@@ -751,7 +751,7 @@ internal sealed partial class CaptureProcessingPersistence(
         var identity = SiloOutputGroupId(raw, nodeId, executionId, outputs.Select(static output => output.ArtifactId));
         var inputs = outputs.Select((output, index) => new SiloArtifactInput(output.ArtifactId, output.Artifact.Role.ToString(),
             output.Artifact.MediaType, output.Artifact.ChecksumSha256, products[index].Payload, output.EvidenceJson,
-            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256)).ToArray();
+            output.ContentIdentitySha256, output.OutputIdentitySha256, nodeId, output.RecipeIdentitySha256, output.Artifact.Variant)).ToArray();
         await Silo.PublishProcessingAsync(identity, raw, inputs, cancellationToken).ConfigureAwait(false);
     }
 

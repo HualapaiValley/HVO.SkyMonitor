@@ -202,7 +202,7 @@ internal static class SiloInfrastructureFixture
         await storage.PublishProcessingAsync(output.ArtifactId.ToString("N"), descriptor,
             [new(output.ArtifactId, output.Artifact.Role.ToString(), output.Artifact.MediaType, output.Artifact.ChecksumSha256,
                 product.Payload, output.EvidenceJson, output.ContentIdentitySha256, output.OutputIdentitySha256, producer,
-                output.RecipeIdentitySha256)], token).ConfigureAwait(false);
+                output.RecipeIdentitySha256, output.Artifact.Variant)], token).ConfigureAwait(false);
         return output;
     }
 

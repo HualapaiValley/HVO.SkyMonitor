@@ -39,7 +39,8 @@ internal sealed record SiloManifestMember(
     string? ContentIdentitySha256 = null,
     string? OutputIdentitySha256 = null,
     string? Producer = null,
-    string? RecipeIdentitySha256 = null);
+    string? RecipeIdentitySha256 = null,
+    string? Variant = null);
 
 /// <summary>An exact dependency on an artifact revision, for reopen (R) or recompute (C) (#1965 6.1).</summary>
 internal sealed record SiloManifestDependency(
@@ -55,7 +56,9 @@ internal sealed record SiloManifestProvenance(
     string? GraphIdentitySha256 = null,
     string? RigRevision = null,
     string? SiteRevision = null,
-    JsonElement? ImportSource = null);
+    JsonElement? ImportSource = null,
+    SiloCaptureCondition? CaptureCondition = null,
+    string? RetentionCaptureId = null);
 
 /// <summary>
 /// A centered view revision. The base and revision documents are kept verbatim as their producer serialized them, so
@@ -97,12 +100,13 @@ internal sealed record SiloMemberFacts(
     string? ContentIdentitySha256,
     string? OutputIdentitySha256,
     string? Producer,
-    string? RecipeIdentitySha256)
+    string? RecipeIdentitySha256,
+    string? Variant = null)
 {
     public string Sha256() => SiloHash.Sha256(SiloJson.Serialize(this));
 
     public static SiloMemberFacts Of(SiloManifestMember member) => new(member.Role, member.RetentionClass, member.MediaType,
-        member.ContentIdentitySha256, member.OutputIdentitySha256, member.Producer, member.RecipeIdentitySha256);
+        member.ContentIdentitySha256, member.OutputIdentitySha256, member.Producer, member.RecipeIdentitySha256, member.Variant);
 }
 
 internal sealed record SiloCaptureSequence(string AgentId, long CaptureSequence);

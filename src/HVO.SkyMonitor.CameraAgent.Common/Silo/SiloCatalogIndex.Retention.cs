@@ -32,7 +32,7 @@ internal sealed partial class SiloCatalogIndex
     }
 
     internal async ValueTask<IReadOnlyDictionary<SiloExactLocator, IReadOnlyList<SiloRetentionReference>>> ReadRetentionReferencesAsync(
-        CancellationToken cancellationToken, SiloExactLocator? only = null)
+        CancellationToken cancellationToken, SiloExactLocator? only = null, bool includeCapturePolicy = false)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         using var command = CreateCommand(connection, null, """
@@ -40,27 +40,60 @@ internal sealed partial class SiloCatalogIndex
                 SELECT DISTINCT key, version_id FROM locators
                 WHERE store_id = $store AND bucket = $bucket AND eligible = 1 AND copy_state = 'active'
                     AND (key GLOB 'p/*' OR key GLOB 'm/*') AND ($key IS NULL OR (key = $key AND version_id = $version))
+            ), sources AS (
+                SELECT DISTINCT source.id, source.revision
+                FROM physical JOIN locators source USING(key, version_id)
+                WHERE source.kind = 'member' AND source.store_id = $store AND source.bucket = $bucket
+                    AND source.eligible = 1 AND source.copy_state <> 'evicted'
+            ), member_publications AS (
+                SELECT m.artifact_id, m.artifact_revision, m.role, m.media_type, p.published_utc_ticks,
+                    CASE WHEN $capturePolicy AND p.group_kind = 'raw-capture' THEN p.group_id
+                         WHEN $capturePolicy AND p.group_kind = 'processing-products'
+                            THEN json_extract(p.manifest_json, '$.provenance.retentionCaptureId')
+                    END AS capture_id,
+                    CASE WHEN $capturePolicy THEN (
+                        SELECT json_extract(member.value, '$.variant')
+                        FROM json_each(p.manifest_json, '$.members') member
+                        WHERE json_extract(member.value, '$.artifactId') = m.artifact_id
+                            AND json_extract(member.value, '$.artifactRevision') = m.artifact_revision
+                    ) END AS variant
+                FROM sources s JOIN publication_members m ON m.artifact_id = s.id AND m.artifact_revision = s.revision
+                JOIN publications p USING(group_id, revision_id)
             ), member_facts AS (
-                SELECT m.artifact_id, m.artifact_revision,
-                    CASE WHEN COUNT(m.role) = COUNT(*) THEN MIN(m.role) END AS role,
-                    CASE WHEN COUNT(p.published_utc_ticks) = COUNT(*) THEN MAX(p.published_utc_ticks) END AS published_utc_ticks
-                FROM publication_members m JOIN publications p USING(group_id, revision_id)
-                GROUP BY m.artifact_id, m.artifact_revision
+                SELECT artifact_id, artifact_revision,
+                    CASE WHEN COUNT(role) = COUNT(*) THEN MIN(role) END AS role,
+                    CASE WHEN COUNT(media_type) = COUNT(*) AND MIN(media_type) = MAX(media_type) THEN MIN(media_type) END AS media_type,
+                    CASE WHEN COUNT(published_utc_ticks) = COUNT(*) THEN MAX(published_utc_ticks) END AS published_utc_ticks,
+                    CASE WHEN COUNT(capture_id) = COUNT(*) AND MIN(capture_id) = MAX(capture_id) THEN MIN(capture_id) END AS capture_id,
+                    CASE WHEN COUNT(variant) = COUNT(*) AND MIN(variant) = MAX(variant) THEN MIN(variant) END AS variant
+                FROM member_publications GROUP BY artifact_id, artifact_revision
             )
             SELECT source.key, source.version_id, r.kind, r.id, r.revision, r.sha256, r.length,
                 CASE WHEN r.kind = 'manifest' THEN 'manifest' ELSE m.role END,
                 COALESCE(m.published_utc_ticks, p.published_utc_ticks),
-                target.store_id, target.bucket, target.key, target.version_id
+                target.store_id, target.bucket, target.key, target.version_id,
+                m.media_type, p.group_kind,
+                json_extract(raw.manifest_json, '$.provenance.captureCondition.windowId'),
+                json_extract(raw.manifest_json, '$.provenance.captureCondition.skyCondition'), m.variant
             FROM physical picked JOIN locators source USING(key, version_id)
                 JOIN roles r USING(kind, id, revision)
                 JOIN locators target USING(kind, id, revision)
                 LEFT JOIN member_facts m ON r.kind = 'member' AND m.artifact_id = r.id AND m.artifact_revision = r.revision
                 LEFT JOIN publications p ON r.kind = 'manifest' AND p.group_id = r.id AND p.revision_id = r.revision
+                LEFT JOIN publications raw ON $capturePolicy AND raw.group_id = CASE p.group_kind
+                    WHEN 'centered-view' THEN replace(p.reference_capture_id, '-', '')
+                    WHEN 'centered-archive' THEN json_extract(p.manifest_json, '$.provenance.retentionCaptureId')
+                    ELSE m.capture_id END AND raw.revision_id = (
+                        SELECT admission.revision_id FROM publications admission
+                        WHERE admission.group_id = raw.group_id AND admission.group_kind = 'raw-capture'
+                            AND admission.manifest_status = 'verified'
+                        ORDER BY admission.generation DESC, admission.sequence DESC, admission.record_index DESC LIMIT 1)
             WHERE source.store_id = $store AND source.bucket = $bucket AND source.eligible = 1 AND source.copy_state <> 'evicted'
                 AND target.eligible = 1 AND target.copy_state <> 'evicted'
             ORDER BY source.key, source.version_id, r.kind, r.id, r.revision,
                 target.store_id, target.bucket, target.key, target.version_id;
-            """, ("$store", Binding.StoreId), ("$bucket", Binding.Bucket), ("$key", only?.Key), ("$version", only?.VersionId));
+            """, ("$store", Binding.StoreId), ("$bucket", Binding.Bucket), ("$key", only?.Key), ("$version", only?.VersionId),
+            ("$capturePolicy", includeCapturePolicy));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var physical = new Dictionary<SiloExactLocator, Dictionary<SiloRoleKey, (SiloRetentionReference Reference, List<SiloExactLocator> Copies)>>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -76,7 +109,11 @@ internal sealed partial class SiloCatalogIndex
             {
                 var identity = new SiloObjectIdentity(role.Kind, role.Id, role.Revision, reader.GetString(5), reader.GetInt64(6));
                 var copies = new List<SiloExactLocator>();
-                found = (new(identity, NullableString(reader, 7), NullableLong(reader, 8) is { } ticks ? new(ticks, TimeSpan.Zero) : null, copies), copies);
+                var window = NullableString(reader, 15);
+                var sky = NullableString(reader, 16);
+                found = (new(identity, NullableString(reader, 7), NullableLong(reader, 8) is { } ticks ? new(ticks, TimeSpan.Zero) : null,
+                    copies, NullableString(reader, 13), NullableString(reader, 14),
+                    window is null && sky is null ? null : new(window, sky), NullableString(reader, 17)), copies);
                 roles.Add(role, found);
             }
             found.Copies.Add(new(reader.GetString(9), reader.GetString(10), reader.GetString(11), reader.GetString(12)));

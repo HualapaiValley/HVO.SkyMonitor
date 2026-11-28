@@ -63,6 +63,7 @@ internal sealed partial class RawCaptureIngress :
     private readonly SiloInstalledStorage? _silo;
     private readonly SiloInstalledSettings? _siloSettings;
     private readonly SiloArtifactStorage? _siloArtifacts;
+    private readonly IServiceProvider? _storagePolicyServices;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -86,7 +87,8 @@ internal sealed partial class RawCaptureIngress :
         SqliteCaptureProcessingStore? processingStore = null,
         SiloInstalledStorage? silo = null,
         SiloInstalledSettings? siloSettings = null,
-        SiloArtifactStorage? siloArtifacts = null)
+        SiloArtifactStorage? siloArtifacts = null,
+        IServiceProvider? storagePolicyServices = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -106,6 +108,7 @@ internal sealed partial class RawCaptureIngress :
         _silo = silo;
         _siloSettings = siloSettings;
         _siloArtifacts = siloArtifacts;
+        _storagePolicyServices = storagePolicyServices;
         _maintenanceGate = maintenanceGate;
         if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();

@@ -34,7 +34,8 @@ internal sealed partial class CaptureProcessingPersistence
         var group = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new { executionId, nodeId }));
         var draft = new SiloGroupDraft("centered-archive", SiloCenteredViews.LowerHex(group), "1",
             reference.Timing.DurableIngressUtc.ToUniversalTime(), reference.Timing.ExposureStartedUtc.ToUniversalTime(),
-            reference.Timing.ExposureEndedUtc.ToUniversalTime(), [], dependencies, new([]), CameraId: reference.Capture.RigId);
+            reference.Timing.ExposureEndedUtc.ToUniversalTime(), [], dependencies,
+            new([], RetentionCaptureId: reference.Capture.CaptureId.ToString("N")), CameraId: reference.Capture.RigId);
         _faultInjector.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt, nodeId);
         await Silo.PublishAsync(draft, null, cancellationToken).ConfigureAwait(false);
     }

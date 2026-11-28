@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 internal sealed record SiloArtifactInput(Guid ArtifactId, string Role, string MediaType, string Sha256,
     ReadOnlyMemory<byte> Payload, byte[] Evidence, string? ContentIdentitySha256, string OutputIdentitySha256,
-    string? Producer = null, string? RecipeIdentitySha256 = null);
+    string? Producer = null, string? RecipeIdentitySha256 = null, string? Variant = null);
 
 /// <summary>The logical member boundary used by CameraAgent writers and readers.</summary>
 internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProvider clock)
@@ -34,7 +34,7 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             var evidenceToken = SiloFilePayloadSpool.TokenOf(evidenceSha);
             members.Add(new(id, output.OutputIdentitySha256, output.Role, RetentionClass(output.MediaType), output.MediaType,
                 output.Payload.Length, sha, true, payloadToken, LowerHex(output.ContentIdentitySha256), LowerHex(output.OutputIdentitySha256),
-                output.Producer, LowerHex(output.RecipeIdentitySha256)));
+                output.Producer, LowerHex(output.RecipeIdentitySha256), output.Variant));
             members.Add(new(id, ProductEvidenceRevision, "product-evidence", SiloRetentionClass.Metadata, "application/json",
                 output.Evidence.LongLength, evidenceSha, true, evidenceToken));
             content.TryAdd(payloadToken, output.Payload);
@@ -46,7 +46,7 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
             raw.Artifact.Role == FrameArtifactRole.Raw
                 ? [new(raw.Artifact.ArtifactId.ToString("D"), CaptureContractJson.ComputeDescriptorSha256(raw),
                     SiloCenteredViews.LowerHex(raw.Artifact.ChecksumSha256), SiloDependencyKind.Compute, true)]
-                : [], new([]), CameraId: raw.Capture.RigId);
+                : [], new([], RetentionCaptureId: raw.Capture.CaptureId.ToString("N")), CameraId: raw.Capture.RigId);
         await PublishAsync(draft, (member, token) => OpenMemoryAsync(content[member.SourceToken], token), cancellationToken)
             .ConfigureAwait(false);
     }
@@ -97,6 +97,12 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         => storage.BindingVerified
             ? storage.Index.ReadRetainedEvidenceFailureAsync(System.Text.Json.JsonSerializer.Serialize(artifacts), cancellationToken)
             : ValueTask.FromResult<SiloAvailabilityState?>(null);
+
+    internal ValueTask<IReadOnlySet<Guid>> ReadPolicyExpiredArtifactsAsync(
+        IReadOnlyList<Guid> artifacts, CancellationToken cancellationToken)
+        => storage.BindingVerified
+            ? storage.Index.ReadPolicyExpiredArtifactsAsync(artifacts, cancellationToken)
+            : ValueTask.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
 
     internal async ValueTask<bool> VerifyRetainedLocalPayloadAsync(Guid artifactId, string sha256, CancellationToken cancellationToken)
     {

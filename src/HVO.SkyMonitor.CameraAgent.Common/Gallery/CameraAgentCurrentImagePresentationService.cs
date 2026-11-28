@@ -557,7 +557,9 @@ internal sealed class CameraAgentCapturePresentationProjector(
         }
         if (matching.Length > 0)
         {
-            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, "ArtifactUnavailable");
+            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable,
+                matching.All(static artifact => artifact.AvailabilityReason == "policy-expired")
+                    ? "PolicyExpired" : "ArtifactUnavailable");
         }
         if (processingReason is not null)
         {

@@ -153,7 +153,7 @@ internal sealed class SiloPublisher(
             draft.RevisionId, draft.PublishedUtc, draft.FromUtc, draft.ToUtc,
             draft.Members.Select((member, index) => new SiloManifestMember(member.ArtifactId, member.ArtifactRevision, member.Role,
                 member.RetentionClass, member.MediaType, member.Length, member.Sha256, member.Required, locators[index],
-                member.ContentIdentitySha256, member.OutputIdentitySha256, member.Producer, member.RecipeIdentitySha256)).ToArray(),
+                member.ContentIdentitySha256, member.OutputIdentitySha256, member.Producer, member.RecipeIdentitySha256, member.Variant)).ToArray(),
             draft.Dependencies, draft.Provenance, draft.PreviousRevisionId, draft.CameraId, draft.View);
 
     /// <summary>Advance one group revision as far as it can go now.</summary>

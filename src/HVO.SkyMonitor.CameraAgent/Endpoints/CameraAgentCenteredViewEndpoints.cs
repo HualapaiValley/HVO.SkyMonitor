@@ -57,6 +57,9 @@ internal static class CameraAgentCenteredViewEndpoints
                 (!Guid.TryParse(reference?.ToString(), out var captureId) || captureId != exception.ReferenceCaptureId))
                 return Results.NotFound();
 
+            if (exception.PolicyExpired)
+                return Results.Problem(statusCode: StatusCodes.Status410Gone, title: "Centered view expired by storage policy.");
+
             return Results.StatusCode(exception.Status switch
             {
                 CameraAgentArtifactReadStatus.Conflict => StatusCodes.Status409Conflict,

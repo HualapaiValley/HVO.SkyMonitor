@@ -218,6 +218,17 @@ internal static class SiloJson
         RequireElements(manifest.Members, nameof(manifest.Members));
         RequireElements(manifest.Dependencies, nameof(manifest.Dependencies));
         RequireElements(manifest.Provenance.RecipeInputIdentities, nameof(manifest.Provenance.RecipeInputIdentities));
+        if (manifest.Provenance.CaptureCondition is { } condition)
+        {
+            if (manifest.GroupKind != "raw-capture")
+                throw new ArgumentException("Capture conditions belong to raw admission.", nameof(manifest));
+            condition.Validate();
+        }
+        if (manifest.Provenance.RetentionCaptureId is { } captureId &&
+            (manifest.GroupKind is not ("processing-products" or "centered-archive") ||
+                !Guid.TryParseExact(captureId, "N", out var parsedCaptureId) || parsedCaptureId == Guid.Empty ||
+                parsedCaptureId.ToString("N") != captureId))
+            throw new ArgumentException("Invalid retention capture identity.", nameof(manifest));
         if (manifest.View is { } section)
         {
             RequireElements(section.Layers, nameof(section.Layers));
@@ -229,6 +240,7 @@ internal static class SiloJson
             SiloText.RequireText(member.ArtifactRevision, nameof(member.ArtifactRevision), 256);
             SiloText.RequireText(member.Role, nameof(member.Role), 128);
             SiloText.RequireText(member.MediaType, nameof(member.MediaType), 256);
+            if (member.Variant is not null) SiloText.RequireText(member.Variant, nameof(member.Variant), 256);
             SiloHash.Require(member.Sha256, nameof(member.Sha256));
             ArgumentOutOfRangeException.ThrowIfNegative(member.Length);
             member.Locator.Validate();

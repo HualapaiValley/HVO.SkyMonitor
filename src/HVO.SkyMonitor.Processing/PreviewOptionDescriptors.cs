@@ -19,7 +19,7 @@ public static class PreviewOptionDescriptors
         Preview("combined-preview-options-v1", "CombinedPreview", "Combined preview", "combined-preview", false),
         Preview("fixed-combined-preview-options-v1", "CombinedPreview", "Combined preview", "combined-preview", true),
         new("jpeg-encoding-options-v1", "JpegEncoding", "packed-jpeg-v1", "JPEG encoding",
-            "Encode the existing packed annotated preview with JPEG encoding recipe 1.0.0 (packed-jpeg-v1). Keep original dimensions or explicitly set a maximum dimension; quality, routing and preview transfer remain separate settings.",
+            "Encode a packed preview or annotated preview with JPEG encoding recipe 1.0.0 (packed-jpeg-v1). Keep original dimensions or explicitly set a maximum dimension; quality, routing and preview transfer remain separate settings.",
             [
                 ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "JPEG output variant",
                     "Final JPEG output route. Update variant-specific dependent inputs separately.", "annotated-final-jpeg", 128, isIdentifier: true),

@@ -46,19 +46,19 @@ internal sealed class SiloRetention(
                 .ConfigureAwait(false);
         }, cancellationToken);
 
-    /// <summary>Age and pressure sweeps share this entry point with future schedule and sky-condition selectors.</summary>
+    /// <summary>Capture profile, age and pressure sweeps share the same exact-version delete fence.</summary>
     internal async ValueTask<string> SweepAsync(bool canStartDelete, Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds,
         ISiloRetentionArchive? archive, CancellationToken cancellationToken,
         Func<SiloExactLocator, bool>? select = null, Func<CancellationToken, ValueTask>? cleanExpiredCache = null,
         Func<SiloExactLocator, bool>? verifiedStoreExit = null, Func<bool>? canIssue = null,
         SemaphoreSlim? lifecycle = null, Func<IDisposable?>? enterMaintenance = null,
-        Func<CancellationToken, ValueTask>? reclaimAuxiliary = null)
+        Func<CancellationToken, ValueTask>? reclaimAuxiliary = null, SemaphoreSlim? storageLifecycle = null)
     {
         await publisher.RetentionSweepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await SweepLocalAsync(canStartDelete, readHolds, archive, select, cleanExpiredCache,
-                verifiedStoreExit, canIssue, lifecycle, enterMaintenance, reclaimAuxiliary, cancellationToken).ConfigureAwait(false);
+                verifiedStoreExit, canIssue, lifecycle, enterMaintenance, reclaimAuxiliary, storageLifecycle, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -70,7 +70,8 @@ internal sealed class SiloRetention(
         Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds, ISiloRetentionArchive? archive,
         Func<SiloExactLocator, bool>? select, Func<CancellationToken, ValueTask>? cleanExpiredCache,
         Func<SiloExactLocator, bool>? verifiedStoreExit, Func<bool>? canIssue, SemaphoreSlim? lifecycle,
-        Func<IDisposable?>? enterMaintenance, Func<CancellationToken, ValueTask>? reclaimAuxiliary, CancellationToken cancellationToken)
+        Func<IDisposable?>? enterMaintenance, Func<CancellationToken, ValueTask>? reclaimAuxiliary,
+        SemaphoreSlim? storageLifecycle, CancellationToken cancellationToken)
     {
         if (SiloRetentionState.Read(root).Attempt is { } outstanding)
             return await ReconcileAsync(outstanding, verifiedStoreExit, cancellationToken).ConfigureAwait(false);
@@ -141,7 +142,8 @@ internal sealed class SiloRetention(
             var attempt = await PrepareAsync(candidate, before.Value, allocation,
                 pending.SurvivorReleases.Count < MaximumPendingSurvivors ? archive : null, cancellationToken).ConfigureAwait(false);
             if (attempt is null) continue;
-            var fenced = await TryFenceAsync(candidate, attempt, readHolds, canIssue, lifecycle, enterMaintenance, cancellationToken)
+            var fenced = await TryFenceAsync(candidate, attempt, readHolds, canIssue, lifecycle, enterMaintenance,
+                storageLifecycle, cancellationToken)
                 .ConfigureAwait(false);
             if (fenced is null)
             {
@@ -156,11 +158,19 @@ internal sealed class SiloRetention(
 
     private async ValueTask<SiloRetentionAttempt?> TryFenceAsync(SiloRetentionCandidate planned, SiloRetentionAttempt attempt,
         Func<CancellationToken, ValueTask<IReadOnlyList<SiloRetentionHold>>> readHolds, Func<bool>? canIssue,
-        SemaphoreSlim? lifecycle, Func<IDisposable?>? enterMaintenance, CancellationToken cancellationToken)
+        SemaphoreSlim? lifecycle, Func<IDisposable?>? enterMaintenance, SemaphoreSlim? storageLifecycle, CancellationToken cancellationToken)
     {
         if (lifecycle is not null) await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var storageEntered = false;
         try
         {
+            // A producer may have published to Silo but still be committing its processing or view evidence.
+            // Yield the fence if that commit owns the storage gate, without making raw admission wait on it.
+            if (storageLifecycle is not null)
+            {
+                storageEntered = await storageLifecycle.WaitAsync(0, cancellationToken).ConfigureAwait(false);
+                if (!storageEntered) return null;
+            }
             return await publisher.TryWithPublicationLockAsync<SiloRetentionAttempt>(async () =>
             {
                 using var maintenance = enterMaintenance?.Invoke();
@@ -185,6 +195,7 @@ internal sealed class SiloRetention(
         }
         finally
         {
+            if (storageEntered) storageLifecycle!.Release();
             lifecycle?.Release();
         }
     }
@@ -198,6 +209,7 @@ internal sealed class SiloRetention(
 
     private static bool SameDecision(SiloRetentionCandidate planned, SiloRetentionCandidate fresh) =>
         planned.Decision == fresh.Decision && planned.AuthorizesRoleExpiry == fresh.AuthorizesRoleExpiry &&
+        (planned.CaptureProfiles ?? []).SequenceEqual(fresh.CaptureProfiles ?? []) &&
         planned.References.Select(static reference => reference.Identity)
             .SequenceEqual(fresh.References.Select(static reference => reference.Identity)) &&
         planned.References.Zip(fresh.References).All(static pair => pair.First.Copies.SequenceEqual(pair.Second.Copies));
@@ -208,7 +220,9 @@ internal sealed class SiloRetention(
     {
         var authority = await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false);
         var configured = policy.Roles.ToDictionary(static item => item.Role, StringComparer.Ordinal);
-        var holds = externalHolds.Concat(await index.ReadRetentionPinsAsync(cancellationToken).ConfigureAwait(false))
+        var stagedDependencies = new List<SiloRetentionHold>();
+        var staged = await ReadStagedKeysAsync(cancellationToken, stagedDependencies).ConfigureAwait(false);
+        var holds = externalHolds.Concat(stagedDependencies).Concat(await index.ReadRetentionPinsAsync(cancellationToken).ConfigureAwait(false))
             .Concat(await index.ReadReopenRetentionHoldsAsync(cancellationToken).ConfigureAwait(false))
             .Concat(await index.ReadViewRetentionHoldsAsync(externalHolds.Where(static hold => hold.Kind == SiloHoldKind.ViewManifest),
                 cancellationToken).ConfigureAwait(false)).ToArray();
@@ -216,30 +230,42 @@ internal sealed class SiloRetention(
         var archiveReferences = holds.Any(static hold => hold.Kind == SiloHoldKind.SatelliteArchiveReference)
             ? await index.ReadArchivedCaptureReferencesAsync(cancellationToken).ConfigureAwait(false) : null;
         var archiveHistoryUnknown = authority.UnknownInterval;
-        var staged = await ReadStagedKeysAsync(cancellationToken).ConfigureAwait(false);
         var leased = saved.Leases.Where(lease => lease.ExpiresUtc > now).SelectMany(static lease => lease.Versions).ToHashSet();
         var result = new List<SiloRetentionCandidate>();
-        foreach (var (locator, references) in await index.ReadRetentionReferencesAsync(cancellationToken, only).ConfigureAwait(false))
+        foreach (var (locator, references) in await index.ReadRetentionReferencesAsync(cancellationToken, only,
+            includeCapturePolicy: policy.CaptureProfiles is { Count: > 0 }).ConfigureAwait(false))
         {
             var decision = "within-policy";
-            var allowRoleExpiry = references.All(reference => FindPolicy(reference, locator.Key, configured)?.AllowLastCopyExpiry == true);
+            var rules = references.Select(reference =>
+            {
+                var (rule, profile) = policy.FindCaptureRule(reference);
+                return (Rule: rule ?? FindPolicy(reference, locator.Key, configured), Profile: profile, reference.PublishedUtc);
+            }).ToArray();
+            var allowRoleExpiry = rules.All(static entry => entry.Rule?.AllowLastCopyExpiry == true);
+            var captureRuleApplies = rules.Any(static entry => entry.Profile is not null);
             if (!authority.CompleteThroughPrefixEnd || references.Count is 0 or > MaximumSharedRoles ||
                 references.Any(static reference => reference.Role is null || reference.PublishedUtc is null) || staged.Contains(locator.Key) ||
                 leased.Contains(locator) || saved.Attempt?.Target == locator ||
+                (captureRuleApplies && references.Any(reference => reference.Copies.Any(leased.Contains))) ||
                 references.Any(reference => holdsByArtifact[reference.Identity.Id].Any(hold => hold.Matches(reference.Identity, now) &&
                     (hold.Kind != SiloHoldKind.SatelliteArchiveReference || archiveHistoryUnknown ||
                         archiveReferences?.Contains(hold.ArtifactId) == true))))
                 decision = "held-reference";
-            else if (references.All(reference => IsDue(FindPolicy(reference, locator.Key, configured), reference.PublishedUtc, now, pressure)))
+            else if (rules.All(entry => IsDue(entry.Rule, entry.PublishedUtc, now, pressure)))
             {
-                if (references.All(static reference => reference.Copies.Count > 1))
+                if (allowRoleExpiry && captureRuleApplies)
+                    decision = Expire;
+                else if (references.All(static reference => reference.Copies.Count > 1))
                     decision = Evict;
                 else if (allowRoleExpiry)
                     decision = Expire;
                 else
                     decision = "last-copy-policy-or-survivor-required";
             }
-            result.Add(new(locator, references, decision, allowRoleExpiry));
+            result.Add(new(locator, references, decision, allowRoleExpiry)
+            {
+                CaptureProfiles = captureRuleApplies ? rules.Select(static entry => entry.Profile).ToArray() : null
+            });
         }
 
         foreach (var orphan in await state.ListOrphansAsync(cancellationToken).ConfigureAwait(false))
@@ -276,7 +302,8 @@ internal sealed class SiloRetention(
         policy is not null && publishedUtc is { } published && published <= now && (pressure && policy.ExpireUnderPressure ||
             policy.MaximumAge is { } age && now - published >= age);
 
-    private async ValueTask<HashSet<string>> ReadStagedKeysAsync(CancellationToken cancellationToken)
+    private async ValueTask<HashSet<string>> ReadStagedKeysAsync(CancellationToken cancellationToken,
+        List<SiloRetentionHold>? dependencies = null)
     {
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (groupId, revisionId) in await state.ListOpenAsync(int.MaxValue, cancellationToken).ConfigureAwait(false))
@@ -284,6 +311,13 @@ internal sealed class SiloRetention(
             var group = (await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false))!;
             foreach (var member in group.Members)
                 keys.Add(SiloObjectNamespace.PayloadKey(member.Draft.RetentionClass, member.Draft.Sha256));
+            if (dependencies is not null)
+            {
+                dependencies.AddRange(group.Draft.Dependencies
+                    .Where(static dependency => dependency is { Kind: SiloDependencyKind.Reopen, Required: true })
+                    .Select(static dependency => new SiloRetentionHold(SiloHoldKind.Recovery, dependency.ArtifactId,
+                        dependency.ArtifactRevision, IdentityKind: SiloIdentityKind.Member)));
+            }
             if (group.ManifestSha256 is { } sha)
                 keys.Add(SiloObjectNamespace.ManifestKey(group.Draft.FromUtc, groupId, revisionId, sha));
         }
@@ -353,8 +387,9 @@ internal sealed class SiloRetention(
                 return null;
         }
 
-        foreach (var reference in candidate.References)
+        for (var index = 0; index < candidate.References.Count; index++)
         {
+            var reference = candidate.References[index];
             var intentId = Guid.NewGuid().ToString("N");
             if (reservations.Count > 0 && reservations[0].IntentId is null)
                 reservations[0] = reservations[0] with { IntentId = intentId };
@@ -366,8 +401,10 @@ internal sealed class SiloRetention(
                 var exact = Array.FindIndex(targets, target => target.Locator == candidate.Locator);
                 targets[exact] = targets[exact] with { AllocationId = allocation.Id, AllocatedBytes = allocation.Bytes };
             }
+            var reason = candidate.CaptureProfiles?[index] is { } profile && roleExpiry
+                ? $"capture-profile:{profile}" : roleExpiry ? Expire : candidate.Decision;
             intents.Add(new(intentId, roleExpiry ? SiloExpiryScope.Role : SiloExpiryScope.Copy, reference.Identity,
-                SiloRetentionPolicy.PolicyId, targets, roleExpiry ? Expire : candidate.Decision, roleExpiry, null));
+                SiloRetentionPolicy.PolicyId, targets, reason, roleExpiry, null));
         }
         var length = candidate.OrphanLength ?? candidate.References.Max(static reference => reference.Identity.Length);
         return new(id, candidate.Locator, intents, reservations, physical, Allocation: allocation,

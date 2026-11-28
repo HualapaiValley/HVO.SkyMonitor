@@ -1,11 +1,13 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.LocalFiles;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -227,7 +229,8 @@ internal sealed partial class RawCaptureIngress
                 entry.PayloadRelativePath != paths.PayloadRelativePath || entry.SidecarRelativePath != paths.SidecarRelativePath)
                 return "silo-admission-evidence-refused";
 
-            var draft = CreateSiloDraft(entry, manifest, revision);
+            var existing = await silo.State.ReadGroupAsync(groupId, revision, cancellationToken).ConfigureAwait(false);
+            var draft = existing?.Draft ?? CreateSiloDraft(entry, manifest, revision, ReadCaptureCondition(manifest.Descriptor));
             try
             {
                 var root = PhysicalRoot.Open(Path.GetFullPath(_options.RawIngressRoot));
@@ -374,7 +377,41 @@ internal sealed partial class RawCaptureIngress
         }
     }
 
-    internal static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision)
+    private SiloCaptureCondition? ReadCaptureCondition(ReconstructionDescriptor descriptor)
+    {
+        var window = descriptor.RetainedScheduleAdmission is
+        {
+            Source: CaptureScheduleIntervalSource.WeeklyWindow or CaptureScheduleIntervalSource.DateExceptionWindow
+        } schedule ? schedule.IntervalId : null;
+        var sky = descriptor.CycleEvidence?.SolarRegime?.ToString();
+        if (sky is null && descriptor.Location is { } provenance && _storagePolicyServices is { } services)
+        {
+            try
+            {
+                if (services.GetService<IDeploymentLocationStore>() is { } locations &&
+                    services.GetService<IPlanetEphemeris>() is { } ephemeris)
+                {
+                    var utc = descriptor.Timing.ExposureStartedUtc;
+                    var location = locations.Resolve(provenance, utc);
+                    var thresholds = new CaptureSolarRegimePolicy();
+                    sky = SolarAltitudeClassifier.Classify(ephemeris, utc, location.LatitudeDegrees, location.LongitudeDegrees,
+                        thresholds.DayAltitudeThresholdDegrees, thresholds.NightAltitudeThresholdDegrees).Regime.ToString();
+                }
+            }
+            catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException or
+                KeyNotFoundException or NotSupportedException or ArgumentOutOfRangeException)
+            {
+                LogSiloCaptureConditionUnavailable(_logger, descriptor.Capture.CaptureId, exception);
+            }
+        }
+        return window is null && sky is null ? null : new(window, sky);
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Capture {CaptureId} has no verified solar condition for Silo retention")]
+    private static partial void LogSiloCaptureConditionUnavailable(ILogger logger, Guid captureId, Exception exception);
+
+    internal static SiloGroupDraft CreateSiloDraft(RawIngressJournalEntry entry, ArtifactManifestV2 manifest, string revision,
+        SiloCaptureCondition? condition = null)
     {
         var artifact = entry.ArtifactId.ToString("D");
         var payloadSha = SiloCenteredViews.LowerHex(entry.PayloadSha256);
@@ -385,10 +422,10 @@ internal sealed partial class RawCaptureIngress
             entry.ExposureStartedUtc.ToUniversalTime(), descriptor.Timing.ExposureEndedUtc.ToUniversalTime(),
             [
                 new(artifact, entry.DescriptorSha256, "raw", SiloRetentionClass.Full, descriptor.Artifact.MediaType, entry.PayloadLength,
-                    payloadSha, true, SiloFilePayloadSpool.TokenOf(payloadSha)),
+                    payloadSha, true, SiloFilePayloadSpool.TokenOf(payloadSha), Variant: descriptor.Artifact.Variant),
                 new(artifact, SiloArtifactStorage.RawEvidenceRevision, "raw-evidence", SiloRetentionClass.Metadata, "application/json", entry.ManifestJson.LongLength,
                     sidecarSha, true, SiloFilePayloadSpool.TokenOf(sidecarSha))
-            ], [], new([], Capture: capture), CameraId: descriptor.Capture.RigId,
+            ], [], new([], Capture: capture, CaptureCondition: condition), CameraId: descriptor.Capture.RigId,
             Capture: new(entry.AgentId, entry.CaptureSequence));
     }
 }

@@ -121,10 +121,22 @@ public sealed partial class SiloStockStoreTests
             var raw = reopened.Items.Single(static item => item.Role.Kind == SiloIdentityKind.Member &&
                 item.Role.Revision != SiloArtifactStorage.RawEvidenceRevision);
             Assert.IsNotNull(raw.ServedFrom);
+            var rawReferences = await storage.Index.ReadRetentionReferencesAsync(token, raw.ServedFrom, includeCapturePolicy: true)
+                .ConfigureAwait(false);
+            var condition = rawReferences[raw.ServedFrom].Single(reference => reference.Identity.Role == raw.Role).Condition;
+            Assert.IsNotNull(condition);
+            Assert.IsNotNull(condition.SkyCondition);
+            Assert.IsTrue(SiloCaptureCondition.IsSolarCondition(condition.SkyCondition));
             var artifactId = Guid.ParseExact(raw.Role.Id, "D");
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5, usesSilo: true);
             var rawEntry = await journal.ReadSiloAdmissionByArtifactAsync(artifactId, token).ConfigureAwait(false);
             Assert.IsNotNull(rawEntry);
+            var descriptor = CaptureContractJson.ParseManifest(rawEntry.ManifestJson).Document?.Manifest.Descriptor;
+            if (descriptor?.RetainedScheduleAdmission is
+                {
+                    Source: CaptureScheduleIntervalSource.WeeklyWindow or CaptureScheduleIntervalSource.DateExceptionWindow
+                } scheduleEvidence)
+                Assert.AreEqual(scheduleEvidence.IntervalId, condition.WindowId);
             while (await journal.HasPendingSiloAdmissionAsync(rawEntry.CaptureId, token).ConfigureAwait(false))
                 await Task.Delay(50, token).ConfigureAwait(false);
             Assert.IsFalse(File.Exists(Path.Combine(root, rawEntry.PayloadRelativePath)));
@@ -180,6 +192,7 @@ public sealed partial class SiloStockStoreTests
                     var productToken = productDeadline.Token;
                     var gallery = scope.ServiceProvider.GetRequiredService<ICameraAgentGallery>();
                     var reference = view.Base.Definition.Reference.Capture.CaptureId;
+                    await AssertInstalledJpegProductsAsync(scope.ServiceProvider, gallery, reference, productToken).ConfigureAwait(false);
                     while ((await gallery.GetCaptureAsync(reference, productToken).ConfigureAwait(false))?.Detail?.CloudAssessment.Availability != "Available")
                         await Task.Delay(50, productToken).ConfigureAwait(false);
                     var satellite = scope.ServiceProvider.GetRequiredService<CaptureSatelliteWorkStore>();
@@ -661,7 +674,69 @@ public sealed partial class SiloStockStoreTests
             }
             """);
         pipeline["steps"] = new JsonArray(calibration, scene, storage, cloud, satellite);
+        if (!color)
+        {
+            var configured = pipeline["steps"]!.AsArray();
+            configured.Add(JsonNode.Parse("""
+                {
+                  "id": "PackedPreview", "type": "Preview", "order": 50,
+                  "dependsOn": ["Calibration"], "publication": { "persistence": "memory-only" }
+                }
+                """));
+            configured.Add(JsonNode.Parse("""
+                {
+                  "id": "PackedAnnotation", "type": "Annotation", "order": 75,
+                  "dependsOn": ["PackedPreview", "ProjectedScene"],
+                  "publication": { "persistence": "memory-only" },
+                  "options": { "drawMetadataCorners": true, "requireProjectedSceneDependency": true }
+                }
+                """));
+            configured.Add(JsonNode.Parse("""
+                {
+                  "id": "JpegPreview", "type": "JpegEncoding", "order": 80,
+                  "dependsOn": ["PackedPreview"], "publication": { "persistence": "durable-local" },
+                  "options": { "sourceRole": "Preview", "outputVariant": "retained-preview-jpeg", "jpegQuality": 85 }
+                }
+                """));
+            configured.Add(JsonNode.Parse("""
+                {
+                  "id": "JpegAnnotation", "type": "JpegEncoding", "order": 81,
+                  "dependsOn": ["PackedAnnotation"], "publication": { "persistence": "durable-local" },
+                  "options": { "outputVariant": "retained-annotation-jpeg", "jpegQuality": 85 }
+                }
+                """));
+            storage["dependsOn"] = new JsonArray("Calibration", "JpegPreview", "JpegAnnotation");
+        }
         return configuration.ToJsonString();
+    }
+
+    private static async Task AssertInstalledJpegProductsAsync(IServiceProvider services, ICameraAgentGallery gallery,
+        Guid capture, CancellationToken token)
+    {
+        var artifacts = services.GetRequiredService<ICameraAgentArtifactService>();
+        var detail = await gallery.GetCaptureAsync(capture, token).ConfigureAwait(false);
+        Assert.IsNotNull(detail);
+        foreach (var (variant, role) in new[]
+        {
+            ("retained-preview-jpeg", FrameArtifactRole.Preview),
+            ("retained-annotation-jpeg", FrameArtifactRole.AnnotatedPreview)
+        })
+        {
+            var jpeg = detail.Artifacts.Single(artifact => artifact.Variant == variant);
+            Assert.AreEqual(role, jpeg.Role);
+            Assert.AreEqual("image/jpeg", jpeg.MediaType);
+            var result = await artifacts.OpenContentAsync(jpeg.ArtifactId, token).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
+            Assert.IsNotNull(result.Content);
+            await using var content = result.Content.ConfigureAwait(false);
+            using var bytes = new MemoryStream();
+            await result.Content.CopyToAsync(bytes, token).ConfigureAwait(false);
+            Assert.AreEqual(jpeg.ChecksumSha256, PayloadChecksum.ComputeSha256(bytes.ToArray()), ignoreCase: true);
+            var dimensions = JpegImageCodec.DecodeJpeg(bytes.ToArray(), cancellationToken: token);
+            Assert.AreEqual(64, dimensions.Width);
+            Assert.AreEqual(48, dimensions.Height);
+        }
+        Assert.IsFalse(detail.Artifacts.Any(static artifact => artifact.ProcessingNodeId is "PackedPreview" or "PackedAnnotation"));
     }
 
     private static Dictionary<string, string?> InstalledSettings(SiloStorageBinding binding, Uri endpoint,

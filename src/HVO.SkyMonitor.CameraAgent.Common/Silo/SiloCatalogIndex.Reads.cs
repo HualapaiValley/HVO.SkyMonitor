@@ -390,6 +390,23 @@ internal sealed partial class SiloCatalogIndex
         };
     }
 
+    internal async ValueTask<IReadOnlySet<Guid>> ReadPolicyExpiredArtifactsAsync(
+        IReadOnlyList<Guid> artifactIds, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, """
+            SELECT r.id FROM json_each($artifacts) a JOIN roles r ON r.kind = 'member' AND r.id = a.value
+            WHERE r.revision NOT IN ($raw, $product)
+            GROUP BY r.id HAVING MIN(COALESCE(r.journaled = 'policy-expired', 0)) = 1;
+            """, ("$artifacts", System.Text.Json.JsonSerializer.Serialize(artifactIds)),
+            ("$raw", SiloArtifactStorage.RawEvidenceRevision), ("$product", SiloArtifactStorage.ProductEvidenceRevision));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var expired = new HashSet<Guid>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            expired.Add(Guid.ParseExact(reader.GetString(0), "D"));
+        return expired;
+    }
+
     internal async ValueTask<SiloJournalPosition?> ReadRoleExpiryAsync(SiloObjectIdentity identity, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);

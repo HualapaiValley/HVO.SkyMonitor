@@ -202,6 +202,20 @@ public sealed partial class SiloRetentionTests
         var saved = SiloDrafts.View(silo.Payloads, "saved", null, 1,
             [SiloDrafts.Layer("stars", "Ready", "saved-layer", 4)], [], publishPreview: true);
         var live = SiloDrafts.View(silo.Payloads, "live", null, 1, [], [], publishPreview: true);
+        var savedRaw = SiloDrafts.Capture(silo.Payloads, 90);
+        var liveRaw = SiloDrafts.Capture(silo.Payloads, 91);
+        await silo.PublishAsync(savedRaw with
+        {
+            GroupKind = "raw-capture",
+            GroupId = Guid.Parse(saved.View!.ReferenceCaptureId).ToString("N"),
+            Provenance = new([], CaptureCondition: new(null, "Day"))
+        }).ConfigureAwait(false);
+        await silo.PublishAsync(liveRaw with
+        {
+            GroupKind = "raw-capture",
+            GroupId = Guid.Parse(live.View!.ReferenceCaptureId).ToString("N"),
+            Provenance = new([], CaptureCondition: new(null, "Day"))
+        }).ConfigureAwait(false);
         await silo.PublishAsync(saved).ConfigureAwait(false);
         await silo.PublishAsync(live).ConfigureAwait(false);
         var typedBase = SqliteCenteredViews.DeserializeDocument<CenteredViewBase>(saved.View!.Base);
@@ -215,9 +229,10 @@ public sealed partial class SiloRetentionTests
 
         silo.Clock.Advance(TimeSpan.FromDays(1));
         var retention = OpenForFixture(silo);
-        var roles = new[] { "manifest", "full", "display", "metadata" };
-        await retention.SetPolicyAsync(new(false, roles.Select(static role => new SiloRoleRetention(role, TimeSpan.Zero, false, true)).ToArray()),
-            token).ConfigureAwait(false);
+        var roles = new[] { "full", "display", "metadata" };
+        await retention.SetPolicyAsync(new(false,
+            roles.Select(static role => new SiloRoleRetention(role, TimeSpan.Zero, false, true)).ToArray(),
+            [new("daytime", [new("centered-view", TimeSpan.FromHours(12))], SkyConditions: ["Day"])]), token).ConfigureAwait(false);
         var savedManifest = silo.PublishRecord(saved.GroupId, saved.RevisionId).Manifest.Locator;
         var liveManifest = silo.PublishRecord(live.GroupId, live.RevisionId).Manifest.Locator;
         var required = silo.MemberLocator(live.GroupId, live.Members.First(static member => member.Required).ArtifactId, live.RevisionId);
@@ -247,6 +262,10 @@ public sealed partial class SiloRetentionTests
         Assert.AreEqual("deleted", await retention.SweepAsync(true, processing.ReadSavedSiloViewHoldsAsync, null, token,
             select: locator => locator == savedManifest).ConfigureAwait(false));
         Assert.AreEqual("expire-role", (await CandidatesAsync().ConfigureAwait(false)).Single(candidate => candidate.Locator == dependency).Decision);
+        var expired = await silo.Catalog.ReopenAsync(saved.GroupId, saved.RevisionId, token).ConfigureAwait(false);
+        Assert.IsFalse(expired.Reopenable);
+        Assert.AreEqual(SiloDisposition.PolicyExpired,
+            expired.Blocking.Single(static item => item.Role.Kind == SiloIdentityKind.Manifest).Disposition);
     }
 
     [TestMethod]

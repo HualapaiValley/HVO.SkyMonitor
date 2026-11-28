@@ -32,9 +32,11 @@ internal sealed record SiloDraftMember(
     string? ContentIdentitySha256 = null,
     string? OutputIdentitySha256 = null,
     string? Producer = null,
-    string? RecipeIdentitySha256 = null)
+    string? RecipeIdentitySha256 = null,
+    string? Variant = null)
 {
-    public SiloMemberFacts Facts() => new(Role, RetentionClass, MediaType, ContentIdentitySha256, OutputIdentitySha256, Producer, RecipeIdentitySha256);
+    public SiloMemberFacts Facts() => new(Role, RetentionClass, MediaType, ContentIdentitySha256, OutputIdentitySha256, Producer,
+        RecipeIdentitySha256, Variant);
 }
 
 /// <summary>

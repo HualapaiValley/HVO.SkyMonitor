@@ -150,12 +150,14 @@ public sealed record CenteredViewSavedSelection(
 /// <summary>The exact revision was published and its required evidence could not be reopened.</summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1032:Implement standard exception constructors",
     Justification = "Every reopen failure carries a reference identity and a typed read status.")]
-public sealed class CenteredViewReopenException(Guid referenceCaptureId, CameraAgentArtifactReadStatus status)
+public sealed class CenteredViewReopenException(Guid referenceCaptureId, CameraAgentArtifactReadStatus status, bool policyExpired = false)
     : IOException("Required centered-view evidence could not be reopened.")
 {
     public Guid ReferenceCaptureId { get; } = referenceCaptureId;
 
     public CameraAgentArtifactReadStatus Status { get; } = status;
+
+    public bool PolicyExpired { get; } = policyExpired;
 }
 
 public interface ICenteredViewReadIndex

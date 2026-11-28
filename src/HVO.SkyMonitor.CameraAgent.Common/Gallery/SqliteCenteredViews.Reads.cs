@@ -157,7 +157,9 @@ internal sealed partial class SqliteCenteredViews
                 : blocking.Any(static item => item.Disposition is SiloDisposition.Missing or SiloDisposition.PolicyExpired) ||
                     reopened.ClosedOutcome is SiloDisposition.Missing or SiloDisposition.PolicyExpired ? CameraAgentArtifactReadStatus.Gone
                 : CameraAgentArtifactReadStatus.Unavailable;
-            throw new CenteredViewReopenException(view.Base.Definition.Reference.Capture.CaptureId, status);
+            throw new CenteredViewReopenException(view.Base.Definition.Reference.Capture.CaptureId, status,
+                status == CameraAgentArtifactReadStatus.Gone && (reopened.ClosedOutcome == SiloDisposition.PolicyExpired ||
+                    blocking.Any(static item => item.Disposition == SiloDisposition.PolicyExpired)));
         }
         return view;
     }

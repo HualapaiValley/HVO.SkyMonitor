@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -50,13 +51,25 @@ internal sealed class SiloCaptureProcessingStep(
         if (Options.PublishArchive && context.RawCapture?.Manifest.CenteredExposure is not null &&
             context.ProcessingExecution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true })
         {
+            var selected = false;
             foreach (var artifact in artifacts)
             {
                 if (context.GetProcessingProduct(artifact.ArtifactId) is { } product &&
                     context.GetDependencyPublicationPolicy(artifact.ArtifactId)?.Persistence != CaptureProcessingPersistenceMode.MemoryOnly)
+                {
                     context.RecordArchivePublication(artifact.ArtifactId.ToString("D"), product.OutputIdentitySha256);
+                    selected = true;
+                }
             }
-            if (artifacts.Any(artifact => context.GetProcessingProduct(artifact.ArtifactId) is not null))
+            foreach (var product in products.Where(static product => product.MediaType == JpegImageCodec.MediaType &&
+                product.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview))
+            {
+                var id = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
+                if (context.GetDependencyPublicationPolicy(id)?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly) continue;
+                context.RecordArchivePublication(id.ToString("D"), product.OutputIdentitySha256);
+                selected = true;
+            }
+            if (selected)
                 faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, context.CurrentNodeId!);
         }
 
