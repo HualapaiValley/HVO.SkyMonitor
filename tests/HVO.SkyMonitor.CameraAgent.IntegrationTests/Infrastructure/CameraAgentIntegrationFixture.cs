@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
@@ -147,7 +148,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         ArgumentNullException.ThrowIfNull(configureServices);
         EnsureInitialized();
-        return _agentFactory!.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        var parent = _agentFactory!;
+        var installedStorage = parent.Services.GetRequiredService<SiloInstalledStorage>();
+        return parent.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             foreach (var hostedService in services
                          .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
@@ -155,6 +158,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             {
                 services.Remove(hostedService);
             }
+            // Endpoint-only hosts share the parent's state root and its installed Silo owner.
+            services.RemoveAll<SiloInstalledStorage>();
+            services.AddSingleton(installedStorage);
             configureServices(services);
         }));
     }
