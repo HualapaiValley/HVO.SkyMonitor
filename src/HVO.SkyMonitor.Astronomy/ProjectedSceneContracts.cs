@@ -30,7 +30,8 @@ public sealed record ProjectedSceneCatalog(
     [property: JsonRequired] string ChecksumSha256,
     [property: JsonRequired] string License,
     [property: JsonRequired] string SchemaVersion,
-    [property: JsonRequired] string PreprocessingVersion);
+    [property: JsonRequired] string PreprocessingVersion,
+    [property: JsonRequired] string CatalogId);
 
 /// <summary>
 /// Canonical catalog and topology selections used to construct the visible scene. The deep-sky selection is present
@@ -247,7 +248,8 @@ public static class ProjectedSceneJson
                 NormalizeSha256(request.CatalogMetadata.Checksum),
                 request.CatalogMetadata.License,
                 request.CatalogMetadata.SchemaVersion,
-                computation.CatalogPreprocessingVersion),
+                computation.CatalogPreprocessingVersion,
+                computation.CatalogId),
             new ProjectedSceneSelection(
                 request.CatalogQuery.MaximumMagnitude,
                 request.CatalogQuery.MaximumResults,
@@ -420,6 +422,7 @@ public static class ProjectedSceneJson
         if (hasDeepSky != scene.DeepSky is not null || hasDeepSky != scene.Selection.DeepSky is not null)
             throw new ArgumentException(
                 "A deep-sky collection and its selection require projected-scene-v3 and are absent from v1 and v2.", nameof(scene));
+        ValidateText(scene.Catalog.CatalogId, nameof(scene.Catalog.CatalogId));
         ValidateText(scene.Catalog.Name, nameof(scene.Catalog.Name));
         ValidateText(scene.Catalog.Version, nameof(scene.Catalog.Version));
         ValidateText(scene.Catalog.SchemaVersion, nameof(scene.Catalog.SchemaVersion));
@@ -955,7 +958,7 @@ public static class ProjectedSceneJson
             "astronomyAlgorithmVersion", "constellationTopology", "ephemerisModelVersion", "source", "objects", "segments")) return false;
         if (!Object(root, "observer", out var observer) || !HasProperties(observer, "latitudeDegrees", "longitudeDegrees", "elevationMeters") ||
             !Object(root, "catalog", out var catalog) || !HasProperties(catalog, "name", "version", "sourceUrl",
-                "checksumSha256", "license", "schemaVersion", "preprocessingVersion") ||
+                "checksumSha256", "license", "schemaVersion", "preprocessingVersion", "catalogId") ||
             !Object(root, "selection", out var selection) || !HasProperties(selection, "maximumMagnitude", "maximumResults",
                 "constellationIds", "solarSystemBodies", "includeConstellationEndpointStars") ||
             !Array(selection, "constellationIds", out _) || !Array(selection, "solarSystemBodies", out _) ||

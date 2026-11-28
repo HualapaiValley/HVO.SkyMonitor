@@ -3188,7 +3188,7 @@ public sealed partial class DurableCaptureProcessingTests
                 "EquidistantFisheye",
                 "projection-v1",
                 "astronomy-v1",
-                "sensor-v1");
+                "sensor-v1", CatalogId: "test-catalog");
             manifest = manifest with { Scene = scene };
         }
         var payloadPath = Path.Combine(root, "raw.bin");

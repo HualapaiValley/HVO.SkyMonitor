@@ -54,7 +54,7 @@ public sealed class MeasuredDeepSkyLiveTests
         var root = Environment.GetEnvironmentVariable("HVO_1926_CATALOG_INPUTS");
         if (string.IsNullOrWhiteSpace(root))
         {
-            Assert.Inconclusive("Set HVO_1926_CATALOG_INPUTS to the directory containing the approved HYG 4.2 and OpenNGC bundles.");
+            Assert.Inconclusive("Set HVO_1926_CATALOG_INPUTS to the directory containing the approved HYG 4.4 and OpenNGC bundles.");
         }
 
         await VirtualSkyCameraModuleTests.RunMeasuredDeepSkyLiveProofAsync(root, exposureCount,
@@ -67,14 +67,14 @@ public sealed partial class VirtualSkyCameraModuleTests
     internal static async Task RunMeasuredDeepSkyLiveProofAsync(string catalogRoot, int exposureCount,
         bool poleAligned, bool injectFixture, bool compareResources, TestContext evidence)
     {
-        const string hyg = "hyg-v4.2-p3-s2-r1";
+        const string hyg = "hyg-v4.4-p4-s3-r1";
         const string ngc = "openngc-v20260501-p6-s5-r1";
         // A complete bright-star slice of the approved catalog fits the ordinary graph's
         // 64 KiB settings contract while retaining stars across the full field.
         const double magnitude = 3.25;
         var token = evidence.CancellationToken;
         var stars = CatalogSnapshotResolver.ResolveDirectory(Path.Combine(catalogRoot, hyg + ".bundle"),
-            new(catalogRoot, "hyg-v42-production") { ExpectedPackageVersion = hyg });
+            new(catalogRoot, "hyg-v44-production") { ExpectedPackageVersion = hyg });
         var objects = CatalogSnapshotResolver.ResolveDirectory(Path.Combine(catalogRoot, ngc + ".bundle"),
             new(catalogRoot, "openngc-production") { ExpectedPackageVersion = ngc });
         var catalog = new InstalledCatalogPair(stars.Catalog, objects);

@@ -104,7 +104,7 @@ internal sealed class WizardHost : IDisposable
     {
         get
         {
-            var path = Path.Combine(Root, "catalog", "hyg-v4.2-p3-s2-r1.bundle");
+            var path = Path.Combine(Root, "catalog", "hyg-v4.4-p4-s3-r1.bundle");
             Directory.CreateDirectory(path);
             return path;
         }
@@ -125,7 +125,7 @@ internal sealed class WizardHost : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         var catalog = new CatalogInstallationIdentity(
-            HygV42.CatalogId, "hyg-v4.2-p3-s2-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg-v4.2",
+            HygV44.CatalogId, "hyg-v4.4-p4-s3-r1", "1", "1", new string('a', 64), 1, 1, "/var/lib/hvo-sky/catalogs/hyg-v44-production",
             new string('a', 64), "local-offline");
         const string image = "sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6a9b2d5e8f1a4c7b0d3e6f";
         var root = $"/var/lib/hvo-sky/cameraagents/{request.InstanceId:D}";
@@ -143,7 +143,7 @@ internal sealed class WizardHost : IDisposable
                 new(DeploymentPlanAction.Create, "folder", root),
                 new(DeploymentPlanAction.Create, "file", $"{root}/config/cameraagent.json"),
                 new(DeploymentPlanAction.Create, "image", image, "imported from the release's archive"),
-                new(DeploymentPlanAction.Create, "catalog", "/var/lib/hvo-sky/catalogs/hyg-v4.2"),
+                new(DeploymentPlanAction.Create, "catalog", "/var/lib/hvo-sky/catalogs/hyg-v44-production"),
                 new(DeploymentPlanAction.Create, "container", $"hvo-sky-cameraagent-{request.InstanceId:N}", "2 CPUs, 4 GiB, 256 PIDs"),
                 new(DeploymentPlanAction.Change, "record", "/etc/hvo-sky/install.json", "adds this instance")
             ])

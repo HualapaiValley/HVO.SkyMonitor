@@ -278,7 +278,7 @@ public static class SiloFixtureImportCommand
     private static bool IsCommandFailure(Exception exception) => exception is
         ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or FormatException or
         System.Text.Json.JsonException or InvalidDataException or Microsoft.Data.Sqlite.SqliteException or PlatformNotSupportedException or
-        Amazon.Runtime.AmazonServiceException or HttpRequestException;
+        HttpRequestException || SiloInstalledStore.IsProviderServiceFailure(exception);
 
     private static string FailReason(Exception exception) => exception switch
     {

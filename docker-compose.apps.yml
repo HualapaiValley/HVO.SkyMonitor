@@ -19,7 +19,7 @@ services:
       DeviceProvisioning__StateDirectory: /app/data/provisioning
       CameraAgent__RawIngressRoot: /workspaces/HVO.SkyMonitor/data/agent
       Catalog__Root: /app/catalog
-      Catalog__RequiredCatalogId: hyg-v42-production
+      Catalog__RequiredCatalogId: hyg-v44-production
       Catalog__RequiredPackageKind: Production
     ports:
       - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"
@@ -40,7 +40,7 @@ services:
         source: ${HVO_RUNTIME_DATA_ROOT:-./data}/archive
         target: /workspaces/HVO.SkyMonitor/data/archive
       - type: bind
-        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/catalog
+        source: ${HVO_RUNTIME_DATA_ROOT:-./data}/catalogs/hyg-v44-production
         target: /app/catalog
         read_only: true
     restart: unless-stopped

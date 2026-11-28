@@ -270,7 +270,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback =>
                     await CatalogLifecycleManager.SelectAsync(
                         request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                        lifecycleControlToken!, daemon, installationVerificationToken!, cancellationToken)
+                        lifecycleControlToken!, installationVerificationToken!, cancellationToken)
                         .ConfigureAwait(false),
                 _ => throw new InstallUsageException("The lifecycle operation is unsupported for a CameraAgent instance.")
             };
@@ -2190,14 +2190,11 @@ internal sealed partial class CameraAgentLifecycleManager
         var value = await ReadSecretAsync(path, cancellationToken).ConfigureAwait(false);
         if (value != packageVersion && value != resumablePackageVersion)
             throw new InstallerException("The catalog selection credential does not match the retained lifecycle state.");
-        // The required catalog ID names the lineage the host enforces; it must name the same approved catalog as the
-        // selected package version, which an interrupted cross-lineage selection may have advanced to its candidate.
         var catalogIdPath = Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredCatalogId");
         if (!File.Exists(catalogIdPath))
             throw new InstallerException("The catalog selection credential does not match the retained instance manifest.");
         var catalogId = await ReadSecretAsync(catalogIdPath, cancellationToken).ConfigureAwait(false);
-        if (catalogId != ProductionCatalog.ForPackageVersion(packageVersion).CatalogId &&
-            (resumablePackageVersion is null || catalogId != ProductionCatalog.ForPackageVersion(resumablePackageVersion).CatalogId))
+        if (catalogId != ProductionCatalog.ForPackageVersion(packageVersion).CatalogId)
             throw new InstallerException("The catalog selection credential does not match the retained lifecycle state.");
     }
 
@@ -2260,7 +2257,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             (manifest.PreviousImage is null) != (manifest.PreviousComposeModelSha256 is null) ||
             manifest.PreviousComposeModelSha256 is not null && !IsSha256(manifest.PreviousComposeModelSha256) ||
-            manifest.PreviousCatalog is not null && !IsValidCatalog(manifest.PreviousCatalog) ||
+            manifest.PreviousCatalog is not null && (!IsValidCatalog(manifest.PreviousCatalog) ||
+                manifest.PreviousCatalog.CatalogId != manifest.Catalog.CatalogId ||
+                manifest.PreviousCatalog.PackageVersion == manifest.Catalog.PackageVersion) ||
             manifest.PreviousCatalog is not null &&
             manifest.PreviousCatalog.InstallRoot != Path.Combine(
                 manifest.ProductRoot, "catalogs", manifest.PreviousCatalog.CatalogId) ||

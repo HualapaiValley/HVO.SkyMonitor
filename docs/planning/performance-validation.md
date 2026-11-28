@@ -57,7 +57,7 @@ Before `W6` is runnable, #211's readiness manifest pins the deployment location,
 scene UTCs, rig/profile hashes, expected catalog row IDs and coordinate
 tolerances, magnitude/result limits, cadence, operation count/duration,
 retention limits, storage headroom, each fault/outage duration, initial backlog,
-and drain budget. The full production catalog means the verified 119,625-row
+and drain budget. The full production catalog means the verified 119,613-row
 snapshot is installed and identified; scene queries remain bounded and do not
 render every catalog row.
 

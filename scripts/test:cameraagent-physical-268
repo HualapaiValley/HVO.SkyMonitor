@@ -20,7 +20,7 @@ readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
 readonly EXPECTED_HEADER_SHA256='af6ab82e66905b3a0f3313e1e82ccb4fedde272eaa64744588a1be8103f9cf0c'
 readonly EXPECTED_UDEV_SHA256='a64c24317f154d5b074e9fac9249f4a5d905153b22f1e74aac4c5f8fe1443f36'
-readonly EXPECTED_CATALOG_SHA256='b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2'
+readonly EXPECTED_CATALOG_SHA256='2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321'
 readonly HEADER_PATH='/usr/local/include/ASICamera2.h'
 readonly UDEV_PATH='/etc/udev/rules.d/99-asi.rules'
 readonly TRIAL_COUNT=5
@@ -75,7 +75,7 @@ case "$PROFILE:$EXPECTED_HOST" in
         exit 2
         ;;
 esac
-readonly EXPECTED_CATALOG_PACKAGE_VERSION='hyg-v4.2-p3-s2-r1'
+readonly EXPECTED_CATALOG_PACKAGE_VERSION='hyg-v4.4-p4-s3-r1'
 
 for variable in HVO_AGENT_STATE_ROOT HVO_CATALOG_PERF_ROOT HVO_OTEL_COLLECTOR_IMAGE \
     HVO_ZWO_SDK_LIBRARY HVO_ZWO_CAMERA_SERIAL HVO_ISSUE_268_USB_SYSFS_PATH; do
@@ -444,7 +444,7 @@ assert_catalog_identity() {
     [[ -z "$(find "$HVO_CATALOG_PERF_ROOT" -mindepth 1 ! -type d ! -type f \
         ! -path "$HVO_CATALOG_PERF_ROOT/current" -print -quit)" ]] || return 1
     [[ "$(find "$HVO_CATALOG_PERF_ROOT" -type l -print)" == "$HVO_CATALOG_PERF_ROOT/current" ]] || return 1
-    catalog_file="$HVO_CATALOG_PERF_ROOT/$expected_target/hyg_v42.sqlite"
+    catalog_file="$HVO_CATALOG_PERF_ROOT/$expected_target/hyg_v44.sqlite"
     [[ -f "$catalog_file" && ! -L "$catalog_file" ]] || return 1
     sha256_matches "$catalog_file" "$EXPECTED_CATALOG_SHA256" || return 1
     [[ "$(find "$HVO_CATALOG_PERF_ROOT" -type f -name '*.sqlite' -print)" == "$catalog_file" ]] || return 1

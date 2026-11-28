@@ -39,9 +39,9 @@ public sealed class VirtualStellarExposureResourceTests
         var utc = new DateTimeOffset(2026, 2, 10, parts[1] == "day" ? 20 : 8, 0, 0, TimeSpan.Zero);
         var root = Environment.GetEnvironmentVariable("HVO_ASTROMETRY_CATALOG_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(root));
-        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v42-production"));
-        Assert.AreEqual(119625L, snapshot.RowCount);
-        Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
+        var snapshot = CatalogSnapshotResolver.Resolve(new(root, "hyg-v44-production"));
+        Assert.AreEqual(119613L, snapshot.RowCount);
+        Assert.AreEqual("2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321", snapshot.DatabaseSha256);
         var rig = parts[0] == "asi676" ? LoadRig("virtual-asi676mc.full.json") :
             VirtualAstrometryFixture.Profiles(52201).Single(profile =>
                 profile.Name == (parts[0] == "mono" ? "mono-native" : "cfa-native")).Config.Rig;

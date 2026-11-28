@@ -124,7 +124,7 @@ internal sealed class CenteredOperationsFixture
             (-38, 79), (-82, 16), (58, -64), (20, 87), (1, 98)
         ];
         var snapshot = Path.Combine(root, "catalog", "current");
-        var database = Path.Combine(snapshot, "hyg_v42.sqlite");
+        var database = Path.Combine(snapshot, "hyg_v44.sqlite");
         using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = database,

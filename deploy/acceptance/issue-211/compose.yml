@@ -16,7 +16,7 @@ services:
       CameraAgent__RawIngressRoot: /var/lib/hvo/data/agent
       CameraAgent__AcceptanceFaultControlRoot: /var/lib/hvo/data/agent/acceptance-faults
       Catalog__Root: /var/lib/hvo/data/catalog
-      Catalog__RequiredCatalogId: hyg-v42-production
+      Catalog__RequiredCatalogId: hyg-v44-production
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}
       LocalIdentity__CookieName: CameraAgent.Standalone211.Auth
       LocalIdentity__DatabasePath: /var/lib/hvo/data/agent/identity/cameraagent_identity.db

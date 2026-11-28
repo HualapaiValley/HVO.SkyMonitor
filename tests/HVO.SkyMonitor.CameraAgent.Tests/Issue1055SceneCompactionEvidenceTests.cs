@@ -82,9 +82,9 @@ public sealed class Issue1055SceneCompactionEvidenceTests
         CatalogSnapshotResult? snapshot = null;
         if (mode == "capture")
         {
-            snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE1055_CATALOG_ROOT"), "hyg-v42-production"));
-            Assert.AreEqual(119625L, snapshot.RowCount);
-            Assert.AreEqual("B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2", snapshot.DatabaseSha256);
+            snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE1055_CATALOG_ROOT"), "hyg-v44-production"));
+            Assert.AreEqual(119613L, snapshot.RowCount);
+            Assert.AreEqual("2CC06890DE1D4168F1EB91CA4EF5CDE1C4923F275A52A1AEDFEC002DF42A3321", snapshot.DatabaseSha256);
             services.AddSingleton<ICelestialCatalog>(snapshot.Catalog);
         }
         else services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));

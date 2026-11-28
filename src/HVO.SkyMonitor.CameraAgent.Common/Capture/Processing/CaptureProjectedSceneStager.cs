@@ -15,9 +15,8 @@ public sealed class CaptureProjectedSceneStager(
     IConstellationTopology? topology = null,
     IPlanetEphemeris? ephemeris = null)
 {
-    private CatalogSnapshotIdentity? FrozenCatalog => catalog is ICelestialCatalogMetadataSource source
-        ? new CatalogSnapshotIdentity(source.CatalogId ?? source.Metadata.Name,
-            source.CatalogPackageVersion ?? source.Metadata.Version, source.Metadata.SchemaVersion,
+    private CatalogSnapshotIdentity? FrozenCatalog => catalog is ICelestialCatalogMetadataSource { CatalogId: { } catalogId, CatalogPackageVersion: { } packageVersion } source
+        ? new CatalogSnapshotIdentity(catalogId, packageVersion, source.Metadata.SchemaVersion,
             source.PreprocessingVersion, source.Metadata.Checksum)
         : null;
 
@@ -112,7 +111,6 @@ public sealed class CaptureProjectedSceneStager(
         var stageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"hvo.skymonitor.projected-scene-stage-key.v1\0{captureId:N}")));
         var topologyMetadata = options.ConstellationIds.Count > 0 ? topology?.Metadata : null;
-        var (catalogId, catalogPackageVersion) = CatalogSceneProvenanceIdentity.For(metadataSource);
         var provenance = new SceneProvenance(
             stageKey,
             config.Rig.ProfileVersion,
@@ -144,8 +142,8 @@ public sealed class CaptureProjectedSceneStager(
             ProjectedSceneStageKey: stageKey,
             ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
             ProjectedSceneSchemaVersion: scene.ProjectedSceneSchemaVersion,
-            CatalogId: catalogId,
-            CatalogPackageVersion: catalogPackageVersion,
+            CatalogId: scene.ComputationProvenance.CatalogId,
+            CatalogPackageVersion: scene.ComputationProvenance.CatalogPackageVersion,
             DeepSkyCatalog: scene.DeepSky?.CatalogIdentity);
         await stagingStore.StageAsync(
             stageKey,

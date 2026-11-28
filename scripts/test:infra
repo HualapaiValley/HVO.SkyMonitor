@@ -101,14 +101,6 @@ fi
 test "$(<"$TEMP_DIR/unsafe-missing-ancestor.log")" = 'Runtime parent ancestor must not be group- or world-writable.'
 test ! -e "$TEMP_DIR/unsafe-missing-ancestor/missing-parent"
 
-if HVO_RUNTIME_DATA_ROOT="$TEMP_DIR/parent-world-writable/runtime" \
-    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" \
-    "$TEMP_DIR/parent-world-writable/runtime/catalog" >"$TEMP_DIR/catalog-parent-rejection.log" 2>&1; then
-    fail 'Catalog install accepted a group/world-writable runtime parent.'
-fi
-test "$(<"$TEMP_DIR/catalog-parent-rejection.log")" = 'Runtime parent must not be group- or world-writable.'
-test ! -e "$TEMP_DIR/parent-world-writable/.hvo-application-state.lock"
-
 mkdir -p "$TEMP_DIR/runtime-root-writable/runtime"
 chmod 0700 "$TEMP_DIR/runtime-root-writable"
 chmod 0777 "$TEMP_DIR/runtime-root-writable/runtime"
@@ -130,7 +122,7 @@ test "$(stat -c '%a' "$writable_host_root/cameraagent")" = 777
 
 mkdir -p \
     "$RUNTIME_ROOT/logichost/dataprotection" \
-    "$RUNTIME_ROOT/catalog/versions/installed" \
+    "$RUNTIME_ROOT/catalogs/hyg-v44-production/versions/installed" \
     "$RUNTIME_ROOT/cameraagent/identity" \
     "$RUNTIME_ROOT/cameraagent/dataprotection" \
     "$RUNTIME_ROOT/cameraagent/provisioning/nested" \
@@ -138,7 +130,7 @@ mkdir -p \
     "$RUNTIME_ROOT/archive" \
     "$TEMP_DIR/shared-volume"
 printf 'logic-key\n' > "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
-printf 'catalog-target\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+printf 'catalog-target\n' > "$RUNTIME_ROOT/catalogs/hyg-v44-production/versions/installed/manifest.json"
 printf 'shared-service\n' > "$TEMP_DIR/shared-volume/database.sentinel"
 printf 'identity-db\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db"
 printf 'identity-wal\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db-wal"
@@ -162,7 +154,7 @@ grep -Fqx 'compose -f docker-compose.apps.yml build cameraagent' "$TEMP_DIR/dock
 grep -Fqx 'compose -f docker-compose.apps.yml up -d cameraagent' "$TEMP_DIR/docker.log"
 grep -q logichost "$TEMP_DIR/docker.log" && fail 'A CameraAgent-only reset selected LogicHost.'
 test -f "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
-test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$RUNTIME_ROOT/catalogs/hyg-v44-production/versions/installed/manifest.json"
 test -f "$RUNTIME_ROOT/unmanaged.sentinel"
 test ! -e "$RUNTIME_ROOT/cameraagent/identity/identity.db"
 test ! -e "$RUNTIME_ROOT/agent/outbox"
@@ -179,7 +171,7 @@ run_start --reset
 grep -Fqx 'compose -f docker-compose.apps.yml build cameraagent' "$TEMP_DIR/docker.log"
 grep -Fqx 'compose -f docker-compose.apps.yml up -d cameraagent' "$TEMP_DIR/docker.log"
 test ! -e "$RUNTIME_ROOT/cameraagent/identity/identity.db"
-test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$RUNTIME_ROOT/catalogs/hyg-v44-production/versions/installed/manifest.json"
 test -f "$RUNTIME_ROOT/unmanaged.sentinel"
 test -f "$TEMP_DIR/shared-volume/database.sentinel"
 test -f "$RUNTIME_ROOT/logichost/dataprotection/key.xml"
@@ -188,7 +180,7 @@ printf 'identity-db\n' > "$RUNTIME_ROOT/cameraagent/identity/identity.db"
 PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
     "$REPO_ROOT/scripts/infra:reset" cameraagent >/dev/null
 test ! -e "$RUNTIME_ROOT/cameraagent/identity/identity.db"
-test -f "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
+test -f "$RUNTIME_ROOT/catalogs/hyg-v44-production/versions/installed/manifest.json"
 test -f "$TEMP_DIR/shared-volume/database.sentinel"
 
 mkdir -p "$TEMP_DIR/outside-runtime"
@@ -212,7 +204,7 @@ test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/dataprotection")" = 700
 test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/identity")" = 700
 test "$(stat -c '%a' "$TEMP_DIR")" = "$runtime_parent_mode"
 
-# The common lock rejects ordinary start/rebuild/reset/catalog mutation without touching state.
+# The common lock rejects ordinary start/rebuild/reset without touching state.
 exec 8<>"$TEMP_DIR/.hvo-application-state.lock"
 flock -n 8
 if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
@@ -227,11 +219,6 @@ if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROO
     "$REPO_ROOT/scripts/infra:start" --rebuild cameraagent >/dev/null 2>&1; then
     fail 'Rebuild ignored the common application-state operation lock.'
 fi
-if HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
-    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" "$RUNTIME_ROOT/catalog" >"$TEMP_DIR/catalog-lock.log" 2>&1; then
-    fail 'Catalog mutation ignored the common application-state operation lock.'
-fi
-grep -Fq 'Another application-state operation is in progress.' "$TEMP_DIR/catalog-lock.log"
 flock -u 8
 exec 8>&-
 test -f "$TEMP_DIR/shared-volume/database.sentinel"
@@ -253,14 +240,6 @@ if (
 ); then
     fail 'Start accepted an exact-inode descriptor that was not already locked.'
 fi
-
-# Explicit runtime/catalog configuration cannot redirect catalog mutation outside the locked runtime.
-if HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
-    "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" install "$TEMP_DIR/not-a-bundle" "$TEMP_DIR/other-catalog" \
-    >"$TEMP_DIR/catalog-mismatch.log" 2>&1; then
-    fail 'Catalog install accepted an install root outside HVO_RUNTIME_DATA_ROOT/catalog.'
-fi
-grep -Fq 'must equal HVO_RUNTIME_DATA_ROOT/catalog' "$TEMP_DIR/catalog-mismatch.log"
 
 # Direct start/reset refuse any durable restore marker and direct the operator to recovery.
 printf 'pending\n' > "$TEMP_DIR/.hvo-application-state-restore.transaction"

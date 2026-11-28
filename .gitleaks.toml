@@ -96,6 +96,14 @@ commits = ["b246422f38bcb39058b0b4fecd3991f83a06f2e8"]
 paths = ['''^docs/validation/satellite-nominal-evaluation-v1/replay-summary\.json$''']
 
 [[allowlists]]
+description = """The #2181 CI evidence fixtures name the public hyg-v44-contracts artifact under a JSON key field. \
+The artifact name is a label and grants no access. This exception covers the introducing commit and the two fixture paths."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = ["ab342136570c2d1e46172c4c96757c2212072bdb"]
+paths = ['''^tests/fixtures/issue-535/final-head/(green|replay-nodes-definition-order)\.json$''']
+
+[[allowlists]]
 description = """Not key material. The #1615 disposable recovery probe records a SHA-256 content digest under the \
 fixture file name 'key'. The file contains exactly 32768 synthetic repeated ASCII k bytes, generated in unit-probe.py; \
 the digest verifies restored bytes and grants no access. Only this immutable introducing commit/path/rule is covered."""

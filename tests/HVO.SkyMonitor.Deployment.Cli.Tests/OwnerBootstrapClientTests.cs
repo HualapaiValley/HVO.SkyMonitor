@@ -18,8 +18,8 @@ public sealed partial class OwnerBootstrapClientTests
         new string('a', 64), new string('b', 64), new string('c', 64),
         "test-location", 1, new string('d', 64), HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess,
         new CatalogInstallationIdentity(
-            HygV42.CatalogId, HygV42.PackageVersion, "2", "3",
-            HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount,
+            HygV44.CatalogId, HygV44.PackageVersion, "3", "4",
+            HygV44.DatabaseSha256, HygV44.DatabaseLength, HygV44.RowCount,
             "/test/catalog", new string('e', 64), "local-offline"));
 
     [TestMethod]

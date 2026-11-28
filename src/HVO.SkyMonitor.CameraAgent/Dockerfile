@@ -127,7 +127,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # explicitly so it never inherits the base image's operating-system version.
 #
 # The state-contract label identifies the fresh-install baseline for CameraAgent lifecycle operations.
-# The catalog-manifest-version label identifies the highest supported catalog manifest.
+# The catalog-manifest-version label identifies the highest supported catalog manifest. The v4
+# catalog contract covers HYG 4.4, the composed HYG 4.4 + OpenNGC catalog, and standalone OpenNGC.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -147,7 +148,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
-      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v4" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       io.hvo.skymonitor.first-boot-contract="cameraagent-first-boot-pause-v1" \
       io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"environmentalObservations\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \

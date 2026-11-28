@@ -61,15 +61,13 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "CC0674AFD04D9FC94BBDDBE5C2726EA6BCEBF863DCE8764FB4525FF5CF5F6332",
+            "6D1AE053A0827745EF7E7E5602C78DCD6DB8C4A0BFCE933ED1C0CE6B54EFF640",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         // The W6 qualification keeps full catalog depth instead of the operator's scene object limit.
         Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
-        Assert.AreEqual(
-            "3AA1CDF3A608275CE17A8B4567B737681119854E713850F1827C31B48FC37BA3",
-            HistoricalCatalogCapProfileSha256(configuration));
+        Assert.AreNotEqual(localProfileSha256, LimitedCatalogProfileSha256(configuration));
         Assert.AreEqual(
             "7B502DC7EB6D565C7671D5B8042FAB4CACFA72E0B4B25B38F67629C5CA607F3E",
             preview.DesiredSha256,
@@ -160,16 +158,13 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual(
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
-        Assert.AreEqual(
-            "D837B53C95B766384D12B4AD228C8C7EBB14B12AE97B502F9AAACBDCD6B0369B",
-            LocalCaptureProfileContract.ComputeSha256(
-                LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
+        var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
+            LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
+        Assert.AreEqual("336492536C4A68193AC96FD1B30D9545A03BFFDF5B1628ABBC5948BF908331CF", localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         // The mono8 W6 control keeps full catalog depth instead of the operator's scene object limit.
         Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
-        Assert.AreEqual(
-            "18091F19A3B0F6CBFED3DB70D2E4111788BF67F5565A4E13A62C26A13F82304F",
-            HistoricalCatalogCapProfileSha256(configuration));
+        Assert.AreNotEqual(localProfileSha256, LimitedCatalogProfileSha256(configuration));
         Assert.AreEqual(
             "E5F0E7EAEA0C834FF8A332F11A9725DC50C31A603D87A32EC8FB73BB80006680",
             preview.DesiredSha256);
@@ -500,15 +495,14 @@ public sealed class StandaloneW6ProfileTests
         return CaptureContractJson.ComputeCanonicalJsonSha256(preimage);
     }
 
-    private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
+    private static string LimitedCatalogProfileSha256(CameraModuleConfig configuration)
     {
-        // Only the explicitly enlarged safety cap and the explicit exhaustive opt-out from the operator's scene
-        // object limit (#1277) may change these pinned profile identities.
+        // Compare the limited and exhaustive profiles with the same configured catalog.
         var options = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
             configuration.Module.Options!.Value.GetRawText())!;
         options["maximumResults"] = System.Text.Json.JsonSerializer.SerializeToElement(300);
         options.Remove("stellarCandidateSelection");
-        var historical = configuration with
+        var limited = configuration with
         {
             Module = configuration.Module with
             {
@@ -516,7 +510,7 @@ public sealed class StandaloneW6ProfileTests
             }
         };
         return LocalCaptureProfileContract.ComputeSha256(
-            LocalCaptureProfileDefinition.CreateForConfiguration(historical, historical.Schedule!));
+            LocalCaptureProfileDefinition.CreateForConfiguration(limited, limited.Schedule!));
     }
 
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)

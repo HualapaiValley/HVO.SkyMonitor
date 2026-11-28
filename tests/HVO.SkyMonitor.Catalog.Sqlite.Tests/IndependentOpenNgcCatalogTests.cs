@@ -73,7 +73,7 @@ internal sealed class IndependentOpenNgcCatalogTests
     public void StandaloneResolutionRejectsChangedBytesAndWrongCatalogIdentity()
     {
         using var fixture = new Snapshot();
-        Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.Resolve(new(fixture.Root, "hyg-v42-fixture")
+        Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.Resolve(new(fixture.Root, "hyg-v44-fixture")
         { ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture }));
         var bytes = File.ReadAllBytes(fixture.Database);
         bytes[^1] ^= 1;
@@ -89,7 +89,7 @@ internal sealed class IndependentOpenNgcCatalogTests
         var values = new Dictionary<string, string?>
         {
             ["Catalog:Root"] = stars.Root,
-            ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
+            ["Catalog:RequiredCatalogId"] = "hyg-v44-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["DeepSkyCatalog:Enabled"] = "true",
             ["DeepSkyCatalog:Root"] = fixture.Root,

@@ -50,11 +50,10 @@ project, with its own port, state and owner.
 
 `catalogId` is a stable logical identifier declared by the catalog specification,
 required as `catalog.id` in manifest version 2,
-for example `hyg-v42-production`. It is not a random installation UUID and is
-never inferred from a package filename or display name. The approved specifications
-are embedded in `src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json`:
-HYG v4.2 assigns `hyg-v42-production` (package lineage `hyg-v4.2-p3-s2-r<N>`) and
-HYG v4.4 assigns `hyg-v44-production` (package lineage `hyg-v4.4-p4-s3-r<N>`).
+for example `hyg-v44-production` (package lineage `hyg-v44-production-p4-s3`).
+The embedded approved registry defines the catalog ID, package version prefix
+and pinned content in
+`src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json`.
 The installer validates IDs against the approved specifications. Exact snapshots remain identified by
 package version, schema/preprocessing versions, database SHA-256, byte length,
 and row count. The source bundle, installed manifest, ledger and selected version must agree.

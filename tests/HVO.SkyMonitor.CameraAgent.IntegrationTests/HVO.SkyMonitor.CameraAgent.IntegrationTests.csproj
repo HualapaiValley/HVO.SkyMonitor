@@ -27,7 +27,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite">
+    <None Include="..\fixtures\catalog\hyg-v44-subset.sqlite" Link="Fixtures\hyg-v44-subset.sqlite">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">

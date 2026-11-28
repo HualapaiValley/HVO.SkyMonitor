@@ -47,8 +47,8 @@ public sealed class FullDayStillProductQualificationTests
         var root = Required("HVO_ISSUE993_FULL_DAY_ROOT");
         Assert.IsFalse(Directory.Exists(root), "Use a fresh evidence root; retained captures and products are immutable.");
         Directory.CreateDirectory(root);
-        var snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE993_CATALOG_ROOT"), "hyg-v42-production")
-        { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" });
+        var snapshot = CatalogSnapshotResolver.Resolve(new(Required("HVO_ISSUE993_CATALOG_ROOT"), "hyg-v44-production")
+        { ExpectedPackageVersion = "hyg-v4.4-p4-s3-r1" });
         var site = DeploymentLocationSnapshot.Create("issue-993-qualified-site", 1, "test", null,
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), null, Latitude, Longitude, 0, "America/Phoenix");
         var calendar = ObservingDayCalendar.ForDeployment(site);

@@ -4,9 +4,7 @@ using HVO.SkyMonitor.Deployment.Contracts;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// Retiring the signed-release options (#1309) kept their slots in the request identities, so an installation or a
-/// lifecycle operation journaled by an earlier build still matches the same request made with this one, and resumes.
-/// Each value was computed by the build before the retirement (development/v1 at bf66ccf6) from the same request.
+/// Checks request identities for catalog installation and release-based CameraAgent lifecycle operations.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -25,6 +23,17 @@ public sealed class RequestIdentityStabilityTests
         ElevationMeters = 800,
         TimeZoneId = "America/Phoenix"
     };
+
+    [TestMethod]
+    public void CatalogBundleInstall_HasTheBaselineRequestIdentity()
+    {
+        var request = new LifecycleRequest(LifecycleOperationKind.CatalogInstall, null, "/var/lib/hvo-sky", false, false, false)
+        {
+            CatalogBundle = "/srv/hvo/hyg-v4.4-p4-s3-r1.bundle"
+        };
+
+        Assert.AreEqual("53577bf35c255d7f03192cfbf3b6f6d4433785b027347c9ca6e2b5cb41d49577", request.ComputeRequestSha256());
+    }
 
     [TestMethod]
     public void ReleaseUpgrade_BindsTheReleaseFolderAndImageSource()
@@ -59,6 +68,5 @@ public sealed class RequestIdentityStabilityTests
         Assert.AreNotEqual(
             identity,
             CameraAgentInstaller.ComputeRequestSha256(request with { ImageSource = ReleaseImageSource.Registry }, InstanceId, verified));
-        // The legacy identity predates releases, so a release install never matches it.
     }
 }

@@ -319,7 +319,7 @@ public sealed class ContainerResourceLimitsTests
                          (null, OriginalLimitLines)
                      })
             {
-                var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+                var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV44.CatalogId);
                 Directory.CreateDirectory(paths.CatalogRoot);
                 var compose = ComposeDeployment.Write(
                     request,
@@ -329,7 +329,7 @@ public sealed class ContainerResourceLimitsTests
                     NativeLinux.getuid(),
                     NativeLinux.getgid(),
                     $"sha256:{new string('a', 64)}",
-                    HygV42.PackageVersion,
+                    HygV44.PackageVersion,
                     Path.Combine(paths.ConfigRoot, "owner-password"),
                     "verification-token",
                     "lifecycle-token",

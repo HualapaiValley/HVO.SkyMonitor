@@ -22,8 +22,7 @@ profile here is a physical lens certification.
 
 ## Catalog selection
 
-Counts are complete selections of the installed `hyg-v42-production` snapshot (HYG 4.2, 119,625 rows, database
-SHA-256 `B51D18B7…0B9E2`). A request is complete only when every row at or brighter than the requested magnitude fits
+Counts below are from the retired snapshot used by the [original qualification](https://github.com/HualapaiValley/HVO.SkyMonitor/blob/83ff398089778d51ef1e26ad848052493b685ed9/docs/astronomy/deep-catalog-selection-v1.md#catalog-selection). Current deployments use [HYG 4.4](../catalog/hyg-v44.md). A request is complete only when every row at or brighter than the requested magnitude fits
 inside the request bound.
 
 | Requested magnitude | Rows | Fits the bound of |

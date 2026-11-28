@@ -710,7 +710,6 @@ public sealed class VirtualSkyCameraModule(
         var transientProvenance = CreateTransientProvenance(
             transient is null ? null : namedPass?.Definition ?? _options.TransientScenario,
             timelineUtc, setpoint.Exposure, namedPass);
-        var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -749,8 +748,8 @@ public sealed class VirtualSkyCameraModule(
             ProjectedSceneStageKey: stageKey,
             VirtualExposure: virtualExposure,
             ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
-            CatalogId: catalogIdentity.CatalogId,
-            CatalogPackageVersion: catalogIdentity.PackageVersion,
+            CatalogId: renderScene.ComputationProvenance.CatalogId,
+            CatalogPackageVersion: renderScene.ComputationProvenance.CatalogPackageVersion,
             DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity ?? resolvedRenderDeepSkyCatalogIdentity,
             CaptureGraphRevisionId: captureGraph?.RevisionId);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -1978,11 +1977,11 @@ public sealed class VirtualSkyCameraModuleOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualCalibrationLightOptions? VirtualCalibration { get; init; }
     public string CatalogName { get; init; } = "HYG";
-    public string CatalogVersion { get; init; } = "4.2-test-fixture";
+    public string CatalogVersion { get; init; } = "4.4-fixture.1";
     public Uri CatalogSourceUrl { get; init; } = new("https://astronexus.com/projects/hyg");
     public string CatalogLicense { get; init; } = "CC BY-SA 4.0";
-    public string CatalogChecksumSha256 { get; init; } = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
-    public string CatalogSchemaVersion { get; init; } = "2";
+    public string CatalogChecksumSha256 { get; init; } = "7912C279A5C6FD3FC26FCEB35987B6CAA72425232E65DB991F28D657BA70B682";
+    public string CatalogSchemaVersion { get; init; } = "3";
     public string RigProfileVersion { get; init; } = "virtual-asi174-v1";
     public IReadOnlyList<string> ConstellationIds { get; init; } = Array.Empty<string>();
     public bool IncludeConstellationEndpointStars { get; init; }

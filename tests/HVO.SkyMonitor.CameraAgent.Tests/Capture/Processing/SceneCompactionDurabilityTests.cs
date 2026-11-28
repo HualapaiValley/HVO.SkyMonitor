@@ -294,7 +294,7 @@ public sealed partial class DurableCaptureProcessingTests
                     new string('A', 64), "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
                     RigProfileHashSha256: new string('B', 64), SceneUtc: descriptor.Timing.ExposureStartedUtc,
                     ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('C', 64),
-                    ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion)
+                    ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion, CatalogId: "test-catalog")
                 };
                 var receipt = fixture.Item.RawCapture! with
                 { Manifest = manifest, CommittedManifestSha256 = CaptureContractJson.ComputeManifestSha256(manifest) };

@@ -201,7 +201,7 @@ update interval. Subscribe to `actions/runner` security and release notices.
 
 ## Advisory Workflow
 
-The hosted x64 catalog job builds the approved HYG 4.2 and standalone OpenNGC
+The hosted x64 catalog job builds the approved HYG 4.4 and standalone OpenNGC
 bundles on `ubuntu-24.04` using the pinned public inputs and repository recipes.
 Before archiving the catalog for the native job, the hosted contract phase
 replays the native restore with disposable synthetic fixtures and copies of the
@@ -221,7 +221,7 @@ the restored OpenNGC database's SHA-256 and byte length against the approved
 catalog specification in the checkout. A native-only retry can reuse a
 retained artifact from an earlier attempt of the same run at the same commit.
 The OpenNGC bundle is a test input. The runtime smoke installs and verifies the
-canonical HYG 4.2 catalog.
+canonical HYG 4.4 catalog.
 
 The native job then:
 
@@ -272,7 +272,7 @@ The harness is also locally callable on a qualified native host:
 
 ```bash
 HVO_OPENNGC_CATALOG_BUNDLE=/absolute/path/to/openngc-v20260501-p6-s5-r1.bundle \
-  ./scripts/test:cameraagent-arm64-ci /absolute/path/to/hyg-v4.2-p3-s2-r1.bundle
+  ./scripts/test:cameraagent-arm64-ci /absolute/path/to/hyg-v4.4-p4-s3-r1.bundle
 ```
 
 Raw evidence is ignored under `TestResults/issue-381/<run>-<attempt>/`. Workflow

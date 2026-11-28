@@ -323,10 +323,10 @@ public sealed partial class CaptureSatelliteIntegrationTests
         var manifest = raw.Manifest with
         {
             Scene = new(scene.SceneIdentitySha256, "fixture-rig", "satellite-retention", "1",
-            new string('A', 64), "configured-rig", "fixture-scene-v1", "fixture-v1", "fixture-v1",
-            RigProfileHashSha256: descriptor.Profiles.Rig.Sha256, SceneUtc: descriptor.Timing.ExposureStartedUtc,
-            ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('B', 64),
-            ProjectedSceneSchemaVersion: scene.SchemaVersion)
+                scene.Catalog.ChecksumSha256, "configured-rig", "fixture-scene-v1", "fixture-v1", "fixture-v1",
+                RigProfileHashSha256: descriptor.Profiles.Rig.Sha256, SceneUtc: descriptor.Timing.ExposureStartedUtc,
+                ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('B', 64),
+                ProjectedSceneSchemaVersion: scene.SchemaVersion, CatalogId: scene.Catalog.CatalogId)
         };
         Assert.IsTrue(manifest.Validate().IsValid);
         var bytes = CaptureContractJson.Serialize(manifest);

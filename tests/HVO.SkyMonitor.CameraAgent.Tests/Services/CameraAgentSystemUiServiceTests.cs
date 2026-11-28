@@ -187,7 +187,7 @@ public sealed partial class CameraAgentSystemUiServiceTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(view.Version));
         Assert.IsFalse(string.IsNullOrWhiteSpace(view.Runtime));
         Assert.AreEqual(
-            new SystemCatalogView("hyg-v42-production", "4.2", "Fixture", "2026.09.1", 2, "celestial-v2", "3",
+            new SystemCatalogView("hyg-v44-production", "4.4", "Fixture", "2026.09.1", 2, "3", "4",
                 118_218, 52_428_800, new string('a', 64)),
             view.Catalog);
     }
@@ -344,8 +344,8 @@ public sealed partial class CameraAgentSystemUiServiceTests
                 Health.Object,
                 Coordinator,
                 Schedule,
-                new CatalogSnapshotResult("2026.09.1", CatalogSnapshotPackageKind.Fixture, 2, "hyg-v42-production", "4.2",
-                    "celestial-v2", "3", "/opt/hvo/catalog/manifest.json", "/opt/hvo/catalog/catalog.db",
+                new CatalogSnapshotResult("2026.09.1", CatalogSnapshotPackageKind.Fixture, 2, "hyg-v44-production", "4.4",
+                    "3", "4", "/opt/hvo/catalog/manifest.json", "/opt/hvo/catalog/catalog.db",
                     new string('a', 64), 52_428_800, 118_218, null!),
                 Clock,
                 NullLogger<CameraAgentSystemUiService>.Instance,

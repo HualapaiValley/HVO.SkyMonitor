@@ -4,19 +4,14 @@ using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
-/// <summary>
-/// The embedded approved-catalog registry (issue #521) is the single reviewed source of every production catalog
-/// identity: it approves exactly HYG 4.2, HYG 4.4 and the composed HYG 4.4 + OpenNGC catalog (issue #525), keeps 4.2
-/// unchanged, agrees with the shell build constants, and refuses any registry text that would let two specifications
-/// claim the same identity or a composed catalog name a stars component the registry does not approve.
-/// </summary>
+/// <summary>Checks the approved catalog set and its agreement with the production build recipes.</summary>
 [TestClass]
 [TestCategory("Unit")]
 internal sealed partial class ApprovedCatalogSpecificationsTests
 {
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private const string ComposedCatalogId = "hyg-v44-openngc-production";
-    private static readonly string[] ApprovedCatalogIds = ["hyg-v42-production", ComposedCatalogId, "hyg-v44-production", "openngc-production"];
+    private static readonly string[] ApprovedCatalogIds = [ComposedCatalogId, "hyg-v44-production", "openngc-production"];
     private static readonly string[] DisputedDuplicateSubjects = ["M102->NGC5457"];
 
     [TestMethod]
@@ -24,28 +19,27 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
         => Assert.IsNotNull(new ApprovedCatalogSpecificationsTests());
 
     [TestMethod]
-    public void RegistryApprovesExactlyHygV42HygV44AndTheComposedCatalog()
+    public void RegistryApprovesExactlyHygV44ComposedAndStandaloneOpenNgc()
         => CollectionAssert.AreEqual(
             ApprovedCatalogIds, ApprovedCatalogSpecifications.All.Select(static item => item.CatalogId).ToArray());
 
     [TestMethod]
-    public void RegistryKeepsTheHygV42IdentityUnchanged()
+    public void RegistryKeepsTheHygV44IdentityUnchanged()
     {
-        var specification = ApprovedCatalogSpecifications.Get("hyg-v42-production");
+        var specification = ApprovedCatalogSpecifications.Get("hyg-v44-production");
 
-        Assert.AreEqual("hyg-v42-production-p3-s2", specification.PackageLineage);
-        Assert.AreEqual("hyg-v4.2-p3-s2-r", specification.PackageVersionPrefix);
-        Assert.AreEqual("2", specification.SchemaVersion);
-        Assert.AreEqual("3", specification.PreprocessingVersion);
-        Assert.AreEqual("hyg_v42.sqlite", specification.Database.RelativePath);
-        Assert.AreEqual("b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2", specification.Database.Sha256);
-        Assert.AreEqual(9_302_016, specification.Database.Length);
-        Assert.AreEqual(119_625, specification.Database.RowCount);
-        Assert.AreEqual(1_361, specification.License.Attribution.Length);
+        Assert.AreEqual("hyg-v44-production-p4-s3", specification.PackageLineage);
+        Assert.AreEqual("hyg-v4.4-p4-s3-r", specification.PackageVersionPrefix);
+        Assert.AreEqual("3", specification.SchemaVersion);
+        Assert.AreEqual("4", specification.PreprocessingVersion);
+        Assert.AreEqual("hyg_v44.sqlite", specification.Database.RelativePath);
+        Assert.AreEqual("2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321", specification.Database.Sha256);
+        Assert.AreEqual(16_166_912, specification.Database.Length);
+        Assert.AreEqual(119_613, specification.Database.RowCount);
+        Assert.AreEqual(1_748, specification.License.Attribution.Length);
     }
 
     [TestMethod]
-    [DataRow("hyg-v4.2-p3-s2-r1", "hyg-v42-production")]
     [DataRow("hyg-v4.4-p4-s3-r1", "hyg-v44-production")]
     [DataRow("hyg-v4.4-p4-s3-r12", "hyg-v44-production")]
     [DataRow("hyg-v4.4-openngc-v20260501-p5-s4-r1", ComposedCatalogId)]
@@ -68,7 +62,7 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
     {
         Assert.IsFalse(ApprovedCatalogSpecifications.TryGet("hyg-v45-production", out _));
         Assert.IsFalse(ApprovedCatalogSpecifications.TryGet(null, out _));
-        Assert.ThrowsExactly<InvalidDataException>(() => ApprovedCatalogSpecifications.Get("hyg-v42-fixture"));
+        Assert.ThrowsExactly<InvalidDataException>(() => ApprovedCatalogSpecifications.Get("hyg-v44-fixture"));
     }
 
     [TestMethod]
@@ -99,7 +93,6 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
     }
 
     [TestMethod]
-    [DataRow("hyg-v42-production", "HYG_", new[] { "catalog-common.sh" })]
     [DataRow("hyg-v44-production", "HYG44_", new[] { "hyg-v44-common.sh" })]
     [DataRow(ComposedCatalogId, "HYGNGC_", new[] { "catalog-common.sh", "hyg-v44-common.sh", "hyg-v44-openngc-common.sh" })]
     public void ShellBuildConstantsAgreeWithTheRegistry(string catalogId, string prefix, string[] scripts)
@@ -282,8 +275,8 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
     {
         var registry = EmbeddedRegistry();
         var specifications = registry["specifications"]!.AsArray();
-        var hygV44 = specifications[1]!.AsObject();
-        var composed = specifications[2]!.AsObject();
+        var hygV44 = specifications[0]!.AsObject();
+        var composed = specifications[1]!.AsObject();
         var components = composed["components"]!.AsArray();
         var transformations = composed["transformations"]!.AsArray();
         Assert.AreEqual(ComposedCatalogId, composed["catalogId"]!.GetValue<string>());
@@ -302,13 +295,13 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
                 hygV44["approvedBy"] = "manifest";
                 break;
             case "duplicate-id":
-                hygV44["catalogId"] = "hyg-v42-production";
+                composed["catalogId"] = hygV44["catalogId"]!.DeepClone();
                 break;
             case "duplicate-lineage":
-                hygV44["packageLineage"] = "hyg-v42-production-p3-s2";
+                composed["packageLineage"] = hygV44["packageLineage"]!.DeepClone();
                 break;
             case "overlapping-prefix":
-                hygV44["packageVersionPrefix"] = "hyg-v4.2-p3-s2-r";
+                composed["packageVersionPrefix"] = hygV44["packageVersionPrefix"]!.DeepClone();
                 break;
             case "unsupported-schema":
                 hygV44["schemaVersion"] = "4";
@@ -354,7 +347,7 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
                 components[0]!["packageVersion"] = "hyg-v4.4-openngc-v20260501-p5-s4-r1";
                 break;
             case "composed-stars-package":
-                components[0]!["packageVersion"] = "hyg-v4.2-p3-s2-r1";
+                components[0]!["packageVersion"] = "hyg-v4.4-p4-s3-r0";
                 break;
             case "composed-stars-database":
                 components[0]!["database"]!["sha256"] = new string('a', 64);

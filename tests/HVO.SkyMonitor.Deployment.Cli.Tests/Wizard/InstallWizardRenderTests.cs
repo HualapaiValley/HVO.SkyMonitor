@@ -42,7 +42,7 @@ public sealed class InstallWizardRenderTests
         driver.Type("/home/operator/hvo-sky-0.9.0");
         driver.Press(Key.Tab);
         driver.Press(Key.Tab);
-        driver.Type("/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle");
+        driver.Type("/home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle");
         driver.Render(TestContext, $"install-{size}-2-software");
         driver.NextTo<NetworkPage>();
         Fits(driver, width, height);
@@ -77,7 +77,7 @@ public sealed class InstallWizardRenderTests
         }
 
         using var host = new WizardHost(environment);
-        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle"]);
+        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle"]);
 
         driver.Replace("Allsky East");
         Fits(driver, 80, 24);
@@ -101,7 +101,7 @@ public sealed class InstallWizardRenderTests
         {
             PlanFailure = _ => InstallerException.Refused("Port 5130 on 127.0.0.1 is already in use by another program.")
         };
-        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", "Allsky East", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle"], width, height);
+        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", "Allsky East", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle"], width, height);
 
         driver.Replace("0.0.0.0");
         driver.Press(Key.Enter);
@@ -124,7 +124,7 @@ public sealed class InstallWizardRenderTests
     {
         using var host = new WizardHost();
         var services = host.Services;
-        var session = new InstallWizardSession(["cameraagent", "install", "--friendly-name", "Allsky East", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle"], services, services.Terminal, WizardHost.Version, WizardHost.InstanceId)
+        var session = new InstallWizardSession(["cameraagent", "install", "--friendly-name", "Allsky East", "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle"], services, services.Terminal, WizardHost.Version, WizardHost.InstanceId)
         {
             AnswersPath = "/home/operator/.config/hvo-sky/install-answers.json"
         };
@@ -154,7 +154,7 @@ public sealed class InstallWizardRenderTests
     public void ANameInAnyScript_IsRendered(int width, int height, string size)
     {
         using var host = new WizardHost(Operator);
-        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", TerminalUi.HvoUnicodeTests.Name, "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle"], width, height);
+        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", TerminalUi.HvoUnicodeTests.Name, "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.4-p4-s3-r1.bundle"], width, height);
 
         driver.NextTo<ReviewPage>();
         driver.WaitIdle("the plan check");

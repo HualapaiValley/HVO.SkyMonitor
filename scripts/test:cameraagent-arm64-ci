@@ -23,7 +23,7 @@ readonly UPLOAD_RESULTS="${HVO_ARM64_RESULTS_ROOT:-$REPO_ROOT/TestResults/issue-
 readonly UPLOAD_STAGING="${UPLOAD_RESULTS}.staging-$$"
 readonly STATE_ROOT="$TEMP_ROOT/state"
 readonly AGENT_ROOT="$STATE_ROOT/agent"
-readonly CATALOG_ROOT="$STATE_ROOT/catalog"
+readonly CATALOG_ROOT="$STATE_ROOT/catalogs/hyg-v44-production"
 readonly DATA_PROTECTION_ROOT="$TEMP_ROOT/data-protection"
 readonly CONFIG_PATH="$TEMP_ROOT/cameraagent.json"
 readonly PASSWORD_PATH="$TEMP_ROOT/owner-password"
@@ -415,17 +415,7 @@ readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.Sky
 # stays strict for every test that should run on ARM64 Linux. The category audit owns the
 # Unit count and still sees it; the obsolete macOS advisory job is retired. If a second OS-conditioned
 # test appears, add it here with its commit, not a broader pattern.
-unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
-# The cross-lineage catalog transition added in e44804d5 needs the HYG 4.4 bundle as well as the
-# 4.2 bundle. The 4.4 bundle is retained as local evidence until its publication is approved, so
-# this workflow restores only 4.2, the test records Inconclusive, and the gate below failed every
-# run from e44804d5 on. It is excluded by name only when no 4.4 bundle is supplied, so a run that
-# passes HVO_HYG_V44_CATALOG_BUNDLE still executes it and the gate stays strict for it.
-readonly CROSS_LINEAGE_TEST='HVO.SkyMonitor.Deployment.Cli.Tests.LifecycleContractTests.CatalogSelect_CrossLineage_SelectsSideBySideRootAndRollsBackExactly'
-if [[ -z "${HVO_HYG_V44_CATALOG_BUNDLE:-}" ]]; then
-    unit_filter+="&FullyQualifiedName!=$CROSS_LINEAGE_TEST"
-fi
-readonly UNIT_FILTER="$unit_filter"
+readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&TestCategory!=Performance&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
 DOCKER_SERVER_ID="$(docker info --format '{{.ID}}')"
 readonly DOCKER_SERVER_ID
 
@@ -510,9 +500,11 @@ fi
 printf 'publish,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
 phase_started=$SECONDS
-HVO_RUNTIME_DATA_ROOT="$STATE_ROOT" "$REPO_ROOT/scripts/catalog:install" install "$BUNDLE" "$CATALOG_ROOT" \
+HVO_INSTALLER_ALLOW_TEST_ROOT=1 dotnet run --project "$REPO_ROOT/src/HVO.SkyMonitor.Deployment.Cli" \
+    --no-build --configuration Release --runtime linux-arm64 -- \
+    catalog install --catalog-bundle "$BUNDLE" --product-root "$STATE_ROOT" \
     > "$RESULTS/catalog-install.log"
-readonly CATALOG_DATABASE="$CATALOG_ROOT/current/hyg_v42.sqlite"
+readonly CATALOG_DATABASE="$CATALOG_ROOT/current/hyg_v44.sqlite"
 [[ "$(sqlite3 "$CATALOG_DATABASE" 'PRAGMA quick_check;')" == ok ]] || fail "installed catalog quick_check failed"
 sha256sum "$CATALOG_DATABASE" > "$RESULTS/catalog-database.sha256"
 printf 'catalog-install,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
@@ -567,7 +559,7 @@ jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
     '.[0].Id | startswith("sha256:")' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
 jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
-    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-contract"] == "cameraagent-silo-state-v1" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "17" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "4" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v3" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-contract"] == "cameraagent-silo-state-v1" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "17" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "4" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v4" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
 jq -e '(.[0].Config.Labels["io.hvo.skymonitor.state-contracts"] | fromjson)
     | .rawIngress == {"writes":17,"reads":{"min":13,"max":17}}
@@ -613,7 +605,7 @@ chmod 600 "$PUBLISH_SMOKE_CONFIG"
         CameraAgent__DeploymentLocation__EffectiveFromUtc="$DEPLOYMENT_LOCATION_EFFECTIVE_FROM_UTC" \
         CameraAgent__TransientDetection__Mode=Off \
         Catalog__Root="$CATALOG_ROOT" \
-        Catalog__RequiredCatalogId=hyg-v42-production \
+        Catalog__RequiredCatalogId=hyg-v44-production \
         Catalog__RequiredPackageKind=Production \
         LocalIdentity__AdminEmail=owner@arm64-ci.invalid \
         LocalIdentity__DatabasePath="$PUBLISH_SMOKE_ROOT/identity/cameraagent_identity.db" \
@@ -668,7 +660,7 @@ docker run --detach \
     --env CameraAgent__DeploymentLocation__EffectiveFromUtc="$DEPLOYMENT_LOCATION_EFFECTIVE_FROM_UTC" \
     --env CameraAgent__TransientDetection__Mode=Off \
     --env Catalog__Root=/var/lib/hvo/data/catalog \
-    --env Catalog__RequiredCatalogId=hyg-v42-production \
+    --env Catalog__RequiredCatalogId=hyg-v44-production \
     --env Catalog__RequiredPackageKind=Production \
     --env LocalIdentity__AdminEmail=owner@arm64-ci.invalid \
     --env LocalIdentity__DatabasePath=/var/lib/hvo/data/agent/identity/cameraagent_identity.db \
@@ -713,7 +705,7 @@ readonly EXPECTED_CATALOG_PREPROCESSING
 EXPECTED_CONFIG_SHA="$(jq -cS -j . "$CONFIG_PATH" | sha256sum | awk '{ print $1 }')"
 readonly EXPECTED_CONFIG_SHA
 jq -e --arg sha "$EXPECTED_CATALOG_SHA" --argjson length "$EXPECTED_CATALOG_LENGTH" --arg schema "$EXPECTED_CATALOG_SCHEMA" --arg preprocessing "$EXPECTED_CATALOG_PREPROCESSING" --arg configurationSha "$EXPECTED_CONFIG_SHA" --arg deploymentLocationSha "$EXPECTED_DEPLOYMENT_LOCATION_SHA256" --arg agentId "cameraagent-arm64-$RUN_KEY" \
-    '.agentId == $agentId and .ownerEmail == "owner@arm64-ci.invalid" and .ownerBootstrapState == "owner-temporary-password" and .rawIngressRoot == "/var/lib/hvo/data/agent" and .deploymentLocationId == "hualapai-cameraagent" and .deploymentLocationVersion == 1 and .deploymentLocationSha256 == $deploymentLocationSha and .catalogId == "hyg-v42-production" and .packageVersion == "hyg-v4.2-p3-s2-r1" and .rowCount == 119625 and (.databaseSha256 | ascii_downcase) == $sha and .databaseLength == $length and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and (.configurationSha256 | ascii_downcase) == $configurationSha and (.rigProfileSha256 | length == 64) and (.scheduleSha256 | length == 64)' \
+    '.agentId == $agentId and .ownerEmail == "owner@arm64-ci.invalid" and .ownerBootstrapState == "owner-temporary-password" and .rawIngressRoot == "/var/lib/hvo/data/agent" and .deploymentLocationId == "hualapai-cameraagent" and .deploymentLocationVersion == 1 and .deploymentLocationSha256 == $deploymentLocationSha and .catalogId == "hyg-v44-production" and .packageVersion == "hyg-v4.4-p4-s3-r1" and .rowCount == 119613 and (.databaseSha256 | ascii_downcase) == $sha and .databaseLength == $length and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and (.configurationSha256 | ascii_downcase) == $configurationSha and (.rigProfileSha256 | length == 64) and (.scheduleSha256 | length == 64)' \
     "$RESULTS/installation-verification.json" >/dev/null || fail "installation verification did not report the canonical deployment location, catalog, and configuration"
 
 deadline=$((SECONDS + 120))

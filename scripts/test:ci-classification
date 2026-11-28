@@ -680,7 +680,8 @@ allowlisted_paths=(
   ".github/prompts/example.md"
   "src/Example/README.md"
   "tests/Example.Tests/README.md"
-  "tests/fixtures/catalog/SOURCE.md"
+  "tests/fixtures/catalog/SOURCE-v44.md"
+  "tests/fixtures/catalog/SOURCE-v44-openngc.md"
   "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md"
   "tools/asi-capture/README.md"
   "scripts/test:devcontainer"
@@ -744,7 +745,7 @@ declare -A link_seen_paths=()
 for path in \
   "${allowlisted_paths[@]}" \
   "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" \
-  "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" \
+  "tests/fixtures/catalog/hyg-v44-subset.sqlite" \
   "tests/fixtures/catalog/SHA256SUMS-v44-openngc" \
   "tests/fixtures/catalog/hyg-v44-openngc-subset.sqlite" \
   "src/HVO.SkyMonitor.Deployment.Cli/ReleaseManifest.cs" \
@@ -2262,7 +2263,7 @@ run_work_catalog_recipe() {
   cp -a "$work_root" "$repo"
   local catalog_recipe_cases=0
   local -a catalog_recipe_paths=(
-    "scripts/catalog/build-hyg-v42.sh"
+    "scripts/catalog/build-hyg-v44.sh"
     "scripts/catalog/catalog-common.sh"
     "scripts/catalog/hyg-v44-openngc-common.sh"
     "scripts/catalog/openngc-v20260501-outlines.sha256"
@@ -2273,7 +2274,7 @@ run_work_catalog_recipe() {
     "tests/fixtures/catalog/SHA256SUMS-v44-openngc"
     "tests/fixtures/catalog/hyg-v44-openngc-subset-star-objects.csv"
     "tests/fixtures/catalog/hyg-v44-openngc-subset.sqlite"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite"
     "tests/fixtures/catalog/nested/recipe.sql"
   )
   local -a specs=() pairs=()
@@ -2295,9 +2296,9 @@ run_work_catalog_recipe() {
   done
 
   local -a neg_paths=(
-    "scripts/catalog:install" "scripts/catalogs/other.sh" "tests/fixtures/catalogue/other.sql"
+    "scripts/catalogs/other.sh" "tests/fixtures/catalogue/other.sql"
     "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md" "docs/catalog/hyg-v44-reproducibility.md"
-    "docs/catalog/hyg-v42-attribution.md" "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs"
+    "docs/catalog/hyg-v44-attribution.md" "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs"
     "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/CatalogTests.cs" "scripts/release:assets"
     ".github/workflows/ci.yml" ".github/workflows/release.yml" "scripts/ci:classify" "scripts/ci:require"
     "scripts/test:ci-classification"
@@ -2326,7 +2327,7 @@ run_work_catalog_recipe() {
   assert_catalog_recipe_output "$output" true
 
   recipe_base="$recipe_head"
-  git -C "$repo" rm --quiet scripts/catalog/build-hyg-v42.sh
+  git -C "$repo" rm --quiet scripts/catalog/build-hyg-v44.sh
   git -C "$repo" commit --quiet -m "Delete a catalog builder"
   recipe_head="$(git -C "$repo" rev-parse HEAD)"
   output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
@@ -2347,12 +2348,15 @@ run_work_catalog_recipe() {
   output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
   assert_catalog_recipe_output "$output" true
 
-  recipe_base="$recipe_head"
-  update_file_in "$repo" "tests/fixtures/catalog/SOURCE.md"
-  recipe_head="$(git -C "$repo" rev-parse HEAD)"
-  output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
-  assert_plan_output "$output" reduced false
-  assert_catalog_recipe_output "$output" true
+  local source_note
+  for source_note in SOURCE-v44.md SOURCE-v44-openngc.md; do
+    recipe_base="$recipe_head"
+    update_file_in "$repo" "tests/fixtures/catalog/$source_note"
+    recipe_head="$(git -C "$repo" rev-parse HEAD)"
+    output="$(classify_in_repo "$repo" pull_request "$recipe_base" "$recipe_head")"
+    assert_plan_output "$output" reduced false
+    assert_catalog_recipe_output "$output" true
+  done
 
   recipe_base="$recipe_head"
   update_file_in "$repo" "docs/runbooks/example.md"
@@ -2441,10 +2445,10 @@ run_work_components_pre_csproj() {
     "src/HVO.SkyMonitor.TerminalUi/HvoTheme.cs|full|true|false|false|false|true"
     "deploy/split-host/compose.cameraagent.yml|full|true|true|true|true|true"
     "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json|full|true|true|true|true|true"
-    "docs/catalog/hyg-v42-license.md|full|false|true|true|true|true"
+    "docs/catalog/hyg-v44-license.md|full|false|true|true|true|true"
     "docs/catalog/hyg-v44-attribution.md|full|false|true|true|true|true"
     "scripts/catalog/hyg-v44-common.sh|full|true|true|true|true|true"
-    "scripts/catalog/install-hyg-v42.sh|full|true|true|true|true|true"
+    "scripts/catalog/bundle-hyg-v44.sh|full|true|true|true|true|true"
   )
   verify_component_plan_batch "$repo" "${component_rows[@]}"
 
@@ -2615,7 +2619,7 @@ run_work_projdirs_and_complete() {
     "scripts/ci:require" \
     "scripts/test:ci-classification" \
     "Directory.Build.props" \
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" \
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite" \
     "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs"
   # Verify enumerator widenings (src/ projects and links outside src/tests/tools).
   local -a link_including_projects=() src_project_names=()
@@ -2702,7 +2706,7 @@ run_work_projdirs_and_complete() {
     "src/Example/Program.cs|A"
     "tests/Example.Tests/ExampleTests.cs|A"
     "tests/fixtures/frames/sample.bin|A"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|M"
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite|M"
     "tools/asi-capture/capture.sh|A"
     "docker/local/Dockerfile|A"
   )
@@ -2753,8 +2757,8 @@ run_work_deploy_fallback_cli() {
     ".github/workflows/development-v1.yml" \
     "scripts/coverage/Program.cs" \
     "tests/unit-test-projects.json" \
-    "scripts/catalog:install" \
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
+    "scripts/catalog/bundle-hyg-v44.sh" \
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite"
   local secret_scan_contract_cases=0 release_scripts_cases=0 catalog_recipe_cases=0
   local i base head output
 
@@ -2802,12 +2806,12 @@ run_work_deploy_fallback_cli() {
     "scripts/test:deployment-installer-qualification|A"
     "scripts/qualify:silo-runtime|A"
     "scripts/test:silo-runtime-qualification|A"
-    "scripts/catalog:install|M"
+    "scripts/catalog/bundle-hyg-v44.sh|M"
     "scripts/infra:operation-lock|A"
     "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml|A"
     "deploy/hvo-docker/README.md|A"
     "deploy/hvo-docker/docker-compose.shared-services.yml|A"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|M"
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite|M"
     "src/HVO.SkyMonitor.Deployment.Cli/Program.cs|A"
     "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/ReleaseAssetsToolTests.cs|A"
     "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json|M"
@@ -2834,9 +2838,9 @@ run_work_deploy_fallback_cli() {
     ".github/workflows/release.yml|true|true"
     ".github/workflows/prerelease.yml|true|true"
     ".github/workflows/release-image.yml|true|true"
-    "scripts/catalog/install-hyg-v42.sh|true|false"
+    "scripts/catalog/bundle-hyg-v44.sh|true|false"
     "scripts/ci:component-build|true|true"
-    "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite|true|false"
+    "tests/fixtures/catalog/hyg-v44-subset.sqlite|true|false"
     "scripts/infra:operation-lock|true|false"
     "scripts/test:deployment-installer|false|true"
     "scripts/test:deployment-installer-qualification|false|true"
@@ -3661,9 +3665,9 @@ run_workflow_shape() {
   catalog_contracts_job="$(extract_workflow_job catalog-contracts)"
   # shellcheck disable=SC2016 # The workflow's own shell variables are matched literally.
   local -a catalog_contracts_steps=(
-    '          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"'
-    '          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null'
-    '        run: ./scripts/catalog/test-hyg-v42-reproducibility.sh "$RUNNER_TEMP/hyg-v42-contracts/build/hyg_v42.csv.gz"'
+    '          catalog_root="$RUNNER_TEMP/hyg-v44-contracts"'
+    '          ./scripts/catalog/prepare-hyg-v44-contracts.sh "$catalog_root" >/dev/null'
+    '        run: ./scripts/catalog/test-hyg-v44-reproducibility.sh "$RUNNER_TEMP/hyg-v44-contracts/build/hyg_v44.csv.gz"'
     '      - name: Upload exact production catalog contracts'
   )
   previous_step_line=0
@@ -3680,11 +3684,11 @@ run_workflow_shape() {
     previous_step_line="${step_match%%:*}"
   done
   if grep -Fq 'continue-on-error' <<< "$catalog_contracts_job"; then
-    printf 'A failed HYG 4.2 reproducibility step must fail Catalog Contracts.\n' >&2
+    printf 'A failed HYG 4.4 reproducibility step must fail Catalog Contracts.\n' >&2
     exit 1
   fi
-  if grep -Eq -- '--fetch|curl|wget|https?://' "$repo_root/scripts/catalog/test-hyg-v42-reproducibility.sh"; then
-    printf 'The HYG 4.2 reproducibility regression must stay offline.\n' >&2
+  if grep -Eq -- '--fetch|curl|wget|https?://' "$repo_root/scripts/catalog/test-hyg-v44-reproducibility.sh"; then
+    printf 'The HYG 4.4 reproducibility regression must stay offline.\n' >&2
     exit 1
   fi
 
@@ -3697,8 +3701,8 @@ run_workflow_shape() {
     }
   done < <(printf '%s\n' "$catalog_contracts_job" "$catalog_reproducibility_job" |
     grep -oE 'scripts/catalog/[A-Za-z0-9._-]+\.sh' | sort -u)
-  if (( catalog_job_script_count != 8 )); then
-    printf 'Expected 8 catalog job scripts across the two catalog jobs, found %s.\n' "$catalog_job_script_count" >&2
+  if (( catalog_job_script_count != 6 )); then
+    printf 'Expected 6 catalog job scripts across the two catalog jobs, found %s.\n' "$catalog_job_script_count" >&2
     exit 1
   fi
 

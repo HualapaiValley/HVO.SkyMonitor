@@ -26,7 +26,7 @@ public sealed class ProductPreparationTests
     public async Task PrepareProductAsync_FreshTestRoot_CreatesWhatCatalogOperationsWriteWithoutPrivilege()
     {
         var scratch = Scratch();
-        var paths = InstallationPaths.Create(Path.Combine(scratch, "product"), Guid.Empty, HygV42.CatalogId);
+        var paths = InstallationPaths.Create(Path.Combine(scratch, "product"), Guid.Empty, HygV44.CatalogId);
         try
         {
             await PrivilegedPreparation.PrepareProductAsync(
@@ -112,8 +112,8 @@ public sealed class ProductPreparationTests
                 request, helper, null, null, NativeLinux.getuid(), NativeLinux.getgid(), CancellationToken.None);
 
             Assert.AreEqual("completed", result.Outcome);
-            Assert.AreEqual(HygV42.PackageVersion, result.Catalog!.PackageVersion);
-            Assert.IsTrue(Directory.Exists(Path.Combine(paths.CatalogRoot, "versions", HygV42.PackageVersion)));
+            Assert.AreEqual(HygV44.PackageVersion, result.Catalog!.PackageVersion);
+            Assert.IsTrue(Directory.Exists(Path.Combine(paths.CatalogRoot, "versions", HygV44.PackageVersion)));
             Assert.HasCount(1, helper.Invocations);
             Assert.AreEqual(SharedReadOnly, File.GetUnixFileMode(paths.ProductRoot));
             Assert.AreEqual(SharedReadOnly, File.GetUnixFileMode(Path.Combine(paths.ProductRoot, "catalogs")));
@@ -130,7 +130,7 @@ public sealed class ProductPreparationTests
         var root = Path.Combine(scratch, "product");
         Directory.CreateDirectory(root);
         File.SetUnixFileMode(root, SharedReadOnly);
-        return InstallationPaths.Create(root, Guid.Empty, HygV42.CatalogId);
+        return InstallationPaths.Create(root, Guid.Empty, HygV44.CatalogId);
     }
 
     /// <summary>

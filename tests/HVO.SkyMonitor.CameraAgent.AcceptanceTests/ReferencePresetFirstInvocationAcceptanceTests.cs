@@ -177,7 +177,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         var selection = create.GetProperty("catalogSelection");
         var depth = magnitude ?? 3.25;
         Assert.AreEqual(depth, selection.GetProperty("maximumMagnitude").GetDouble());
-        var catalog = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production"));
+        var catalog = CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v44-production"));
         var catalogSelection = await catalog.Catalog.ReadAsync(depth, 2500).ConfigureAwait(false);
         Assert.IsTrue(catalogSelection.IsCompleteForRequestedMagnitude);
         Assert.AreEqual(depth == 5 ? 1637 : 226, catalogSelection.Stars.Count);

@@ -54,6 +54,8 @@ public sealed partial class ProcessingGraphOperationsTests
             var metadata = catalog.As<ICelestialCatalogMetadataSource>();
             metadata.SetupGet(value => value.Metadata).Returns(referenceData.Metadata);
             metadata.SetupGet(value => value.PreprocessingVersion).Returns(referenceData.Provenance!.PreprocessingVersion);
+            metadata.SetupGet(value => value.CatalogId).Returns(referenceData.Provenance!.CatalogId);
+            metadata.SetupGet(value => value.CatalogPackageVersion).Returns(referenceData.Provenance!.PackageVersion);
             var predictionQueriesFailed = 0;
             var failCatalogQueries = false;
             catalog.Setup(value => value.QueryCandidatesAsync(It.IsAny<CatalogCandidateQuery>(), It.IsAny<CancellationToken>()))

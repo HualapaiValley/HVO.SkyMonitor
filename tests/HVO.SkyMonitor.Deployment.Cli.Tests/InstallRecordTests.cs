@@ -401,7 +401,7 @@ public sealed partial class InstallRecordTests
         public ProductRoot()
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-install-record-{Guid.NewGuid():N}");
-            Paths = InstallationPaths.Create(root, Instance, HygV42.CatalogId);
+            Paths = InstallationPaths.Create(root, Instance, HygV44.CatalogId);
             foreach (var directory in new[] { Paths.ProductRoot, Paths.InstanceRoot, Paths.DeploymentStateRoot, Paths.OperationsRoot })
             {
                 Directory.CreateDirectory(directory);
@@ -428,7 +428,7 @@ public sealed partial class InstallRecordTests
         {
             static ImageInstallationIdentity Image(string id) => new("registry", $"cameraagent@{id}", id, "amd64", null);
             var catalog = new CatalogInstallationIdentity(
-                HygV42.CatalogId, "1", "1", "1", new string('a', 64), 1, 1, Paths.CatalogRoot, new string('a', 64), "local-offline");
+                HygV44.CatalogId, "1", "1", "1", new string('a', 64), 1, 1, Paths.CatalogRoot, new string('a', 64), "local-offline");
             return new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent, Instance, "North Camera",
                 Guid.NewGuid(), $"installer-{Instance:D}", 1, new string('d', 64), "owner@example.test", 0, 0, 0, "UTC",

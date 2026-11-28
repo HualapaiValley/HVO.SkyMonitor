@@ -27,7 +27,7 @@ hyg_check_sqlite_version
 
 FIXTURES="$(realpath -e -- "$SCRIPT_DIR/../../tests/fixtures/catalog")"
 readonly FIXTURES
-readonly -a REQUIRED_RECIPES=(build-fixture.sh build-fixture-v44.sh build-fixture-v44-openngc.sh)
+readonly -a REQUIRED_RECIPES=(build-fixture-v44.sh build-fixture-v44-openngc.sh)
 
 HVO_REPRO_SQLITE="$(realpath "$(command -v sqlite3)")"
 export HVO_REPRO_SQLITE
@@ -51,7 +51,7 @@ chmod 0755 "$work/bin/sqlite3"
 export PATH="$work/bin:$PATH"
 export HVO_REPRO_SECURE_DELETE=OFF
 
-# Every recipe in the directory runs, so a new one is covered without being listed here; the three this regression
+# Every recipe in the directory runs, so a new one is covered without being listed here; the two this regression
 # was written for must be among them, so that renaming one cannot quietly drop it.
 recipes=()
 for recipe in "$FIXTURES"/build-fixture*.sh; do

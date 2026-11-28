@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed partial class QuarantinedReadinessTests
 {
-    private static readonly ApprovedCatalogContract Catalog = ProductionCatalog.Get(HygV42.CatalogId);
+    private static readonly ApprovedCatalogContract Catalog = ProductionCatalog.Get(HygV44.CatalogId);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(3);
 
@@ -55,7 +55,7 @@ public sealed partial class QuarantinedReadinessTests
     [TestMethod]
     public void TryAccept_CatalogMismatch_IsRefused()
     {
-        using var document = JsonDocument.Parse(Health(1, "terminal").Replace("\"4.2\"", "\"4.4\"", StringComparison.Ordinal));
+        using var document = JsonDocument.Parse(Health(1, "terminal").Replace("\"4.4\"", "\"4.5\"", StringComparison.Ordinal));
 
         Assert.IsFalse(QuarantinedReadiness.TryAccept(document.RootElement, Catalog, out var reason));
         StringAssert.Contains(reason, "catalog", StringComparison.OrdinalIgnoreCase);
@@ -341,7 +341,7 @@ public sealed partial class QuarantinedReadinessTests
             ? QuarantinedReadiness.LaneDescription
             : "Capture lanes are accepting and draining work.";
         var checks = new StringBuilder()
-            .Append("{\"name\":\"catalog\",\"status\":\"Healthy\",\"description\":\"Catalog matches.\",\"data\":{\"CatalogId\":\"hyg-v42-production\",\"CatalogVersion\":\"4.2\",\"SchemaVersion\":\"2\",\"PreprocessingVersion\":\"3\",\"RowCount\":119625,\"PackageVersion\":\"hyg-v4.2-p3-s2-r1\"}},")
+            .Append("{\"name\":\"catalog\",\"status\":\"Healthy\",\"description\":\"Catalog matches.\",\"data\":{\"CatalogId\":\"hyg-v44-production\",\"CatalogVersion\":\"4.4\",\"SchemaVersion\":\"3\",\"PreprocessingVersion\":\"4\",\"RowCount\":119613,\"PackageVersion\":\"hyg-v4.4-p4-s3-r1\"}},")
             .Append("{\"name\":\"capture-lanes\",\"status\":\"").Append(laneStatus)
             .Append("\",\"description\":\"").Append(laneDescription)
             .Append("\",\"data\":{\"Availability\":\"").Append(laneStatus)

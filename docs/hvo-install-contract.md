@@ -107,7 +107,7 @@ Every release carries assets with these names and kinds:
 | `hvo-<product>-<rid>` | `cli` | The runtime client, when the product has one |
 | `install.sh` | `install-script` | The entry point, with the release version baked in |
 | `<image>-<version>-linux-<arch>.oci.tar` | `image-archive` | An offline image archive per architecture |
-| `<catalog version>.bundle.tar.gz` | `catalog` | An independently versioned data package (section 1): the default HYG 4.2 star bundle and `openngc-v20260501-p6-s5-r1.bundle.tar.gz` for deep-sky objects. HYG 4.4 remains held for separate approval. Star and deep-sky selections use independent catalog lifecycle commands |
+| `<catalog version>.bundle.tar.gz` | `catalog` | An independently versioned data package (section 1): the default HYG 4.4 star bundle and `openngc-v20260501-p6-s5-r1.bundle.tar.gz` for deep-sky objects. Star and deep-sky selections use independent catalog lifecycle commands |
 | `THIRD-PARTY-NOTICES.md` | `notices` | The third-party notices of what the release ships, the installer's bundled packages among them (SkyMonitor, #1317) |
 | `release.json` | | The machine-readable release manifest |
 | `SHA256SUMS` | | Covers every asset |
@@ -137,6 +137,11 @@ Every release carries assets with these names and kinds:
   by itself: the operator, or `install.sh`, extracts it and passes it to the installer (SkyMonitor:
   `--catalog-bundle`). The product still declares which data versions it accepts, so a newer data package can be
   installed without a product release.
+- **Star catalog rollback** is an instance operation.
+  `hvo-sky-install catalog rollback` restores the previous package revision of the installed star lineage.
+  It refuses when there is no previous revision or capture processing still has pending work or retries.
+  Later releases must preserve this rollback contract. Independent OpenNGC selection has its own
+  previous-selection record.
 - **Platform names** (decision D5). A name about an image uses the OCI architecture, `amd64` or `arm64`:
   - the offline archive's file name, `<image>-<version>-linux-<arch>.oci.tar`;
   - `images.<key>.platforms`;

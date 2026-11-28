@@ -49,7 +49,7 @@ The following content from the retired virtual-planetarium plan remains owned:
 - Fixed observer, camera, lens, and time fixtures: `docs/virtual-camera.md`.
 - Projection and astronomy ownership: `ARCH-*`, Astronomy, and
   `docs/virtual-camera.md`.
-- HYG selection and provenance: `docs/catalog/hyg-v42.md`.
+- HYG selection and provenance: `docs/catalog/hyg-v44.md`.
 - Annotation and constellation behavior:
   `docs/catalog/d3-celestial-constellations.md` and shared Processing phase 2.
 - Stellarium comparison: `docs/validation/stellarium.md`.

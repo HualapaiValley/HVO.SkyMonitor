@@ -155,7 +155,7 @@ if [[ ${#REBUILD_SERVICES[@]} -gt 0 ]]; then
     docker compose -f docker-compose.apps.yml build "${REBUILD_SERVICES[@]}"
 fi
 
-prepare_runtime_directory "$RUNTIME_DATA_ROOT/catalog"
+prepare_runtime_directory "$RUNTIME_DATA_ROOT/catalogs/hyg-v44-production"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/identity"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/dataprotection"
 prepare_runtime_directory "$RUNTIME_DATA_ROOT/cameraagent/provisioning"

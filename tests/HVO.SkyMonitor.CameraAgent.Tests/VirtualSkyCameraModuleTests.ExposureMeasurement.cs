@@ -1202,6 +1202,9 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         private readonly InMemoryCelestialCatalog _catalog = new([star]);
 
+        public string CatalogId => Metadata.Name;
+        public string CatalogPackageVersion => Metadata.Version;
+
         public CatalogMetadata Metadata { get; } = new("measurement-prediction", "fixture", new Uri("https://example.invalid/catalog"),
             new string('A', 64), "fixture", "2");
 

@@ -1204,6 +1204,9 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         private readonly InMemoryCelestialCatalog _catalog = new(stars);
 
+        public string CatalogId => Metadata.Name;
+        public string CatalogPackageVersion => Metadata.Version;
+
         public CatalogMetadata Metadata { get; } = new(
             "regional-visibility-fixture",
             "1",

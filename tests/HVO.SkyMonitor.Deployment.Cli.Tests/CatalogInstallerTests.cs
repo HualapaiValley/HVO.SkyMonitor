@@ -19,7 +19,7 @@ public sealed class CatalogInstallerTests
         var bundle = Path.Combine(root, "bundle");
         Directory.CreateDirectory(bundle);
         File.WriteAllText(Path.Combine(bundle, "manifest.json"), manifest);
-        File.WriteAllText(Path.Combine(bundle, "hyg_v42.sqlite"), "not-used");
+        File.WriteAllText(Path.Combine(bundle, "hyg_v44.sqlite"), "not-used");
         File.WriteAllText(Path.Combine(bundle, "LICENSE-HYG.md"), "not-used");
         File.WriteAllText(Path.Combine(bundle, "ATTRIBUTION-HYG.md"), "not-used");
 

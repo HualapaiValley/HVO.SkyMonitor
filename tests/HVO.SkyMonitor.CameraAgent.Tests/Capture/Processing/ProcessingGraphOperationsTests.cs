@@ -3422,7 +3422,7 @@ public sealed partial class ProcessingGraphOperationsTests
             SceneUtc: DateTimeOffset.UnixEpoch,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion);
+            ProjectedSceneSchemaVersion: SceneProvenance.RetainedProjectedSceneSchemaVersion, CatalogId: "test-catalog");
         return submission with
         {
             Result = submission.Result with

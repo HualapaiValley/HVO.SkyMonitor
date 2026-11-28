@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Amazon.Runtime;
 using Amazon.S3;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -85,6 +86,8 @@ internal sealed class SiloInstalledStore : IDisposable
     private static SiloConflictException BindingRefused(string message) => new("silo.installed-binding-refused", message);
 
     internal long? ReadExactAllocationBytes(SiloExactLocator locator) => _exactAllocation?.Invoke(locator);
+
+    internal static bool IsProviderServiceFailure(Exception exception) => exception is AmazonServiceException;
 
     public void Dispose() => _client?.Dispose();
 }
