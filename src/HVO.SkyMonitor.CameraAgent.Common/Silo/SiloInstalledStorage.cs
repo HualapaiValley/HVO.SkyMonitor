@@ -35,7 +35,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
 
     internal SiloInstalledStorage(SiloInstalledSettings settings, IOptions<CameraAgentHostOptions> options, TimeProvider clock,
         ISiloFaults? faults, Func<ISiloObjectStore, ISiloObjectStore>? decorateReadStore, SiloInstalledStore? installedStore,
-        ISiloPayloadSpool? payloadSpool)
+        ISiloPayloadSpool? payloadSpool, IStorageCapacityProvider? capacity = null)
     {
         _clock = clock;
         var rawRoot = Path.GetFullPath(options.Value.RawIngressRoot);
@@ -55,7 +55,7 @@ internal sealed class SiloInstalledStorage : ICameraAgentSiloVerification, IDisp
             _journal = new(State, _root.Spool, _installed.Store, Binding, clock, faults);
             Publisher = new(State, _root.Spool, _journal, Catalog, Spool, Binding, clock, faults);
             DiskBudget = SiloFilesystemObservation.CreateBudget(_root.Root.Path, settings.DataRoot,
-                settings.MaximumStagedBytes, settings.ReclaimCaptureHourBytes, _installed.ReadExactAllocationBytes);
+                settings.MaximumStagedBytes, settings.ReclaimCaptureHourBytes, _installed.ReadExactAllocationBytes, capacity);
             Retention = new(State, Index, Publisher, Catalog, _journal, _root.Root, _installed.Store, DiskBudget, clock);
             Publisher.RetentionFence = Retention.ReadUnsettledTarget;
         }
