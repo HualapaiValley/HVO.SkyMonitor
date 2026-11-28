@@ -7,9 +7,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -32,11 +34,20 @@ public sealed partial class DurableCaptureProcessingTests
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(0, projectionOverride: projection).ConfigureAwait(false);
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, reference: reference,
                 recipe: MeasuredAstrometryFixture.PerformanceOptions).ConfigureAwait(false);
+            using var provider = SiloInfrastructureFixture.OpenStore(root);
+            var silo = provider.GetRequiredService<SiloArtifactStorage>();
+            var objects = provider.GetRequiredService<SiloTestStore>();
+            var rawManifest = fixture.Fixture.Manifest;
+            await SiloInfrastructureFixture.PublishArtifactAsync(silo, rawManifest.Descriptor,
+                CaptureContractJson.ComputeDescriptorSha256(rawManifest.Descriptor), reference.Raw.Payload,
+                SiloArtifactStorage.RawEvidenceRevision, CaptureContractJson.Serialize(rawManifest), CancellationToken.None)
+                .ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
-            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options);
+            using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options, silo: silo);
             using var gate = new CaptureAstrometryExecutionGate();
             using var process = Process.GetCurrentProcess();
-            var persistence = CreatePersistence(fixture.Fixture.Options, store, telemetry);
+            var persistence = new CaptureProcessingPersistence(fixture.Fixture.Options, store, telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: silo);
             var initialBytes = RetainedBytes();
             var before = Sample();
             var result = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item,
@@ -48,7 +59,8 @@ public sealed partial class DurableCaptureProcessingTests
             var captureId = fixture.Fixture.Manifest.Descriptor.Capture.CaptureId;
             var node = await store.ReadNodeAsync(captureId, "astrometry", CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(node);
-            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = new CameraAgentArtifactService(fixture.Fixture.Options, store,
+                new CameraAgentPreviewEncoder(), silo: silo);
             using var reader = new CameraAgentRetainedAstrometryService(store, artifacts);
             var beforeRead = Sample();
             var view = await reader.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
@@ -126,8 +138,10 @@ public sealed partial class DurableCaptureProcessingTests
 
             async Task<ProcessingArtifact> ReadExportAsync(DurableProcessingOutput output)
             {
-                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
                 var manifest = output.ProductManifest!;
+                var bytes = await silo.ReadMemberAsync(output.ArtifactId, output.OutputIdentitySha256,
+                    manifest.ByteLength, manifest.Artifact.ChecksumSha256, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(bytes);
                 var export = new StructuredProcessingProductManifestV1(StructuredProcessingProductManifestV1.CurrentSchemaVersion,
                     new(descriptor, manifest.Artifact, manifest.OutputIdentitySha256, manifest.Algorithms, manifest.Compatibility,
                         manifest.TotalIntegrationTicks, manifest.ByteLength, manifest.Kind, manifest.ProductSchemaVersion!, manifest.ContentIdentitySha256!),
@@ -135,7 +149,8 @@ public sealed partial class DurableCaptureProcessingTests
                 return ImportAstrometryProduct(StructuredProcessingProductManifestJson.Serialize(export), bytes);
             }
 
-            long RetainedBytes() => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);
+            long RetainedBytes() => objects.BytesStored +
+                Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);
 
             // This class runs serially. Process allocation deltas include work across async continuations.
             (long Ticks, double Cpu, long Allocations, long WorkingSet) Sample()

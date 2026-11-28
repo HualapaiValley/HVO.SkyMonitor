@@ -1131,6 +1131,16 @@ internal sealed partial class SqliteCaptureProcessingStore
                 }
                 var durableOutputs = await ReadExecutionOutputsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
+                if (_silo is { } silo && durableOutputs.Count > 0)
+                {
+                    var retained = new List<DurableProcessingOutput>(durableOutputs.Count);
+                    foreach (var output in durableOutputs)
+                    {
+                        if (await silo.IsArtifactRetainedAsync(output.ArtifactId, cancellationToken).ConfigureAwait(false))
+                            retained.Add(output);
+                    }
+                    durableOutputs = retained;
+                }
                 var published = await ReadExecutionOutputAssociationsAsync(
                     connection, executionId, row.NodeId, cancellationToken).ConfigureAwait(false);
                 var inputs = await ReadExecutionInputsAsync(

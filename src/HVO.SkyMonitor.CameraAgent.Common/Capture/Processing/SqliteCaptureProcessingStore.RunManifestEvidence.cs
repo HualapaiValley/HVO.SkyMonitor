@@ -73,7 +73,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// each node's input bindings. Attempts, outputs, masters, dependencies and contracts are the same rows in both
     /// reads and are not read again.
     /// </summary>
-    private static async ValueTask<ProcessingGraphExecutionDetail> ReadRunManifestEvidenceAsync(
+    private async ValueTask<ProcessingGraphExecutionDetail> ReadRunManifestEvidenceAsync(
         SqliteConnection connection,
         ProcessingGraphExecutionDetail detail,
         CancellationToken cancellationToken)
@@ -130,7 +130,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// One node's input bindings as its run manifest carries them: whether every frozen derived input survives, whether
     /// legacy history lacks a proof of that, and the inputs completed from the node's own output lineage.
     /// </summary>
-    private static async ValueTask<(IReadOnlyList<ProcessingGraphExecutionInputState> Inputs,
+    private async ValueTask<(IReadOnlyList<ProcessingGraphExecutionInputState> Inputs,
         IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> Masters, bool Retained, bool EvidenceIncomplete)> ReadRunManifestBindingsAsync(
         SqliteConnection connection,
         ProcessingGraphExecutionState execution,
@@ -162,6 +162,18 @@ internal sealed partial class SqliteCaptureProcessingStore
                     execution.ExecutionClass, attemptCount);
         var completed = await CompleteRunManifestInputsAsync(
             connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
+        if (retained && _silo is { } silo)
+        {
+            foreach (var id in completed.Inputs.Select(static input => input.ArtifactId)
+                .Concat(completed.Masters.Select(static master => master.ArtifactId)).Distinct())
+            {
+                if (!await silo.IsArtifactRetainedAsync(id, cancellationToken).ConfigureAwait(false))
+                {
+                    retained = false;
+                    break;
+                }
+            }
+        }
         return (completed.Inputs, completed.Masters, retained && completed.Complete, evidenceIncomplete);
     }
 

@@ -175,9 +175,8 @@ public sealed partial class ProcessingGraphOperationsTests
             }
 
             ProcessingGraphExecutionDetail external;
-            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            using (var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
                 ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = authorizationKey,
@@ -262,9 +261,8 @@ public sealed partial class ProcessingGraphOperationsTests
                     CapturePipelineSchemaVersions.ExplicitV2,
                     CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
-            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            using var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = FileSystemTestPaths.CreateShortUnixSocketPath(),
@@ -368,7 +366,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await using var runnerLifetime = runner.ConfigureAwait(false);
                 var runnerTask = runner.RunAsync(runnerStopping.Token);
                 await WaitForPathAsync(socketPath).ConfigureAwait(false);
-                using var provider = CreateProvider(root, LocalRunnerSettings());
+                using var provider = CreateReplayTransportProvider(root, LocalRunnerSettings());
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -418,7 +416,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await using var runnerLifetime = runner.ConfigureAwait(false);
                 var runnerTask = runner.RunAsync(runnerStopping.Token);
                 await WaitForPathAsync(socketPath).ConfigureAwait(false);
-                using var recoveredProvider = CreateProvider(root, LocalRunnerSettings());
+                using var recoveredProvider = CreateReplayTransportProvider(root, LocalRunnerSettings());
                 await recoveredProvider.GetRequiredService<IRawCaptureIngress>()
                     .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                 var operations = recoveredProvider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
@@ -456,7 +454,6 @@ public sealed partial class ProcessingGraphOperationsTests
 
             Dictionary<string, string?> LocalRunnerSettings() => new()
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:ReplayLeaseSeconds"] = "3",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
@@ -1659,7 +1656,9 @@ public sealed partial class ProcessingGraphOperationsTests
             _ = await operations.CancelReplayAsync(
                 centeredReplay.Execution.ExecutionId, "centered-cancel-key", "owner-test", null,
                 CancellationToken.None).ConfigureAwait(false);
-            File.Delete(receipts[0].StoredFrame.AbsolutePath);
+            var oldest = receipts[0].Manifest.Descriptor;
+            await SiloInfrastructureFixture.ExpireLocalMemberAsync(provider, oldest.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(oldest), CancellationToken.None).ConfigureAwait(false);
             var idempotentReplay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
                     receipts[^1].Manifest.Descriptor.Capture.CaptureId,
@@ -3135,9 +3134,8 @@ public sealed partial class ProcessingGraphOperationsTests
             Task? runnerTask = null;
 
             ProcessingGraphExecutionDetail external;
-            using (var provider = CreateProvider(root, new Dictionary<string, string?>
+            using (var provider = CreateReplayTransportProvider(root, new Dictionary<string, string?>
             {
-                ["CameraAgent:ProcessingGraphs:ReplayProfile"] = "LocalRunner",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
                 ["CameraAgent:ProcessingGraphs:LocalRunner:SocketPath"] = socketPath,
                 ["CameraAgent:ProcessingGraphs:LocalRunner:AuthorizationKey"] = authorizationKey,
@@ -3562,6 +3560,17 @@ public sealed partial class ProcessingGraphOperationsTests
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             CapturePipelineConfig.Empty,
             "agent-test");
+
+    // The installed Silo profile runs in process. These tests compose the bounded runner
+    // adapter explicitly to exercise the transport and durable replay scheduling in isolation.
+    private static ServiceProvider CreateReplayTransportProvider(
+        string root, IReadOnlyDictionary<string, string?> overrides)
+        => CreateProvider(root, overrides, configureServices: services =>
+            services.Replace(ServiceDescriptor.Singleton(provider => new CameraAgentRecipeExecutionAdapter(
+                provider.GetRequiredService<IProcessingRecipeExecutor>(),
+                ReplayExecutionProfile.LocalRunner,
+                provider.GetRequiredService<LocalReplayRunnerClient>(),
+                provider.GetRequiredService<GainNormalizationPreparer>))));
 
     internal static ServiceProvider CreateProvider(
         string root,

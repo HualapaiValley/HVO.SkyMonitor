@@ -89,7 +89,7 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.AreEqual(revisionId, activated.RootElement.GetProperty("activeRevisionId").GetString());
 
         // Leave the cadence at its production bound and advance the fixture's sequence to the next eligible capture.
-        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1, usesSilo: true);
         await journal.InitializeAsync(token).ConfigureAwait(false);
         Assert.IsNotNull(configuration.AgentId);
         for (var sequence = lastCaptureSequence + 1; sequence <= 60; sequence++)

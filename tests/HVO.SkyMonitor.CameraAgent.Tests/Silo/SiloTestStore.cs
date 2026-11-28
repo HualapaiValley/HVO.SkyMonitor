@@ -21,6 +21,15 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
 
     public SiloStoreDescriptor Descriptor { get; } = new(storeId, bucket, storeClass, SiloRetrieval.Online, qualified);
 
+    public long BytesStored
+    {
+        get
+        {
+            lock (_gate)
+                return _objects.Values.SelectMany(static versions => versions).Sum(static version => version.Bytes.LongLength);
+        }
+    }
+
     /// <summary>How many bytes of the key's versions readers have consumed.</summary>
     public long BytesServed(string key)
     {

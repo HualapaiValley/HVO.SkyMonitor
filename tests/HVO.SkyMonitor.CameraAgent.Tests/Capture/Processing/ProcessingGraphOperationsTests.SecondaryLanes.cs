@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 
@@ -92,9 +93,13 @@ public sealed partial class ProcessingGraphOperationsTests
             var store = provider.GetRequiredService<ICaptureLaneStore>();
             var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(item => item.Name == laneName);
             Assert.IsTrue(lane.Enabled);
-            var payload = receipt.StoredFrame.AbsolutePath;
-            var backup = payload + ".test-backup";
-            File.Move(payload, backup);
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var change = connection.CreateCommand();
+            change.CommandText = "UPDATE raw_captures SET manifest_json = $manifest WHERE capture_id = $capture;";
+            change.Parameters.AddWithValue("$capture", receipt.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+            var manifest = change.Parameters.AddWithValue("$manifest", "{"u8.ToArray());
+            Assert.AreEqual(1, await change.ExecuteNonQueryAsync().ConfigureAwait(false));
             try
             {
                 Assert.IsNull(await store.ClaimAsync(lane, "secondary-invalid", configuration, CancellationToken.None).ConfigureAwait(false));
@@ -102,7 +107,11 @@ public sealed partial class ProcessingGraphOperationsTests
                 var backlog = await store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(lane.Required ? 1L : 0L, backlog.Single(item => item.Lane == laneName).QuarantineCount);
             }
-            finally { File.Move(backup, payload); }
+            finally
+            {
+                manifest.Value = CaptureContractJson.Serialize(receipt.Manifest);
+                Assert.AreEqual(1, await change.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
             if (!standardFirst)
             {
                 if (lane.Required)

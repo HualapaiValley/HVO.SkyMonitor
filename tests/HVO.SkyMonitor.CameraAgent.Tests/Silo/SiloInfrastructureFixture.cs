@@ -179,6 +179,30 @@ internal static class SiloInfrastructureFixture
         return Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator;
     }
 
+    internal static async ValueTask ExpireLocalMemberAsync(
+        IServiceProvider services, Guid artifactId, string revision, CancellationToken token)
+    {
+        var storage = services.GetRequiredService<SiloInstalledStorage>();
+        var key = new SiloRoleKey(SiloIdentityKind.Member, artifactId.ToString("D"), revision);
+        var role = await storage.Index.ReadRoleAsync(key, token).ConfigureAwait(false);
+        Assert.IsNotNull(role);
+        var locator = Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator;
+        var identity = new SiloObjectIdentity(key.Kind, key.Id, key.Revision, role.Sha256, role.Length);
+        var intent = Guid.NewGuid().ToString("N");
+        await storage.ArchiveJournal.AppendAsync(
+            [new SiloExpiryIntentRecord(intent, SiloExpiryScope.Role, identity, "last-copy-policy:operator",
+                [new(locator, "local")], "retention elapsed", LastCopy: true)], intent + ":intent", token).ConfigureAwait(false);
+        services.GetRequiredService<SiloTestStore>().Delete(locator);
+        var now = services.GetRequiredService<TimeProvider>().GetUtcNow();
+        await storage.ArchiveJournal.AppendAsync(
+            [new SiloExpiryDispositionRecord(intent, locator, SiloExpiryOutcome.Deleted, now, "NoSuchVersion"),
+                new SiloAvailabilityRecord(SiloAvailabilityScope.Role, identity, SiloAvailabilityState.PolicyExpired,
+                    now, "last copy expired", IntentId: intent)], intent + ":settlement", token).ConfigureAwait(false);
+        await storage.Catalog.CatchUpAsync(await storage.State.ReadWriterEvidenceAsync(token).ConfigureAwait(false),
+            null, token).ConfigureAwait(false);
+        Assert.AreEqual(SiloDisposition.PolicyExpired, (await storage.Index.ReadRoleAsync(key, token).ConfigureAwait(false))?.Disposition);
+    }
+
     private sealed class Bucket
     {
         public Bucket()

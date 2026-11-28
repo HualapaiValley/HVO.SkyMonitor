@@ -48,7 +48,8 @@ public sealed partial class RawCaptureIngressTests
         double appliedGain = CenteredTestSettings.Gain;
         try
         {
-            using (var beforeRawRestart = new CenteredFixture(root, fault, clock, wakeup: rawWakeup))
+            using var siloProvider = SiloInfrastructureFixture.OpenStore(root);
+            using (var beforeRawRestart = new CenteredFixture(root, fault, clock, wakeup: rawWakeup, siloProvider: siloProvider))
             {
                 var module = new CenteredRunnerModule((attempt, request, _) =>
                 {
@@ -69,7 +70,7 @@ public sealed partial class RawCaptureIngressTests
 
             CenteredWindowSnapshot opened;
             ExposureAttemptKey uncertain104;
-            using (var afterRawRestart = new CenteredFixture(root, timeProvider: clock, wakeup: productWakeup))
+            using (var afterRawRestart = new CenteredFixture(root, timeProvider: clock, wakeup: productWakeup, siloProvider: siloProvider))
             {
                 await afterRawRestart.Ingress.InitializeAsync(token).ConfigureAwait(false);
                 var head = await afterRawRestart.Ingress.ReadCurrentAsync(camera, token).ConfigureAwait(false);
@@ -102,7 +103,7 @@ public sealed partial class RawCaptureIngressTests
 
             Guid lateCapture;
             ExposureAttemptKey target106;
-            using (var beforeCloseRestart = new CenteredFixture(root, timeProvider: clock, wakeup: new CenteredWindowWakeup()))
+            using (var beforeCloseRestart = new CenteredFixture(root, timeProvider: clock, wakeup: new CenteredWindowWakeup(), siloProvider: siloProvider))
             using (var stopAfter105 = CancellationTokenSource.CreateLinkedTokenSource(token))
             {
                 await beforeCloseRestart.Ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -121,7 +122,7 @@ public sealed partial class RawCaptureIngressTests
                     // outside admission while the original window close transaction is interrupted.
                     AdvanceTo(opened.DeadlineUtc.AddMilliseconds(1));
                     fault.InterruptClose = opened.WindowIdentity;
-                    using var faultedStore = new SqliteCaptureProcessingStore(beforeCloseRestart.Options, clock, fault);
+                    using var faultedStore = new SqliteCaptureProcessingStore(beforeCloseRestart.Options, clock, fault, silo: beforeCloseRestart.Silo);
                     using var coordinator = new CenteredWindowCoordinator(faultedStore, journal, clock, NullLogger<CenteredWindowCoordinator>.Instance);
                     await coordinator.CloseDueAsync(ct).ConfigureAwait(false);
                     Assert.IsTrue(fault.CloseInterrupted);
@@ -141,7 +142,7 @@ public sealed partial class RawCaptureIngressTests
             }
 
             CenteredWindowDisposition frozen;
-            using (var afterCloseRestart = new CenteredFixture(root, timeProvider: clock, wakeup: new CenteredWindowWakeup()))
+            using (var afterCloseRestart = new CenteredFixture(root, timeProvider: clock, wakeup: new CenteredWindowWakeup(), siloProvider: siloProvider))
             {
                 await afterCloseRestart.Ingress.InitializeAsync(token).ConfigureAwait(false);
                 await SettleTraceLinearAsync(afterCloseRestart, config, clock, 1, token).ConfigureAwait(false);
@@ -163,7 +164,7 @@ public sealed partial class RawCaptureIngressTests
                 using var coordinator = new CenteredWindowCoordinator(afterCloseRestart.Store, journal, clock,
                     NullLogger<CenteredWindowCoordinator>.Instance);
                 await coordinator.CloseDueAsync(token).ConfigureAwait(false);
-                var persistence = new CaptureProcessingPersistence(afterCloseRestart.Options, afterCloseRestart.Store, afterCloseRestart.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                var persistence = new CaptureProcessingPersistence(afterCloseRestart.Options, afterCloseRestart.Store, afterCloseRestart.Telemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: afterCloseRestart.Silo);
                 var source = new CenteredWindowRetainedRegistrationSource(
                     new CenteredExposureProductReader(afterCloseRestart.Ingress, afterCloseRestart.Store), afterCloseRestart.Ingress, persistence);
                 using var registration = new CenteredWindowRegistrationWorker(afterCloseRestart.Store, persistence, journal, source, clock,
@@ -202,7 +203,7 @@ public sealed partial class RawCaptureIngressTests
                     Assert.IsNull(await afterCloseRestart.Store.ReadOutputByArtifactIdAsync(artifactId, token).ConfigureAwait(false));
             }
 
-            using var final = new CenteredFixture(root, timeProvider: clock);
+            using var final = new CenteredFixture(root, timeProvider: clock, siloProvider: siloProvider);
             using var repeated = new CenteredWindowCoordinator(final.Store, journal, clock, NullLogger<CenteredWindowCoordinator>.Instance);
             await repeated.CloseDueAsync(token).ConfigureAwait(false);
             var reopened = await final.Store.ReadCenteredWindowByReferenceAsync(opened.ReferenceCaptureId, token).ConfigureAwait(false);
@@ -227,8 +228,9 @@ public sealed partial class RawCaptureIngressTests
     private static async Task SettleTraceLinearAsync(CenteredFixture fixture, CameraModuleConfig config,
         TimeProvider clock, int count, CancellationToken token)
     {
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(fixture.Ingress, token).ConfigureAwait(false);
         var persistence = new CaptureProcessingPersistence(fixture.Options, fixture.Store, fixture.Telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: fixture.Silo);
         using var handler = new StandardCaptureLaneHandler(fixture.Factory, persistence, fixture.Telemetry,
             NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress, fixture.Options, timeProvider: clock);
         var lane = fixture.Policy.Definitions.Single(definition => definition.Name == "standard");
