@@ -146,7 +146,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 services.AddSingleton(locations.Object);
                 services.AddSingleton(invalidPin ? CreateReferenceCatalog("replacement", stars: referenceData.Stars) : reference);
                 if (failArchive)
-                    services.AddSingleton<ICaptureProcessingFaultInjector, StorageSelectionFailure>();
+                    services.AddSingleton<ICaptureProcessingFaultInjector>(new StorageSelectionFailure());
             });
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             await ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -333,4 +333,12 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
+    private sealed class StorageSelectionFailure : ICaptureProcessingFaultInjector
+    {
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "archive")
+                throw new IOException("Simulated interruption while selecting retained storage inputs.");
+        }
+    }
 }
