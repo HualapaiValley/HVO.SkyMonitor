@@ -315,11 +315,18 @@ public sealed partial class SiloRetentionTests
         Assert.AreEqual(Healthy.TotalBytes / 2, observed!.Value.TotalBytes);
         Assert.AreEqual(Healthy.AvailableBytes, observed.Value.AvailableBytes);
         Assert.AreEqual(Healthy.TotalBytes, observed.Value.StateCapacity!.Value.TotalBytes);
+        Assert.AreEqual(true, observed.Value.ReclaimRoot?.TracksTrash);
         Assert.IsGreaterThanOrEqualTo(8192L, observed.Value.TrashBytes!.Value);
         Assert.AreEqual(4096L, budget.ReadExactAllocationBytes(exact));
         Assert.IsNull(budget.ReadExactAllocationBytes(exact with { VersionId = "other" }));
         File.Delete(file);
         Assert.AreEqual(0L, budget.ObserveReclamation()?.TrashBytes);
+
+        var newData = Directory.CreateDirectory(Path.Combine(silo.RootPath, "new-data")).FullName;
+        var newBudget = SiloFilesystemObservation.CreateBudget(silo.RootPath, newData, 1, 8192, capacity: new TestCapacity(newData));
+        var newSample = newBudget.ObserveReclamation()!.Value;
+        Assert.AreEqual(observed.Value.TotalBytes, newSample.TotalBytes);
+        Assert.AreNotEqual(observed.Value.ReclaimRoot, newSample.ReclaimRoot);
     }
 
     private sealed class TestCapacity(string data) : IStorageCapacityProvider
