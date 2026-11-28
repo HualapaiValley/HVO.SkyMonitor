@@ -24,6 +24,7 @@ public sealed partial class RawCaptureIngressTests
             using (var original = new CenteredFixture(root, siloProvider: siloProvider))
             {
                 var receipt = await original.AdmitAsync(config, rawTime).ConfigureAwait(false);
+                await SiloInfrastructureFixture.SettleRawAdmissionsAsync(original.Ingress, token).ConfigureAwait(false);
                 var descriptor = receipt.Manifest.Descriptor;
                 var attempt = receipt.Manifest.CenteredExposure!.Source;
                 key = new(attempt.Camera, attempt.RunId, descriptor.Capture.CaptureId);

@@ -28,7 +28,8 @@ public sealed partial class RawCaptureIngressTests
         long initialCursor;
         try
         {
-            using (var first = new CenteredFixture(root))
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using (var first = new CenteredFixture(root, siloProvider: silo))
             {
                 var start = Timestamp(1);
                 var submission = CenteredSubmission(start);
@@ -51,9 +52,9 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(acquisition, initial.View.Base.Definition.Reference.Input.Raw.CenteredAcquisition);
             }
 
-            using var restarted = new CenteredFixture(root);
+            using var restarted = new CenteredFixture(root, siloProvider: silo);
             await restarted.Ingress.InitializeAsync(token).ConfigureAwait(false);
-            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+            var index = new SqliteCenteredViews(restarted.Store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.Silo);
             Assert.AreEqual(initialCursor, await index.ReadProductCursorAsync(camera, token).ConfigureAwait(false));
             var reloaded = await index.ReadLastLiveAsync(camera, token).ConfigureAwait(false);
             Assert.AreEqual(initial.View.Revision.RevisionId, reloaded?.View.Revision.RevisionId);
@@ -83,14 +84,15 @@ public sealed partial class RawCaptureIngressTests
             await RecordCenteredTrailScanAsync(restarted.Store, oldExposure, observation, token).ConfigureAwait(false);
 
             // The durable transient completion can be consumed by a fresh publication reader.
-            using var reopenedProcessing = new SqliteCaptureProcessingStore(restarted.Options);
-            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+            using var reopenedProcessing = new SqliteCaptureProcessingStore(restarted.Options, silo: restarted.Silo);
+            var afterRestart = new SqliteCenteredViews(reopenedProcessing, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance, silo: restarted.Silo);
             Assert.HasCount(1, await afterRestart.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
             var persistence = new CaptureProcessingPersistence(restarted.Options, reopenedProcessing, restarted.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: restarted.Silo);
             using var trailPublication = CreateCenteredTrailPublisher(restarted, afterRestart, persistence);
             await trailPublication.PublishReadyAsync(token).ConfigureAwait(false);
             await trailPublication.PublishReadyAsync(token).ConfigureAwait(false);
+            await SettleViewsAsync(afterRestart, token).ConfigureAwait(false);
             Assert.IsEmpty(await afterRestart.ReadDueTrailWorkAsync(16, token).ConfigureAwait(false));
             var enriched = (await afterRestart.ReadArchiveAsync(oldExposure.CaptureId, token).ConfigureAwait(false)).Single();
             Assert.AreEqual(archived.DefaultRevisionId, enriched.DefaultRevisionId);
@@ -102,7 +104,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(observation, assessment.ObservedUtc);
             Assert.AreEqual(second.Issued.Interval, (await afterRestart.ReadLastLiveAsync(camera, token).ConfigureAwait(false))?.Interval);
 
-            using var artifacts = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder());
+            using var artifacts = new CameraAgentArtifactService(restarted.Options, restarted.Store, new CameraAgentPreviewEncoder(), silo: restarted.Silo);
             var reader = new CenteredViewPresentationReader(index, artifacts);
             var reopened = await reader.OpenPreviewAsync(archived.Base.BaseId, archived.InitialRevisionId, token).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, reopened.Status);
@@ -141,15 +143,16 @@ public sealed partial class RawCaptureIngressTests
         CenteredFixture setup, CameraModuleConfig config, CameraKey camera, CancellationToken token)
     {
         var clock = TimeProvider.System;
-        using var artifacts = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder());
+        await SiloInfrastructureFixture.SettleRawAdmissionsAsync(setup.Ingress, token).ConfigureAwait(false);
+        using var artifacts = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder(), silo: setup.Silo);
         using var telemetry = new CaptureControlTelemetry();
         using var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, clock, telemetry);
         using var scheduleStore = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, clock);
         using var schedule = new CaptureScheduleRuntimeCoordinator(scheduleStore, admission, new RawIngressState(clock),
             new CaptureLaneState(clock, setup.Options), setup.Factory, clock);
         var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
-        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance);
+            NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
+        var views = new SqliteCenteredViews(setup.Store, clock, NullLogger<SqliteCenteredViews>.Instance, silo: setup.Silo);
         var products = new CenteredExposureProductReader(setup.Ingress, setup.Store);
         var producer = new CenteredViewProducer(persistence, artifacts, views, setup.Options, setup.Store);
         var layers = new CenteredViewSourceLayers(setup.Store, views, new CenteredViewLayerProducer(views, persistence));
@@ -168,6 +171,7 @@ public sealed partial class RawCaptureIngressTests
         var stream = CenteredViewLookup.ResolveStream(await setup.Ingress.ReadCurrentAsync(camera, token).ConfigureAwait(false));
         Assert.IsNotNull(stream);
         Assert.IsFalse(await worker.DrainCameraAsync(camera, stream, CancellationToken.None, token).ConfigureAwait(false));
+        await SettleViewsAsync(views, token).ConfigureAwait(false);
         var selected = await views.ReadCurrentAsync(stream, token).ConfigureAwait(false);
         Assert.IsNotNull(selected);
         Assert.AreEqual(selected.View.Base.BaseId, await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false));
@@ -177,5 +181,15 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(selected.Interval, (await views.ReadCurrentAsync(stream, token).ConfigureAwait(false))?.Interval);
         await setup.Ingress.CompleteAsync(lease, token).ConfigureAwait(false);
         return (selected, cursor);
+    }
+
+    private static async Task SettleViewsAsync(SqliteCenteredViews views, CancellationToken token)
+    {
+        while (true)
+        {
+            var publication = await views.PublishSiloChangesAsync(16, token).ConfigureAwait(false);
+            Assert.IsNull(publication.Status);
+            if (!publication.More) return;
+        }
     }
 }

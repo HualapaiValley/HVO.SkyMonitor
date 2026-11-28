@@ -2,6 +2,7 @@ using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
 
@@ -79,21 +80,28 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     {
         var (path, bytes) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
         var manifest = CaptureContractJson.ParseManifest(bytes).Document!.Manifest;
+        var committed = await CommitLocationEvidenceAsync(manifest).ConfigureAwait(false);
+        await RetainedFileMutations.WriteAllBytesAsync(path, committed.Json).ConfigureAwait(false);
+        return (path, committed.Json, committed.Capture);
+    }
+
+    private async Task<(byte[] Json, string Capture)> CommitLocationEvidenceAsync(ArtifactManifestV2 manifest)
+    {
         var descriptor = manifest.Descriptor;
-        var journal = new SqliteRawCaptureJournal(Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), 5);
+        var root = _options.Value.RawIngressRoot;
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
         await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
         var identity = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId,
             descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         descriptor = descriptor with { Capture = descriptor.Capture with { CaptureSequence = identity.CaptureSequence } };
-        manifest = manifest with { Descriptor = descriptor };
-        bytes = CaptureContractJson.Serialize(manifest);
-        await RetainedFileMutations.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
+        var payloadRef = SiloArtifactStorage.RawReference(identity.ArtifactId, ".bin");
+        var bytes = CaptureContractJson.Serialize(manifest with { Descriptor = descriptor, RelativeArtifactPath = payloadRef });
         _ = await journal.CommitAsync(new RawIngressJournalEntry(descriptor.Capture.AgentId, descriptor.Capture.CaptureSequence,
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
             CaptureContractJson.ComputeManifestSha256(bytes), descriptor.Artifact.ChecksumSha256, descriptor.Layout.ByteLength,
-            manifest.RelativeArtifactPath, Path.GetRelativePath(_options.Value.RawIngressRoot, path), bytes,
+            payloadRef, SiloArtifactStorage.RawReference(identity.ArtifactId, ".json"), bytes,
             descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), null, null, [], CancellationToken.None).ConfigureAwait(false);
-        return (path, bytes, descriptor.Capture.CaptureId.ToString("N"));
+        return (bytes, descriptor.Capture.CaptureId.ToString("N"));
     }
 
     private static byte[] ChangeRound7Manifest(byte[] original)

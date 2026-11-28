@@ -922,9 +922,11 @@ public sealed partial class RawCaptureIngressTests
         try
         {
             var clock = new ExposureTestTimeProvider(DateTimeOffset.UtcNow);
-            using var setup = new CenteredFixture(root, timeProvider: clock);
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            using var setup = new CenteredFixture(root, timeProvider: clock, siloProvider: silo);
             var config = CenteredConfiguration("camera");
             var first = await setup.AdmitAsync(config, Timestamp(1)).ConfigureAwait(false);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(setup.Ingress, CancellationToken.None).ConfigureAwait(false);
             var key = new ExposureKey(first.Manifest.CenteredExposure!.Source.Camera,
                 first.Manifest.CenteredExposure.Source.RunId, first.Manifest.Descriptor.Capture.CaptureId);
             var reader = new CenteredExposureProductReader(setup.Ingress, setup.Store);
@@ -932,7 +934,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(LinearExposureDisposition.Pending, initial!.Disposition);
 
             var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
             using var standard = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                 NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options);
             var lease = await setup.Ingress.ClaimAsync(setup.Policy.Definitions.Single(lane => lane.Name == "standard"),
@@ -1057,44 +1059,13 @@ public sealed partial class RawCaptureIngressTests
 
             var saved = await setup.Store.ReadOutputByArtifactIdAsync(settled.Product.ArtifactId, CancellationToken.None)
                 .ConfigureAwait(false);
-            Assert.IsNotNull(saved);
-            var operation = new ProcessingLifecycleOperation("delete:centered-test", "delete", settled.Product.OutputIdentitySha256,
-                saved.PayloadRelativePath, saved.SidecarRelativePath, "processing-deletion-tombstones/centered-test",
-                "retention-expired", 0);
-            var firstReader = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
-                .ConfigureAwait(false);
-            Assert.IsNotNull(firstReader);
-            await using var firstReaderScope = firstReader.ConfigureAwait(false);
-            Assert.IsFalse(await setup.Store.PlanLifecycleOperationAsync(operation, CancellationToken.None).ConfigureAwait(false));
-            await new DerivedProductReconciler(root, setup.Store).RunAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(File.Exists(Path.Combine(root, saved.PayloadRelativePath)));
-            Assert.IsTrue(File.Exists(Path.Combine(root, saved.SidecarRelativePath)));
-            await firstReader.DisposeAsync().ConfigureAwait(false);
-
-            Assert.IsTrue(await setup.Store.PlanLifecycleOperationAsync(operation, CancellationToken.None).ConfigureAwait(false));
-            Assert.IsTrue(File.Exists(Path.Combine(root, saved.PayloadRelativePath)));
-            Assert.IsNull(await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
-                .ConfigureAwait(false));
-            await new DerivedProductReconciler(root, setup.Store).RunAsync(CancellationToken.None).ConfigureAwait(false);
-
-            Assert.IsNull(await setup.Store.ReadOutputByArtifactIdAsync(settled.Product.ArtifactId, CancellationToken.None)
-                .ConfigureAwait(false));
-            Assert.IsFalse(File.Exists(Path.Combine(root, saved.PayloadRelativePath)));
-            Assert.IsFalse(File.Exists(Path.Combine(root, saved.SidecarRelativePath)));
-            var expired = await reader.ReadLinearAsync(key, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(LinearExposureDisposition.Expired, expired!.Disposition);
-            Assert.AreEqual("retention-expired", expired.Reason);
-            Assert.AreEqual(settled.Product, expired.Product);
-            Assert.AreEqual(settled.Revision, expired.Revision);
-            Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, expired.Provenance!.Disposition);
-            Assert.AreEqual(settled.Provenance.RawArtifactId, expired.Provenance.RawArtifactId);
-            Assert.AreEqual(settled.Provenance.RawDescriptorSha256, expired.Provenance.RawDescriptorSha256);
-            Assert.AreEqual(settled.Provenance.RawPayloadSha256, expired.Provenance.RawPayloadSha256);
-            Assert.AreEqual(settled.Provenance.LinearDescriptorSha256, expired.Provenance.LinearDescriptorSha256);
-            Assert.AreEqual(settled.Provenance.LinearPayloadSha256, expired.Provenance.LinearPayloadSha256);
-            Assert.AreEqual(settled.Provenance.OutputIdentitySha256, expired.Provenance.OutputIdentitySha256);
-            Assert.IsNull(await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
-                .ConfigureAwait(false));
+            Assert.IsNotNull(saved?.Descriptor);
+            var retained = await setup.Silo!.ReadMemberAsync(saved.ArtifactId, saved.OutputIdentitySha256,
+                saved.Descriptor.Layout.ByteLength, settled.Product.PayloadSha256, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(retained);
+            Assert.AreEqual(settled.Provenance.LinearPayloadSha256, PayloadChecksum.ComputeSha256(retained));
+            var holds = await persistence.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(holds.Any(hold => hold.ArtifactId == settled.Product.ArtifactId));
         }
         finally { DeleteRoot(root); }
     }

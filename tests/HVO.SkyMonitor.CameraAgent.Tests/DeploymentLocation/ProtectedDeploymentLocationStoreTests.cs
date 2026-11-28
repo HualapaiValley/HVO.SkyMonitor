@@ -413,11 +413,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             Descriptor = manifest.Descriptor with { Location = secondLocation.ToProvenance() }
         };
-        var evidenceDirectory = Path.Combine(_options.Value.RawIngressRoot, "evidence");
-        Directory.CreateDirectory(evidenceDirectory);
-        await File.WriteAllBytesAsync(
-            Path.Combine(evidenceDirectory, "capture.json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        _ = await CommitLocationEvidenceAsync(manifest).ConfigureAwait(false);
         await File.WriteAllBytesAsync(statePath, firstHistory).ConfigureAwait(false);
         await File.WriteAllBytesAsync(markerPath, firstMarker).ConfigureAwait(false);
 
@@ -441,11 +437,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             Descriptor = manifest.Descriptor with { Location = firstLocation.ToProvenance() }
         };
-        var evidenceDirectory = Path.Combine(_options.Value.RawIngressRoot, "evidence");
-        Directory.CreateDirectory(evidenceDirectory);
-        await File.WriteAllBytesAsync(
-            Path.Combine(evidenceDirectory, "capture.json"),
-            CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+        _ = await CommitLocationEvidenceAsync(manifest).ConfigureAwait(false);
 
         _timeProvider.UtcNow = captureTime.AddHours(1);
         var backdated = CreateSeed(-31.2733, 149.0700, 1165, "Australia/Sydney") with
