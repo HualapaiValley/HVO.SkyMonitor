@@ -6,15 +6,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// <summary>
 /// Correction round 2 of #1314 (PR #1340): a restore syncs every directory it relies on before it records that it is
 /// complete, even one an interrupted attempt created (R11); every recovery authenticates the snapshot it will restore
-/// before it changes any container (R12); and a store under a storage root named after the snapshot is removed, keeping
-/// its files, whichever restore puts the snapshot back (R14).
+/// before it changes any container (R12).
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
-    private const string ApiRoot = "/app/data/archive/api-added";
-    private const string ApiOutbox = "archive/api-added/outbox/artifact-outbox.db";
-    private const string ApiBulkFile = "archive/api-added/frames/2026/10/17/Raw/frame.bin";
-
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -105,31 +100,6 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_FailedCandidate_RemovesAStoreUnderARootTheCandidateNamedAndKeepsItsFiles()
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        ExecuteSql(RawIngressPath(fixture.Paths), ScheduleRevisionsTable);
-        fixture.Runner.OnComposeUp = image =>
-        {
-            // A schedule created through the API while the candidate runs names a new storage root, and the candidate
-            // opens an outbox there in its own (migrated) schema and stores a frame under it.
-            if (image == CandidateImageId) NameApiRoot(fixture.Paths);
-        };
-
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
-
-        AssertApiRootStoreRemoved(fixture.Paths);
-        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
-        CollectionAssert.Contains(journal.StateRestorePlan!.CurrentLocations.ToArray(), ApiOutbox);
-        CollectionAssert.DoesNotContain(journal.StateRestorePlan.TargetLocations.ToArray(), ApiOutbox);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_FailedCandidateThatLeftTheJournalUnreadable_StillRecoversAndSaysWhatItCouldNotRead()
     {
         using var fixture = await MigratingFixtureAsync();
@@ -156,29 +126,4 @@ public sealed partial class LifecycleContractTests
         StringAssert.Contains(error.ToString(), "raw/journal/raw-ingress.db", StringComparison.Ordinal);
     }
 
-    private const string ScheduleRevisionsTable =
-        "CREATE TABLE capture_schedule_revisions(revision_id TEXT PRIMARY KEY, revision_number INTEGER NOT NULL UNIQUE, profile_json BLOB NOT NULL);";
-
-    private static void NameApiRoot(InstallationPaths paths)
-    {
-        ExecuteSql(RawIngressPath(paths),
-            "INSERT INTO capture_schedule_revisions VALUES('r-api', 9, CAST('{\"processingSteps\":[{\"type\":\"FileStorage\",\"options\":{\"storageRoot\":\"" +
-            ApiRoot + "\"}}]}' AS BLOB));");
-        var outbox = CameraAgentStateSnapshot.StorePath(paths.StateRoot, ApiOutbox);
-        Directory.CreateDirectory(Path.GetDirectoryName(outbox)!);
-        ExecuteSql(outbox, "PRAGMA journal_mode=WAL; CREATE TABLE outbox(id INTEGER PRIMARY KEY, migrated INTEGER NOT NULL); INSERT INTO outbox(migrated) VALUES(1);");
-        var bulk = CameraAgentStateSnapshot.StorePath(paths.StateRoot, ApiBulkFile);
-        Directory.CreateDirectory(Path.GetDirectoryName(bulk)!);
-        File.WriteAllBytes(bulk, [1, 2, 3]);
-    }
-
-    private static void AssertApiRootStoreRemoved(InstallationPaths paths)
-    {
-        var outbox = CameraAgentStateSnapshot.StorePath(paths.StateRoot, ApiOutbox);
-        foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => outbox + suffix).Prepend(outbox))
-            Assert.IsFalse(File.Exists(file), $"'{file}' was left in place for the previous release.");
-        Assert.IsTrue(File.Exists(CameraAgentStateSnapshot.StorePath(paths.StateRoot, ApiBulkFile)), "A restore removed a bulk file.");
-        // The schedule revision that named the root is gone with the rest of the journal's later changes.
-        Assert.AreEqual(0, ReadCounter(paths, "raw/journal/raw-ingress.db", "SELECT COUNT(*) FROM capture_schedule_revisions WHERE revision_id = 'r-api';"));
-    }
 }

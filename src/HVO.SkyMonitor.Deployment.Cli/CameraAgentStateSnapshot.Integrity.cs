@@ -298,6 +298,14 @@ internal static partial class CameraAgentStateSnapshot
     {
         using (var layout = connection.CreateCommand())
         {
+            layout.CommandText = """
+                SELECT (SELECT user_version FROM pragma_user_version), (SELECT application_id FROM pragma_application_id);
+                """;
+            using (var format = layout.ExecuteReader())
+            {
+                if (!format.Read() || format.GetInt64(0) != HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityFormat.SchemaVersion || format.GetInt64(1) != DatabaseApplicationId)
+                    throw new InvalidDataException("Unsupported retained integrity ledger SQLite schema; fresh install required.");
+            }
             layout.CommandText = "SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%';";
             using var rows = layout.ExecuteReader();
             var expected = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

@@ -3,7 +3,10 @@ using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
+using HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
@@ -48,40 +51,100 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         return harness;
     }
 
-    /// <summary>Initializes every store; over existing stores this is what an upgraded instance does on startup.</summary>
     public async Task InitializeStoresAsync()
     {
+        await OpenStoreAsync("rawIngress").ConfigureAwait(false);
+        await OpenStoreAsync("processing").ConfigureAwait(false);
+        await OpenStoreAsync("transientRuntime").ConfigureAwait(false);
+        foreach (var (store, _, _) in CameraAgentStateContractsLabelTests.Stores)
+        {
+            if (store != "rawIngress")
+                await OpenStoreAsync(store).ConfigureAwait(false);
+        }
+    }
+
+    internal ApplicationDbContext OpenIdentity(Func<DbContextOptionsBuilder<ApplicationDbContext>,
+        DbContextOptionsBuilder<ApplicationDbContext>>? configure = null)
+    {
+        var path = StorePath("identity/cameraagent_identity.db");
+        var options = CameraAgentDesignTimeDbContextFactory.CreateOptionsBuilder()
+            .UseSqlite(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
+        return new ApplicationDbContext((configure?.Invoke(options) ?? options).Options);
+    }
+
+    internal async Task OpenStoreAsync(string store, CancellationToken token = default)
+    {
         var services = new ServiceCollection();
+        var protector = new PassThroughProtector();
         services.AddLogging();
-        // The host registers Data Protection for the deployment location; the stores only need it to exist.
-        services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.IDeploymentLocationProtector>(new PassThroughProtector());
+        services.AddSingleton<IDeploymentLocationProtector>(protector);
         services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:RawIngressRoot"] = RawRoot
         }).Build());
         var provider = services.BuildServiceProvider();
         await using var disposeProvider = provider.ConfigureAwait(false);
-        await new SqliteRawCaptureJournal(Path.Combine(RawRoot, "journal", "raw-ingress.db"), 5)
-            .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteCaptureProcessingStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteTransientRuntimeStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteEnvironmentalObservationStore>().InitializeAsync(RawRoot, CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteTimeLapseStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        _ = await provider.GetRequiredService<SqliteNightlyProductStore>()
-            .ListAsync(new DateOnly(2026, 10, 16), CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteLocalAutomationStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        // The host initializes the orbital store through OrbitalElementsAvailability, which calls this; disposing the
-        // provider disposes the singleton store and releases its exclusive lock.
-        await provider.GetRequiredService<SqliteOrbitalElementsStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        await provider.GetRequiredService<SqliteSwpcStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        // The host creates the calibration-family store on its first use; disposing the provider releases its root lock.
-        await provider.GetRequiredService<SqliteCalibrationFamilyStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var identity = Path.Combine(StateRoot, "identity", "cameraagent_identity.db");
-        var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseSqlite($"Data Source={identity};Pooling=False").Options);
-        await using (context.ConfigureAwait(false))
+
+        switch (store)
         {
-            await context.Database.MigrateAsync().ConfigureAwait(false);
+            case "rawIngress":
+                await new SqliteRawCaptureJournal(StorePath("raw/journal/raw-ingress.db"), 5, usesSilo: true)
+                    .InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "processing":
+                await provider.GetRequiredService<SqliteCaptureProcessingStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "transientRuntime":
+                await provider.GetRequiredService<SqliteTransientRuntimeStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "environmentalObservations":
+                await provider.GetRequiredService<SqliteEnvironmentalObservationStore>().InitializeAsync(RawRoot, token).ConfigureAwait(false);
+                break;
+            case "timeLapses":
+                await provider.GetRequiredService<SqliteTimeLapseStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "nightlyProducts":
+                _ = await provider.GetRequiredService<SqliteNightlyProductStore>()
+                    .ListAsync(new DateOnly(2026, 10, 16), token).ConfigureAwait(false);
+                break;
+            case "localAutomations":
+                await provider.GetRequiredService<SqliteLocalAutomationStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "orbitalElements":
+                await provider.GetRequiredService<SqliteOrbitalElementsStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "spaceWeather":
+                await provider.GetRequiredService<SqliteSwpcStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "calibrationFamilies":
+                await provider.GetRequiredService<SqliteCalibrationFamilyStore>().InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "siloPublication":
+                await provider.GetRequiredService<SiloInstalledStorage>().State.InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "siloCatalog":
+                await provider.GetRequiredService<SiloInstalledStorage>().Index.InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "siloArchive":
+                Directory.CreateDirectory(StorePath("raw/.silo"));
+                await new SiloArchiveIndex(StorePath("raw/.silo/archive-test.db"),
+                    new(SiloArchiveStore.MarkerFormat, "archive-test", "archive", "source", "retention"))
+                    .InitializeAsync(token).ConfigureAwait(false);
+                break;
+            case "retainedIntegrity":
+                using (new RetainedIntegrityLedger(RawRoot, protector, _ => null, () => { }, TimeProvider.System)) { }
+                break;
+            case "retainedValidation":
+                var directory = Directory.CreateDirectory(StorePath("raw/.location")).FullName;
+                using (new RetainedManifestValidationIndex(directory, new byte[32], protector, DateTimeOffset.UnixEpoch, () => { })) { }
+                break;
+            case "identity":
+                var context = OpenIdentity();
+                await using (context.ConfigureAwait(false))
+                    await CameraAgentIdentitySchema.InitializeAsync(context, token).ConfigureAwait(false);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(store));
         }
     }
 
@@ -95,7 +158,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
     public string StorePath(string location) => Path.Combine(StateRoot, location.Replace('/', Path.DirectorySeparatorChar));
 
     /// <summary>
-    /// The complete schema of a store as the previous release's exact validators see it: every object's type, owning
+    /// The complete schema of a store as the validators see it: every object's type, owning
     /// table and SQL (whitespace-normalized), the user version, and the rows that record the store's version, since a
     /// version kept in a row (a <c>*_schema</c> or <c>*_metadata</c> table's version column, or the EF migration
     /// history) can change without any DDL changing.
@@ -108,6 +171,8 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         {
             version.CommandText = "PRAGMA user_version;";
             schema["pragma:user_version"] = Convert.ToString(version.ExecuteScalar(), CultureInfo.InvariantCulture)!;
+            version.CommandText = "PRAGMA application_id;";
+            schema["pragma:application_id"] = Convert.ToString(version.ExecuteScalar(), CultureInfo.InvariantCulture)!;
         }
         var tables = new List<string>();
         using (var command = connection.CreateCommand())

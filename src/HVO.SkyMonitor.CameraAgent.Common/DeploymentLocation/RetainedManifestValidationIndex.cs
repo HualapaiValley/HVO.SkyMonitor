@@ -9,6 +9,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 internal sealed partial class RetainedManifestValidationIndex : IDisposable
 {
     internal const string FileName = "retained-validation.v2.db";
+    private const int SchemaVersion = 1;
+    private const int ApplicationId = 0x48565256; // HVRV
     internal const int BatchSize = 8192;
     private const int ProofLength = 73;
     private readonly byte[] _identity;
@@ -36,8 +38,12 @@ internal sealed partial class RetainedManifestValidationIndex : IDisposable
         try
         {
             EnsureConfined();
-            try { ValidateExistingLayout(); Open(); }
-            catch (InvalidDataException) { Recreate(); }
+            CheckExistingVersion();
+            try
+            {
+                if (HasExpectedLayout()) Open();
+                else Recreate();
+            }
             catch (SqliteException exception) when (exception.SqliteErrorCode is 11 or 26 || exception.SqliteExtendedErrorCode == 776) { Recreate(); }
         }
         catch (Exception exception) when (IsOptionalFailure(exception)) { Disable(); }
@@ -81,9 +87,30 @@ internal sealed partial class RetainedManifestValidationIndex : IDisposable
         return bytes[72] is (byte)ProofKind.Artifact or (byte)ProofKind.OtherJson ? (ProofKind)bytes[72] : null;
     }
 
-    private void ValidateExistingLayout()
+    private void CheckExistingVersion()
     {
         if (!File.Exists(_path) || new FileInfo(_path).Length == 0) return;
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = _path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+            DefaultTimeout = 1
+        }.ToString());
+        try
+        {
+            connection.Open();
+            _ = Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, null, "Retained validation index", SchemaVersion, ApplicationId);
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode is 11 or 26 || exception.SqliteExtendedErrorCode == 776)
+        {
+            // The layout check handles a corrupt advisory cache through its existing rebuild path.
+        }
+    }
+
+    private bool HasExpectedLayout()
+    {
+        if (!File.Exists(_path) || new FileInfo(_path).Length == 0) return true;
         using var read = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _path,
@@ -96,18 +123,19 @@ internal sealed partial class RetainedManifestValidationIndex : IDisposable
         schema.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND NOT " +
             "(type='table' AND name='proofs' OR type='index' AND name='proof_expiration');";
         if (Convert.ToInt64(schema.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0)
-            throw new InvalidDataException("The advisory index has an unexpected layout.");
+            return false;
         schema.CommandText = "PRAGMA table_info(proofs);";
         using var columns = schema.ExecuteReader();
         foreach (var (name, type) in new[] { ("digest", "BLOB"), ("proof", "BLOB"), ("created_utc", "INTEGER") })
             if (!columns.Read() || columns.GetString(1) != name || columns.GetString(2) != type || columns.GetInt32(3) != 1)
-                throw new InvalidDataException("The advisory index has an unexpected layout.");
-        if (columns.Read()) throw new InvalidDataException("The advisory index has an unexpected layout.");
+                return false;
+        return !columns.Read();
     }
 
     private void Recreate()
     {
         Close();
+        CheckExistingVersion();
         // Remove only the dedicated advisory names. A foreign DB/hard link is never opened writable.
         foreach (var suffix in new[] { "", "-journal", "-wal", "-shm" }) File.Delete(_path + suffix);
         Open();
@@ -123,6 +151,7 @@ internal sealed partial class RetainedManifestValidationIndex : IDisposable
             DefaultTimeout = 1
         }.ToString());
         _connection.Open();
+        Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(_connection, "Retained validation index", SchemaVersion, ApplicationId);
         using var setup = _connection.CreateCommand();
         Sqlite.SqliteConnectionConfigurationGate.Run(() =>
         {
@@ -137,15 +166,25 @@ internal sealed partial class RetainedManifestValidationIndex : IDisposable
             setup.CommandText = "PRAGMA cache_size=-4096;";
             setup.ExecuteNonQuery();
         });
-        setup.CommandText = """
-            CREATE TABLE IF NOT EXISTS proofs (
-                digest BLOB PRIMARY KEY NOT NULL,
-                proof BLOB NOT NULL,
-                created_utc INTEGER NOT NULL
-            ) WITHOUT ROWID;
-            CREATE INDEX IF NOT EXISTS proof_expiration ON proofs(created_utc);
-            """;
-        setup.ExecuteNonQuery();
+        using (var transaction = _connection.BeginTransaction(deferred: false))
+        {
+            if (Sqlite.SqliteSchemaBaseline.NeedsCreation(_connection, transaction, "Retained validation index", SchemaVersion, ApplicationId))
+            {
+                setup.Transaction = transaction;
+#pragma warning disable CA2100 // Internal schema and numeric baseline markers.
+                setup.CommandText = """
+                    CREATE TABLE IF NOT EXISTS proofs (
+                        digest BLOB PRIMARY KEY NOT NULL,
+                        proof BLOB NOT NULL,
+                        created_utc INTEGER NOT NULL
+                    ) WITHOUT ROWID;
+                    CREATE INDEX IF NOT EXISTS proof_expiration ON proofs(created_utc);
+                    """ + Sqlite.SqliteSchemaBaseline.Stamp(SchemaVersion, ApplicationId);
+#pragma warning restore CA2100
+                setup.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
         _lookup = _connection.CreateCommand();
         _lookup.CommandText = "SELECT proof FROM proofs WHERE digest=$digest AND typeof(proof)='blob' AND length(proof)<=4096;";
         _lookup.Parameters.Add("$digest", SqliteType.Blob);

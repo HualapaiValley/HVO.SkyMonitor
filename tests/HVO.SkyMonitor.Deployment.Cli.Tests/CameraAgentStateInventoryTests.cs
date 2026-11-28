@@ -1,115 +1,24 @@
-using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
-using Microsoft.Data.Sqlite;
-using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
-/// <summary>
-/// Checks that the installer locates the snapshot stores in the synthetic fixture from configuration and schedule
-/// revisions. The fixture includes orbital elements, space weather and calibration families, which the snapshot
-/// excludes (<see cref="CameraAgentStateLayout.SqliteStores"/>).
-/// </summary>
 [TestClass]
 [TestCategory("Unit")]
 public sealed class CameraAgentStateInventoryTests
 {
     [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void Stores_ForThePreviousReleaseStorageRoots_AreExactlyThePreviousReleaseStoreLocations()
+    public void Stores_UsesTheSmallDatabaseInventoryForTheSiloBaseline()
     {
-        var (storageRoots, locations) = LoadPreviousRelease();
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-inventory-{Guid.NewGuid():N}");
-        try
-        {
-            var paths = InstallationPaths.Create(root, Guid.NewGuid(), "catalog");
-            Directory.CreateDirectory(paths.ConfigRoot);
-            // The generated deployment configuration names some storage roots; a capture-schedule revision names the rest.
-            var generated = CameraConfiguration.Generate(Request(), Guid.Parse("65c0dd43-6490-4f10-b972-0f68c79e45a8"));
-            File.WriteAllText(Path.Combine(paths.ConfigRoot, "camera-module.json"), generated.Json);
-            var generatedRoots = StorageRootsOf(generated.Json);
-            CollectionAssert.IsSubsetOf(generatedRoots, storageRoots.ToArray(),
-                "The previous-release fixture does not cover the storage roots the installer generates.");
-            WriteRevision(paths, storageRoots.Except(generatedRoots, StringComparer.Ordinal).ToArray());
-
-            var stores = CameraAgentStateInventory.Stores(paths, ContractReplayProfile.InProcess);
-
-            CollectionAssert.AreEqual(
-                locations.Where(static location => location != CameraAgentStateLayout.OrbitalElementsStore &&
-                                                   location != CameraAgentStateLayout.SpaceWeatherStore &&
-                                                   location != CameraAgentStateLayout.CalibrationFamiliesStore).ToArray(),
-                stores.Order(StringComparer.Ordinal).ToArray(),
-                "The installer's snapshot inventory does not name exactly the store locations the CameraAgent keeps.");
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
-        }
+        string[] expected =
+        [
+            "identity/cameraagent_identity.db",
+            "raw/journal/raw-ingress.db",
+            "raw/.environment/environmental-observations.db",
+            "raw/.time-lapses/time-lapses.db",
+            "raw/.nightly-products/nightly-products.db",
+            "raw/.automation/local-automations.db",
+            "raw/.location/retained-integrity.v1.db"
+        ];
+        CollectionAssert.AreEqual(expected, CameraAgentStateInventory.Stores.ToArray());
     }
-
-    private static (IReadOnlyList<string> StorageRoots, string[] Locations) LoadPreviousRelease()
-    {
-        var manifest = Path.Combine(AppContext.BaseDirectory, "Fixtures", "previous-release", "manifest.json");
-        using var document = JsonDocument.Parse(File.ReadAllText(manifest));
-        var fixture = document.RootElement;
-        Assert.AreEqual(1, fixture.GetProperty("schemaVersion").GetInt32());
-        return (
-            [.. fixture.GetProperty("storageRoots").EnumerateArray().Select(static item => item.GetString()!)],
-            [.. fixture.GetProperty("stores").EnumerateArray().Select(static store => store.GetProperty("location").GetString()!).Order(StringComparer.Ordinal)]);
-    }
-
-    private static string[] StorageRootsOf(string json)
-    {
-        using var document = JsonDocument.Parse(json);
-        var roots = new List<string>();
-        Collect(document.RootElement);
-        return [.. roots.Distinct(StringComparer.Ordinal)];
-
-        void Collect(JsonElement element)
-        {
-            if (element.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var property in element.EnumerateObject())
-                {
-                    if (property.Name == "storageRoot" && property.Value.ValueKind == JsonValueKind.String) roots.Add(property.Value.GetString()!);
-                    else Collect(property.Value);
-                }
-            }
-            else if (element.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in element.EnumerateArray()) Collect(item);
-            }
-        }
-    }
-
-    private static void WriteRevision(InstallationPaths paths, string[] storageRoots)
-    {
-        var journal = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
-        Directory.CreateDirectory(Path.GetDirectoryName(journal)!);
-        var profile = JsonSerializer.Serialize(new
-        {
-            processingSteps = storageRoots.Select(static storageRoot => new { type = "FileStorage", options = new { storageRoot } }).ToArray()
-        });
-        using var connection = new SqliteConnection($"Data Source={journal};Pooling=False");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            "CREATE TABLE capture_schedule_revisions(revision_id TEXT PRIMARY KEY, revision_number INTEGER NOT NULL UNIQUE, profile_json BLOB NOT NULL);" +
-            "INSERT INTO capture_schedule_revisions VALUES('r1', 1, CAST($profile AS BLOB));";
-        command.Parameters.AddWithValue("$profile", profile);
-        command.ExecuteNonQuery();
-    }
-
-    private static InstallRequest Request() => new()
-    {
-        FriendlyName = "Camera",
-        OwnerEmail = "admin@example.test",
-        CatalogBundle = "/srv/catalog.bundle",
-        ImageReference = $"sha256:{new string('a', 64)}",
-        LatitudeDegrees = 35.2,
-        LongitudeDegrees = -114.1,
-        ElevationMeters = 800,
-        TimeZoneId = "America/Phoenix"
-    };
 }

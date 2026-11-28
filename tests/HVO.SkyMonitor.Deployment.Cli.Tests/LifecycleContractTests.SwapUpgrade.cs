@@ -18,7 +18,7 @@ public sealed partial class LifecycleContractTests
     private const string RawSentinelTable = "sentinel";
     private const string CandidateMigrationTable = "candidate_migration";
     private static readonly string[] SnapshotEntries =
-        ["00-cameraagent_identity.db", "01-raw-ingress.db", "02-artifact-outbox.db", "manifest.json"];
+        ["00-cameraagent_identity.db", "01-raw-ingress.db", "02-environmental-observations.db", "manifest.json"];
     private static readonly string[] SnapshotProtectedLocations =
     [
         "raw/.location/deployment-location.v1.protected",
@@ -32,15 +32,15 @@ public sealed partial class LifecycleContractTests
         "restore:identity/cameraagent_identity.db",
         "restore-sidecars-removed:raw/journal/raw-ingress.db",
         "restore:raw/journal/raw-ingress.db",
-        "restore-sidecars-removed:raw/outbox/artifact-outbox.db",
-        "restore:raw/outbox/artifact-outbox.db",
+        "restore-sidecars-removed:raw/.environment/environmental-observations.db",
+        "restore:raw/.environment/environmental-observations.db",
         "restore-protected:raw/.deployment-location.v1.identity",
         "restore-directories-synced"
     ];
     private static readonly string[] DurableSwapSteps =
     [
         "journal:Prepared", "journal:CandidateValidated", "journal:Drained", "snapshot:identity/cameraagent_identity.db",
-        "snapshot:raw/journal/raw-ingress.db", "snapshot:raw/outbox/artifact-outbox.db", "journal:StateSnapshotRecorded",
+        "snapshot:raw/journal/raw-ingress.db", "snapshot:raw/.environment/environmental-observations.db", "journal:StateSnapshotRecorded",
         "journal:Mutating", "journal:CandidateVerified", "journal:Committed"
     ];
 
@@ -486,7 +486,7 @@ public sealed partial class LifecycleContractTests
             SafeFileSystem.CreateRuntimeDirectory(directory, NativeLinux.getuid(), NativeLinux.getgid());
         Execute(CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot),
             "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT PRIMARY KEY, ProductVersion TEXT NOT NULL);" +
-            "INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity', '10.0.0');" +
+            "INSERT INTO __EFMigrationsHistory VALUES('20261128144428_InitialIdentity', '10.0.0');" +
             "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY, Email TEXT);" +
             "INSERT INTO AspNetUsers VALUES('1', 'owner@example.test'), ('2', 'operator@example.test');");
         Execute(RawIngressPath(paths),
@@ -494,9 +494,9 @@ public sealed partial class LifecycleContractTests
             $"CREATE TABLE {RawSentinelTable}(id INTEGER PRIMARY KEY, value TEXT NOT NULL);" +
             string.Concat(Enumerable.Range(1, 40).Select(static index => $"INSERT INTO {RawSentinelTable}(value) VALUES('capture-{index}');")) +
             "PRAGMA user_version=12;");
-        Execute(CameraAgentStateSnapshot.StorePath(paths.StateRoot, "raw/outbox/artifact-outbox.db"),
-            "CREATE TABLE outbox(id INTEGER PRIMARY KEY, artifact TEXT NOT NULL);" +
-            "INSERT INTO outbox(artifact) VALUES('a'), ('b'), ('c');");
+        Execute(CameraAgentStateSnapshot.StorePath(paths.StateRoot, EnvironmentStore),
+            "CREATE TABLE fixture_observations(id INTEGER PRIMARY KEY, observation TEXT NOT NULL);" +
+            "INSERT INTO fixture_observations(observation) VALUES('a'), ('b'), ('c');");
     }
 
     private static void MigrateAsCandidate(InstallationPaths paths)

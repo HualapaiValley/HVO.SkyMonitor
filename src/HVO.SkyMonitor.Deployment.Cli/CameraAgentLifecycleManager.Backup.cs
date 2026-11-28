@@ -55,7 +55,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var vault = BackupVault.For(request);
         vault.Admit();
-        var stores = BackupStores(paths, manifest);
+        var stores = CameraAgentStateInventory.Stores;
         var (items, _) = BackupInventory.CollectInstance(paths, stores);
         var partials = await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         EnsureBackupCapacity(paths, manifest, vault, items, stores, partials);
@@ -74,22 +74,6 @@ internal sealed partial class CameraAgentLifecycleManager
                     exception);
             }
             vault.Admit();
-        }
-    }
-
-    /// <summary>
-    /// The stores the backup's snapshot holds: those an upgrade snapshots. An inventory the installer cannot read refuses
-    /// the backup before anything changes.
-    /// </summary>
-    private static IReadOnlyList<string> BackupStores(InstallationPaths paths, InstanceManifest manifest)
-    {
-        try
-        {
-            return CameraAgentStateInventory.Stores(paths, manifest.ReplayProfile);
-        }
-        catch (InstallerException exception) when (!exception.IsRefusal)
-        {
-            throw InstallerException.Refused(exception.Message, exception);
         }
     }
 
@@ -174,7 +158,7 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var vault = BackupVault.For(request);
-        var stores = BackupStores(paths, manifest);
+        var stores = CameraAgentStateInventory.Stores;
         var running = manifest.LifecycleCondition == InstanceLifecycleCondition.Installed &&
                       (await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false)).Running;
         if (request.Abort)

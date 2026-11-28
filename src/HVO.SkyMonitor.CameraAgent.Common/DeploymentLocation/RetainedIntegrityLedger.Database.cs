@@ -9,24 +9,21 @@ internal sealed partial class RetainedIntegrityLedger
 {
     private void ValidateLayout()
     {
-        var path = Path.Combine(_directory, DatabaseName);
-        if (!File.Exists(path) || new FileInfo(path).Length == 0) return;
-        using var read = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false,
-            DefaultTimeout = 1
-        }.ToString());
-        read.Open();
-        using var command = read.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND NOT (type='table' AND name IN ('entries','scan_entries','pending','metadata'));";
-        if (Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0)
+        using var command = _database.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'
+              AND type = 'table' AND name IN ('entries', 'scan_entries', 'pending', 'metadata');
+            """;
+        if (command.ExecuteScalar() is not 4L)
+            throw new InvalidDataException("Retained integrity ledger has an incomplete layout.");
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*';";
+        if (command.ExecuteScalar() is not 4L)
             throw new InvalidDataException("Retained integrity ledger has an unexpected layout.");
     }
 
     private void OpenSchema()
     {
+        Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(_database, "Retained integrity ledger", SchemaVersion, DatabaseApplicationId);
         Sqlite.SqliteConnectionConfigurationGate.Run(() =>
         {
             Execute("PRAGMA busy_timeout=100;");
@@ -35,7 +32,18 @@ internal sealed partial class RetainedIntegrityLedger
             Execute("PRAGMA synchronous=FULL;");
             Execute("PRAGMA cache_size=-4096;");
         });
-        Execute(SchemaSql);
+        using var transaction = _database.BeginTransaction(deferred: false);
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(_database, transaction, "Retained integrity ledger", SchemaVersion, DatabaseApplicationId))
+        {
+            using var command = _database.CreateCommand();
+            command.Transaction = transaction;
+#pragma warning disable CA2100 // Internal schema and numeric baseline markers.
+            command.CommandText = SchemaSql + Sqlite.SqliteSchemaBaseline.Stamp(SchemaVersion, DatabaseApplicationId);
+#pragma warning restore CA2100
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        ValidateLayout();
     }
 
     private bool ReadMetadata()

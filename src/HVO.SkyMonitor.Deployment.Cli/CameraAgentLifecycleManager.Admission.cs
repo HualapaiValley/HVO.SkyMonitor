@@ -94,8 +94,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (imageChange && resumed is null)
         {
-            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, kind == LifecycleOperationKind.Rollback,
-                snapshotRequired: true);
+            EnsureUpgradeStorage(paths, request.ImageArchive, snapshotRequired: true);
             await AdmitCandidateAsync(request, paths, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
         // Every check that only reads has admitted the rollback, so it goes ahead: the warning comes now, before anything

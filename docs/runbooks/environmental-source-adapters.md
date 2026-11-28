@@ -305,15 +305,9 @@ the capture regime. The marker is capture-specific and cannot suppress future ca
 associations remain immutable. A pre-commit interruption admits neither the row
 nor its marker; raw-ingress recovery publishes the original sidecar evidence.
 
-Raw-ingress schema 16 is a reader boundary for this evidence. Canonical schemas
-13, 14 and 15 upgrade transactionally, with existing capture bytes retained.
-The image declares writes 16 / reads 13–16 and
-`canonical-v13-v14-v15-to-v16`; installer preflight verifies canonical source
-schemas, integrity and foreign keys before permitting that declared conversion.
-The changed raw-ingress boundary is an existing installer checkpoint trigger;
-older schema readers refuse 16 rather than silently discarding the marker.
-Downgrade requires the paired pre-upgrade checkpoint. No instance is upgraded or
-deployed by this software-only work.
+The [CameraAgent baseline](../hvo-install-contract.md#cameraagent-state-contract-baseline)
+records this evidence in raw journal schema 1. It starts on a fresh
+installation, and earlier journals require a fresh install.
 
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any

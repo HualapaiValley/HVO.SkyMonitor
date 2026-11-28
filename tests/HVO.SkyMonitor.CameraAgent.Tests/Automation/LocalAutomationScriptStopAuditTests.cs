@@ -111,12 +111,12 @@ public sealed class LocalAutomationScriptStopAuditTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task SchemaThreeUpgradesAtomicallyAndDriftIsRefused(bool drift)
+    public async Task SchemaThreeIsRefusedWithoutChangingTheQueuedRun(bool drift)
     {
         using var fixture = new ScriptControlsFixture();
         await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
         await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
-        var before = (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        _ = await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
         fixture.Runner.Dispose();
         fixture.Store.Dispose();
         using (var connection = new SqliteConnection("Data Source=" + fixture.DatabasePath))
@@ -128,20 +128,18 @@ public sealed class LocalAutomationScriptStopAuditTests
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         using var reopened = fixture.NewStore();
-        if (drift)
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => reopened.InitializeAsync(default).AsTask()).ConfigureAwait(false);
-        else
-        {
-            await reopened.InitializeAsync(default).ConfigureAwait(false);
-            Assert.AreEqual(before, (await reopened.GetStateAsync(default).ConfigureAwait(false)).Runs.Single());
-            Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await new LocalAutomationScriptCommands(reopened, fixture.Worker)
-                .StopAsync(new("script", before.RunKey, 1, "owner"), default).ConfigureAwait(false)).Status);
-        }
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            reopened.InitializeAsync(default).AsTask()).ConfigureAwait(false);
+        StringAssert.Contains(error.Message, "fresh install required", StringComparison.Ordinal);
         using var check = new SqliteConnection("Data Source=" + fixture.DatabasePath);
         await check.OpenAsync().ConfigureAwait(false);
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(drift ? 3L : 4L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
+        Assert.AreEqual(3L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
+        version.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'automation_script_stops';";
+        Assert.AreEqual(0L, await version.ExecuteScalarAsync().ConfigureAwait(false));
+        version.CommandText = "SELECT COUNT(*) FROM automation_runs;";
+        Assert.AreEqual(1L, await version.ExecuteScalarAsync().ConfigureAwait(false));
     }
 
     private static async Task AssertAuditAsync(ScriptControlsFixture fixture, LocalAutomationRun run, string actor)

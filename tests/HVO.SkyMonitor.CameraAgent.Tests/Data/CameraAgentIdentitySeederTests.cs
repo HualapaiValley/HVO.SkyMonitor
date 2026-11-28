@@ -3,7 +3,6 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -20,7 +19,7 @@ public sealed class CameraAgentIdentitySeederTests
     [TestMethod]
     public void ModelHasSingleInitialMigration()
     {
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+        var options = CameraAgentDesignTimeDbContextFactory.CreateOptionsBuilder()
             .UseSqlite("Data Source=:memory:")
             .Options;
         using var dbContext = new ApplicationDbContext(options);
@@ -274,7 +273,6 @@ public sealed class CameraAgentIdentitySeederTests
             services.AddDbContext<ApplicationDbContext>(options =>
             {
                 options.UseSqlite(connection);
-                options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
             });
             services.AddIdentityCore<ApplicationUser>(options =>
                 {

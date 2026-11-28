@@ -4,7 +4,6 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.Processing;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -95,14 +94,6 @@ public sealed partial class ProcessingGraphOperationsTests
         var afterReplay = await store.ReadRevisionAsync(expected.State.RevisionId, token).ConfigureAwait(false);
         Assert.IsTrue(SqliteCaptureProcessingStore.HasSameRevisionContent(afterReplay, expected));
         Console.WriteLine($"Historical revision {expected.State.RevisionId} retained all plan bytes and fit/replay identities.");
-    }
-
-    private static async Task UsePreviousAstrometryLookupSchemaAsync(string root, CancellationToken token)
-    {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False;Foreign Keys=False");
-        await connection.OpenAsync(token).ConfigureAwait(false);
-        await PrepareHistoricalProcessingFixtureAsync(connection, SqliteCaptureProcessingStore.LegacySchema9SqlForTests, 9)
-            .ConfigureAwait(false);
     }
 
     // Feed the production journal an independently compiled predecessor definition.

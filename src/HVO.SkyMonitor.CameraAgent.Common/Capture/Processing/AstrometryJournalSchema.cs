@@ -1,7 +1,7 @@
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-// The separately released astrometry beta used this index in processing schema 10.
-internal static class LegacyAstrometryJournalSchema
+// Shared verbatim with installer preflight to verify the published astrometry lookup index.
+internal static class AstrometryJournalSchema
 {
     internal const string LookupIndexName = "ix_processing_outputs_astrometry_lookup";
     internal const string LookupIndexDefinition = """

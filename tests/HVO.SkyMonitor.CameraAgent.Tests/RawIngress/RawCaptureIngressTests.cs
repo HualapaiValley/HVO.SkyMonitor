@@ -32,54 +32,6 @@ public sealed partial class RawCaptureIngressTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
-    [DataRow(-1)]
-    [DataRow((int)RawIngressFaultPoint.AfterMigrationTransactionBegan)]
-    [DataRow((int)RawIngressFaultPoint.BeforeMigrationCommit)]
-    public async Task InitializeAsync_PopulatedV13MigrationIsAtomicAndPreservesSchedule(int faultValue)
-    {
-        var root = CreateRoot();
-        try
-        {
-            var path = Path.Combine(root, "journal", "raw-ingress.db");
-            await new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            using (var setup = await OpenJournalAsync(root).ConfigureAwait(false))
-            {
-                await ExecuteTestSqlAsync(setup, """
-                    INSERT INTO capture_schedule_revisions(revision_id, revision_number, profile_json, profile_sha256, schedule_sha256, source, actor, created_unix_ms)
-                    VALUES ('installed-revision', 1, x'0001FF20', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-                            'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'installed', 'owner', 1234);
-                    INSERT INTO capture_schedule_state(state_key, active_revision_id, version, updated_unix_ms)
-                    VALUES (1, 'installed-revision', 2, 1234);
-                    """).ConfigureAwait(false);
-                await RevertProfilesToV13Async(setup).ConfigureAwait(false);
-            }
-            if (faultValue >= 0)
-            {
-                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() =>
-                    new SqliteRawCaptureJournal(path, 1, faultInjector: new OneShotFaultInjector((RawIngressFaultPoint)faultValue))
-                        .InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
-                using var rolledBack = await OpenJournalAsync(root).ConfigureAwait(false);
-                Assert.AreEqual(13L, await ScalarLongAsync(rolledBack, "PRAGMA user_version;").ConfigureAwait(false));
-                Assert.AreEqual(0L, await ScalarLongAsync(rolledBack, "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'named_rig_profiles';").ConfigureAwait(false));
-            }
-            await new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            await new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
-            Assert.AreEqual("installed-revision", await ScalarStringAsync(verify, "SELECT active_revision_id FROM capture_schedule_state;").ConfigureAwait(false));
-            CollectionAssert.AreEqual(new byte[] { 0, 1, 255, 32 }, await ScalarBytesAsync(verify, "SELECT profile_json FROM capture_schedule_revisions;").ConfigureAwait(false));
-            Assert.AreEqual(new string('A', 64), await ScalarStringAsync(verify, "SELECT profile_sha256 FROM capture_schedule_revisions;").ConfigureAwait(false));
-            Assert.AreEqual(new string('B', 64), await ScalarStringAsync(verify, "SELECT schedule_sha256 FROM capture_schedule_revisions;").ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM named_rig_selection WHERE state_key = 1 AND version = 0 AND active_revision_id IS NULL AND pending_command_key IS NULL AND pending_schedule_revision_id IS NULL AND pending_schedule_version IS NULL;").ConfigureAwait(false));
-            Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
     public async Task InitializeAsync_DriftedV13DoesNotMigrateOrChangeSchedule()
     {
         var root = CreateRoot();
@@ -92,9 +44,9 @@ public sealed partial class RawCaptureIngressTests
                 await RevertProfilesToV13Async(setup).ConfigureAwait(false);
                 await ExecuteTestSqlAsync(setup, "ALTER TABLE capture_schedule_revisions ADD COLUMN drift TEXT;").ConfigureAwait(false);
             }
-            var failure = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+            var failure = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
                 new SqliteRawCaptureJournal(path, 1).InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
-            StringAssert.Contains(failure.Message, "canonical schema 13", StringComparison.Ordinal);
+            StringAssert.Contains(failure.Message, "fresh install required", StringComparison.Ordinal);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(13L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'named_rig_profiles';").ConfigureAwait(false));
@@ -141,7 +93,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV17AndAcceptsEquivalentLegacyFormatting()
+    public async Task InitializeAsync_EmptyDatabaseCreatesBaselineAndAcceptsEquivalentFormatting()
     {
         var root = CreateRoot();
         try
@@ -404,6 +356,7 @@ public sealed partial class RawCaptureIngressTests
                 command.CommandText = $"""
                     CREATE TABLE unsupported_schema_sentinel(value TEXT NOT NULL);
                     INSERT INTO unsupported_schema_sentinel(value) VALUES ('unchanged');
+                    PRAGMA application_id = 0;
                     PRAGMA user_version = {version};
                     """;
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -412,8 +365,7 @@ public sealed partial class RawCaptureIngressTests
             var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
                 journal.InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
 
-            StringAssert.Contains(exception.Message, "archive the database", StringComparison.Ordinal);
-            StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+            StringAssert.Contains(exception.Message, "fresh install required", StringComparison.Ordinal);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(version, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual("unchanged", await ScalarStringAsync(
@@ -511,7 +463,7 @@ public sealed partial class RawCaptureIngressTests
                     // including the read-only inspection source, is refused with SQLITE_BUSY.
                     command.CommandText = "PRAGMA locking_mode = EXCLUSIVE;";
                     Assert.AreEqual("exclusive", await command.ExecuteScalarAsync().ConfigureAwait(false));
-                    command.CommandText = "PRAGMA user_version = 17;";
+                    command.CommandText = "PRAGMA user_version = 1;";
                     await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
 
@@ -555,7 +507,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("wal", await command.ExecuteScalarAsync().ConfigureAwait(false));
             // A committed write that leaves the canonical schema alone, so the write-ahead log holds real frames
             // the inspection must still see after this connection closes.
-            command.CommandText = "PRAGMA user_version = 17;";
+            command.CommandText = "PRAGMA user_version = 1;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         Assert.IsTrue(

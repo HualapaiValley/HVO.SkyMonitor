@@ -38,7 +38,7 @@ internal sealed class ReleaseFixture : IDisposable
     {
         ["io.hvo.skymonitor.state-contract"] = "cameraagent-silo-state-v1",
         ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
-        ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+        ["io.hvo.skymonitor.identity-migration"] = "20261128144428_InitialIdentity",
         ["io.hvo.skymonitor.raw-ingress-schema"] = "13",
         ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
         ["io.hvo.skymonitor.component"] = "CameraAgent",

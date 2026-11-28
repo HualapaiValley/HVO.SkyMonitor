@@ -5,7 +5,6 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 internal sealed partial class SqliteRawCaptureJournal
 {
-    private const string SiloAdmissionTable = "silo_raw_admissions";
     private const string SiloRawEntryColumns = """
         raw.agent_id, raw.capture_sequence, raw.capture_id, raw.raw_artifact_id,
         raw.descriptor_sha256, raw.manifest_sha256, raw.payload_sha256, raw.payload_length,
@@ -18,37 +17,6 @@ internal sealed partial class SqliteRawCaptureJournal
             staged_bytes INTEGER NOT NULL CHECK (staged_bytes >= 0)
         ) STRICT;
         """;
-
-    private static readonly Lazy<string> SiloAdmissionDefinition = new(() =>
-    {
-        using var connection = new SqliteConnection("Data Source=:memory:");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = SiloAdmissionSql;
-        command.ExecuteNonQuery();
-        return ReadSchemaDefinitions(connection)[SiloAdmissionTable];
-    });
-
-    private static bool IsCanonicalSiloAdmissionTable(string name, string definition, int version) =>
-        version == CurrentSchemaVersion && name == SiloAdmissionTable && definition == SiloAdmissionDefinition.Value;
-
-    private async Task InitializeSiloAdmissionsAsync(SqliteConnection connection, CancellationToken cancellationToken)
-    {
-        using var transaction = BeginImmediate(connection);
-        using var schema = connection.CreateCommand();
-        schema.Transaction = transaction;
-        schema.CommandText = "SELECT sql FROM sqlite_schema WHERE name = 'silo_raw_admissions' AND type = 'table';";
-        if (await schema.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
-        {
-            using var retained = connection.CreateCommand();
-            retained.Transaction = transaction;
-            retained.CommandText = "SELECT EXISTS (SELECT 1 FROM raw_captures);";
-            if ((long)(await retained.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0)
-                throw new InvalidDataException("The installed Silo layout requires a fresh raw admission journal.");
-            await ExecuteNonQueryAsync(connection, transaction, SiloAdmissionSql, cancellationToken).ConfigureAwait(false);
-        }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
 
     private static async Task TrackSiloAdmissionAsync(SqliteConnection connection, SqliteTransaction transaction, long rowId,
         RawIngressJournalEntry entry, CancellationToken cancellationToken)

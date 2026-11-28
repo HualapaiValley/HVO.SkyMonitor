@@ -26,18 +26,18 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         fixture.Runner.OnComposeUp = image =>
         {
             if (image != CandidateImageId) return;
-            AdvanceFleet(fixture.Paths, toNextSequence: 20);
+            AdvanceEnvironmentalJournal(fixture.Paths, recordId: 20);
             ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE raw_capture_sequences SET last_sequence = 9 WHERE agent_id = '{AgentId}';");
         };
         using var error = new StringWriter();
         CameraAgentStateCounters.CarryStep = current =>
         {
-            if (current != $"{step}:{FleetStore}") return;
-            DamageCarriedFleetStore(fixture.Paths, sidecar);
+            if (current != $"{step}:{EnvironmentStore}") return;
+            DamageCarriedEnvironmentStore(fixture.Paths, sidecar);
             switch (fault)
             {
                 case "commit": throw new IOException("disk I/O error");
@@ -57,13 +57,13 @@ public sealed partial class LifecycleContractTests
             CameraAgentStateCounters.CarryStep = static _ => { };
         }
 
-        // The restore completed, degraded: the original runs on a fleet store that is exactly the snapshot's.
+        // The restore completed, degraded: the original runs on an environmental journal that is exactly the snapshot's.
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId, error.ToString());
         Assert.IsTrue(fixture.Runner.Running);
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
-        await AssertLiveFleetStoreIsTheSnapshotsAsync(fixture, journal.StateSnapshot!);
-        StringAssert.Contains(error.ToString(), $"could not carry the fleet-report-sequence counter of '{FleetStore}' with key \"1\"", StringComparison.Ordinal);
+        await AssertLiveStoreMatchesSnapshotAsync(fixture, journal.StateSnapshot!, EnvironmentStore);
+        StringAssert.Contains(error.ToString(), $"could not carry the environmental-journal-record-id counter of '{EnvironmentStore}' with key \"environmental_observation_journal\"", StringComparison.Ordinal);
         // Another store's carry is untouched by the fault.
         Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
     }
@@ -75,21 +75,21 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         fixture.Runner.OnComposeUp = image =>
         {
-            if (image == CandidateImageId) AdvanceFleet(fixture.Paths, toNextSequence: 20);
+            if (image == CandidateImageId) AdvanceEnvironmentalJournal(fixture.Paths, recordId: 20);
         };
         // The carry fails on the staged copy, and then so does the pure copy that replaces it.
         CameraAgentStateCounters.CarryStep = current =>
         {
-            if (current != $"apply-verify:{FleetStore}") return;
-            DamageCarriedFleetStore(fixture.Paths, "-journal");
+            if (current != $"apply-verify:{EnvironmentStore}") return;
+            DamageCarriedEnvironmentStore(fixture.Paths, "-journal");
             throw new IOException("disk I/O error");
         };
         CameraAgentStateSnapshot.StepCompleted = current =>
         {
-            if (current == $"restore-recopy:{FleetStore}") throw new IOException("injected failure of the pure copy");
+            if (current == $"restore-recopy:{EnvironmentStore}") throw new IOException("injected failure of the pure copy");
         };
         try
         {
@@ -114,7 +114,7 @@ public sealed partial class LifecycleContractTests
         CameraAgentStateSnapshot.StepCompleted = current =>
         {
             if (current == "restore-directories-synced" && carriedOnResume is null)
-                carriedOnResume = ReadCounter(fixture.Paths, FleetStore, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;");
+                carriedOnResume = ReadCounter(fixture.Paths, EnvironmentStore, EnvironmentalSequence);
         };
         LifecycleResult result;
         try
@@ -138,9 +138,9 @@ public sealed partial class LifecycleContractTests
     /// journal or write-ahead log beside it. The file being carried is the restore's staged copy when there is one, and
     /// the live store otherwise.
     /// </summary>
-    private static void DamageCarriedFleetStore(InstallationPaths paths, string sidecar)
+    private static void DamageCarriedEnvironmentStore(InstallationPaths paths, string sidecar)
     {
-        var live = CameraAgentStateSnapshot.StorePath(paths.StateRoot, FleetStore);
+        var live = CameraAgentStateSnapshot.StorePath(paths.StateRoot, EnvironmentStore);
         var carried = Directory.GetFiles(Path.GetDirectoryName(live)!, $".{Path.GetFileName(live)}.restore-*.tmp").SingleOrDefault() ?? live;
         using (var stream = new FileStream(carried, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
         {
@@ -151,15 +151,15 @@ public sealed partial class LifecycleContractTests
         if (sidecar.Length > 0) File.WriteAllBytes(carried + sidecar, Enumerable.Repeat((byte)0x01, 512).ToArray());
     }
 
-    private static async Task AssertLiveFleetStoreIsTheSnapshotsAsync(LifecycleFixture fixture, LifecycleStateSnapshot snapshot)
+    private static async Task AssertLiveStoreMatchesSnapshotAsync(LifecycleFixture fixture, LifecycleStateSnapshot snapshot, string store)
     {
         var manifest = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, snapshot, CancellationToken.None);
-        var recorded = manifest.Databases.Single(static database => database.RelativePath == FleetStore);
-        var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
+        var recorded = manifest.Databases.Single(database => database.RelativePath == store);
+        var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, store);
         Assert.AreEqual(recorded.Sha256, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(live))),
-            "The live fleet store is not byte for byte the snapshot's.");
+            "The live store is not byte for byte the snapshot's.");
         foreach (var suffix in CameraAgentStateLayout.SqliteSidecarSuffixes)
-            Assert.IsFalse(File.Exists(live + suffix), $"The restore left '{suffix}' beside the live fleet store.");
+            Assert.IsFalse(File.Exists(live + suffix), $"The restore left '{suffix}' beside the live store.");
         Assert.IsEmpty(Directory.GetFiles(Path.GetDirectoryName(live)!, ".*.restore-*"), "A staged copy was left behind.");
     }
 }

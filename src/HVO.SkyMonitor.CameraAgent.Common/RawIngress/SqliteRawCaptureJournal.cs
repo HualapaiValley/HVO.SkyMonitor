@@ -29,18 +29,10 @@ internal sealed partial class SqliteRawCaptureJournal(
     FirstBootPauseIdentity? firstBootPause = null,
     bool usesSilo = false)
 {
-    // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
-    internal const int CurrentSchemaVersion = 17;
-    internal const int PreviousEnvironmentalFenceSchemaVersion = 16;
-    internal const int PreviousSchemaVersion = 13;
-    internal const int PreviousRecoverySchemaVersion = 14;
-    internal const int PreviousEvidenceSchemaVersion = 15;
+    internal const int CurrentSchemaVersion = 1;
+    internal const int ApplicationId = 0x48565249; // HVRI
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
-        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true, includeCentered: true));
-    private static readonly Lazy<Dictionary<string, string>> PreCenteredSchemaDefinitions =
-        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
-    private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
-        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: false));
+        new(CreateCanonicalSchemaDefinitions);
     private static readonly JsonSerializerOptions ProcessingSerializerOptions = CreateProcessingSerializerOptions();
     private static readonly HashSet<string> SharedSchemaObjectNames = new(StringComparer.Ordinal)
     {
@@ -73,7 +65,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "ix_processing_outputs_role",
         "ix_processing_outputs_recipe",
         "ix_processing_outputs_product",
-        LegacyAstrometryJournalSchema.LookupIndexName,
+        AstrometryJournalSchema.LookupIndexName,
         "ix_processing_outputs_retention_available",
         "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact",
@@ -153,42 +145,32 @@ internal sealed partial class SqliteRawCaptureJournal(
         if (!initializeSchema)
         {
             var inspection = await InspectExistingDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            var version = inspection.Version;
-            if (version > CurrentSchemaVersion)
-            {
-                throw new InvalidOperationException(
-                    $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
-            }
-            initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion &&
-                version != PreviousEnvironmentalFenceSchemaVersion && !initializeSchema)
-            {
-                throw new InvalidOperationException(
-                    $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
-            }
+            initializeSchema = inspection is (0, 0, 0);
+            if (!initializeSchema && (inspection.Version != CurrentSchemaVersion || inspection.ApplicationId != ApplicationId))
+                throw UnsupportedSchema(inspection.Version, inspection.ApplicationId);
         }
 
         using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
-        var writableVersion = await ExecuteScalarLongAsync(
-            connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-        var writableSchemaObjectCount = await ExecuteScalarLongAsync(
-            connection,
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
-            cancellationToken).ConfigureAwait(false);
-        if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion &&
-                writableVersion != PreviousEnvironmentalFenceSchemaVersion))
-        {
-            throw new InvalidOperationException(
-                $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
-        }
-        using var integrityMigration = !initializeSchema && writableVersion != CurrentSchemaVersion
-            ? DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath) : null;
         if (initializeSchema)
         {
             try
             {
                 using var transaction = BeginImmediate(connection);
+                using var identity = connection.CreateCommand();
+                identity.Transaction = transaction;
+                identity.CommandText = """
+                    SELECT (SELECT user_version FROM pragma_user_version),
+                           (SELECT application_id FROM pragma_application_id),
+                           (SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*');
+                    """;
+                using (var reader = await identity.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    if (reader.GetInt64(0) == CurrentSchemaVersion && reader.GetInt64(1) == ApplicationId)
+                        throw new InvalidOperationException("Raw ingress SQLite schema was initialized concurrently; retry startup.");
+                    if (reader.GetInt64(0) != 0 || reader.GetInt64(1) != 0 || reader.GetInt64(2) != 0)
+                        throw UnsupportedSchema(reader.GetInt64(0), reader.GetInt64(1));
+                }
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, StageEventSchemaSql, cancellationToken).ConfigureAwait(false);
@@ -202,6 +184,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, SiloAdmissionSql, cancellationToken).ConfigureAwait(false);
                 if (firstBootPause is { } seed)
                 {
                     // A Silo-layout clean install's first-boot pause (#1966) is written by the same transaction that
@@ -213,7 +196,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
-                    $"PRAGMA user_version = {CurrentSchemaVersion};",
+                    $"PRAGMA application_id = {ApplicationId}; PRAGMA user_version = {CurrentSchemaVersion};",
                     cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -225,38 +208,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion
-            or PreviousEnvironmentalFenceSchemaVersion)
-        {
-            try
-            {
-                using var transaction = BeginImmediate(connection);
-                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != writableVersion)
-                {
-                    throw new InvalidOperationException("Raw ingress schema changed before migration.");
-                }
-                await VerifyMigrationSourceAsync(connection, transaction, (int)writableVersion, cancellationToken).ConfigureAwait(false);
-                _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
-                if (writableVersion == PreviousSchemaVersion)
-                    await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
-                await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
-                await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
-                _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                _transactionRecorder?.Invoke("schema-migration", true);
-            }
-            catch
-            {
-                _transactionRecorder?.Invoke("schema-migration", false);
-                throw;
-            }
-        }
+        await ValidateIdentityAsync(connection, null, cancellationToken).ConfigureAwait(false);
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        if (usesSilo)
-            await InitializeSiloAdmissionsAsync(connection, cancellationToken).ConfigureAwait(false);
-        else if (await ExecuteScalarLongAsync(connection,
-            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'silo_raw_admissions');", cancellationToken).ConfigureAwait(false) != 0)
-            throw new InvalidDataException("This raw admission journal belongs to an installed Silo layout.");
         await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds, verifyDatabase: !usesSilo).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -1967,7 +1920,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         }
     }
 
-    private async Task<(long Version, long SchemaObjectCount)> InspectExistingDatabaseAsync(
+    private async Task<(long Version, long ApplicationId, long SchemaObjectCount)> InspectExistingDatabaseAsync(
         CancellationToken cancellationToken)
     {
         return await SqliteInspectionSnapshot.InspectAsync(
@@ -1980,9 +1933,13 @@ internal sealed partial class SqliteRawCaptureJournal(
                     connection, "PRAGMA user_version;", token).ConfigureAwait(false);
                 var schemaObjectCount = await ExecuteScalarLongAsync(
                     connection,
-                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*';",
                     token).ConfigureAwait(false);
-                return (version, schemaObjectCount);
+                var applicationId = await ExecuteScalarLongAsync(
+                    connection, "PRAGMA application_id;", token).ConfigureAwait(false);
+                if (version == CurrentSchemaVersion && applicationId == ApplicationId)
+                    await SqliteCaptureProcessingStore.ValidateExistingProcessingVersionAsync(connection, token).ConfigureAwait(false);
+                return (version, applicationId, schemaObjectCount);
             },
             _inspectionSourceOpenedSeam,
             cancellationToken).ConfigureAwait(false);
@@ -2122,82 +2079,55 @@ internal sealed partial class SqliteRawCaptureJournal(
         => Convert.ToString(await ExecuteScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statements are executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles, bool includeCentered = false)
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
         foreach (var sql in new[]
                  {
-                     SchemaSql,
-                     StageEventSchemaSql,
-                     TransientSchemaSql,
-                     TransientRuntimeOperationsSchemaSql,
-                     CaptureScheduleSchemaSql,
-                     CalibrationLibrarySchemaSql
+                     SchemaSql, StageEventSchemaSql, TransientSchemaSql, TransientRuntimeOperationsSchemaSql,
+                     CaptureScheduleSchemaSql, CalibrationLibrarySchemaSql, NamedProfileSchemaSql, CenteredSchemaSql, SiloAdmissionSql
                  })
         {
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.ExecuteNonQuery();
         }
-        if (includeProfiles)
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = NamedProfileSchemaSql;
-            command.ExecuteNonQuery();
-        }
-        if (includeCentered)
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = CenteredSchemaSql;
-            command.ExecuteNonQuery();
-        }
         return ReadSchemaDefinitions(connection);
     }
 
-    private static async Task VerifyMigrationSourceAsync(
-        SqliteConnection connection, SqliteTransaction transaction, int sourceVersion, CancellationToken cancellationToken)
+    private static InvalidOperationException UnsupportedSchema(long version, long applicationId)
+        => new($"Raw ingress SQLite schema {version} is unsupported (application ID {applicationId}); fresh install required.");
+
+    internal static async Task ValidateIdentityAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, CancellationToken cancellationToken)
     {
-        if (!string.Equals(await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false), "ok", StringComparison.Ordinal) ||
-            await ExecuteScalarLongAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
-        {
-            throw new InvalidDataException($"Raw ingress v{sourceVersion} migration source failed integrity or foreign-key validation.");
-        }
-        await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : PreCenteredSchemaDefinitions.Value,
-            sourceVersion, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT (SELECT user_version FROM pragma_user_version), (SELECT application_id FROM pragma_application_id);
+            """;
+        using var rows = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await rows.ReadAsync(cancellationToken).ConfigureAwait(false);
+        if (rows.GetInt64(0) != CurrentSchemaVersion || rows.GetInt64(1) != ApplicationId)
+            throw UnsupportedSchema(rows.GetInt64(0), rows.GetInt64(1));
     }
 
     internal static async Task ValidateCanonicalSchemaDefinitionsAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
-        => await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, CanonicalSchemaDefinitions.Value, CurrentSchemaVersion, cancellationToken).ConfigureAwait(false);
-
-    private static async Task ValidateCanonicalSchemaDefinitionsAsync(
-        SqliteConnection connection,
-        SqliteTransaction? transaction,
-        Dictionary<string, string> expectedDefinitions,
-        int version,
-        CancellationToken cancellationToken)
     {
-        var actualSchemaDefinitions = await ReadSchemaDefinitionsAsync(
-            connection, transaction, cancellationToken).ConfigureAwait(false);
+        await ValidateIdentityAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var expectedDefinitions = CanonicalSchemaDefinitions.Value;
+        var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (expectedDefinitions.Any(expected =>
-                !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
-                !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
-            actualSchemaDefinitions.Keys.Any(name =>
-                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name) &&
-                !IsCanonicalSiloAdmissionTable(name, actualSchemaDefinitions[name], version)) ||
-            (actualSchemaDefinitions.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName) &&
-             version != CurrentSchemaVersion &&
-             (version != PreviousEnvironmentalFenceSchemaVersion ||
-              !await SqliteCaptureProcessingStore.HasCanonicalAstrometryJournalSchemaAsync(
-                  connection, transaction, cancellationToken).ConfigureAwait(false))))
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
         {
             throw new InvalidDataException(
-                $"Raw ingress SQLite schema is not the canonical schema {version} definition.");
+                $"Raw ingress SQLite schema is not the canonical schema {CurrentSchemaVersion} definition.");
         }
     }
 
@@ -2237,7 +2167,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         command.CommandText = """
             SELECT type, name, tbl_name, sql
             FROM sqlite_schema
-            WHERE name NOT LIKE 'sqlite_%'
+            WHERE name NOT GLOB 'sqlite_*'
             ORDER BY type, name;
             """;
         return command;

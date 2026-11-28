@@ -581,10 +581,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    [DataRow(false, true)]
-    [DataRow(false, true, true)]
     public async Task CenteredRuntime_DoesNotBackdateACalendarOrRawCommitAcrossTheCutoff(
-        bool dispatchCrossesCutoff, bool migrateLegacyClock = false, bool priorAvailabilityBuild = false)
+        bool dispatchCrossesCutoff)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-raw-cutoff");
         var token = TestContext.CancellationToken;
@@ -632,30 +630,11 @@ public sealed partial class VirtualSkyCameraModuleTests
                 if (!dispatchCrossesCutoff)
                     Assert.IsLessThan(window.DeadlineUtc, head.AcquisitionHead.CommittedUtc);
                 Assert.IsGreaterThan(window.DeadlineUtc, clock.UtcNow);
-                if (migrateLegacyClock)
-                {
-                    using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-                    await connection.OpenAsync(token).ConfigureAwait(false);
-                    using var command = connection.CreateCommand();
-                    command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql + "\n" + """
-                        DROP INDEX ix_processing_outputs_astrometry_lookup;
-                        UPDATE processing_centered_attempt_calendar SET admitted_ticks = $legacy WHERE attempt_id = $attempt;
-                        """ + "\n" + (priorAvailabilityBuild
-                        ? "DROP INDEX ix_processing_centered_output_availability_cutoff;\n" +
-                          SqliteCaptureProcessingStore.LegacyCenteredAvailabilityCutoffIndexForTests
-                        : "DROP TABLE processing_centered_output_availability;");
-                    command.Parameters.AddWithValue("$legacy", window.DeadlineUtc.AddMilliseconds(-1).UtcTicks);
-                    command.Parameters.AddWithValue("$attempt", last.Reservation.Pending.Key.AttemptId.ToString("N"));
-                    await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-                }
             }
 
             using var restarted = CenteredRuntimeProvider(root, clock);
             var ingressAfter = restarted.GetRequiredService<RawCaptureIngress>();
             await ingressAfter.InitializeAsync(token).ConfigureAwait(false);
-            if (migrateLegacyClock)
-                Assert.IsTrue(await restarted.GetRequiredService<SqliteCaptureProcessingStore>()
-                    .RecoverUnobservedCenteredEvidenceAsync(token).ConfigureAwait(false));
             await restarted.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
             var closed = await restarted.GetRequiredService<ICenteredWindowReader>().ReadAsync(window.ReferenceCaptureId, token)
                 .ConfigureAwait(false);
@@ -663,10 +642,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(window.DeadlineUtc, closed.EvidenceCutoffUtc);
             Assert.AreEqual(CenteredWindowSlotState.MissingExposure, closed.Slots[4].State);
             var frozenSlotStart = closed.Slots[4].ExpectedStartUtc;
-            Assert.AreEqual(start.AddSeconds(4).AddMilliseconds(dispatchCrossesCutoff || migrateLegacyClock ? 0 : 80), frozenSlotStart);
+            Assert.AreEqual(start.AddSeconds(4).AddMilliseconds(dispatchCrossesCutoff ? 0 : 80), frozenSlotStart);
             Assert.IsFalse(closed.Slots.Any(slot => slot.Exposure?.CaptureId == late));
-            if (migrateLegacyClock)
-                Assert.AreEqual(CenteredWindowSlotState.MissingExposure, closed.Slots[2].State);
         }
         finally
         {

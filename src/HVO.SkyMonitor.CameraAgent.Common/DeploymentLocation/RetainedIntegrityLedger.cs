@@ -105,14 +105,6 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             _recoveredJournal = new FileInfo(databasePath + "-journal") is { Exists: true, Length: > 0 } ||
                 new FileInfo(databasePath + "-wal") is { Exists: true, Length: > 0 };
             _database.Open();
-            // A hot rollback journal needs a writable recovery before any read-only
-            // schema inspection. No schema creation or application write precedes validation.
-            using (var recovery = _database.CreateCommand())
-            {
-                recovery.CommandText = "PRAGMA trusted_schema=OFF; SELECT COUNT(*) FROM sqlite_master;";
-                _ = recovery.ExecuteScalar();
-            }
-            ValidateLayout();
             OpenSchema();
             var metadataExists = ReadMetadata();
             if (requiredNonce is not null && (!metadataExists || !string.Equals(requiredNonce, _nonce, StringComparison.Ordinal)))

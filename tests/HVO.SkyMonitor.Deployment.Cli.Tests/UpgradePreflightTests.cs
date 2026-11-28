@@ -11,7 +11,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class UpgradePreflightTests
 {
     private const string LegacyIdentityMigration = "20251125021552_CreateLocalIdentity";
-    private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
+    private const string CurrentIdentityMigration = "20261128144428_InitialIdentity";
 
     private static readonly uint RuntimeUid = NativeLinux.getuid();
     private static readonly uint RuntimeGid = NativeLinux.getgid();
@@ -831,44 +831,6 @@ public sealed partial class UpgradePreflightTests
             command.CommandText = $"PRAGMA user_version = {schemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)};";
 #pragma warning restore CA2100
             command.ExecuteNonQuery();
-        }
-
-        public void WriteCanonicalV13RawIngressDatabase()
-        {
-            WriteCanonicalV14RawIngressDatabase();
-            ChangeRawIngressSchema("""
-                DROP TRIGGER tr_named_rig_revisions_no_delete;
-                DROP TRIGGER tr_named_rig_revisions_immutable;
-                DROP TRIGGER tr_named_equipment_revisions_no_delete;
-                DROP TRIGGER tr_named_equipment_revisions_immutable;
-                DROP TABLE named_rig_selection_receipts;
-                DROP TABLE named_rig_selection_commands;
-                DROP TABLE named_rig_selection;
-                DROP TABLE named_rig_revisions;
-                DROP TABLE named_equipment_revisions;
-                DROP TABLE named_equipment_definitions;
-                DROP TABLE named_rig_profiles;
-                PRAGMA user_version = 13;
-                """);
-            AssertRawIngressFingerprint(RawIngressV13Schema.Fingerprint);
-        }
-
-        public void WriteCanonicalV14RawIngressDatabase()
-        {
-            var path = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
-            SafeFileSystem.CreateOwnerDirectory(Path.GetDirectoryName(path)!);
-            using var stream = typeof(UpgradePreflightTests).Assembly.GetManifestResourceStream(
-                "HVO.SkyMonitor.Deployment.Cli.Tests.FrozenRawIngressV14.sql")!;
-            using var reader = new StreamReader(stream);
-            ChangeRawIngressSchema(reader.ReadToEnd());
-            AssertRawIngressFingerprint(RawIngressV13Schema.V14Fingerprint);
-        }
-
-        private void AssertRawIngressFingerprint(string expected)
-        {
-            using var connection = new SqliteConnection($"Data Source={CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot)}");
-            connection.Open();
-            Assert.AreEqual(expected, RawIngressV13Schema.ComputeFingerprint(connection));
         }
 
         public void ChangeRawIngressSchema(string sql)

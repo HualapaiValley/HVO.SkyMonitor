@@ -248,7 +248,7 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
-    public async Task MeasuredDeepSkySchedulerKeepsHostRunningWhenRawJournalSchemaIsNewer()
+    public async Task MeasuredDeepSkySchedulerKeepsHostRunningWhenRawJournalSchemaIsUnsupported()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var token = timeout.Token;
@@ -306,7 +306,7 @@ public sealed partial class CameraAgentArtifactServiceTests
                 Assert.AreSame(warning, first);
                 var refusal = await warning.ConfigureAwait(false);
                 Assert.IsInstanceOfType<InvalidOperationException>(refusal);
-                StringAssert.Contains(refusal.Message, "Raw ingress schema 99 is newer", StringComparison.Ordinal);
+                StringAssert.Contains(refusal.Message, "fresh install required", StringComparison.Ordinal);
             }
         }
         finally

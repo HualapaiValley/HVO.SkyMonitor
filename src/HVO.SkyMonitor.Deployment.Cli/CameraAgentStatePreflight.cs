@@ -389,14 +389,18 @@ internal static class CameraAgentStatePreflight
 
         long observed;
         long schemaObjects;
+        long applicationId;
+        bool supportedIdentity;
         bool canonical = false;
         try
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if (observed == expected)
+            applicationId = RawIngressBaselineSchema.ReadApplicationId(database.Connection);
+            supportedIdentity = expected != RawIngressBaselineSchema.Version || applicationId == RawIngressBaselineSchema.ApplicationId;
+            if (observed == expected && supportedIdentity)
             {
-                canonical = expected != 17 || RawIngressV13Schema.IsCanonicalV17(database.Connection);
+                canonical = expected != RawIngressBaselineSchema.Version || RawIngressBaselineSchema.IsCanonical(database.Connection);
                 if (canonical)
                 {
                     using var integrity = database.Connection.CreateCommand();
@@ -422,14 +426,14 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == 0 && applicationId == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            observed == expected
+            observed == expected && supportedIdentity
                 ? "Restore a verified CameraAgent checkpoint or backup to repair the raw journal."
                 : CameraAgentStateContract.FreshInstallRequired));
     }
@@ -594,7 +598,7 @@ internal static class CameraAgentStatePreflight
             userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
         }
         using var objects = connection.CreateCommand();
-        objects.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';";
+        objects.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*';";
         return (userVersion, Convert.ToInt64(objects.ExecuteScalar(), CultureInfo.InvariantCulture));
     }
 

@@ -19,7 +19,7 @@ public sealed class CameraAgentImageLabelsTests
             {
               "io.hvo.skymonitor.state-contract": 7,
               "io.hvo.skymonitor.raw-ingress-schema": null,
-              "io.hvo.skymonitor.identity-migration": ["20260827053715_InitialIdentity"],
+              "io.hvo.skymonitor.identity-migration": ["20261128144428_InitialIdentity"],
               "io.hvo.skymonitor.component": "cameraagent"
             }
             """);

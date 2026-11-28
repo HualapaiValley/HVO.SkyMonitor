@@ -345,10 +345,45 @@ The [cutover plan](planning/cameraagent-silo-cutover.md) governs site rollout.
 The baseline keeps clean install, installation verification, data-preserving uninstall, reinstall,
 and purge with exact instance confirmation. Later builds that declare the same contract can use
 `cameraagent upgrade` and `cameraagent rollback` through the retained Compose and image identities.
-Until 0.10.0-beta.1 ships, fold schema changes into the initial EF Core migration and baselined SQLite
-stores owned by [#2179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2179). From 0.10.0-beta.1
-onward, later releases must maintain upgrade, reinstall, migration and rollback support from this
-baseline. A schema or state-contract change after shipment requires an explicit, verified transition.
+The database baselines have two phases.
+
+1. **Before 0.10.0-beta.1 ships**, edit the fresh EF Core initial migration, its model snapshot, and
+   the SQLite baseline definitions in place. Update the schema contract and test fixtures with the
+   definitions. The release starts with one initial version per store.
+2. **From 0.10.0-beta.1 onward**, preserve the shipped definitions and add forward migrations from
+   the baseline. Each release that changes a schema must qualify upgrade, reinstall and rollback
+   with populated state. The preceding image must either be able to read the resulting state or have
+   a verified rollback procedure that restores a compatible state and accounts for data written
+   since the upgrade.
+
+Earlier and unrecognized database versions stop at startup with a “fresh install required”
+diagnostic. The baseline does not adopt or convert those databases. [#2179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2179)
+
+The following table lists the CameraAgent-owned SQLite files under the instance state root. SQLite
+versions use `PRAGMA user_version` unless the table gives a different marker. Application IDs and
+binding records distinguish a baseline store from other databases with the same version number.
+
+| Store | Path under state root | 0.10.0-beta.1 baseline |
+| --- | --- | --- |
+| Local Identity | `identity/cameraagent_identity.db` | EF migration `20261128144428_InitialIdentity` |
+| Raw ingress and Silo admissions, capture control and lanes, scheduling, rig selection, calibration library, and transient runtime | `raw/journal/raw-ingress.db` | 1 |
+| Capture processing, replay, centered views and manifest-count ledger | Tables in `raw/journal/raw-ingress.db` | 1 in `capture_processing_schema.version` |
+| Silo publication state | `raw/.silo/publication-state.db` | 1 |
+| Silo catalog index | `raw/.silo/catalog-index.db` | 1 |
+| Silo archive work index, one per configured archive | `raw/.silo/<archive-store-id>.db` | 1 |
+| Environmental observation journal and local poll state | `raw/.environment/environmental-observations.db` | 1 |
+| Local automation | `raw/.automation/local-automations.db` | 1 |
+| Nightly products | `raw/.nightly-products/nightly-products.db` | 1 |
+| Time-lapse jobs and products | `raw/.time-lapses/time-lapses.db` | 1 |
+| Satellite orbital elements | `raw/.orbital-elements/orbital-elements.db` | 1 |
+| NOAA space weather | `raw/.space-weather/space-weather.db` | 1 |
+| Calibration families | `raw/.calibration-families/calibration-families.db` | 1 |
+| Retained integrity ledger | `raw/.location/retained-integrity.v1.db` | 1 |
+| Retained validation proof cache | `raw/.location/retained-validation.v2.db` | 1 |
+
+The installer carries the `environmental_observation_journal` row-ID high water across checkpoint
+restore so a client reference cannot name a later observation. Astronomy catalogs are separately
+versioned read-only inputs.
 
 Before replacing an image, the installer pauses and drains capture, stops the writers and records
 a verified checkpoint of the small stores for recovery before commit. A failed or interrupted
@@ -390,9 +425,6 @@ it gives the newest schema a release may write, and every schema it reads:
   swap from a transition requiring a checkpoint. SkyMonitor publishes its per-store schema inventory
   in the same shape. CameraAgent lifecycle admission uses the baseline identifier and the candidate's
   catalog, Identity and raw journal declarations.
-
-CameraAgent keeps the local environmental observation journal at
-`raw/.environment/environmental-observations.db` under the instance state root.
 
 ### SkyMonitor Silo layout (#1966)
 

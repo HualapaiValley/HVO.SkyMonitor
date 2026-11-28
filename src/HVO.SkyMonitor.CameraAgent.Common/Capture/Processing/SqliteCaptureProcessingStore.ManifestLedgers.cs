@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -7,7 +6,6 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     internal const string ManifestInputLedger = "Inputs";
     internal const string ManifestOutputLedger = "Outputs";
-    private const string ManifestLedgerTablePrefix = "CREATE TABLE processing_execution_manifest_counts(";
 
     // Empty node IDs are reserved for the independent status of each ledger. The
     // count rows survive pin/output retention and disappear only with the execution.
@@ -121,67 +119,5 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         if (!header) throw new InvalidDataException("The manifest count ledger header is missing.");
         return counts;
-    }
-
-    private static async ValueTask MigrateManifestLedgersAsync(SqliteConnection connection,
-        SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, ManifestLedgerTablePrefix).ConfigureAwait(false);
-        // Keyset iteration keeps migration memory bounded to one frozen plan. All
-        // rows, optional-member removal and the version marker share one transaction.
-        var after = "";
-        while (true)
-        {
-            string id;
-            byte[] frozen;
-            using (var read = connection.CreateCommand())
-            {
-                read.Transaction = transaction;
-                read.CommandText = "SELECT execution_id, frozen_plan_json FROM processing_executions WHERE execution_id>$after ORDER BY execution_id LIMIT 1;";
-                read.Parameters.AddWithValue("$after", after);
-                using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) break;
-                id = reader.GetString(0);
-                frozen = (byte[])reader[1];
-            }
-            var executionId = Guid.ParseExact(id, "N");
-            await InitializeManifestLedgersAsync(connection, transaction, executionId, [], cancellationToken).ConfigureAwait(false);
-            await ImportManifestLedgerAsync(connection, transaction, executionId, ManifestInputLedger,
-                frozen, FrozenOutputInputCountsMember, 512, cancellationToken).ConfigureAwait(false);
-            await ImportManifestLedgerAsync(connection, transaction, executionId, ManifestOutputLedger,
-                frozen, CommittedOutputCountsMember, 128, cancellationToken).ConfigureAwait(false);
-            byte[] primary;
-            try { primary = WithoutCommittedOutputCounts(frozen); }
-            catch (Exception exception) when (exception is InvalidDataException or JsonException)
-            {
-                // Preserve pre-existing primary corruption for its ordinary reader.
-                after = id;
-                continue;
-            }
-            if (!ReferenceEquals(primary, frozen))
-            {
-                using var update = connection.CreateCommand();
-                update.Transaction = transaction;
-                update.CommandText = "UPDATE processing_executions SET frozen_plan_json=$primary WHERE execution_id=$execution;";
-                update.Parameters.AddWithValue("$primary", primary);
-                update.Parameters.AddWithValue("$execution", id);
-                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            after = id;
-        }
-    }
-
-    private static async ValueTask ImportManifestLedgerAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid executionId, string kind, byte[] frozen, string member, int maximumCount, CancellationToken cancellationToken)
-    {
-        Dictionary<string, int> counts;
-        try { counts = ReadManifestCounter(frozen, member, maximumCount); }
-        catch (InvalidDataException)
-        {
-            await SetManifestLedgerStateAsync(connection, transaction, executionId, kind, "Corrupt", cancellationToken).ConfigureAwait(false);
-            return;
-        }
-        foreach (var (node, count) in counts)
-            await RecordManifestCountAsync(connection, transaction, executionId, kind, node, count, cancellationToken).ConfigureAwait(false);
     }
 }

@@ -371,8 +371,6 @@ public sealed partial class ProcessingGraphOperationsTests
                     => await SiloInfrastructureFixture.ReadArtifactBytesAsync(provider,
                         (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).ArtifactId, token).ConfigureAwait(false);
             }
-            if (historicalPlan)
-                await UsePreviousAstrometryLookupSchemaAsync(root, token).ConfigureAwait(false);
             if (retireHistoricalGeneration)
             {
                 await VerifyHistoricalGenerationRetirementAsync(activeId, predecessorRevision!, historicalCapture!,

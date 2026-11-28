@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 public sealed partial class SqliteOrbitalElementsStore
 {
+    private const int ApplicationId = 0x48564F45;
     internal const int CurrentSchemaVersion = 1;
     private const int BusyTimeoutSeconds = 5;
 
@@ -197,17 +198,8 @@ public sealed partial class SqliteOrbitalElementsStore
         CancellationToken cancellationToken)
     {
         using var transaction = BeginImmediate(connection);
-        var version = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-        if (version == 0)
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Orbital elements", CurrentSchemaVersion, ApplicationId))
         {
-            var objects = await ScalarLongAsync(connection, transaction, """
-                SELECT COUNT(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%';
-                """, cancellationToken).ConfigureAwait(false);
-            if (objects != 0)
-            {
-                throw new InvalidDataException(
-                    "Orbital elements storage contains unversioned schema objects; archive it before starting this CameraAgent.");
-            }
             await ExecuteAsync(connection, transaction, CanonicalSchemaSql, cancellationToken).ConfigureAwait(false);
             var now = ToUnixMilliseconds(Truncate(Now()));
             await ExecuteAsync(connection, transaction, """
@@ -216,14 +208,8 @@ public sealed partial class SqliteOrbitalElementsStore
                 VALUES('celestrak', 0, 0, 0);
                 """, cancellationToken, ("$seed", RandomNumberGenerator.GetBytes(32)), ("$now", now)).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
-                string.Create(CultureInfo.InvariantCulture, $"PRAGMA user_version = {CurrentSchemaVersion};"),
+                Sqlite.SqliteSchemaBaseline.Stamp(CurrentSchemaVersion, ApplicationId),
                 cancellationToken).ConfigureAwait(false);
-        }
-        else if (version != CurrentSchemaVersion)
-        {
-            throw new InvalidDataException(version > CurrentSchemaVersion
-                ? "Orbital elements storage was written by a newer CameraAgent; this version cannot use it."
-                : "Orbital elements storage has an unknown schema version.");
         }
         await ValidateSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         var reconciledAt = ToUnixMilliseconds(Truncate(Now()));
@@ -381,6 +367,8 @@ public sealed partial class SqliteOrbitalElementsStore
                     await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
                     command.CommandText = "PRAGMA foreign_keys = ON;";
                     await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                    if (!_initialized)
+                        Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(configured, "Orbital elements", CurrentSchemaVersion, ApplicationId);
                     command.CommandText = "PRAGMA journal_mode = WAL;";
                     var mode = await command.ExecuteScalarAsync(token).ConfigureAwait(false) as string;
                     if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))

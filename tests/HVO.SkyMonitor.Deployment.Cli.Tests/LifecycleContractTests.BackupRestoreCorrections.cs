@@ -22,18 +22,19 @@ public sealed partial class LifecycleContractTests
     public async Task RestoreAsync_CounterStoreCreatedAfterTheBackup_IsCarriedOverSoNoCounterIsLowered()
     {
         using var fixture = await BackupFixtureAsync();
+        var environment = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore);
+        File.Delete(environment);
         var backup = await BackupAsync(fixture, new FakeLifecycleClient());
-        var fleet = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
-        Execute(fleet,
-            "CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, next_sequence INTEGER NOT NULL, schema_version INTEGER NOT NULL);" +
-            "INSERT INTO fleet_status_metadata VALUES(1, 60, 1);");
+        Execute(environment,
+            EnvironmentalFixtureSchema +
+            "INSERT INTO environmental_observation_journal VALUES(60);");
         await UninstallAsync(fixture);
 
         var restored = await RestoreAsync(fixture, backup.Backup!.Archive);
 
         Assert.AreEqual("completed", restored.Outcome);
-        Assert.IsTrue(File.Exists(fleet), "the store that handed out fleet sequences after the backup was removed");
-        Assert.AreEqual(60L, Scalar(fleet, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
+        Assert.IsTrue(File.Exists(environment), "the store that recorded environmental observations after the backup was removed");
+        Assert.AreEqual(60L, Scalar(environment, EnvironmentalSequence));
     }
 
     /// <summary>

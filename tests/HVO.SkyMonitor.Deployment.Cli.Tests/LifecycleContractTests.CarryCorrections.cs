@@ -57,9 +57,9 @@ public sealed partial class LifecycleContractTests
         var identity = CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);
         ExecuteSql(identity,
             "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT);" +
-            "INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity');");
+            "INSERT INTO __EFMigrationsHistory VALUES('20261128144428_InitialIdentity');");
         var databaseBytes = CameraAgentStateSnapshot.StoreBytes(fixture.Paths.StateRoot,
-            CameraAgentStateInventory.Stores(fixture.Paths, fixture.Manifest.ReplayProfile));
+            CameraAgentStateInventory.Stores);
         var available = 4 * databaseBytes + 256L * 1024 * 1024;
         Assert.IsTrue(CameraAgentStateCounters.JournalRecordBytes(databaseBytes) > 0);
         var lifecycle = new FakeLifecycleClient();

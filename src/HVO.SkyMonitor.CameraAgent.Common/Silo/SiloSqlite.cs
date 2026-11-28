@@ -40,7 +40,7 @@ internal static class SiloSqlite
         }
         if (read < header.Length || !header.AsSpan(0, 16).SequenceEqual("SQLite format 3\0"u8))
         {
-            throw new SiloFormatRefusedException(format.Subject, "not an SQLite database", format.Format);
+            throw new SiloFormatRefusedException(format.Subject, "not an SQLite database", format.Format, sqlite: true);
         }
         var applicationId = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(68, 4));
         var userVersion = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(60, 4));
@@ -53,7 +53,7 @@ internal static class SiloSqlite
         {
             throw new SiloFormatRefusedException(format.Subject,
                 string.Create(CultureInfo.InvariantCulture, $"application_id 0x{applicationId:X8}, user_version {userVersion}"),
-                format.Format);
+                format.Format, sqlite: true);
         }
     }
 
@@ -146,23 +146,23 @@ internal static class SiloSqlite
             return await ScalarLongAsync(connection, transaction,
                 "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false) == 0
                 ? false
-                : throw new SiloFormatRefusedException(format.Subject, "unversioned schema objects", format.Format);
+                : throw new SiloFormatRefusedException(format.Subject, "unversioned schema objects", format.Format, sqlite: true);
         }
         if (applicationId != format.ApplicationId || userVersion != format.UserVersion)
         {
             throw new SiloFormatRefusedException(format.Subject,
                 string.Create(CultureInfo.InvariantCulture, $"application_id 0x{applicationId:X8}, user_version {userVersion}"),
-                format.Format);
+                format.Format, sqlite: true);
         }
         var actual = await ReadDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (!actual.SequenceEqual(format.Definitions, StringComparer.Ordinal))
         {
-            throw new SiloFormatRefusedException(format.Subject, "a drifted schema", format.Format);
+            throw new SiloFormatRefusedException(format.Subject, "a drifted schema", format.Format, sqlite: true);
         }
         var stored = await ReadMetadataAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (!stored.TryGetValue("format", out var storedFormat) || !string.Equals(storedFormat, format.Format, StringComparison.Ordinal))
         {
-            throw new SiloFormatRefusedException(format.Subject, storedFormat, format.Format);
+            throw new SiloFormatRefusedException(format.Subject, storedFormat, format.Format, sqlite: true);
         }
         foreach (var (key, value) in metadata)
         {

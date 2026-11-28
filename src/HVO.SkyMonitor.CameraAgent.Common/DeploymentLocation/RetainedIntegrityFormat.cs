@@ -7,6 +7,9 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 // authenticated layout requires a new protocol/version and reader boundary.
 internal static class RetainedIntegrityFormat
 {
+    internal const int SchemaVersion = 1;
+    internal const int DatabaseApplicationId = 0x4856524C; // HVRL
+
     internal sealed record EntryProof(string Nonce, string Key, string Digest, int Kind, long Generation);
     internal sealed record IntentProof(string Nonce, string Key, bool Tree, long Generation, string? Planned, string? Source, bool Denied);
     internal sealed record Metadata(string Nonce, long Generation, string Chain, long Count, bool Established, string Pending,

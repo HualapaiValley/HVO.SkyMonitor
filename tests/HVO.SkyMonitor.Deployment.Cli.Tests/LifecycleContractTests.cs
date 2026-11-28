@@ -141,7 +141,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("version-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
     [DataRow("created-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
     [DataRow("contract-label", "!The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
-    [DataRow("state-contract", "!This installation does not carry the supported CameraAgent state contract")]
+    [DataRow("state-contract", "!This installation has an unsupported CameraAgent state contract; fresh install required.")]
     public async Task UpgradeAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeTheJournalOrALoad(string fault, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
@@ -187,7 +187,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
     [DataRow("created-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
     [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
-    [DataRow("state-contract", "!This installation does not carry the supported CameraAgent state contract")]
+    [DataRow("state-contract", "!This installation has an unsupported CameraAgent state contract; fresh install required.")]
     [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
     public async Task UpgradeAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnyPullOrTheJournal(string fault, string expected)
     {
@@ -2039,7 +2039,7 @@ public sealed partial class LifecycleContractTests
         if (failurePoint == "snapshot")
         {
             // A store with recovery files but no database cannot be snapshotted, so the snapshot fails after the stop.
-            var orphan = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, "raw/.fleet/fleet-status.db") + "-wal";
+            var orphan = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore) + "-wal";
             Directory.CreateDirectory(Path.GetDirectoryName(orphan)!);
             await File.WriteAllTextAsync(orphan, "orphaned log");
         }
@@ -2220,7 +2220,7 @@ public sealed partial class LifecycleContractTests
                 CatalogContract: CameraAgentImageContract.CatalogContract,
                 ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null,
                 RawIngressSchema: recoveryState ? "13" : "12",
-                IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
+                IdentityMigration: recoveryState ? "20261128144428_InitialIdentity" : null,
                 CatalogManifestVersion: recoveryState ? "2" : null);
             if (installedImage is not null) image = installedImage(image);
             var installationId = Guid.NewGuid();
@@ -2267,7 +2267,7 @@ public sealed partial class LifecycleContractTests
                     if (databasePath == CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot))
                         command.CommandText = "CREATE TABLE sentinel(value); PRAGMA user_version=13;";
                     else
-                        command.CommandText = "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT); INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity');";
+                        command.CommandText = "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT); INSERT INTO __EFMigrationsHistory VALUES('20261128144428_InitialIdentity');";
                     await command.ExecuteNonQueryAsync();
                     File.SetUnixFileMode(databasePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 }
@@ -2396,7 +2396,7 @@ public sealed partial class LifecycleContractTests
                 ["io.hvo.skymonitor.state-contract"] = "cameraagent-silo-state-v1",
                 [SiloInstallation.FirstBootContractLabel] = SiloInstallation.FirstBootContract,
                 ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
-                ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
+                ["io.hvo.skymonitor.identity-migration"] = "20261128144428_InitialIdentity",
                 ["io.hvo.skymonitor.raw-ingress-schema"] = isCandidate ? CandidateRawIngressSchema : "12",
                 ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
                 ["org.opencontainers.image.revision"] = isCandidate ? new string('9', 40) : new string('8', 40),

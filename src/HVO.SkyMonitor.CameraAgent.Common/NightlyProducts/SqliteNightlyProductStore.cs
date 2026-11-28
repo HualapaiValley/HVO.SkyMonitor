@@ -937,80 +937,22 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         return windows;
     }
 
-    /// <summary>
-    /// Extends the schema-2 product-kind constraints atomically, preserving the existing files and references.
-    /// </summary>
-    private static async ValueTask ExtendProductKindsAsync(SqliteConnection connection, SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        foreach (var table in new[] { "nightly_products", "nightly_windows" })
-        {
-            var start = SchemaSql.IndexOf("CREATE TABLE " + table + " (", StringComparison.Ordinal);
-            var end = SchemaSql.IndexOf(") STRICT;", start, StringComparison.Ordinal) + ") STRICT;".Length;
-            var create = SchemaSql[start..end].Replace("CREATE TABLE " + table + " (",
-                "CREATE TABLE " + table + "_v3 (", StringComparison.Ordinal);
-            await ExecuteAsync(connection, transaction, create, cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                $"INSERT INTO {table}_v3 SELECT * FROM {table}; DROP TABLE {table}; ALTER TABLE {table}_v3 RENAME TO {table};",
-                cancellationToken).ConfigureAwait(false);
-        }
-        await ExecuteAsync(connection, transaction, """
-            CREATE INDEX nightly_products_by_date ON nightly_products (observing_date, window_start_utc_ticks);
-            CREATE INDEX nightly_windows_by_date ON nightly_windows (observing_date, window_start_utc_ticks);
-            CREATE TRIGGER nightly_products_immutable_update BEFORE UPDATE ON nightly_products
-            BEGIN SELECT RAISE(ABORT, 'Published nightly products are immutable.'); END;
-            CREATE TRIGGER nightly_products_immutable_delete BEFORE DELETE ON nightly_products
-            BEGIN SELECT RAISE(ABORT, 'Published nightly products are immutable.'); END;
-            """, cancellationToken).ConfigureAwait(false);
-    }
+    private const int ApplicationId = 0x48564E50; // HVNP
 
-    /// <summary>Creates, upgrades the supported schema-2 input, or verifies schema 3 once per process.</summary>
     private async ValueTask EnsureSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         if (_schemaReady)
         {
             return;
         }
-        // Rebuilding CHECK constraints is SQLite's documented table-rebuild path. Foreign-key enforcement is
-        // restored after the atomic transaction, and every retained reference is checked before commit.
-        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
-        {
-            await ExecuteAsync(connection, null, "PRAGMA foreign_keys = OFF;", cancellationToken).ConfigureAwait(false);
-        }, cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
-        var version = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken)
-            .ConfigureAwait(false);
-        if (version > NightlyProductContract.CurrentSchemaVersion)
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Nightly product",
+                NightlyProductContract.CurrentSchemaVersion, ApplicationId))
         {
-            throw new InvalidDataException(
-                $"Nightly product schema {version} is newer than supported schema "
-                + $"{NightlyProductContract.CurrentSchemaVersion}.");
-        }
-        if (version == 0)
-        {
-            var objectCount = await ScalarLongAsync(
-                connection, transaction, "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
-                cancellationToken).ConfigureAwait(false);
-            if (objectCount != 0)
-            {
-                throw new InvalidDataException(
-                    "Nightly product storage exists without a schema version; archive the database before starting "
-                    + "this CameraAgent.");
-            }
             await ExecuteAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(
-                connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
+            await ExecuteAsync(connection, transaction,
+                Sqlite.SqliteSchemaBaseline.Stamp(NightlyProductContract.CurrentSchemaVersion, ApplicationId),
                 cancellationToken).ConfigureAwait(false);
-        }
-        else if (version == NightlyProductContract.PreviousSchemaVersion)
-        {
-            await ExtendProductKindsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, $"PRAGMA user_version = {NightlyProductContract.CurrentSchemaVersion};",
-                cancellationToken).ConfigureAwait(false);
-        }
-        else if (version != NightlyProductContract.CurrentSchemaVersion)
-        {
-            throw new InvalidDataException($"Nightly product schema {version} is unsupported.");
         }
         var schemaObjects = await ScalarLongAsync(
             connection, transaction, "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
@@ -1029,10 +971,6 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 .ConfigureAwait(false) != 0)
             throw new InvalidDataException("Nightly product storage contains invalid references.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
-        {
-            await ExecuteAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
-        }, cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
     }
 
@@ -1059,6 +997,8 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             command.CommandText = "PRAGMA foreign_keys = ON;";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            if (!_schemaReady)
+                Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(configuredConnection, "Nightly product", NightlyProductContract.CurrentSchemaVersion, ApplicationId);
             command.CommandText = "PRAGMA journal_mode = WAL;";
             var mode = await command.ExecuteScalarAsync(token).ConfigureAwait(false) as string;
             if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))

@@ -26,6 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 /// </remarks>
 internal sealed partial class SqliteCalibrationFamilyStore : IDisposable
 {
+    private const int ApplicationId = 0x48564346;
     internal const int SchemaVersion = 1;
     internal const string DirectoryName = ".calibration-families";
     internal const string DatabaseFileName = "calibration-families.db";
@@ -497,11 +498,13 @@ internal sealed partial class SqliteCalibrationFamilyStore : IDisposable
             Pooling = false,
             DefaultTimeout = 5
         }.ToString());
-        await SqliteConnectionConfigurationGate.OpenAndConfigureAsync(connection, static (configured, _) =>
+        await SqliteConnectionConfigurationGate.OpenAndConfigureAsync(connection, (configured, _) =>
         {
             Execute(configured, null, "PRAGMA busy_timeout = 5000;");
             Execute(configured, null, "PRAGMA synchronous = FULL;");
             Execute(configured, null, "PRAGMA foreign_keys = ON;");
+            if (!_initialized)
+                SqliteSchemaBaseline.CheckBeforeWrite(configured, "Calibration family", SchemaVersion, ApplicationId);
             if (!string.Equals(Scalar(configured, null, "PRAGMA journal_mode = WAL;") as string, "wal", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("The calibration-family store could not enable WAL.");
@@ -518,21 +521,10 @@ internal sealed partial class SqliteCalibrationFamilyStore : IDisposable
     private static void VerifySchema(SqliteConnection connection)
     {
         using var transaction = connection.BeginTransaction(deferred: false);
-        var version = Convert.ToInt64(Scalar(connection, transaction, "PRAGMA user_version;"), CultureInfo.InvariantCulture);
-        if (version == 0)
+        if (SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Calibration family", SchemaVersion, ApplicationId))
         {
-            if (Convert.ToInt64(Scalar(connection, transaction,
-                    "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*';"),
-                    CultureInfo.InvariantCulture) != 0)
-            {
-                throw new InvalidDataException("The calibration-family store contains an unversioned schema.");
-            }
             Execute(connection, transaction, Schema);
-            Execute(connection, transaction, FormattableString.Invariant($"PRAGMA user_version = {SchemaVersion};"));
-        }
-        else if (version != SchemaVersion)
-        {
-            throw new InvalidDataException("Unsupported calibration-family schema version; upgrade forward with a compatible binary.");
+            Execute(connection, transaction, SqliteSchemaBaseline.Stamp(SchemaVersion, ApplicationId));
         }
         using var canonical = new SqliteConnection("Data Source=:memory:");
         canonical.Open();

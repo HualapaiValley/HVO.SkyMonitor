@@ -12,7 +12,7 @@ public sealed partial class LifecycleContractTests
         => image with
         {
             StateContract = CameraAgentStateContract.Current,
-            IdentityMigration = "20260827053715_InitialIdentity",
+            IdentityMigration = "20261128144428_InitialIdentity",
             RawIngressSchema = "12",
             CatalogManifestVersion = "2"
         };

@@ -1379,7 +1379,7 @@ public sealed partial class ProcessingGraphOperationsTests
 
     [TestMethod]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed internal schema SQL and parameterized inserts only.")]
-    public async Task Schema6ConfiguredBasicRevisionWithLegacyIdentityIsSupersededDeterministicallyOnUpgrade()
+    public async Task ConfiguredBasicRevisionWithEarlierPlanIdentityIsSupersededDeterministically()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-upgrade");
         Directory.CreateDirectory(Path.Combine(root, "journal"));
@@ -1395,17 +1395,19 @@ public sealed partial class ProcessingGraphOperationsTests
                     CapturePipelineSchemaVersions.ExplicitV2,
                     CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
+            using (var provider = CreateProvider(root))
+                await provider.GetRequiredService<SqliteCaptureProcessingStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
             var legacyRevisionName = pipelineIdentity[..16];
             var legacyRevisionId = new string('A', 64);
-            // A schema-6 CameraAgent persisted configured-basic under the unchanged pipeline-hash revision name but with
+            // An earlier plan compiler persisted configured-basic under the unchanged pipeline-hash revision name but with
             // identities produced by the pre-mediaType compiler contract, so the current compiler yields a different
             // revision ID for the same name.
             using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = SqliteCaptureProcessingStore.LegacySchema6SqlForTests + """
+                command.CommandText = """
                     INSERT INTO processing_graph_revisions(
                         revision_id, graph_name, revision_name, lifecycle,
                         definition_identity_sha256, shared_plan_identity_sha256, local_plan_identity_sha256,

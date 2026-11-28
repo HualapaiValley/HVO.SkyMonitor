@@ -207,7 +207,7 @@ public sealed class CameraAgentIdentityPolicyTests
             services.AddDataProtection();
             services.AddAuthentication();
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(connection));
-            services.AddIdentityCore<ApplicationUser>()
+            services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddCameraAgentPasswordPolicy()
                 .AddSignInManager()

@@ -672,7 +672,7 @@ public sealed class SqliteCameraAgentGalleryTests
     [DataRow(2)]
     [DataRow(3)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected unsupported-schema fixture statements are fixed test SQL.")]
-    public async Task PopulatedOlderProcessingSchemasAreRejectedWithoutMutationAsync(int schemaVersion)
+    public async Task PopulatedUnsupportedProcessingSchemasAreRejectedWithoutMutationAsync(int schemaVersion)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-processing-migration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -844,8 +844,9 @@ public sealed class SqliteCameraAgentGalleryTests
 
             using (var rejected = new SqliteCaptureProcessingStore(options))
             {
-                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                var exception = await Assert.ThrowsAsync<Exception>(async () =>
                     await rejected.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+                StringAssert.Contains(exception.Message, "fresh install required", StringComparison.Ordinal);
             }
 
             using var verify = new SqliteConnection(

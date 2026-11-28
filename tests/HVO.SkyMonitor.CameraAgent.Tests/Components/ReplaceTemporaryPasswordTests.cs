@@ -120,7 +120,7 @@ public sealed class ReplaceTemporaryPasswordTests
         {
             _connection.Open();
             _dbContext = new ApplicationDbContext(
-                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(_connection).Options);
+                CameraAgentDesignTimeDbContextFactory.CreateOptionsBuilder().UseSqlite(_connection).Options);
             Owner = new ApplicationUser
             {
                 Id = "owner",

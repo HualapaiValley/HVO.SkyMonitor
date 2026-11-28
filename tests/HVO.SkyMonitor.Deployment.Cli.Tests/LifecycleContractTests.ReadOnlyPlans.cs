@@ -186,7 +186,7 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.IsFalse(failure.IsRefusal, failure.Message);
-        StringAssert.StartsWith(failure.Message, "This installation does not carry the supported CameraAgent state contract", StringComparison.Ordinal);
+        StringAssert.StartsWith(failure.Message, "This installation has an unsupported CameraAgent state contract; fresh install required.", StringComparison.Ordinal);
         Assert.AreEqual(1, fixture.Runner.PullCount);
         var journal = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
         Assert.AreEqual(InstallationStatus.Failed, journal!.Status);

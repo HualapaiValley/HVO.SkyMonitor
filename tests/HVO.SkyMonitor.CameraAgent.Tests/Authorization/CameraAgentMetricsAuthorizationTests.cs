@@ -19,7 +19,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -326,9 +325,8 @@ public sealed partial class CameraAgentMetricsAuthorizationTests
             builder.Services.AddDbContext<ApplicationDbContext>(options =>
             {
                 options.UseSqlite($"Data Source={Path.Combine(root, "identity.db")}");
-                options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
             });
-            builder.Services.AddIdentityCore<ApplicationUser>()
+            builder.Services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>()
                 .AddSignInManager();

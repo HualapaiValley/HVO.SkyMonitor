@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
@@ -26,8 +28,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class SqliteTimeLapseStoreTests
 {
-    private static readonly System.Text.Json.JsonSerializerOptions ProductJson = new(System.Text.Json.JsonSerializerDefaults.Web)
-    { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    { Converters = { new JsonStringEnumConverter() } };
 
     [TestMethod]
     [DataRow(CameraAgentTimeLapseState.NoSources)]
@@ -531,38 +533,19 @@ public sealed class SqliteTimeLapseStoreTests
     }
 
     [TestMethod]
-    public async Task ZeroNineStoredJobReadsRecoversAndCompletesWithoutChangingItsPreset()
+    public async Task ZeroNineDatabaseRequiresAFreshInstallAndKeepsItsWorkingJob()
     {
-        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-upgrade");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-legacy");
         try
         {
             await RestoreZeroNineAsync(root);
-            var options = Options(root);
-            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
-            Guid jobId;
-            string presetIdentity;
-            using (var store = new SqliteTimeLapseStore(options, clock))
-            {
-                var retained = (await store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single();
-                jobId = retained.JobId;
-                presetIdentity = retained.Preset.IdentitySha256;
-                Assert.AreEqual(CameraAgentTimeLapseState.Working, retained.State);
-                Assert.IsNull(retained.Preset.RendererVersion);
-                await store.EnqueueAsync(retained.Occurrence, retained.Preset, [], CancellationToken.None);
-                Assert.AreEqual("5EDB50EBB57E57FC43B575269FD2DF62AF6D30760DFB8807C421B69D026D98A2", presetIdentity);
-                using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
-                var recovered = await store.ClaimAsync(CancellationToken.None);
-                Assert.IsNotNull(recovered);
-                Assert.AreEqual(jobId, recovered.JobId);
-                Assert.AreEqual(retained.Preset, recovered.Preset);
-                await store.FreezePlanAsync(jobId, new([], new Dictionary<string, int>()), CancellationToken.None);
-                await store.CompleteAsync(jobId, CameraAgentTimeLapseState.NoSources, "timelapse.no-admitted-sources", null, CancellationToken.None);
-            }
-            using var reopened = new SqliteTimeLapseStore(options, clock);
-            var completed = (await reopened.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single();
-            Assert.AreEqual(jobId, completed.JobId);
-            Assert.AreEqual(presetIdentity, completed.Preset.IdentitySha256);
-            Assert.AreEqual(CameraAgentTimeLapseState.NoSources, completed.State);
+            var path = Path.Combine(root, ".time-lapses", "time-lapses.db");
+            var before = await File.ReadAllBytesAsync(path);
+            using var store = new SqliteTimeLapseStore(Options(root), new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
+            var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+            StringAssert.Contains(error.Message, "fresh install required", StringComparison.Ordinal);
+            CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
         }
         finally { Directory.Delete(root, true); }
     }
@@ -574,9 +557,18 @@ public sealed class SqliteTimeLapseStoreTests
         try
         {
             await RestoreZeroNineAsync(root);
-            var options = Options(root);
-            using var store = new SqliteTimeLapseStore(options, new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
-            var legacy = (await store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single().Preset;
+            var database = Path.Combine(root, ".time-lapses", "time-lapses.db");
+            using var fixture = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = database,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString());
+            await fixture.OpenAsync();
+            using var preset = fixture.CreateCommand();
+            preset.CommandText = "SELECT preset_json FROM jobs;";
+            var legacy = JsonSerializer.Deserialize<CameraAgentTimeLapsePreset>(
+                (string)(await preset.ExecuteScalarAsync())!, SerializerOptions)!;
             var settings = new TimeLapseOptions
             {
                 RigProfileSha256 = HVO.SkyMonitor.Astronomy.RigProjectionContextFactory.CreateProfileHashSha256(legacy.Rig),
@@ -732,7 +724,7 @@ public sealed class SqliteTimeLapseStoreTests
             SELECT $product,$output,job_id,report_date,$period,$window,$start,$end,$preset,0,$json,$sha,
                 $product || '.mp4',$bytes,updated_ticks,16,16,1 FROM jobs WHERE job_id = $standalone;
             """;
-        var json = System.Text.Json.JsonSerializer.Serialize(product, ProductJson);
+        var json = System.Text.Json.JsonSerializer.Serialize(product, SerializerOptions);
         command.Parameters.AddWithValue("$product", product.ProductId.ToString("N"));
         command.Parameters.AddWithValue("$standalone", job.JobId.ToString("N"));
         command.Parameters.AddWithValue("$output", identity);
@@ -950,8 +942,8 @@ public sealed class SqliteTimeLapseStoreTests
         private static readonly LocalAutomationWindowPlanner SitePlanner = new(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar));
         private static readonly LocalAutomationSourceWindowPolicy DailyPolicy = NightlyProductFixture.Occurrence(
             Common.NightlyProducts.NightlyProductKind.Keogram, windowKind: LocalAutomationSourceWindowKind.SunriseDay).SourceWindow!.Policy;
-        private static readonly System.Text.Json.JsonSerializerOptions WindowJson = new(System.Text.Json.JsonSerializerDefaults.Web)
-        { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+        private static readonly JsonSerializerOptions WindowJson = new(JsonSerializerDefaults.Web)
+        { Converters = { new JsonStringEnumConverter() } };
         private readonly string _root;
         private readonly IOptions<CameraAgentHostOptions> _options;
         private readonly CameraAgentTimeLapsePreset _preset;

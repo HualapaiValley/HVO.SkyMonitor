@@ -138,105 +138,6 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
     }
 
-    [TestMethod]
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the canonical internal schema test fixture is executed.")]
-    public async Task CanonicalSchema5IsMigratedWithoutLosingProcessingHistory()
-    {
-        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
-        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = SqliteCaptureProcessingStore.LegacySchema5SqlForTests + """
-                INSERT INTO processing_nodes(
-                    capture_id, node_id, required, dependencies_json, recipe_name, output_role,
-                    output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
-                VALUES(
-                    '10000000000000000000000000000001', 'migrated-node', 1, '[]', 'schema-test',
-                    'Preview', 'default', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-                    'Completed', NULL, 1, 0);
-                """;
-            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-        }
-
-        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-        {
-            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
-            verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
-        Assert.AreEqual(1L, await ScalarAsync(
-            verify, "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'migrated-node';").ConfigureAwait(false));
-        Assert.AreEqual(1L, await ScalarAsync(
-            verify, "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'processing_executions';").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema6GraphIdentitySurvivesProcessingSchemaMigration()
-    {
-        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
-        var definition = new ProcessingGraphDefinition(
-            ProcessingGraphSchemaVersions.V1,
-            "schema-six",
-            "1",
-            [new ProcessingGraphSourceDefinition("$raw",
-                [new ProcessingGraphProductContract(
-                    FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)])],
-            []);
-        var plan = ProcessingGraphCompiler.Compile(definition).Plan!;
-        var definitionJson = ProcessingGraphJson.SerializeCanonical(definition);
-        Assert.DoesNotContain("\"mediaType\"", Encoding.UTF8.GetString(definitionJson), StringComparison.Ordinal);
-        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = SqliteCaptureProcessingStore.LegacySchema6SqlForTests + """
-                INSERT INTO processing_graph_revisions(
-                    revision_id, graph_name, revision_name, lifecycle,
-                    definition_identity_sha256, shared_plan_identity_sha256, local_plan_identity_sha256,
-                    pipeline_json, definition_json, frozen_plan_json, nodes_json, created_unix_ms,
-                    validated_unix_ms, activated_unix_ms, retired_unix_ms)
-                VALUES(
-                    $revision, 'schema-six', '1', 'Active', $definition, $shared, $local,
-                    x'7B7D', $json, x'7B7D', x'5B5D', 0, 0, 0, NULL);
-                INSERT INTO processing_graph_registry_state(
-                    state_key, selection_mode, active_revision_id, configured_basic_revision_id,
-                    state_version, updated_unix_ms)
-                VALUES(1, 'ConfiguredBasic', $revision, $revision, 1, 0);
-                """;
-            command.Parameters.AddWithValue("$revision", new string('A', 64));
-            command.Parameters.AddWithValue("$definition", plan.DefinitionIdentitySha256);
-            command.Parameters.AddWithValue("$shared", plan.PlanIdentitySha256);
-            command.Parameters.AddWithValue("$local", new string('B', 64));
-            command.Parameters.AddWithValue("$json", definitionJson);
-            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-        }
-
-        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-        {
-            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
-            verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
-        using var read = verify.CreateCommand();
-        read.CommandText = """
-            SELECT definition_identity_sha256, definition_json
-            FROM processing_graph_revisions
-            WHERE revision_id = $revision;
-            """;
-        read.Parameters.AddWithValue("$revision", new string('A', 64));
-        using var reader = await read.ExecuteReaderAsync().ConfigureAwait(false);
-        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-        Assert.AreEqual(plan.DefinitionIdentitySha256, reader.GetString(0));
-        var parsed = ProcessingGraphJson.Parse((byte[])reader[1]);
-        Assert.IsTrue(parsed.IsValid, string.Join(Environment.NewLine, parsed.Diagnostics));
-        Assert.AreEqual(plan.DefinitionIdentitySha256,
-            ProcessingGraphCompiler.Compile(parsed.Definition!).Plan!.DefinitionIdentitySha256);
-    }
-
     /// <summary>
     /// Schema 7 already carries execution history, so the migration to the current schema has to preserve every recorded
     /// attempt and give each one a route it never wrote. The route the historical row takes must be
@@ -244,116 +145,17 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     /// in process or dispatched to the local replay runner, and claiming either would report a value the
     /// instrument never measured.
     /// </summary>
-    [TestMethod]
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema7NodeAttemptsAreMigratedWithUnknownExecutionRoute()
-    {
-        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
-        await SeedNodeAttemptAsync(
-            fixture,
-            SqliteCaptureProcessingStore.LegacySchema7SqlForTests).ConfigureAwait(false);
-
-        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-        {
-            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
-            verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
-        Assert.AreEqual(1L, await ScalarAsync(verify, """
-            SELECT COUNT(*) FROM processing_node_attempts
-            WHERE node_id = 'migrated-attempt' AND attempt_number = 1
-              AND status = 'Completed' AND outcome = 'Produced' AND duration_ticks = 1234
-              AND execution_route = 'Unknown';
-            """).ConfigureAwait(false));
-        Assert.AreEqual(1L, await ScalarAsync(verify, """
-            SELECT COUNT(*) FROM pragma_table_info('processing_node_attempts')
-            WHERE name = 'execution_route';
-            """).ConfigureAwait(false));
-    }
-
     /// <summary>
     /// A schema 6 database reaches the current schema in a single migration step, which also needs the attempt-table
     /// rebuild schema 7 introduces in addition to its own graph delivery tables. Without it the version marker
     /// advances while the execution route column stays absent, which the schema validation inside the same
     /// transaction then rejects, so this asserts the column and the preserved row rather than only the marker.
     /// </summary>
-    [TestMethod]
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema6NodeAttemptsAreMigratedWithUnknownExecutionRoute()
-    {
-        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
-        await SeedNodeAttemptAsync(
-            fixture,
-            SqliteCaptureProcessingStore.LegacySchema6SqlForTests).ConfigureAwait(false);
-
-        using (var store = new SqliteCaptureProcessingStore(fixture.Options))
-        {
-            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
-            verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
-        Assert.AreEqual(1L, await ScalarAsync(verify, """
-            SELECT COUNT(*) FROM processing_node_attempts
-            WHERE node_id = 'migrated-attempt' AND attempt_number = 1
-              AND execution_route = 'Unknown';
-            """).ConfigureAwait(false));
-    }
-
     /// <summary>
     /// Applies a legacy schema and seeds the graph revision, execution, execution node, and completed node attempt
     /// the execution-route migration has to carry forward. Both legacy versions declare the attempt table without
     /// the route column, so the same insert serves either one.
     /// </summary>
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    private static async Task SeedNodeAttemptAsync(SchemaFixture fixture, string legacySchemaSql)
-    {
-        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = legacySchemaSql + """
-            INSERT INTO processing_graph_revisions(
-                revision_id, graph_name, revision_name, lifecycle,
-                definition_identity_sha256, shared_plan_identity_sha256, local_plan_identity_sha256,
-                pipeline_json, definition_json, frozen_plan_json, nodes_json, created_unix_ms,
-                validated_unix_ms, activated_unix_ms, retired_unix_ms)
-            VALUES(
-                $revision, 'attempt-route', '1', 'Active', $sha, $sha, $sha,
-                x'7B7D', x'7B7D', x'7B7D', x'5B5D', 0, 0, 0, NULL);
-            INSERT INTO processing_executions(
-                execution_id, execution_class, status, capture_id, primary_artifact_id, graph_revision_id,
-                definition_identity_sha256, shared_plan_identity_sha256, local_plan_identity_sha256,
-                frozen_plan_json, configuration_json, trigger_kind, trigger_reference, priority, payload_bytes,
-                accepted_unix_ms, available_unix_ms, deadline_unix_ms, maximum_age_unix_ms,
-                started_unix_ms, completed_unix_ms, failure_reason, allow_automatic_publication)
-            VALUES(
-                $execution, 'Replay', 'Completed', $capture, $artifact, $revision,
-                $sha, $sha, $sha, x'7B7D', x'7B7D', 'schema-test', NULL, 0, 0,
-                0, 0, 0, 0, 0, 1, NULL, 1);
-            INSERT INTO processing_execution_nodes(
-                execution_id, node_id, required, plan_sha256, shared_plan_node_identity_sha256,
-                dependencies_json, inputs_json, outputs_json, window_json, status, reason,
-                attempt_count, started_unix_ms, completed_unix_ms)
-            VALUES(
-                $execution, 'migrated-attempt', 1, $sha, $sha, '[]', '[]', '[]', NULL, 'Completed', NULL,
-                1, 0, 1);
-            INSERT INTO processing_node_attempts(
-                execution_id, node_id, attempt_number, lease_owner, lease_token,
-                started_unix_ms, completed_unix_ms, status, outcome, reason, duration_ticks)
-            VALUES(
-                $execution, 'migrated-attempt', 1, 'schema-test', 'schema-test-token',
-                0, 1, 'Completed', 'Produced', NULL, 1234);
-            """;
-        command.Parameters.AddWithValue("$revision", new string('A', 64));
-        command.Parameters.AddWithValue("$sha", new string('B', 64));
-        command.Parameters.AddWithValue("$execution", new string('1', 32));
-        command.Parameters.AddWithValue("$capture", new string('2', 32));
-        command.Parameters.AddWithValue("$artifact", new string('3', 32));
-        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-    }
-
     [TestMethod]
     public async Task MalformedCurrentSchemaIsRejectedWithoutMutation()
     {
@@ -415,7 +217,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = FormattableString.Invariant($"PRAGMA user_version = {SqliteRawCaptureJournal.CurrentSchemaVersion};");
+                command.CommandText = FormattableString.Invariant(
+                    $"PRAGMA user_version = {SqliteRawCaptureJournal.CurrentSchemaVersion}; PRAGMA application_id = {SqliteRawCaptureJournal.ApplicationId};");
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions

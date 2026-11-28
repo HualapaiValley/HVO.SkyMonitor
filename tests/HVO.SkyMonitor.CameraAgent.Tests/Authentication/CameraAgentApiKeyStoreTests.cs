@@ -302,7 +302,7 @@ public sealed class CameraAgentApiKeyStoreTests
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
-            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            var options = CameraAgentDesignTimeDbContextFactory.CreateOptionsBuilder()
                 .UseSqlite(connection)
                 .ConfigureWarnings(warnings => warnings.Throw(CoreEventId.RowLimitingOperationWithoutOrderByWarning));
             if (queries is not null)

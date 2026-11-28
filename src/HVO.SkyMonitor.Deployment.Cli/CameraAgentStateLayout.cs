@@ -12,7 +12,7 @@ internal static class CameraAgentStateContract
     public const string Current = CameraAgentSiloBinding.StateContract;
     public const string BaselineRelease = "0.10.0-beta.1";
     public const string FreshInstallRequired =
-        $"This installation does not carry the supported CameraAgent state contract. Use a fresh install of {BaselineRelease} or later with a new instance and empty storage.";
+        $"This installation has an unsupported CameraAgent state contract; fresh install required. Install {BaselineRelease} or later as a new instance on empty storage.";
 
     public static bool IsCurrent(string? declaration)
         => string.Equals(declaration, Current, StringComparison.Ordinal);
@@ -110,31 +110,22 @@ internal static class CameraAgentStateLayout
     /// <summary>The calibration-family store's location under the state root.</summary>
     public const string CalibrationFamiliesStore = RawDirectoryName + "/.calibration-families/calibration-families.db";
 
+    /// <summary>The environmental observation journal's location under the state root.</summary>
+    public const string EnvironmentalObservationsStore = RawDirectoryName + "/.environment/environmental-observations.db";
+
     /// <summary>
-    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators, except the orbital
-    /// elements, space-weather and calibration-family stores. These are the small databases a migrating upgrade snapshots. None lies inside a bulk frame,
-    /// archive or derived tree, so the snapshot never reads bulk data. The artifact outbox lives in each storage root
-    /// the generated pipeline writes to. <see cref="OrbitalElementsStore"/> is deliberately not listed: it holds the
-    /// provider's attempt floor and any halt, and a restore must never rewind them, or the release rolled back to could
-    /// request inside the floor or after the provider refused. <see cref="SpaceWeatherStore"/> is also excluded:
-    /// restoring an older copy would rewind per-product Retry-After floors, backoff and provider/product halts.
-    /// <see cref="CalibrationFamiliesStore"/> is also excluded. A snapshot or backup that an earlier installer took names
-    /// only the stores listed here then, and verification requires every listed store, so listing a new store would make
-    /// this installer refuse those snapshots and backups. No earlier release opens the store, so a rollback needs no copy
-    /// of it, and a full backup still archives it with the instance's other files.
+    /// Small application databases in a lifecycle checkpoint. Retained integrity travels together with
+    /// protected location state. Orbital and space-weather provider ledgers must keep their live request
+    /// floors through recovery. The Silo stores and calibration families have their own recovery boundaries.
     /// </summary>
     public static IReadOnlyList<string> SqliteStores { get; } =
     [
         $"{IdentityDirectoryName}/{IdentityDatabaseFileName}",
         $"{RawDirectoryName}/journal/raw-ingress.db",
-        $"{RawDirectoryName}/outbox/artifact-outbox.db",
-        $"{ArchiveDirectoryName}/outbox/artifact-outbox.db",
-        $"{RawDirectoryName}/.fleet/fleet-status.db",
-        $"{RawDirectoryName}/.environment/environmental-observation-outbox.db",
-        $"{RawDirectoryName}/evidence/execution-evidence-outbox.db",
+        EnvironmentalObservationsStore,
         $"{RawDirectoryName}/.time-lapses/time-lapses.db",
         $"{RawDirectoryName}/.nightly-products/nightly-products.db",
-        $"{RawDirectoryName}/.automation/local-automations.db"
+        AutomationStore
     ];
 
     /// <summary>The files SQLite keeps beside a database while it has uncheckpointed or uncommitted content.</summary>

@@ -198,7 +198,7 @@ public sealed class OwnerPasswordReplacementServiceTests
                     options.AddInterceptors(new PasswordChangeCompletionFailureInterceptor());
                 }
             });
-            services.AddIdentityCore<ApplicationUser>()
+            services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddCameraAgentPasswordPolicy();
             var provider = services.BuildServiceProvider();

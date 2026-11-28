@@ -5,19 +5,12 @@ using HVO.SkyMonitor.Deployment.Contracts;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// Correction round 3 of #1314 (PR #1340), R15: every value a restore reads from stores the release it replaces wrote is
-/// checked before it is used, and a value in a shape the installer does not read degrades the restore rather than
-/// blocking it. A capture-schedule profile stored as text, as null, as a blob that is not UTF-8 or as malformed JSON
-/// narrows the inventory to the configured roots; a counter stored in another shape is carried only as far as the
-/// journal recorded it. Automatic recovery, <c>--resume</c>, <c>--restore-only</c> and a rollback each put the snapshot
-/// back and say on standard error what they could not read.
+/// Restore handles candidate databases with malformed schedule profiles or counters. The fixed checkpoint inventory
+/// works independently of schedule profiles. For malformed counters recovery carries the marks already recorded.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
-    private const string ProductsRoot = "/app/data/archive/products";
-    private const string ProductsOutbox = "archive/products/outbox/artifact-outbox.db";
-    private const string ProductsProfile =
-        "{\"processingSteps\":[{\"type\":\"FileStorage\",\"options\":{\"storageRoot\":\"" + ProductsRoot + "\"}}]}";
+    private const string ProductsProfile = "{\"processingSteps\":[]}";
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -25,7 +18,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("null")]
     [DataRow("non-utf8")]
     [DataRow("malformed-json")]
-    public async Task UpgradeAsync_FailedCandidateThatRewroteAScheduleProfile_RecoversOntoItsSnapshotAndSaysWhatItCouldNotRead(string shape)
+    public async Task UpgradeAsync_FailedCandidateThatRewroteAScheduleProfile_RecoversOntoItsSnapshot(string shape)
     {
         using var fixture = await CanonicalProfileFixtureAsync();
         RewriteProfileOnFirstCandidateStart(fixture, shape);
@@ -39,7 +32,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.IsTrue(fixture.Runner.Running);
         AssertRecoveredOntoTheSnapshotsProfile(fixture.Paths, canonical: true);
-        AssertSaidItCouldNotReadTheProfile(error.ToString(), shape);
+        Assert.DoesNotContain("could not read the storage roots", error.ToString(), StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -90,7 +83,7 @@ public sealed partial class LifecycleContractTests
         }
 
         Assert.IsTrue(restoredJournalOnResume, "The recovery did not put the snapshot's journal back.");
-        AssertSaidItCouldNotReadTheProfile(error.ToString(), shape);
+        Assert.DoesNotContain("could not read the storage roots", error.ToString(), StringComparison.Ordinal);
         // The retry runs the candidate again on the restored stores, and this time it leaves the profile alone.
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
@@ -104,17 +97,17 @@ public sealed partial class LifecycleContractTests
     [DataRow("real-value")]
     [DataRow("out-of-range")]
     [DataRow("text-key")]
-    public async Task UpgradeAsync_FailedCandidateThatLeftACounterInAnotherShape_RecoversOntoItsSnapshotAndSaysWhatItCouldNotRead(string shape)
+    public async Task UpgradeAsync_FailedCandidateThatLeftACounterInAnotherShape_RecoversOntoItsSnapshot(string shape)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         fixture.Runner.OnComposeUp = image =>
         {
             if (image != CandidateImageId) return;
             ExecuteSql(RawIngressPath(fixture.Paths), RewriteControlStateSql(shape));
             // A store the candidate left readable is still carried.
-            AdvanceFleet(fixture.Paths, toNextSequence: 20);
+            AdvanceEnvironmentalJournal(fixture.Paths, recordId: 20);
         };
         using var error = new StringWriter();
 
@@ -128,7 +121,7 @@ public sealed partial class LifecycleContractTests
         // The snapshot's control state is back in its own shape, carried no further than the journal recorded it.
         Assert.AreEqual(3, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db",
             "SELECT version FROM capture_control_state WHERE state_key = 1 AND typeof(version) = 'integer';"));
-        Assert.AreEqual(20, ReadCounter(fixture.Paths, "raw/.fleet/fleet-status.db", "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
+        Assert.AreEqual(20, ReadCounter(fixture.Paths, EnvironmentStore, EnvironmentalSequence));
         StringAssert.Contains(error.ToString(), "could not read the counters of 'raw/journal/raw-ingress.db'", StringComparison.Ordinal);
         StringAssert.Contains(error.ToString(), shape switch
         {
@@ -171,42 +164,6 @@ public sealed partial class LifecycleContractTests
         StringAssert.Contains(error.ToString(), "a revision that is not well-formed JSON", StringComparison.Ordinal);
     }
 
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("long")]
-    [DataRow("control")]
-    public async Task UpgradeAsync_FailedCandidateThatNamedARootNoSnapshotCanRecord_RecoversOntoItsSnapshot(string shape)
-    {
-        using var fixture = await MigratingFixtureAsync();
-        SeedStores(fixture.Paths);
-        SeedProductsRevision(fixture.Paths);
-        var root = shape == "long" ? "/app/data/archive/" + new string('x', 600) : "/app/data/archive/a\\u0001b";
-        fixture.Runner.OnComposeUp = image =>
-        {
-            if (image == CandidateImageId)
-                ExecuteSql(RawIngressPath(fixture.Paths),
-                    "INSERT INTO capture_schedule_revisions VALUES('r-candidate', 2, CAST('{\"processingSteps\":[{\"options\":{\"storageRoot\":\"" +
-                    root + "\"}}]}' AS BLOB));");
-        };
-        using var error = new StringWriter();
-
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture), fixture.Runner, _ => new FakeLifecycleClient(),
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true },
-            fixture.Uid, fixture.Gid, CancellationToken.None, error: error));
-
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.IsTrue(fixture.Runner.Running);
-        Assert.AreEqual(0, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db",
-            "SELECT COUNT(*) FROM capture_schedule_revisions WHERE revision_id = 'r-candidate';"));
-        StringAssert.Contains(error.ToString(), "could not read the storage roots in the journal", StringComparison.Ordinal);
-        StringAssert.Contains(error.ToString(), "outbox location a snapshot cannot record", StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// The canonical schema-15 instance the interrupted-recovery tests use, with one schedule revision naming a storage
-    /// root the configuration does not, and an outbox under it.
-    /// </summary>
     private static async Task<LifecycleFixture> CanonicalProfileFixtureAsync()
     {
         var fixture = await LifecycleFixture.CreateAsync(
@@ -222,29 +179,14 @@ public sealed partial class LifecycleContractTests
             "INSERT INTO capture_schedule_revisions(revision_id, revision_number, profile_json, profile_sha256, schedule_sha256, source, actor, reason, created_unix_ms) " +
             $"VALUES('r1', 1, CAST('{ProductsProfile}' AS BLOB), '{new string('a', 64)}', '{new string('b', 64)}', 'api', 'owner', NULL, 0);");
         WriteIdentityLineage(fixture.Paths);
-        SeedProductsOutbox(fixture.Paths);
+        ExecuteSql(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore),
+            EnvironmentalFixtureSchema + "INSERT INTO environmental_observation_journal VALUES(1);");
         // An installed instance's Compose files are owner-only, as the installer writes them; restore-only checks that.
         foreach (var file in ComposeFileNames.Select(name => Path.Combine(fixture.Paths.ConfigRoot, "compose", name)))
             SafeFileSystem.WriteTextAtomic(file, await File.ReadAllTextAsync(file));
         return fixture;
     }
 
-    /// <summary>One schedule revision in the seeded journal's simplified schema, naming the products root.</summary>
-    private static void SeedProductsRevision(InstallationPaths paths)
-    {
-        ExecuteSql(RawIngressPath(paths), ScheduleRevisionsTable +
-            $"INSERT INTO capture_schedule_revisions VALUES('r1', 1, CAST('{ProductsProfile}' AS BLOB));");
-        SeedProductsOutbox(paths);
-    }
-
-    private static void SeedProductsOutbox(InstallationPaths paths)
-        => ExecuteSql(CameraAgentStateSnapshot.StorePath(paths.StateRoot, ProductsOutbox),
-            "CREATE TABLE outbox(id INTEGER PRIMARY KEY, artifact TEXT NOT NULL); INSERT INTO outbox(artifact) VALUES('before');");
-
-    /// <summary>
-    /// The candidate's first start migrates the profile's storage and writes to the products outbox; a later start, the
-    /// retry after a restore, leaves both alone.
-    /// </summary>
     private static void RewriteProfileOnFirstCandidateStart(LifecycleFixture fixture, string shape)
     {
         var candidateStarts = 0;
@@ -252,7 +194,7 @@ public sealed partial class LifecycleContractTests
         {
             if (image != CandidateImageId || candidateStarts++ > 0) return;
             ExecuteSql(RawIngressPath(fixture.Paths), RewriteProfileSql(shape));
-            ExecuteSql(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, ProductsOutbox), "INSERT INTO outbox(artifact) VALUES('candidate');");
+            AdvanceEnvironmentalJournal(fixture.Paths, recordId: 3);
         };
     }
 
@@ -292,26 +234,14 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
-    /// The journal's revision is the snapshot's again, byte for byte and in the snapshot's own table, and so is the
-    /// products outbox the candidate wrote to.
+    /// The journal has the snapshot's revision and the environmental journal carries the later record-ID floor.
     /// </summary>
     private static void AssertRecoveredOntoTheSnapshotsProfile(InstallationPaths paths, bool canonical)
     {
         Assert.AreEqual(1, ReadCounter(paths, "raw/journal/raw-ingress.db",
             $"SELECT COUNT(*) FROM capture_schedule_revisions WHERE typeof(profile_json) = 'blob' AND CAST(profile_json AS TEXT) = '{ProductsProfile}';"));
         if (canonical) Assert.IsTrue(ColumnExists(RawIngressPath(paths), "capture_schedule_revisions", "profile_sha256"));
-        Assert.AreEqual(0, ReadCounter(paths, ProductsOutbox, "SELECT COUNT(*) FROM outbox WHERE artifact = 'candidate';"));
-    }
-
-    private static void AssertSaidItCouldNotReadTheProfile(string error, string shape)
-    {
-        StringAssert.Contains(error, "could not read the storage roots in the journal", StringComparison.Ordinal);
-        StringAssert.Contains(error, shape switch
-        {
-            "text" => "stores its profile as text",
-            "null" => "stores its profile as null",
-            "non-utf8" => "profile is not valid UTF-8",
-            _ => "is not valid JSON"
-        }, StringComparison.Ordinal);
+        Assert.AreEqual(1, ReadCounter(paths, EnvironmentStore, "SELECT COUNT(*) FROM environmental_observation_journal;"));
+        Assert.AreEqual(3, ReadCounter(paths, EnvironmentStore, EnvironmentalSequence));
     }
 }

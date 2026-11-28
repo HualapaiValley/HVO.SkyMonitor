@@ -92,17 +92,8 @@ public sealed partial class LifecycleContractTests
     public async Task Diagnostic1476_SnapshotStoreIdentityIsEscaped(bool json, bool hostileStore)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        const string root = "/app/data/raw/quote\"root";
-        await File.WriteAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "camera-module.json"),
-            JsonSerializer.Serialize(new { storageRoot = root }));
-        var stores = CameraAgentStateInventory.Stores(fixture.Paths, fixture.Manifest.ReplayProfile);
-        var relative = stores.Single(static store => store.Contains("quote", StringComparison.Ordinal));
-        // Configured roots reject controls at admission; also exercise the snapshot boundary directly with a hostile filename.
-        if (hostileStore)
-        {
-            relative = $"raw/{HostileDiagnostic1476Name}/store.db";
-            stores = [relative];
-        }
+        var relative = hostileStore ? $"raw/{HostileDiagnostic1476Name}/store.db" : "raw/quote\"root/store.db";
+        string[] stores = [relative];
         var target = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         await File.WriteAllTextAsync(target, "not a SQLite database");
@@ -111,7 +102,7 @@ public sealed partial class LifecycleContractTests
         var message = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         Console.WriteLine(JsonSerializer.Serialize(message));
         AssertDiagnostic1476Safe(message);
-        Assert.IsFalse(message.Contains(relative, StringComparison.Ordinal), "The snapshot diagnostic echoed the unescaped configured store path.");
+        Assert.IsFalse(message.Contains(relative, StringComparison.Ordinal), "The snapshot diagnostic echoed the unescaped store path.");
         StringAssert.Contains(failure.Message, CameraAgentStateDiagnostics.Reason(relative), StringComparison.Ordinal);
     }
 

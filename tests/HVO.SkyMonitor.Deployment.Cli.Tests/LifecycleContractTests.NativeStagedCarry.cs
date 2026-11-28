@@ -19,11 +19,11 @@ public sealed partial class LifecycleContractTests
         byte[]? beforeCarry = null;
         CameraAgentStateCounters.CarryStep = step =>
         {
-            var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
-            if (step == $"apply:{FleetStore}")
-                beforeCarry = File.ReadAllBytes(Directory.GetFiles(Path.GetDirectoryName(live)!, ".fleet-status.db.restore-*.tmp").Single());
-            if (step != $"apply-commit:{FleetStore}") return;
-            var staged = Directory.GetFiles(Path.GetDirectoryName(live)!, ".fleet-status.db.restore-*.tmp").Single();
+            var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
+            if (step == $"apply:{AutomationStore}")
+                beforeCarry = File.ReadAllBytes(Directory.GetFiles(Path.GetDirectoryName(live)!, ".local-automations.db.restore-*.tmp").Single());
+            if (step != $"apply-commit:{AutomationStore}") return;
+            var staged = Directory.GetFiles(Path.GetDirectoryName(live)!, ".local-automations.db.restore-*.tmp").Single();
             Assert.IsNotNull(beforeCarry);
             CollectionAssert.AreNotEqual(beforeCarry, File.ReadAllBytes(staged), "SQLite did not spill dirty pages before the fault.");
             Assert.IsTrue(File.Exists(staged + "-journal"), "SQLite created no real rollback journal.");
@@ -51,8 +51,8 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(fixture.Runner.Running);
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
-        await AssertLiveFleetStoreIsTheSnapshotsAsync(fixture, journal.StateSnapshot!);
-        StringAssert.Contains(error.ToString(), $"could not carry the fleet-report-sequence counter of '{FleetStore}'", StringComparison.Ordinal);
+        await AssertLiveStoreMatchesSnapshotAsync(fixture, journal.StateSnapshot!, AutomationStore);
+        StringAssert.Contains(error.ToString(), $"could not carry the automation-definition-version counter of '{AutomationStore}'", StringComparison.Ordinal);
         Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db",
             $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
     }
@@ -68,11 +68,11 @@ public sealed partial class LifecycleContractTests
         NativeFileSizeLimit? fileSizeLimit = null;
         CameraAgentStateCounters.CarryStep = step =>
         {
-            if (step == $"apply-commit:{FleetStore}") fault.Arm("commit");
+            if (step == $"apply-commit:{AutomationStore}") fault.Arm("commit");
         };
         CameraAgentStateSnapshot.StepCompleted = step =>
         {
-            if (step == $"restore-recopy:{FleetStore}") fileSizeLimit = new NativeFileSizeLimit(limit);
+            if (step == $"restore-recopy:{AutomationStore}") fileSizeLimit = new NativeFileSizeLimit(limit);
         };
         using var error = new StringWriter();
         InstallerException failure;
@@ -91,8 +91,8 @@ public sealed partial class LifecycleContractTests
         }
         Assert.IsNotNull(fileSizeLimit, "The pure recopy fault was never armed.");
         Assert.IsGreaterThan(0, fault.WriteFailures);
-        var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
-        var partial = Directory.GetFiles(Path.GetDirectoryName(live)!, ".fleet-status.db.restore-*.tmp").Single();
+        var live = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
+        var partial = Directory.GetFiles(Path.GetDirectoryName(live)!, ".local-automations.db.restore-*.tmp").Single();
         Assert.AreEqual((long)limit, new FileInfo(partial).Length, "The copy did not write its first block before failing.");
         Assert.IsGreaterThan((long)limit, new FileInfo(live).Length);
         StringAssert.Contains(failure.Message, "file length was too large", StringComparison.OrdinalIgnoreCase);
@@ -112,7 +112,7 @@ public sealed partial class LifecycleContractTests
         CameraAgentStateSnapshot.StepCompleted = step =>
         {
             if (step == "restore-directories-synced")
-                carried = ReadCounter(fixture.Paths, FleetStore, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;");
+                carried = ReadCounter(fixture.Paths, AutomationStore, "SELECT version FROM automation_definitions WHERE definition_id = 'native-fault';");
         };
         try
         {
@@ -136,19 +136,22 @@ public sealed partial class LifecycleContractTests
     {
         var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
+        var automation = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
+        ExecuteSql(automation, FixtureDump(AutomationStore));
+        SaveDefinition(automation, "native-fault", 1);
         // Exceed SQLite's default page cache so rollback must restore pages through native pwrite.
-        ExecuteSql(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore), """
+        ExecuteSql(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore), """
             CREATE TABLE native_fault_pages (id INTEGER PRIMARY KEY, payload BLOB NOT NULL);
             WITH RECURSIVE rows(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 2048)
             INSERT INTO native_fault_pages SELECT id, zeroblob(4096) FROM rows;
-            CREATE TRIGGER native_fault_spill AFTER UPDATE OF next_sequence ON fleet_status_metadata
+            CREATE TRIGGER native_fault_spill AFTER UPDATE OF version ON automation_definitions
             BEGIN UPDATE native_fault_pages SET payload = randomblob(4096); END;
             """);
         fixture.Runner.OnComposeUp = image =>
         {
             if (image != CandidateImageId) return;
-            AdvanceFleet(fixture.Paths, toNextSequence: 20);
+            SaveDefinition(automation, "native-fault", 19);
             ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE raw_capture_sequences SET last_sequence = 9 WHERE agent_id = '{AgentId}';");
         };
         return fixture;

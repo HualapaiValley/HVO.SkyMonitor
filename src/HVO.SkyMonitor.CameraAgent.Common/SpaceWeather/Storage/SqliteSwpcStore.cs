@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 
 public sealed partial class SqliteSwpcStore : ISwpcStore
 {
+    private const int ApplicationId = 0x48565357;
     internal const int SchemaVersion = 1;
     internal const long RawBodyLimit = 256L * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
@@ -103,6 +104,8 @@ public sealed partial class SqliteSwpcStore : ISwpcStore
             await SqliteConnectionConfigurationGate.OpenAndConfigureAsync(db, (connection, _) =>
             {
                 Exec(connection, null, "PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
+                if (!_initialized)
+                    SqliteSchemaBaseline.CheckBeforeWrite(connection, "Space weather", SchemaVersion, ApplicationId);
                 if (!string.Equals(Scalar(connection, null, "PRAGMA journal_mode=WAL;") as string, "wal", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Space-weather storage could not enable WAL.");
                 return ValueTask.CompletedTask;

@@ -334,7 +334,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
     }
 
     [TestMethod]
-    public async Task SchemaTwoUpgradePreservesSiloVersionsLineagePointersAndImmutability()
+    public async Task BaselineRestartPreservesSiloVersionsLineagePointersAndImmutability()
     {
         _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
         NightlyProductDetail before;
@@ -346,23 +346,6 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
             before = (await harness.Store.GetAsync(id, CancellationToken.None))!;
         }
         var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);
-        var source = database + ".source";
-        File.Move(database, source);
-        using (var connection = new SqliteConnection("Data Source=" + database))
-        {
-            await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandText = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "nightly-products-schema-v2.sql"));
-            await command.ExecuteNonQueryAsync();
-            command.CommandText = "ATTACH DATABASE $source AS original;";
-            command.Parameters.AddWithValue("$source", source);
-            await command.ExecuteNonQueryAsync();
-            foreach (var table in new[] { "nightly_products", "nightly_product_sources", "nightly_windows", "nightly_window_products" })
-            {
-                command.CommandText = $"INSERT INTO {table} SELECT * FROM original.{table};";
-                await command.ExecuteNonQueryAsync();
-            }
-        }
         using var silo = new NightlySiloFixture(_root);
         var objects = silo.Objects;
         var versions = objects.Keys("p/").ToDictionary(key => key, key => objects.VersionsOf(key).ToArray(), StringComparer.Ordinal);
@@ -383,7 +366,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
         await verify.OpenAsync();
         using var check = verify.CreateCommand();
         check.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(3L, await check.ExecuteScalarAsync());
+        Assert.AreEqual(1L, await check.ExecuteScalarAsync());
         check.CommandText = "SELECT COUNT(*) FROM pragma_foreign_key_check;";
         Assert.AreEqual(0L, await check.ExecuteScalarAsync());
         check.CommandText = "DELETE FROM nightly_products;";
@@ -391,7 +374,7 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
     }
 
     [TestMethod]
-    public async Task InvalidSchemaTwoReferencesRollBackTheEntireConversion()
+    public async Task SchemaTwoIsRefusedWithoutChangingItsReferences()
     {
         Directory.CreateDirectory(Path.Combine(_root, SqliteNightlyProductStore.DirectoryName));
         var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);

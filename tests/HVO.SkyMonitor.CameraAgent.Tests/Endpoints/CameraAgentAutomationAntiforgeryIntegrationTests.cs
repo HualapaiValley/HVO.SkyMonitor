@@ -19,7 +19,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -134,9 +133,8 @@ public sealed class CameraAgentAutomationAntiforgeryIntegrationTests
             builder.Services.AddDbContext<ApplicationDbContext>(options =>
             {
                 options.UseSqlite($"Data Source={Path.Combine(root, "identity.db")}");
-                options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
             });
-            builder.Services.AddIdentityCore<ApplicationUser>().AddEntityFrameworkStores<ApplicationDbContext>()
+            builder.Services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3).AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>().AddSignInManager();
             builder.Services.AddAuthentication(options => options.DefaultScheme = IdentityConstants.ApplicationScheme).AddIdentityCookies();
             builder.Services.ConfigureApplicationCookie(options => Program.ConfigureApplicationCookie(options));

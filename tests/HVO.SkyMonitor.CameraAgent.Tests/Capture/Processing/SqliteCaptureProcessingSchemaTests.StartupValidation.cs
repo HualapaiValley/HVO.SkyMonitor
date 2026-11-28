@@ -22,7 +22,6 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     private static readonly string[] RestartScanOnly = ["restart"];
     private static readonly string[] RestartValidationOrder = ["restart/writable-open", "restart", "restart/foreign-keys"];
     private static readonly string[] InspectionAndWriteScans = ["inspection", "schema"];
-    private static readonly string[] RestartAndAdoptionScans = ["restart", "schema"];
 
     [TestMethod]
     public async Task FreshDatabaseScansBeforeAndAfterCreatingProcessingSchema()
@@ -63,7 +62,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using (var writer = await fixture.OpenAsync().ConfigureAwait(false))
         {
             RetainWalOnClose(writer);
-            await ExecuteTestSqlAsync(writer, "PRAGMA application_id = 2005;", TestContext.CancellationToken).ConfigureAwait(false);
+            await ExecuteTestSqlAsync(writer, "UPDATE processing_nodes SET reason = 'retained-wal' WHERE node_id = 'schema-test';", TestContext.CancellationToken).ConfigureAwait(false);
         }
         var filesBeforeRestart = ReadDatabaseFiles(fixture.DatabasePath);
         using (var restarted = new SqliteCaptureProcessingStore(fixture.Options))
@@ -76,57 +75,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         Assert.IsFalse(File.Exists(fixture.DatabasePath + "-wal"), "The last close must checkpoint the retained WAL.");
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(2005L, await ScalarAsync(verify, "PRAGMA application_id;").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    public async Task EarlierCenteredSchemaAdoptionScansAgainInsideItsTransaction()
-    {
-        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
-        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = DropCenteredRegistrationStateSql + "\nDROP INDEX ix_processing_outputs_astrometry_lookup;";
-            await command.ExecuteNonQueryAsync(TestContext.CancellationToken).ConfigureAwait(false);
-        }
-        var recorder = new ValidationRecorder();
-
-        using (var restarted = new SqliteCaptureProcessingStore(fixture.Options, faultInjector: recorder))
-        {
-            await restarted.InitializeAsync(TestContext.CancellationToken).ConfigureAwait(false);
-        }
-
-        // The restart scan precedes the adoption's first write; the adoption scan sits inside its transaction.
-        CollectionAssert.AreEqual(RestartAndAdoptionScans, recorder.Scopes.ToArray());
-        recorder.AssertWriteScanInsideTransaction();
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
         Assert.AreEqual(1L, await ScalarAsync(verify,
-            "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'ix_processing_outputs_astrometry_lookup';").ConfigureAwait(false));
-    }
-
-    [TestMethod]
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Executes the fixed legacy schema 9 test constant.")]
-    public async Task Schema9MigrationScansBeforeWritingAndInsideItsTransaction()
-    {
-        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
-        using (var connection = await fixture.OpenAsync().ConfigureAwait(false))
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = SqliteCaptureProcessingStore.LegacySchema9SqlForTests;
-            await command.ExecuteNonQueryAsync(TestContext.CancellationToken).ConfigureAwait(false);
-        }
-        var recorder = new ValidationRecorder();
-
-        using (var migrated = new SqliteCaptureProcessingStore(fixture.Options, faultInjector: recorder))
-        {
-            await migrated.InitializeAsync(TestContext.CancellationToken).ConfigureAwait(false);
-        }
-
-        CollectionAssert.AreEqual(InspectionAndWriteScans, recorder.Scopes.ToArray());
-        recorder.AssertWriteScanInsideTransaction();
-        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify,
-            "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
+            "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'schema-test' AND reason = 'retained-wal';").ConfigureAwait(false));
     }
 
     [TestMethod]

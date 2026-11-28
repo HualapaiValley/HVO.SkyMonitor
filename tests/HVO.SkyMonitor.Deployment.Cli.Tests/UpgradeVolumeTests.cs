@@ -57,7 +57,7 @@ public sealed class UpgradeVolumeTests
             installedImage: static image => image with
             {
                 StateContract = "cameraagent-silo-state-v1",
-                IdentityMigration = "20260827053715_InitialIdentity",
+                IdentityMigration = "20261128144428_InitialIdentity",
                 RawIngressSchema = "12",
                 CatalogManifestVersion = "2",
             });
@@ -184,7 +184,7 @@ public sealed class UpgradeVolumeTests
     {
         Execute(CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot),
             "CREATE TABLE __EFMigrationsHistory(MigrationId TEXT PRIMARY KEY, ProductVersion TEXT NOT NULL);" +
-            "INSERT INTO __EFMigrationsHistory VALUES('20260827053715_InitialIdentity', '10.0.0');");
+            "INSERT INTO __EFMigrationsHistory VALUES('20261128144428_InitialIdentity', '10.0.0');");
         // A raw journal of a realistic size: two hundred thousand capture rows.
         Execute(CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot),
             "PRAGMA journal_mode=WAL; CREATE TABLE captures(id INTEGER PRIMARY KEY, path TEXT NOT NULL, sha256 TEXT NOT NULL);" +

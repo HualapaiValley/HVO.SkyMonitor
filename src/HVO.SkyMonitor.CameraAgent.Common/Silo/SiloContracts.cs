@@ -194,9 +194,9 @@ internal abstract class SiloDataException(string message, Exception? inner = nul
 [SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Internal Silo exception; every instance carries the evidence its handlers need.")]
 internal sealed class SiloFormatRefusedException : SiloDataException
 {
-    public SiloFormatRefusedException(string subject, string? found, string supported)
+    public SiloFormatRefusedException(string subject, string? found, string supported, bool sqlite = false)
         : base(string.Create(CultureInfo.InvariantCulture,
-            $"{subject} has format '{found ?? "(none)"}', which this CameraAgent does not support (supported: '{supported}'). It was refused read-only and left unchanged."))
+            $"{subject} has format '{found ?? "(none)"}', which this CameraAgent does not support (supported: '{supported}'){(sqlite ? "; fresh install required" : string.Empty)}. It was refused read-only and left unchanged."))
     {
         Subject = subject;
         Found = found;

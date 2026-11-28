@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Sqlite;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
 
@@ -26,17 +27,13 @@ public sealed partial class SqliteSwpcStore
     private static void VerifySchema(SqliteConnection db)
     {
         using var tx = db.BeginTransaction(deferred: false);
-        var version = Convert.ToInt64(Scalar(db, tx, "PRAGMA user_version;"), CultureInfo.InvariantCulture);
-        if (version == 0)
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(db, tx, "Space weather", SchemaVersion, ApplicationId))
         {
-            if (Convert.ToInt64(Scalar(db, tx, "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*';"), CultureInfo.InvariantCulture) != 0)
-                throw new InvalidDataException("Space-weather storage contains an unversioned schema.");
             Exec(db, tx, Schema);
             Exec(db, tx, "INSERT INTO swpc_meta(id,revision,ingest_sequence) VALUES(1,0,0);");
             foreach (var p in Enum.GetValues<SwpcProduct>()) Exec(db, tx, "INSERT INTO swpc_products(product,checkpoint) VALUES($p,$c);", ("$p", (int)p), ("$c", Json(EmptyCheckpoint)));
-            Exec(db, tx, "PRAGMA user_version=1;");
+            Exec(db, tx, SqliteSchemaBaseline.Stamp(SchemaVersion, ApplicationId));
         }
-        else if (version != SchemaVersion) throw new InvalidDataException("Unsupported space-weather schema version; upgrade forward with a compatible binary.");
         using var canonical = new SqliteConnection("Data Source=:memory:"); canonical.Open(); Exec(canonical, null, Schema);
         var expected = Definitions(canonical, null); var actual = Definitions(db, tx);
         if (expected.Count != actual.Count || expected.Any(pair => !actual.TryGetValue(pair.Key, out var sql) || sql != pair.Value))

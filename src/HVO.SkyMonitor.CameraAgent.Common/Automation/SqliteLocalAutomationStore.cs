@@ -267,6 +267,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     /// operator read that arrives before the runner's hosted start still sees a valid store rather
     /// than a missing-table failure.
     /// </summary>
+    private const int ApplicationId = 0x48564155; // HVAU
+
     private async ValueTask EnsureSchemaAsync(
         SqliteConnection connection,
         bool settleInterruptedRuns,
@@ -283,50 +285,14 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 .Select(item => item.Request.AutomationRunKey).OfType<string>().Distinct(StringComparer.Ordinal).ToArray()
             : [];
         using var transaction = BeginImmediate(connection);
-        var version = await ReadUserVersionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        if (version > LocalAutomationContract.CurrentSchemaVersion)
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Local automation",
+                LocalAutomationContract.CurrentSchemaVersion, ApplicationId))
         {
-            throw new InvalidDataException(
-                $"Local automation schema {version} is newer than supported schema "
-                + $"{LocalAutomationContract.CurrentSchemaVersion}.");
-        }
-        if (version == 0)
-        {
-            var objectCount = await ScalarLongAsync(
-                connection,
-                transaction,
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
-                cancellationToken).ConfigureAwait(false);
-            if (objectCount != 0)
-            {
-                throw new InvalidDataException(
-                    "Local automation storage exists without a schema version; archive the database "
-                    + "before starting this CameraAgent.");
-            }
             await ExecuteAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(
-                connection,
-                transaction,
-                $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};",
-                cancellationToken).ConfigureAwait(false);
-        }
-        else if (version == 3)
-        {
-            // Only the known predecessor is a supported forward input. Do not bless a drifted store.
-            var predecessorObjects = await ScalarLongAsync(connection, transaction,
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false);
-            if (predecessorObjects != 8)
-                throw new InvalidDataException("Local automation SQLite schema is incomplete or drifted.");
-            await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
-                $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
-        }
-        else if (version != LocalAutomationContract.CurrentSchemaVersion)
-        {
-            throw new InvalidDataException(
-                $"Local automation schema {version} is unsupported; archive the database and complete an "
-                + "explicit state-disposition procedure before starting this CameraAgent.");
+                Sqlite.SqliteSchemaBaseline.Stamp(LocalAutomationContract.CurrentSchemaVersion, ApplicationId),
+                cancellationToken).ConfigureAwait(false);
         }
         var schemaObjects = await ScalarLongAsync(
             connection,
@@ -1686,6 +1652,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             command.CommandText = "PRAGMA foreign_keys = ON;";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            if (!_schemaReady)
+                Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(configuredConnection, "Local automation", LocalAutomationContract.CurrentSchemaVersion, ApplicationId);
             command.CommandText = "PRAGMA journal_mode = WAL;";
             // The PRAGMA reports the mode actually in force; a silent fallback to rollback journaling
             // would lose the atomicity this contract depends on, so it is asserted rather than assumed.
@@ -1842,13 +1810,6 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
-
-    private static async ValueTask<long> ReadUserVersionAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-        => await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken)
-            .ConfigureAwait(false);
 
     private static readonly Action<ILogger, int, Exception?> RunsSettled =
         LoggerMessage.Define<int>(

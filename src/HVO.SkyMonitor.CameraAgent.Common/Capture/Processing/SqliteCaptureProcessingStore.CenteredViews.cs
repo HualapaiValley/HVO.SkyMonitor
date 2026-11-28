@@ -415,88 +415,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         return productCandidate ?? CenteredAuthoritativeAssociationResolution.None;
     }
 
-    private static async ValueTask AddCenteredViewSchemaAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql + "\n" + BackfillPendingWindowWorkSql;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async ValueTask AddCenteredViewRuntimeSchemaAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = CenteredViewRuntimeSchemaSql + "\n" + CenteredViewRetentionSchema.IndexSql + "\n" + BackfillPendingWindowWorkSql;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async ValueTask UpgradeUnstartedWindowCheckpointAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken token)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = "SELECT EXISTS(SELECT 1 FROM processing_centered_windows);";
-        if (await command.ExecuteScalarAsync(token).ConfigureAwait(false) is not 0L)
-            throw new InvalidOperationException("The pre-runtime centered window checkpoint contains work without an admitted slot calendar. Preserve the database for explicit state disposition.");
-        // Schema 11 never assigned these attempts to calendar slots. The next
-        // acquisition starts at ordinal one in a new run; old evidence remains addressable.
-        command.CommandText = """
-            UPDATE centered_exposure_attempts
-            SET status = 'expired', reason = 'schema-11.missing-slot-calendar'
-            WHERE status IN ('pending', 'dispatched') AND run_id IN (
-                SELECT run_id FROM centered_exposure_runs WHERE closed_reason IS NULL);
-            UPDATE centered_exposure_runs SET closed_reason = 'schema-11.missing-slot-calendar'
-            WHERE closed_reason IS NULL;
-            DROP TABLE processing_centered_windows;
-            """;
-        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-        await AddCenteredWindowSchemaAsync(connection, transaction, token).ConfigureAwait(false);
-    }
-
-    private const string LegacyCenteredWindowCheckpointSchemaSql = """
-        CREATE TABLE processing_centered_windows(
-            window_sha256 TEXT PRIMARY KEY CHECK(length(window_sha256) = 64),
-            deadline_utc_ticks INTEGER NOT NULL,
-            checkpoint_json BLOB NOT NULL,
-            reference_capture_id TEXT CHECK(reference_capture_id IS NULL OR length(reference_capture_id) = 32),
-            closure_json BLOB,
-            publication_json BLOB,
-            terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
-            CHECK(terminal = 0 OR closure_json IS NOT NULL),
-            CHECK(reference_capture_id IS NULL OR closure_json IS NOT NULL),
-            CHECK(publication_json IS NULL OR (closure_json IS NOT NULL AND terminal = 1))
-        ) STRICT;
-        CREATE INDEX ix_processing_centered_windows_pending
-            ON processing_centered_windows(deadline_utc_ticks, window_sha256)
-            WHERE terminal = 0;
-        CREATE UNIQUE INDEX ix_processing_centered_windows_reference
-            ON processing_centered_windows(reference_capture_id) WHERE reference_capture_id IS NOT NULL;
-        """;
-
-    private const string BackfillPendingWindowWorkSql = """
-        INSERT OR IGNORE INTO processing_centered_view_window_work(window_sha256, retry_utc)
-        SELECT window.window_sha256, 0
-        FROM processing_centered_windows window
-        LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
-        WHERE window.terminal = 1 AND window.closure_json IS NOT NULL AND window.reference_capture_id IS NOT NULL
-            AND work.window_sha256 IS NULL;
-        """;
-
-    private const string LegacyCenteredViewWindowWorkSchemaSql = """
-        CREATE TABLE processing_centered_view_window_work (
-            window_sha256 TEXT PRIMARY KEY NOT NULL REFERENCES processing_centered_windows(window_sha256),
-            live_base_id TEXT REFERENCES processing_centered_view_bases(base_id),
-            retry_utc INTEGER,
-            terminal_reason TEXT,
-            CHECK(retry_utc IS NULL OR terminal_reason IS NULL)
-        ) STRICT;
-        CREATE INDEX ix_processing_centered_view_window_live_base
-            ON processing_centered_view_window_work(live_base_id) WHERE live_base_id IS NOT NULL;
-        """;
-
     private const string CenteredViewWindowWorkSchemaSql = """
         CREATE TABLE processing_centered_view_window_work (
             window_sha256 TEXT PRIMARY KEY NOT NULL REFERENCES processing_centered_windows(window_sha256),
@@ -550,9 +468,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         CREATE INDEX ix_processing_centered_view_trail_capture
             ON processing_centered_view_trail_work(capture_id, revision);
         """;
-
-    private const string LegacyCenteredViewRuntimeSchemaSql =
-        CenteredViewRuntimePrefixSql + "\n" + LegacyCenteredViewWindowWorkSchemaSql + "\n" + CenteredViewRuntimeSuffixSql;
 
     private const string CenteredViewRuntimeSchemaSql =
         CenteredViewRuntimePrefixSql + "\n" + CenteredViewWindowWorkSchemaSql + "\n" + CenteredViewRuntimeSuffixSql;

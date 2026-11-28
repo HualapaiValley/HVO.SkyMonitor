@@ -20,7 +20,7 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         const string key = "agent'\n\u001b[31m\\\"";
         using (var connection = new SqliteConnection($"Data Source={RawIngressPath(fixture.Paths)};Pooling=False"))
         {
@@ -99,21 +99,23 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
-        var target = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
+        var target = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
+        ExecuteSql(target, FixtureDump(AutomationStore));
+        SaveDefinition(target, "journal-budget", 1);
         ExecuteSql(target,
             "CREATE TABLE padding(value BLOB);" +
             "WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n < 40960) INSERT INTO padding SELECT zeroblob(8192) FROM rows;" +
-            "CREATE TRIGGER rewrite_pages AFTER UPDATE ON fleet_status_metadata BEGIN UPDATE padding SET value = randomblob(8192); END;");
+            "CREATE TRIGGER rewrite_pages AFTER UPDATE ON automation_definitions BEGIN UPDATE padding SET value = randomblob(8192); END;");
         var bytes = new FileInfo(target).Length;
         Assert.IsTrue(bytes > 256L * 1024 * 1024);
         var floors = CameraAgentStateCounters.ReadReadable(fixture.Paths.StateRoot).Floors
-            .Where(static floor => floor.Store == FleetStore).Select(static floor => floor with { Value = 20 }).ToArray();
+            .Where(static floor => floor.Store == AutomationStore).Select(static floor => floor with { Value = 20 }).ToArray();
         var trial = Path.Combine(fixture.Root, "large-trial");
         long journalBytes = 0;
         CameraAgentStateCounters.CarryStep = current =>
         {
-            if (current == $"trial-verify:{FleetStore}") journalBytes = new FileInfo(Path.Combine(trial, "store.db-journal")).Length;
+            if (current == $"trial-verify:{AutomationStore}") journalBytes = new FileInfo(Path.Combine(trial, "store.db-journal")).Length;
         };
         try
         {
@@ -129,7 +131,7 @@ public sealed partial class LifecycleContractTests
             {
                 CameraAgentStateCounters.TrialHost = new FakeHostEnvironment { Fallback = new(fixture.Root, "test", available) };
                 var started = false;
-                CameraAgentStateCounters.CarryStep = current => { if (current == $"trial:{FleetStore}") started = true; };
+                CameraAgentStateCounters.CarryStep = current => { if (current == $"trial:{AutomationStore}") started = true; };
                 var refused = CameraAgentStateCounters.PlanCarry(floors, _ => target, trial);
                 Assert.IsEmpty(refused.Floors, "A trial consumed the space needed for its journal and the restore.");
                 Assert.IsFalse(started, "The trial started before checking its space.");

@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
 /// Temporarily replaces the Unix VFS syscall pointers in the SQLite library used by Microsoft.Data.Sqlite.
-/// Only a fleet store staged below this fixture is faulted. Tests using this process-wide hook must not run in parallel.
+/// Only a automation store staged below this fixture is faulted. Tests using this process-wide hook must not run in parallel.
 /// SQLite's published version-3 VFS ABI defines xSetSystemCall and xGetSystemCall after its first 13 method pointers:
 /// https://www.sqlite.org/c3ref/vfs.html.
 /// </summary>
@@ -91,7 +91,7 @@ internal sealed class NativeSqliteIoFault : IDisposable
     {
         var path = new FileInfo($"/proc/self/fd/{descriptor}").LinkTarget;
         return path is not null && path.StartsWith(_directory, StringComparison.Ordinal) &&
-               Path.GetFileName(path).StartsWith(".fleet-status.db.restore-", StringComparison.Ordinal) &&
+               Path.GetFileName(path).StartsWith(".local-automations.db.restore-", StringComparison.Ordinal) &&
                path.EndsWith(".tmp", StringComparison.Ordinal);
     }
 

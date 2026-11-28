@@ -370,11 +370,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.BayerRggb16, false, false)]
     [DataRow(CameraPixelFormat.Mono16, false, true)]
     [DataRow(CameraPixelFormat.Mono16, true, true)]
-    [DataRow(CameraPixelFormat.Mono16, false, false, true)]
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
-        Justification = "The historical fixture selects between constant schema statements.")]
     public async Task CenteredViewPublishesTheAcquiredSingleThenTheFrozenRegisteredStack(CameraPixelFormat format,
-        bool wideField, bool detectLateTrail, bool hasTrustedCutoff = false)
+        bool wideField, bool detectLateTrail)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-publication-live");
         var token = CancellationToken.None;
@@ -390,7 +387,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             ? CenteredStackDisposition.SingleExposure : CenteredStackDisposition.Registered;
         var expectStack = expectedDisposition == CenteredStackDisposition.Registered;
         var expectTrailMembership = detectLateTrail && wideField;
-        var upgradePreviousPublisher = expectStack && !detectLateTrail;
+        var verifySavedSelection = expectStack && !detectLateTrail;
         var recoverUnpublishedStack = format == CameraPixelFormat.Mono16 && !detectLateTrail;
         CenteredViewSavedSelection? saved = null;
         CenteredWindowDisposition? unpublished = null;
@@ -540,7 +537,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     if (index == 5)
                         issued104 = live;
                 }
-                if (upgradePreviousPublisher)
+                if (verifySavedSelection)
                 {
                     Assert.IsNotNull(issued103);
                     var visibleLayers = issued103.View.Revision.Manifest.Layers;
@@ -552,20 +549,6 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
             }
 
-            if (upgradePreviousPublisher)
-            {
-                using var prior = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-                await prior.OpenAsync(token).ConfigureAwait(false);
-                using var command = prior.CreateCommand();
-                // Retain real windows and views under all three pre-index schema-12 layouts.
-                command.CommandText = SqliteCaptureProcessingSchemaTests.DropCenteredRegistrationStateSql +
-                    "\nDROP INDEX ix_processing_outputs_astrometry_lookup;\n" +
-                    (hasTrustedCutoff ? string.Empty : format == CameraPixelFormat.Mono16
-                        ? "DROP TABLE processing_centered_output_availability;"
-                        : "DROP INDEX ix_processing_centered_output_availability_cutoff;\n" +
-                          SqliteCaptureProcessingStore.LegacyCenteredAvailabilityCutoffIndexForTests);
-                await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
-            }
             using var reopened = CenteredRuntimeProvider(root, clock, detectTransients: detectLateTrail);
             if (detectLateTrail)
                 profile = await PersistCenteredTrailLocationAsync(reopened, profile, token).ConfigureAwait(false);

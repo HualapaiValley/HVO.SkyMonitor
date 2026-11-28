@@ -35,6 +35,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         RequireCapacityAsync(options.Value.TimeLapses.Encoder.MaximumScratchBytes,
             options.Value.TimeLapses.Encoder.MaximumOutputBytes, token);
 
+    private const int SchemaVersion = 1;
+    private const int ApplicationId = 0x4856544C;
+
     internal async ValueTask RequireCapacityAsync(long scratchBytes, long publicationBytes, CancellationToken token)
     {
         await InitializeAsync(token).ConfigureAwait(false);
@@ -59,15 +62,8 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             if (_initialized) return;
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             using var transaction = Begin(connection);
-            var version = Convert.ToInt32(await ScalarAsync(connection, transaction, "PRAGMA user_version;", token).ConfigureAwait(false), CultureInfo.InvariantCulture);
-            if (version == 0)
-            {
-                if (Convert.ToInt32(await ScalarAsync(connection, transaction,
-                    "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", token).ConfigureAwait(false), CultureInfo.InvariantCulture) != 0)
-                    throw new InvalidDataException("Unversioned time-lapse storage cannot be adopted.");
+            if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Time-lapse", SchemaVersion, ApplicationId))
                 await ExecuteAsync(connection, transaction, Schema, token).ConfigureAwait(false);
-            }
-            else if (version != 1) throw new InvalidDataException("Unsupported time-lapse storage schema.");
             if (Convert.ToInt32(await ScalarAsync(connection, transaction,
                     "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", token).ConfigureAwait(false), CultureInfo.InvariantCulture) != 12 ||
                 (string?)await ScalarAsync(connection, transaction, "PRAGMA integrity_check;", token).ConfigureAwait(false) != "ok")
@@ -427,6 +423,8 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         {
             await ExecuteAsync(configured, null, "PRAGMA synchronous=FULL;", cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(configured, null, "PRAGMA foreign_keys=ON;", cancellationToken).ConfigureAwait(false);
+            if (!_initialized)
+                Sqlite.SqliteSchemaBaseline.CheckBeforeWrite(configured, "Time-lapse", SchemaVersion, ApplicationId);
             if (!string.Equals((string?)await ScalarAsync(configured, null, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false), "wal", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Time-lapse storage requires WAL.");
         }, token).ConfigureAwait(false);
@@ -533,7 +531,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
         return await command.ExecuteScalarAsync(token).ConfigureAwait(false);
     }
 
-    private const string Schema = """
+    private static readonly string Schema = """
         CREATE TABLE jobs(
             job_id TEXT PRIMARY KEY, occurrence_json TEXT NOT NULL, window_json TEXT NOT NULL, parent_job_id TEXT,
             preset_json TEXT NOT NULL, report_date TEXT NOT NULL, state TEXT NOT NULL
@@ -564,6 +562,5 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
           OR (OLD.plan_json IS NOT NULL AND (OLD.plan_json IS NOT NEW.plan_json OR OLD.plan_sha256 IS NOT NEW.plan_sha256))
           OR (OLD.exclusions_json IS NOT NULL AND (OLD.exclusions_json IS NOT NEW.exclusions_json OR OLD.exclusions_sha256 IS NOT NEW.exclusions_sha256))
         BEGIN SELECT RAISE(ABORT,'Retained video inputs are immutable.'); END;
-        PRAGMA user_version=1;
-        """;
+        """ + Sqlite.SqliteSchemaBaseline.Stamp(SchemaVersion, ApplicationId);
 }

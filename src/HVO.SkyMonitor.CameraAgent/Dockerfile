@@ -143,15 +143,15 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-contract="cameraagent-silo-state-v1" \
-      io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
-      io.hvo.skymonitor.raw-ingress-schema="17" \
+      io.hvo.skymonitor.identity-migration="20261128144428_InitialIdentity" \
+      io.hvo.skymonitor.raw-ingress-schema="1" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v4" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       io.hvo.skymonitor.first-boot-contract="cameraagent-first-boot-pause-v1" \
-      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"siloPublication\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"siloCatalog\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalObservations\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"siloPublication\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"siloCatalog\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalObservations\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"localAutomations\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"siloArchive\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"retainedIntegrity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"retainedValidation\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
       org.opencontainers.image.created="${HVO_CREATED}"

@@ -239,10 +239,11 @@ public sealed partial class LifecycleContractTests
     public async Task RestoreAsync_InterruptedBetweenTheFilesOfACarriedStore_ResumesTheWholeStore()
     {
         using var fixture = await BackupFixtureAsync();
+        var environment = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore);
+        File.Delete(environment);
         var backup = await BackupAsync(fixture, new FakeLifecycleClient());
-        var fleet = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
-        SeedWalStore(fleet);
-        var unit = new[] { string.Empty }.Concat(CameraAgentStateLayout.SqliteSidecarSuffixes).Where(suffix => File.Exists(fleet + suffix)).ToArray();
+        SeedWalStore(environment);
+        var unit = new[] { string.Empty }.Concat(CameraAgentStateLayout.SqliteSidecarSuffixes).Where(suffix => File.Exists(environment + suffix)).ToArray();
         CollectionAssert.Contains(unit, "-wal", "the store under test has no WAL");
         await UninstallAsync(fixture);
         var images = new List<CrashImage>();
@@ -258,9 +259,9 @@ public sealed partial class LifecycleContractTests
             ResetBackupCrashHooks();
         }
         Assert.AreEqual("completed", first.Outcome);
-        var carried = images.Single(static image => image.Step == $"restore-carried:{FleetStore}");
-        var previousFleet = CameraAgentStateSnapshot.StorePath(
-            Path.Combine(fixture.Paths.InstanceRoot, BackupInventory.RestoreFolderName, first.OperationId!.Value.ToString("D"), "previous", "state"), FleetStore);
+        var carried = images.Single(static image => image.Step == $"restore-carried:{EnvironmentStore}");
+        var previousEnvironment = CameraAgentStateSnapshot.StorePath(
+            Path.Combine(fixture.Paths.InstanceRoot, BackupInventory.RestoreFolderName, first.OperationId!.Value.ToString("D"), "previous", "state"), EnvironmentStore);
 
         var violations = new List<string>();
         // Every way an interruption can split the unit: some of its files moved, the rest still kept aside.
@@ -268,7 +269,7 @@ public sealed partial class LifecycleContractTests
         {
             var moved = unit.Where((_, index) => (mask & (1 << index)) != 0).ToArray();
             RestoreCrashImage(fixture, carried);
-            foreach (var suffix in unit.Except(moved)) File.Move(fleet + suffix, previousFleet + suffix);
+            foreach (var suffix in unit.Except(moved)) File.Move(environment + suffix, previousEnvironment + suffix);
             var name = $"moved [{string.Join(",", moved.Select(static suffix => suffix.Length == 0 ? "db" : suffix))}]";
             try
             {
@@ -281,9 +282,9 @@ public sealed partial class LifecycleContractTests
             }
             foreach (var suffix in unit.Where(suffix => suffix != "-shm"))
             {
-                if (!File.Exists(fleet + suffix)) violations.Add($"{name}: '{FleetStore}{suffix}' was not carried");
+                if (!File.Exists(environment + suffix)) violations.Add($"{name}: '{EnvironmentStore}{suffix}' was not carried");
             }
-            if (ReadWalStore(fleet) != 60) violations.Add($"{name}: the store lost the transaction its WAL held");
+            if (ReadWalStore(environment) != 60) violations.Add($"{name}: the store lost the transaction its WAL held");
         }
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
@@ -317,7 +318,7 @@ public sealed partial class LifecycleContractTests
         // A rename and its sync are one step apart: the image after an entry's swap, or after a rename before its sync.
         var swapping = images.Where(static image => image.Step.StartsWith("restore-swapped:", StringComparison.Ordinal) ||
                                                     image.Step.StartsWith("restore-renamed:", StringComparison.Ordinal) &&
-                                                    !image.Step.Contains("/.fleet/", StringComparison.Ordinal)).ToArray();
+                                                    !image.Step.Contains("/.environment/", StringComparison.Ordinal)).ToArray();
         Assert.IsNotEmpty(swapping);
 
         var violations = new List<string>();
@@ -548,7 +549,7 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
-    /// A fleet-status store in WAL mode whose last transaction, which takes its counter to 60, is only in its WAL: the
+    /// An environmental observation journal in WAL mode whose last transaction, which takes its counter to 60, is only in its WAL: the
     /// files are copied while the connection that wrote them is still open, so nothing has checkpointed it.
     /// </summary>
     private static void SeedWalStore(string path)
@@ -566,11 +567,11 @@ public sealed partial class LifecycleContractTests
 #pragma warning restore CA2100
                 command.ExecuteNonQuery();
             }
-            Run("CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, next_sequence INTEGER NOT NULL, schema_version INTEGER NOT NULL);" +
-                "INSERT INTO fleet_status_metadata VALUES(1, 1, 1);");
+            Run(EnvironmentalFixtureSchema +
+                "INSERT INTO environmental_observation_journal VALUES(1);");
             Run("PRAGMA journal_mode=WAL;");
             Run("PRAGMA wal_autocheckpoint=0;");
-            Run("UPDATE fleet_status_metadata SET next_sequence = 60 WHERE metadata_key = 1;");
+            Run("INSERT INTO environmental_observation_journal VALUES(60);");
             foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
             {
                 File.Copy(scratch + suffix, path + suffix);
@@ -593,7 +594,7 @@ public sealed partial class LifecycleContractTests
             using var connection = new SqliteConnection($"Data Source={copy};Pooling=False");
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;";
+            command.CommandText = EnvironmentalSequence;
             return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
         }
         finally

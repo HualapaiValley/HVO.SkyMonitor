@@ -453,7 +453,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             if (inspection.RawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
             {
                 throw new InvalidOperationException(
-                    $"Raw ingress schema {inspection.RawVersion} is unsupported; schema {SqliteRawCaptureJournal.CurrentSchemaVersion} must initialize before transient runtime state.");
+                    $"Raw ingress schema {inspection.RawVersion} is unsupported; fresh install required.");
             }
             using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
             using (var transaction = BeginImmediate(connection))
@@ -2200,17 +2200,15 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 {
                     var rawVersion = await ExecuteScalarLongAsync(
                         connection, "PRAGMA user_version;", null, token).ConfigureAwait(false);
+                    if (rawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
+                        return new RuntimeSchemaInspection(rawVersion, 0);
+                    await SqliteRawCaptureJournal.ValidateIdentityAsync(connection, null, token).ConfigureAwait(false);
                     var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
                         connection, null, token).ConfigureAwait(false);
                     if (runtimeObjectCount > 0)
-                    {
                         await ValidateRuntimeSchemaAsync(connection, null, token).ConfigureAwait(false);
-                    }
-                    if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
-                    {
-                        await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
-                            connection, null, token).ConfigureAwait(false);
-                    }
+                    await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                        connection, null, token).ConfigureAwait(false);
                     return new RuntimeSchemaInspection(rawVersion, runtimeObjectCount);
                 },
                 inspectionSourceOpenedSeam,

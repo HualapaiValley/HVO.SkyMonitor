@@ -25,9 +25,8 @@ public sealed class SqliteEnvironmentalObservationStore(
     ILocalEnvironmentalAssociationStore, IEnvironmentalAcquisitionStateStore,
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IEnvironmentalLocationHeldPollStore, IDisposable
 {
-    internal const int BeforeRetentionIndexesSchemaVersion = 3;
-    internal const int PreviousSchemaVersion = 4;
-    internal const int CurrentSchemaVersion = 5;
+    internal const int CurrentSchemaVersion = 1;
+    private const int ApplicationId = 0x4856454E; // HVEN
     internal const int MaximumOperationReceipts = 10_000;
     private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
@@ -1374,49 +1373,21 @@ public sealed class SqliteEnvironmentalObservationStore(
             }
             Directory.CreateDirectory(DatabaseDirectory(root));
             EnsureDatabaseFilesArePhysical(root);
-            var inspection = File.Exists(DatabasePath(root))
-                ? await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false)
-                : new EnvironmentalSchemaInspection(0, 0);
-            var initializeSchema = inspection.SchemaVersion == 0 && inspection.SchemaObjectCount == 0;
-            if (!initializeSchema && !IsSupportedSchemaVersion(inspection.SchemaVersion))
-            {
-                var relationship = inspection.SchemaVersion > CurrentSchemaVersion
-                    ? "newer than supported"
-                    : "unsupported";
-                throw new InvalidOperationException(
-                    $"Environmental observation schema {inspection.SchemaVersion} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
-            }
+            var initializeSchema = !File.Exists(DatabasePath(root)) ||
+                await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false);
             using var connection = await OpenUnconfiguredAsync(root, cancellationToken).ConfigureAwait(false);
-            if (inspection.SchemaVersion != CurrentSchemaVersion)
+            if (initializeSchema)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                 using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
-                var writableVersion = await ExecuteScalarLongAsync(
-                    connection, "PRAGMA user_version;", transaction, cancellationToken).ConfigureAwait(false);
-                var writableObjectCount = await CountSchemaObjectsAsync(
-                    connection, transaction, cancellationToken).ConfigureAwait(false);
-                if (writableVersion == 0 && writableObjectCount == 0)
+                if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Environmental observation",
+                        CurrentSchemaVersion, ApplicationId))
                 {
                     using var command = connection.CreateCommand();
                     command.Transaction = transaction;
                     command.CommandText = CanonicalSchemaSql;
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-                else if (writableVersion is BeforeRetentionIndexesSchemaVersion or PreviousSchemaVersion)
-                {
-                    await ValidateSchemaAsync(connection, transaction, cancellationToken, checked((int)writableVersion)).ConfigureAwait(false);
-                    using var migration = connection.CreateCommand();
-                    migration.Transaction = transaction;
-                    migration.CommandText =
-                        (writableVersion == BeforeRetentionIndexesSchemaVersion ? RetentionIndexesSql : string.Empty)
-                        + LocationHeldPollsSql + "PRAGMA user_version=5;";
-                    await migration.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-                else if (writableVersion != CurrentSchemaVersion)
-                {
-                    throw new InvalidOperationException(
-                        "Environmental observation schema changed during initialization; restart after completing an explicit state-disposition procedure.");
                 }
                 await ValidateSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -1832,7 +1803,7 @@ public sealed class SqliteEnvironmentalObservationStore(
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<EnvironmentalSchemaInspection> InspectExistingDatabaseAsync(
+    private async ValueTask<bool> InspectExistingDatabaseAsync(
         string root,
         CancellationToken cancellationToken)
     {
@@ -1860,19 +1831,16 @@ public sealed class SqliteEnvironmentalObservationStore(
                 DefaultTimeout = busyTimeoutSeconds
             }.ToString());
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var version = await ExecuteScalarLongAsync(
-                connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
-            var objectCount = await CountSchemaObjectsAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            if (IsSupportedSchemaVersion(version))
-            {
-                await ValidateSchemaAsync(connection, null, cancellationToken, checked((int)version)).ConfigureAwait(false);
-            }
-            return new(checked((int)version), objectCount);
+            var initializeSchema = Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, null, "Environmental observation",
+                CurrentSchemaVersion, ApplicationId);
+            if (!initializeSchema)
+                await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
+            return initializeSchema;
         }
         catch (Exception exception) when (exception is SqliteException or IOException or InvalidDataException)
         {
             throw new InvalidDataException(
-                $"Environmental observation SQLite schema inspection failed for '{databasePath}'; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.",
+                $"Environmental observation SQLite schema inspection failed for '{databasePath}': {exception.Message}",
                 exception);
         }
         finally
@@ -1947,25 +1915,15 @@ public sealed class SqliteEnvironmentalObservationStore(
             Convert.ToHexString(SHA256.HashData(stream)));
     }
 
-    private static bool IsSupportedSchemaVersion(long version)
-        => version is BeforeRetentionIndexesSchemaVersion or PreviousSchemaVersion or CurrentSchemaVersion;
-
     private static async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
-        CancellationToken cancellationToken,
-        int schemaVersion = CurrentSchemaVersion)
+        CancellationToken cancellationToken)
     {
-        if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", transaction, cancellationToken)
-                .ConfigureAwait(false) != schemaVersion)
-        {
-            throw new InvalidDataException("Environmental observation schema version is not canonical.");
-        }
-        var expectedDefinitions = CanonicalSchemaDefinitions.Value
-            .Where(entry => schemaVersion != BeforeRetentionIndexesSchemaVersion ||
-                entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
-            .Where(entry => schemaVersion == CurrentSchemaVersion || entry.Key != "environmental_location_held_polls")
-            .ToDictionary(StringComparer.Ordinal);
+        if (Sqlite.SqliteSchemaBaseline.NeedsCreation(connection, transaction, "Environmental observation",
+                CurrentSchemaVersion, ApplicationId))
+            throw new InvalidDataException("Environmental observation SQLite schema is missing; fresh install required.");
+        var expectedDefinitions = CanonicalSchemaDefinitions.Value;
         var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (expectedDefinitions.Any(expected =>
                 !actual.TryGetValue(expected.Key, out var definition) ||
@@ -1996,15 +1954,6 @@ public sealed class SqliteEnvironmentalObservationStore(
             throw new InvalidDataException("Local environmental observation metadata counters are inconsistent.");
         }
     }
-
-    private static async ValueTask<long> CountSchemaObjectsAsync(
-        SqliteConnection connection,
-        SqliteTransaction? transaction,
-        CancellationToken cancellationToken)
-        => await ExecuteScalarLongAsync(connection, """
-            SELECT COUNT(*) FROM sqlite_schema
-            WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%';
-            """, transaction, cancellationToken).ConfigureAwait(false);
 
     private static async ValueTask<long> ExecuteScalarLongAsync(
         SqliteConnection connection,
@@ -2159,7 +2108,6 @@ public sealed class SqliteEnvironmentalObservationStore(
         }
     }
 
-    private sealed record EnvironmentalSchemaInspection(int SchemaVersion, long SchemaObjectCount);
 
     private sealed record DatabaseFileState(
         string Path,
@@ -2168,7 +2116,7 @@ public sealed class SqliteEnvironmentalObservationStore(
         long LastWriteUtcTicks,
         string Sha256);
 
-    private const string LocalSchemaSql = """
+    private static readonly string LocalSchemaSql = """
         CREATE TABLE environmental_observation_journal_metadata(
             metadata_key INTEGER NOT NULL PRIMARY KEY CHECK(metadata_key = 1),
             stored_count INTEGER NOT NULL DEFAULT 0 CHECK(stored_count >= 0),
@@ -2319,7 +2267,7 @@ public sealed class SqliteEnvironmentalObservationStore(
             UNIQUE(association_id, local_record_id)) STRICT;
         CREATE INDEX ix_environment_association_evidence_record
             ON environmental_capture_association_evidence(local_record_id, association_id);
-        """ + RetentionIndexesSql + LocationHeldPollsSql + "PRAGMA user_version=5;";
+        """ + RetentionIndexesSql + LocationHeldPollsSql + Sqlite.SqliteSchemaBaseline.Stamp(CurrentSchemaVersion, ApplicationId);
 
     private const string RetentionIndexesSql = """
         CREATE INDEX ix_environment_on_demand_retention
@@ -2338,5 +2286,5 @@ public sealed class SqliteEnvironmentalObservationStore(
             settled INTEGER NOT NULL CHECK(settled IN (0, 1))) STRICT;
         """;
 
-    private const string CanonicalSchemaSql = LocalSchemaSql;
+    private static readonly string CanonicalSchemaSql = LocalSchemaSql;
 }

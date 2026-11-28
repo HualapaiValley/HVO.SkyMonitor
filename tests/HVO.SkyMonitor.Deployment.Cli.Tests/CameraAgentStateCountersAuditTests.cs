@@ -7,9 +7,8 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// <summary>
 /// The guard for #1314 R9: every counter-like column in every CameraAgent store is either carried across a snapshot
 /// restore (<see cref="CameraAgentStateCounters.All"/>) or audited as one that never leaves the instance and is never
-/// sent back (<see cref="CameraAgentStateCounters.Local"/>), exactly once. The stores are the previous-release images,
-/// which the CameraAgent's own readability test holds equal to the stores this release creates, so a new store or
-/// column of this kind fails here until it is classified.
+/// sent back (<see cref="CameraAgentStateCounters.Local"/>), exactly once. The fixture covers the retained
+/// columns from the old images. The baseline creates the active tables and declares them in the image contract.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -62,7 +61,7 @@ public sealed partial class CameraAgentStateCountersAuditTests
     /// be the one the previous release declares; a key a candidate stores in any other class makes its store unreadable.
     /// </summary>
     [TestMethod]
-    public void EveryCarriedCounterKey_IsTheTypeThePreviousReleaseDeclaresForIt()
+    public void EveryCarriedCounterKey_MatchesTheFixtureStorageType()
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "previous-release");
         using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "manifest.json")));
@@ -102,9 +101,17 @@ public sealed partial class CameraAgentStateCountersAuditTests
         foreach (var store in manifest.RootElement.GetProperty("stores").EnumerateArray())
         {
             var location = store.GetProperty("location").GetString()!;
+            if (location.EndsWith("/outbox/artifact-outbox.db", StringComparison.Ordinal) ||
+                location is "raw/.fleet/fleet-status.db" or "raw/evidence/execution-evidence-outbox.db")
+                continue;
+            if (location == "raw/.environment/environmental-observation-outbox.db")
+                location = CameraAgentStateLayout.EnvironmentalObservationsStore;
             var sql = File.ReadAllText(Path.Combine(directory, store.GetProperty("dump").GetString()!));
             foreach (Match table in CreateTablePattern().Matches(sql))
             {
+                if (table.Groups["table"].Value is "environmental_observation_outbox" or
+                    "environmental_observation_outbox_audit" or "environmental_observation_central_projection")
+                    continue;
                 foreach (var definition in SplitTopLevel(table.Groups["body"].Value))
                 {
                     var column = ColumnPattern().Match(definition);
@@ -117,7 +124,6 @@ public sealed partial class CameraAgentStateCountersAuditTests
                     var timestamp = name.EndsWith("_unix_ms", StringComparison.Ordinal) || name.EndsWith("_ticks", StringComparison.Ordinal);
                     if (!timestamp && CounterName.IsMatch(name) || primaryKey && !singleton)
                     {
-                        // A store under any storage root keeps the same outbox schema, so each location is checked.
                         columns.Add((location, table.Groups["table"].Value, name,
                             rest.Contains("AUTOINCREMENT", StringComparison.OrdinalIgnoreCase)));
                     }

@@ -74,7 +74,10 @@ public sealed partial class LifecycleContractTests
         { DataSource = ledger, Pooling = false }.ToString());
         database.Open();
         using var schema = database.CreateCommand();
-        schema.CommandText = SchemaSql;
+#pragma warning disable CA2100 // Fixed schema and integer version identifiers.
+        schema.CommandText = SchemaSql + FormattableString.Invariant(
+            $"PRAGMA application_id = {DatabaseApplicationId}; PRAGMA user_version = {SchemaVersion};");
+#pragma warning restore CA2100
         _ = schema.ExecuteNonQuery();
         using var entry = database.CreateCommand();
         entry.CommandText = "INSERT INTO entries(key,digest,kind,generation,auth) VALUES($key,$digest,2,1,$auth);";

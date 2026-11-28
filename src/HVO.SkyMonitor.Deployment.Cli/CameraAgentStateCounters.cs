@@ -78,9 +78,7 @@ internal static class CameraAgentStateCounters
         bool IntegerKey = false);
 
     private const string RawIngress = "raw/journal/raw-ingress.db";
-    private const string Fleet = "raw/.fleet/fleet-status.db";
-    private const string Environment = "raw/.environment/environmental-observation-outbox.db";
-    private const string Evidence = "raw/evidence/execution-evidence-outbox.db";
+    private const string Environment = CameraAgentStateLayout.EnvironmentalObservationsStore;
     private const string Automation = "raw/.automation/local-automations.db";
     internal const string AutomationDefinitionVersion = "automation-definition-version";
     private const int MaximumCarryBytes = 4 * 1024 * 1024;
@@ -89,24 +87,20 @@ internal static class CameraAgentStateCounters
     [
         new(RawIngress, "capture-sequence", "raw_capture_sequences", "agent_id", "last_sequence", CounterKind.HighWater, Upsert: true),
         new(RawIngress, "capture-control-version", "capture_control_state", "state_key", "version", CounterKind.HighWater, IntegerKey: true),
-        new(Fleet, "fleet-report-sequence", "fleet_status_metadata", "metadata_key", "next_sequence", CounterKind.HighWater, IntegerKey: true),
         new(RawIngress, "capture-schedule-version", "capture_schedule_state", "state_key", "version", CounterKind.StateToken, MissingRowAllowance: 1, IntegerKey: true),
         new(RawIngress, "named-rig-selection-version", "named_rig_selection", "state_key", "version", CounterKind.StateToken, IntegerKey: true),
         new(RawIngress, "calibration-library-version", "calibration_library_state", "state_key", "version", CounterKind.StateToken, IntegerKey: true),
         new(RawIngress, "processing-graph-registry-version", "processing_graph_registry_state", "state_key", "state_version", CounterKind.StateToken, MissingRowAllowance: 1, IntegerKey: true),
         new(Automation, AutomationDefinitionVersion, "automation_definitions", "definition_id", "version", CounterKind.StateToken),
-        new(Environment, "environmental-outbox-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "environmental_observation_outbox"),
-        new(Environment, "environmental-journal-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "environmental_observation_journal"),
-        new(Evidence, "execution-evidence-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "execution_evidence_units")
+        new(Environment, "environmental-journal-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "environmental_observation_journal")
     ];
 
     /// <summary>
     /// Every other counter-like column in a CameraAgent store, keyed <c>table.column</c>, with why a rewind of it can
     /// never let a client or anything outside the instance act on different state. Counter-like means an INTEGER
     /// column named for a sequence, version, revision, generation, epoch, serial, next or last value (timestamps
-    /// excluded), or an integer row-ID primary key that is not a singleton key. Artifact outboxes share one schema under
-    /// every storage root. <c>CameraAgentStateCountersAuditTests</c> holds this list and <see cref="All"/> to the
-    /// previous-release store images.
+    /// excluded), or an integer row-ID primary key that is not a singleton key.
+    /// <c>CameraAgentStateCountersAuditTests</c> checks this list and <see cref="All"/> against the store schemas.
     /// </summary>
     public static IReadOnlyDictionary<string, string> Local { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -147,31 +141,12 @@ internal static class CameraAgentStateCounters
         ["processing_outputs.capture_sequence"] = "a copy of a capture sequence",
         ["processing_replay_work.work_id"] = "a local AUTOINCREMENT row ID; replay execution IDs are content- and request-derived",
         ["processing_output_diagnostics.diagnostic_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
-        // Fleet.
-        ["fleet_status_metadata.schema_version"] = "the store's schema version, which the migration rule compares",
-        ["fleet_status_records.sequence"] = "a copy of a sequence the carried fleet-report counter handed out",
-        ["fleet_status_records.record_id"] = "a local AUTOINCREMENT row ID; reports are identified by their sequence",
         // Environment.
-        ["environmental_observation_outbox_audit.audit_id"] = "a local AUTOINCREMENT row ID, used only in a read-only audit cursor",
         ["environmental_capture_regime_state.capture_sequence"] = "a copy of a capture sequence",
         ["environmental_acquisition_attempts.attempt_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
         ["environmental_acquisition_attempts.capture_sequence"] = "a copy of a capture sequence",
         ["environmental_capture_associations.association_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
         ["environmental_capture_associations.capture_sequence"] = "a copy of a capture sequence",
-        ["environmental_observation_central_projection.projection_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
-        // Evidence: an origin is per boot session, and every restore runs with the instance stopped.
-        ["execution_evidence_schema.version"] = "the store's schema version, which the migration rule compares",
-        ["execution_evidence_origins.next_sequence"] = "a per-origin sequence; the origin hash covers the boot session, new at every start, so no restored origin issues again",
-        ["execution_evidence_origins.acknowledged_through_sequence"] = "a per-origin acknowledgement mark under a per-boot origin",
-        ["execution_evidence_units.origin_sequence"] = "a copy of a per-boot origin sequence",
-        ["execution_evidence_conflicts.origin_sequence"] = "a copy of a per-boot origin sequence",
-        ["execution_evidence_audit.audit_id"] = "a local AUTOINCREMENT row ID, used only in a read-only audit cursor",
-        ["execution_evidence_conflicts.conflict_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
-        // Artifact outboxes, under every storage root.
-        ["artifact_outbox_schema.version"] = "the store's schema version, which the migration rule compares",
-        ["artifact_outbox_records.record_id"] = "a local AUTOINCREMENT row ID in a read-only paging cursor; actions key on the content-derived idempotency key",
-        ["artifact_outbox_audit.audit_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
-        ["artifact_outbox_conflicts.conflict_id"] = "a local AUTOINCREMENT row ID, never in a response or token",
         // Time-lapses: job IDs are content-derived, and the revision is accepted back only by in-process Blazor
         // circuits, which the stop before every restore ends.
         ["jobs.revision"] = "accepted back only by in-process Blazor circuits, which the stop before every restore ends",

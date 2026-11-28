@@ -166,23 +166,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         ) STRICT;
         """ + "\n" + CenteredAvailabilitySchemaSql;
 
-    private static async ValueTask AddCenteredWindowSchemaAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = CenteredWindowSchemaSql + "\n" + CenteredRegistrationStateSchemaSql;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task AddCenteredRegistrationStateSchemaAsync(SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        using var command = transaction.Connection!.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = CenteredRegistrationStateSchemaSql;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     // Can also be called as part of a journal transaction by the admission
     // adapter. An existing window is an immutable checkpoint, even after close.
     internal static async ValueTask<bool> TrackCenteredWindowAsync(

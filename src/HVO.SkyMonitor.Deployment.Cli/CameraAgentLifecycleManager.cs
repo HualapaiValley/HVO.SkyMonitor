@@ -392,7 +392,7 @@ internal sealed partial class CameraAgentLifecycleManager
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
             await docker.VerifyContainerAsync(
                 compose, paths, manifest.Image, uid, gid, cancellationToken).ConfigureAwait(false);
-            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: false);
+            EnsureUpgradeStorage(paths, request.ImageArchive, snapshotRequired: false);
         }
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var previousManifestPath = Path.Combine(operationRoot, "previous-instance-manifest.json");
@@ -540,7 +540,7 @@ internal sealed partial class CameraAgentLifecycleManager
         // All baseline image changes take a small-store checkpoint for precommit failure recovery.
         // A requested rollback runs the retained image on the same live contract, preserving post-upgrade data.
         if (!operation.MutationStarted)
-            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: true);
+            EnsureUpgradeStorage(paths, request.ImageArchive, snapshotRequired: true);
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
@@ -746,7 +746,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
             OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
             // Checkpoint only the small stores after Compose stops the writers.
-            var stores = SnapshotInventory(paths, manifest.ReplayProfile, rollback);
+            var stores = CameraAgentStateInventory.Stores;
             var snapshot = await CameraAgentStateSnapshot.CreateAsync(
                 paths, manifest.InstanceId, operation.OperationId, manifest.Image, stores, cancellationToken).ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with
@@ -1015,12 +1015,12 @@ internal sealed partial class CameraAgentLifecycleManager
     /// <item>the highest value each monotonic counter has reached, the higher of what the journal already holds and what
     /// the live stores hold now, so a restore repeated after a crash, when the live stores may already be the rewound
     /// snapshot, still raises the counters to the true marks;</item>
-    /// <item>the plan: every store location the configured inventory lists now, together with those any earlier attempt
-    /// recorded (the inventory reads schedule revisions from the journal the restore replaces) and, when the target is
+    /// <item>the plan: every store location in the checkpoint inventory, together with those any earlier attempt
+    /// recorded and, when the target is
     /// another snapshot, those the operation's own snapshot recorded; and the target snapshot's own locations.</item>
     /// </list>
-    /// A candidate that damaged a store beyond reading must not block its own recovery, so the inventory then falls back
-    /// to the configured roots, the damaged store's counters are carried only as far as the journal recorded them, and
+    /// A candidate that damaged a store beyond reading must not block its own recovery.
+    /// The damaged store's counters are carried only as far as the journal recorded them, and
     /// the restore says so on standard error. The journal keeps the marks themselves; what is carried is planned from
     /// them against the target snapshot on every attempt, so a mark a retry can no longer carry never fails the retry.
     /// </summary>
@@ -1036,9 +1036,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken)
             .ConfigureAwait(false);
         var incomplete = new List<string>();
-        var (inventory, unreadInventory) = CameraAgentStateInventory.StoresForRestore(paths, manifest.ReplayProfile);
-        if (unreadInventory is not null) incomplete.Add(unreadInventory);
-        IEnumerable<string> current = (operation.StateRestorePlan?.CurrentLocations ?? []).Concat(inventory);
+        IEnumerable<string> current = (operation.StateRestorePlan?.CurrentLocations ?? []).Concat(CameraAgentStateInventory.Stores);
         if (operation.StateSnapshot is { } own && own != snapshot)
         {
             var ownManifest = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, own, cancellationToken)
@@ -2569,11 +2567,10 @@ internal sealed partial class CameraAgentLifecycleManager
     /// keeping space for the restore. Bulk data is never copied or counted.
     /// </summary>
     private static void EnsureUpgradeStorage(
-        InstallationPaths paths, string? imageArchive, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile,
-        bool rollback, bool snapshotRequired)
+        InstallationPaths paths, string? imageArchive, bool snapshotRequired)
     {
         var databaseBytes = snapshotRequired
-            ? CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback))
+            ? CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, CameraAgentStateInventory.Stores)
             : 0;
         var snapshotBytes = snapshotRequired
             ? checked(4 * databaseBytes + CameraAgentStateCounters.JournalRecordBytes(databaseBytes))
@@ -2591,16 +2588,6 @@ internal sealed partial class CameraAgentLifecycleManager
                 : "Insufficient free space for the candidate image and headroom.");
         }
     }
-
-    /// <summary>
-    /// The live stores an image change checkpoints for recovery. A rollback uses the restore inventory so a
-    /// schedule journal it cannot read narrows the checkpoint to stores in the configured roots.
-    /// </summary>
-    private static IReadOnlyList<string> SnapshotInventory(
-        InstallationPaths paths, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile, bool rollback)
-        => rollback
-            ? CameraAgentStateInventory.StoresForRestore(paths, replayProfile).Stores
-            : CameraAgentStateInventory.Stores(paths, replayProfile);
 
     internal static LifecycleContinuityBoundary ToBoundary(LifecycleContinuity value)
         => new(

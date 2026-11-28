@@ -1422,7 +1422,7 @@ public sealed partial class RawCaptureIngressTests
             var instance = Guid.NewGuid();
             var paths = Installer.InstallationPaths.Create(root, instance, "hyg-v44-production");
             var files = new Installer.CameraAgentStateDatabaseView(Path.Combine(root, "identity.db"), path);
-            var requirements = new Installer.CameraAgentStateRequirements(Installer.CameraAgentStateContract.Current, null, 17, null);
+            var requirements = new Installer.CameraAgentStateRequirements(Installer.CameraAgentStateContract.Current, null, 1, null);
             Assert.HasCount(0, Evaluate(requirements));
 
             RawCaptureReceipt original;
@@ -1438,19 +1438,19 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("raw-ingress-schema", Evaluate(requirements).Single().Code);
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
-                await ExecuteTestSqlAsync(connection, "PRAGMA user_version=17;").ConfigureAwait(false);
+                await ExecuteTestSqlAsync(connection, "PRAGMA user_version=1;").ConfigureAwait(false);
             using (var setup = new CenteredFixture(root, siloProvider: silo))
                 await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
-                Assert.AreEqual(17L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
                 using var manifest = connection.CreateCommand();
                 manifest.CommandText = "SELECT manifest_sha256 FROM raw_captures;";
                 Assert.AreEqual(original.CommittedManifestSha256, await manifest.ExecuteScalarAsync(token).ConfigureAwait(false));
             }
             Assert.HasCount(0, Evaluate(requirements));
             var rollback = Evaluate(requirements with { RawIngressSchema = 16 }).Single();
-            Assert.AreEqual("17", rollback.Observed);
+            Assert.AreEqual("1", rollback.Observed);
             Assert.AreEqual("16", rollback.Expected);
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))

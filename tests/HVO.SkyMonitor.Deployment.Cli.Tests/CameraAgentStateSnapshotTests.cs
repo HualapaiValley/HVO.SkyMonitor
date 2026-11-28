@@ -16,18 +16,13 @@ public sealed partial class CameraAgentStateSnapshotTests
         "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null, StateContract: CameraAgentStateContract.Current);
 
     /// <summary>
-    /// The stores an installer released before the calibration-family store (#1475) snapshots. A snapshot or backup it
-    /// took names exactly these, and this installer must still verify and restore it.
+    /// The stores in the initial lifecycle checkpoint. Calibration families are backed up separately.
     /// </summary>
-    private static readonly string[] StoresBeforeCalibrationFamilies =
+    private static readonly string[] BaselineCheckpointStores =
     [
         "identity/cameraagent_identity.db",
         "raw/journal/raw-ingress.db",
-        "raw/outbox/artifact-outbox.db",
-        "archive/outbox/artifact-outbox.db",
-        "raw/.fleet/fleet-status.db",
-        "raw/.environment/environmental-observation-outbox.db",
-        "raw/evidence/execution-evidence-outbox.db",
+        "raw/.environment/environmental-observations.db",
         "raw/.time-lapses/time-lapses.db",
         "raw/.nightly-products/nightly-products.db",
         "raw/.automation/local-automations.db"
@@ -59,13 +54,13 @@ public sealed partial class CameraAgentStateSnapshotTests
     {
         using var root = new SnapshotRoot();
         var raw = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db");
-        var outbox = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/outbox/artifact-outbox.db");
+        var environment = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.EnvironmentalObservationsStore);
         CreateDatabase(raw, 25);
         var operationId = Guid.NewGuid();
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, operationId, Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
         var expected = Rows(raw);
         // A candidate writes to the journal, creates a store the snapshot recorded as absent, and leaves sidecars.
-        CreateDatabase(outbox, 3);
+        CreateDatabase(environment, 3);
         await using (var connection = new SqliteConnection($"Data Source={raw};Pooling=False"))
         {
             await connection.OpenAsync();
@@ -82,7 +77,7 @@ public sealed partial class CameraAgentStateSnapshotTests
         CollectionAssert.AreEqual(expected, Rows(raw));
         Assert.AreEqual(once, await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None));
         Assert.IsFalse(File.Exists(raw + "-journal"));
-        Assert.IsFalse(File.Exists(outbox));
+        Assert.IsFalse(File.Exists(environment));
         Assert.IsFalse(Directory.EnumerateFiles(Path.GetDirectoryName(raw)!, "*.tmp").Any());
     }
 
@@ -143,7 +138,7 @@ public sealed partial class CameraAgentStateSnapshotTests
         using var root = new SnapshotRoot();
         CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(
-            root.Paths, root.InstanceId, Guid.NewGuid(), Image, StoresBeforeCalibrationFamilies, CancellationToken.None);
+            root.Paths, root.InstanceId, Guid.NewGuid(), Image, BaselineCheckpointStores, CancellationToken.None);
 
         // Reconstruct the actual earlier wire shape, not a new snapshot with an old input inventory.
         var current = await CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None);

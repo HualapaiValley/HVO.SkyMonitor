@@ -15,8 +15,6 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
-    private const string FleetStore = "raw/.fleet/fleet-status.db";
-
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("capture_schedule_state", "version", "state_key = 1", false, DisplayName = "a state token, which writes one above its floor")]
@@ -109,10 +107,10 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         fixture.Runner.OnComposeUp = image =>
         {
-            if (image == CandidateImageId) RewriteFleetStore(fixture.Paths, encoding, nextSequence: 20);
+            if (image == CandidateImageId) RewriteEnvironmentStore(fixture.Paths, encoding, recordId: 20);
         };
         using var error = new StringWriter();
 
@@ -123,31 +121,31 @@ public sealed partial class LifecycleContractTests
 
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.IsTrue(fixture.Runner.Running);
-        Assert.AreEqual("UTF-8", DatabaseEncoding(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore)));
-        Assert.AreEqual(10, ReadCounter(fixture.Paths, FleetStore, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
-        StringAssert.Contains(error.ToString(), $"could not read the counters of '{FleetStore}'", StringComparison.Ordinal);
+        Assert.AreEqual("UTF-8", DatabaseEncoding(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore)));
+        Assert.AreEqual(10, ReadCounter(fixture.Paths, EnvironmentStore, EnvironmentalSequence));
+        StringAssert.Contains(error.ToString(), $"could not read the counters of '{EnvironmentStore}'", StringComparison.Ordinal);
         StringAssert.Contains(error.ToString(), $"is encoded as {encoding}, not UTF-8", StringComparison.Ordinal);
     }
 
     [TestMethod]
     [DoNotParallelize]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("read:" + FleetStore, false)]
+    [DataRow("read:" + EnvironmentStore, false)]
     [DataRow("trim", true)]
-    [DataRow("screen:" + FleetStore, false)]
-    [DataRow("trial:" + FleetStore, false)]
-    [DataRow("trial-verify:" + FleetStore, false)]
-    [DataRow("apply:" + FleetStore, false)]
-    [DataRow("apply-verify:" + FleetStore, false)]
-    public async Task UpgradeAsync_AFaultAtAnyCarryStep_DegradesOnlyThatStoreAndCompletesTheRestore(string step, bool fleetCarried)
+    [DataRow("screen:" + EnvironmentStore, false)]
+    [DataRow("trial:" + EnvironmentStore, false)]
+    [DataRow("trial-verify:" + EnvironmentStore, false)]
+    [DataRow("apply:" + EnvironmentStore, false)]
+    [DataRow("apply-verify:" + EnvironmentStore, false)]
+    public async Task UpgradeAsync_AFaultAtAnyCarryStep_DegradesOnlyThatStoreAndCompletesTheRestore(string step, bool environmentCarried)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        SeedCounters(fixture.Paths, captureSequence: 5, fleetNextSequence: 10);
+        SeedCounters(fixture.Paths, captureSequence: 5, environmentRecordId: 10);
         fixture.Runner.OnComposeUp = image =>
         {
             if (image != CandidateImageId) return;
-            AdvanceFleet(fixture.Paths, toNextSequence: 20);
+            AdvanceEnvironmentalJournal(fixture.Paths, recordId: 20);
             ExecuteSql(RawIngressPath(fixture.Paths), $"UPDATE raw_capture_sequences SET last_sequence = 9 WHERE agent_id = '{AgentId}';");
         };
         using var error = new StringWriter();
@@ -170,15 +168,15 @@ public sealed partial class LifecycleContractTests
 
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId, error.ToString());
         Assert.IsTrue(fixture.Runner.Running);
-        Assert.AreEqual(fleetCarried ? 20 : 10,
-            ReadCounter(fixture.Paths, FleetStore, "SELECT next_sequence FROM fleet_status_metadata WHERE metadata_key = 1;"));
+        Assert.AreEqual(environmentCarried ? 20 : 10,
+            ReadCounter(fixture.Paths, EnvironmentStore, EnvironmentalSequence));
         // The other store's carry is untouched by the fault.
         Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
-        if (!fleetCarried)
+        if (!environmentCarried)
         {
-            StringAssert.Contains(error.ToString(), step == $"read:{FleetStore}"
-                ? $"the counters of '{FleetStore}' (injected carry fault)"
-                : $"the fleet-report-sequence counter of '{FleetStore}' with key \"1\" (injected carry fault)", StringComparison.Ordinal);
+            StringAssert.Contains(error.ToString(), step == $"read:{EnvironmentStore}"
+                ? $"the counters of '{EnvironmentStore}' (injected carry fault)"
+                : $"the environmental-journal-record-id counter of '{EnvironmentStore}' with key \"environmental_observation_journal\" (injected carry fault)", StringComparison.Ordinal);
         }
     }
 
@@ -191,18 +189,16 @@ public sealed partial class LifecycleContractTests
         " FROM automation_definition_revisions;" +
         "DROP TABLE automation_definition_revisions; ALTER TABLE r2 RENAME TO automation_definition_revisions;";
 
-    /// <summary>Replaces the fleet store with one in <paramref name="encoding"/>, holding the same schema and one row.</summary>
-    private static void RewriteFleetStore(InstallationPaths paths, string encoding, long nextSequence)
+    /// <summary>Replaces the environmental journal with one in <paramref name="encoding"/>, holding the same schema and one row.</summary>
+    private static void RewriteEnvironmentStore(InstallationPaths paths, string encoding, long recordId)
     {
-        var path = CameraAgentStateSnapshot.StorePath(paths.StateRoot, FleetStore);
+        var path = CameraAgentStateSnapshot.StorePath(paths.StateRoot, EnvironmentStore);
         foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => path + suffix).Prepend(path))
             File.Delete(file);
         ExecuteSql(path,
             FormattableString.Invariant($"PRAGMA encoding = '{encoding}';") +
-            "CREATE TABLE fleet_status_metadata(metadata_key INTEGER NOT NULL PRIMARY KEY CHECK(metadata_key = 1)," +
-            " schema_version INTEGER NOT NULL, agent_instance_id TEXT NULL, next_sequence INTEGER NOT NULL CHECK(next_sequence > 0)," +
-            " overflow_count INTEGER NOT NULL DEFAULT 0) STRICT;" +
-            FormattableString.Invariant($"INSERT INTO fleet_status_metadata VALUES(1, 1, NULL, {nextSequence}, 0);"));
+            EnvironmentalFixtureSchema +
+            FormattableString.Invariant($"INSERT INTO environmental_observation_journal VALUES({recordId});"));
         Assert.AreEqual(encoding, DatabaseEncoding(path));
     }
 

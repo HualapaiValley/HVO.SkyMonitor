@@ -1262,12 +1262,9 @@ records `raw-evidence-written-off` as its terminal disposition.
 The next admission attempt reinitializes ingress; other unresolved evidence
 failures continue to refuse captures. No release deletes or rewrites raw data.
 
-The image declares raw-journal version 16, including audited recovery and
-capture-specific environmental evidence. A canonical v13, v14 or v15 journal
-upgrades transactionally through the declared `canonical-v13-v14-v15-to-v16`
-transition. The image must declare schema 16 and that migration. Older readers
-cannot preserve this evidence. An earlier runtime refuses the v16 journal.
-Preserve the evidence and select a compatible forward repair.
+The image declares raw journal baseline 1, which includes audited recovery and
+capture-specific environmental evidence. Earlier raw journals require a fresh
+installation. See the [database inventory](../hvo-install-contract.md#cameraagent-state-contract-baseline).
 
 A Named active revision compiled by the earlier version cannot run any live work.
 In that case:

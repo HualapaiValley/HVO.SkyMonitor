@@ -201,11 +201,12 @@ public sealed partial class LifecycleContractTests
     public async Task RestoreAsync_ResumedAfterTheLastCarriedRename_SyncsBothFoldersOfTheCarriedStore()
     {
         using var fixture = await BackupFixtureAsync();
+        var environment = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore);
+        File.Delete(environment);
         var backup = await BackupAsync(fixture, new FakeLifecycleClient());
-        var fleet = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
-        Execute(fleet,
-            "CREATE TABLE fleet_status_metadata(metadata_key INTEGER PRIMARY KEY, next_sequence INTEGER NOT NULL, schema_version INTEGER NOT NULL);" +
-            "INSERT INTO fleet_status_metadata VALUES(1, 60, 1);");
+        Execute(environment,
+            EnvironmentalFixtureSchema +
+            "INSERT INTO environmental_observation_journal VALUES(60);");
         await UninstallAsync(fixture);
         var images = new List<CrashImage>();
         using var captured = new TemporaryDirectory();
@@ -219,9 +220,9 @@ public sealed partial class LifecycleContractTests
         {
             ResetBackupCrashHooks();
         }
-        var target = Path.GetDirectoryName(fleet)!;
+        var target = Path.GetDirectoryName(environment)!;
         var source = Path.GetDirectoryName(CameraAgentStateSnapshot.StorePath(
-            Path.Combine(fixture.Paths.InstanceRoot, BackupInventory.RestoreFolderName, first.OperationId!.Value.ToString("D"), "previous", "state"), FleetStore))!;
+            Path.Combine(fixture.Paths.InstanceRoot, BackupInventory.RestoreFolderName, first.OperationId!.Value.ToString("D"), "previous", "state"), EnvironmentStore))!;
         var lastCarried = images.Last(image => image.Step.StartsWith("restore-renamed:" + target + "/", StringComparison.Ordinal));
         RestoreCrashImage(fixture, lastCarried);
         var events = new List<string>();

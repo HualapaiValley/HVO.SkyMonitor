@@ -1,10 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
-using HVO.SkyMonitor.CameraAgent.Common.Environmental;
-using HVO.SkyMonitor.CameraAgent.Common.Automation;
-using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.State;
 using Microsoft.Data.Sqlite;
 
@@ -14,8 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 /// Keeps the CameraAgent image's state contract, its <c>io.hvo.skymonitor.state-contracts</c> label, which release.json's
 /// <c>stateContracts.cameraAgent</c> repeats (install contract section 6), equal to the stores this release keeps. Every
 /// SQLite store an instance keeps is declared; each store's <c>writes</c> is the schema the store records about itself
-/// when this release creates it; and its <c>reads</c> are the schemas this release opens: the one it writes, and for raw
-/// ingress, environmental observations, nightly products and local automations also the inputs they migrate from.
+/// when this release creates it; and its <c>reads</c> are the schemas this release opens, which are exactly the ones it writes.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -26,7 +21,7 @@ public sealed class CameraAgentStateContractsLabelTests
     private const string Label = "io.hvo.skymonitor.state-contracts";
 
     // Each store's database under the instance state root and its schema marker.
-    private static readonly (string Store, string Location, string Marker)[] Stores =
+    internal static readonly (string Store, string Location, string Marker)[] Stores =
     [
         ("identity", "identity/cameraagent_identity.db", "SELECT COUNT(*) FROM \"__EFMigrationsHistory\";"),
         ("rawIngress", "raw/journal/raw-ingress.db", "PRAGMA user_version;"),
@@ -38,7 +33,10 @@ public sealed class CameraAgentStateContractsLabelTests
         ("localAutomations", "raw/.automation/local-automations.db", "PRAGMA user_version;"),
         ("orbitalElements", "raw/.orbital-elements/orbital-elements.db", "PRAGMA user_version;"),
         ("spaceWeather", "raw/.space-weather/space-weather.db", "PRAGMA user_version;"),
-        ("calibrationFamilies", "raw/.calibration-families/calibration-families.db", "PRAGMA user_version;")
+        ("calibrationFamilies", "raw/.calibration-families/calibration-families.db", "PRAGMA user_version;"),
+        ("siloArchive", "raw/.silo/archive-test.db", "PRAGMA user_version;"),
+        ("retainedIntegrity", "raw/.location/retained-integrity.v1.db", "PRAGMA user_version;"),
+        ("retainedValidation", "raw/.location/retained-validation.v2.db", "PRAGMA user_version;")
     ];
 
     [TestMethod]
@@ -77,41 +75,10 @@ public sealed class CameraAgentStateContractsLabelTests
 
         foreach (var (store, contract) in declared)
         {
-            // No store opens a schema newer than the one it writes.
-            Assert.AreEqual(contract.Writes, contract.Max, $"{store} reads no schema newer than it writes");
-            if (store is not ("rawIngress" or "nightlyProducts" or "environmentalObservations" or "localAutomations"))
-            {
-                // Every other store refuses any schema but the one it writes, at startup.
-                Assert.AreEqual(contract.Writes, contract.Min, $"{store} reads only the schema it writes");
-            }
+            Assert.AreEqual(1L, contract.Writes, $"{store} creates baseline 1");
+            Assert.AreEqual(contract.Writes, contract.Min, $"{store} reads only the schema it writes");
+            Assert.AreEqual(contract.Writes, contract.Max, $"{store} reads only the schema it writes");
         }
-        // Raw ingress migrates each supported predecessor in place to the schema it writes.
-        var rawIngress = declared["rawIngress"];
-        long[] opened =
-        [
-            SqliteRawCaptureJournal.PreviousSchemaVersion, SqliteRawCaptureJournal.PreviousRecoverySchemaVersion,
-            SqliteRawCaptureJournal.PreviousEvidenceSchemaVersion, SqliteRawCaptureJournal.PreviousEnvironmentalFenceSchemaVersion,
-            SqliteRawCaptureJournal.CurrentSchemaVersion
-        ];
-        Assert.AreEqual(SqliteRawCaptureJournal.CurrentSchemaVersion, rawIngress.Writes);
-        CollectionAssert.AreEqual(
-            opened,
-            Enumerable.Range((int)rawIngress.Min, (int)(rawIngress.Max - rawIngress.Min + 1)).Select(static schema => (long)schema).ToArray());
-        var environmental = declared["environmentalObservations"];
-        Assert.AreEqual(SqliteEnvironmentalObservationStore.CurrentSchemaVersion, environmental.Writes);
-        CollectionAssert.AreEqual(
-            new long[] { SqliteEnvironmentalObservationStore.BeforeRetentionIndexesSchemaVersion,
-                SqliteEnvironmentalObservationStore.PreviousSchemaVersion, SqliteEnvironmentalObservationStore.CurrentSchemaVersion },
-            Enumerable.Range((int)environmental.Min, (int)(environmental.Max - environmental.Min + 1)).Select(static schema => (long)schema).ToArray());
-        var automation = declared["localAutomations"];
-        Assert.AreEqual(LocalAutomationContract.CurrentSchemaVersion, automation.Writes);
-        CollectionAssert.AreEqual(new long[] { 3, LocalAutomationContract.CurrentSchemaVersion },
-            Enumerable.Range((int)automation.Min, (int)(automation.Max - automation.Min + 1)).Select(static schema => (long)schema).ToArray());
-        var nightly = declared["nightlyProducts"];
-        Assert.AreEqual(NightlyProductContract.CurrentSchemaVersion, nightly.Writes);
-        CollectionAssert.AreEqual(
-            new long[] { NightlyProductContract.PreviousSchemaVersion, NightlyProductContract.CurrentSchemaVersion },
-            Enumerable.Range((int)nightly.Min, (int)(nightly.Max - nightly.Min + 1)).Select(static schema => (long)schema).ToArray());
     }
 
     private static SortedDictionary<string, (long Writes, long Min, long Max)> ReadContract()

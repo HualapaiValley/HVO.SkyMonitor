@@ -42,7 +42,6 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Scalar.AspNetCore;
@@ -224,7 +223,6 @@ public class Program
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
         {
             options.UseSqlite(identityConnectionString);
-            options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
         });
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 

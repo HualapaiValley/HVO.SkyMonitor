@@ -5,22 +5,12 @@ using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment;
 
-// Frozen schema identity for the one supported in-place migration. This is deliberately independent of
-// CameraAgent.Common: the deployment CLI must not load the runtime whose state it is evaluating.
-internal static class RawIngressV13Schema
+// Frozen fingerprint of the baseline raw journal. The installer stays independent of the runtime.
+internal static class RawIngressBaselineSchema
 {
-    internal const string MigrationContract = "canonical-v13-to-v14";
-    internal const string RecoveryMigrationContract = "canonical-v13-v14-to-v15";
-    internal const string EnvironmentalFenceMigrationContract = "canonical-v13-v14-v15-to-v16";
-    internal const string CenteredExposureMigrationContract = "canonical-v13-v14-v15-v16-to-v17";
-    internal const string V17Fingerprint = "feb4ed1f705a458d3915c14d460ab9ff00e51fbe9888e499d2adfad57d74745f";
-    internal const string Fingerprint = "937cceed13de8f13bf9263d7ece48d21e26388836551c78ccbd27d86aea638ce";
-    // Frozen from the candidate v14 journal, not derived from the database under inspection.
-    internal const string V14Fingerprint = "66046ff0772ff0ad91509efee1a343a3a73d36fc1e4d196ac3e2db2e66e29216";
-    // v15 changes durable reader semantics, not the canonical table definitions.
-    internal const string V15Fingerprint = V14Fingerprint;
-    // Raw 16 plus the 48 witnessed processing objects from the separately released astrometry beta.
-    private const string V16WithLegacyAstrometryFingerprint = "194cba35fbe2eb39b8ecf193efa876b589f9c17f98f6a6cf5b24c4514a5d2f35";
+    internal const int Version = 1;
+    internal const int ApplicationId = 0x48565249; // HVRI
+    internal const string Fingerprint = "feb4ed1f705a458d3915c14d460ab9ff00e51fbe9888e499d2adfad57d74745f";
     private const string SiloAdmissionTable = "silo_raw_admissions";
     private const string SiloAdmissionDefinition = """
         CREATE TABLE silo_raw_admissions (
@@ -73,41 +63,26 @@ internal static class RawIngressV13Schema
         "ix_transient_worker_candidates_pending"
     };
 
-    internal static bool IsCanonical(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.RejectAstrometryIndex), Fingerprint, StringComparison.Ordinal);
-
-    internal static bool IsCanonicalV14(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.RejectAstrometryIndex), V14Fingerprint, StringComparison.Ordinal);
-
-    internal static bool IsCanonicalV16(SqliteConnection connection)
-        => IsCanonicalV14(connection) ||
-            (string.Equals(ComputeFingerprint(connection, ProcessingObjects.Include), V16WithLegacyAstrometryFingerprint, StringComparison.Ordinal) &&
-             HasLegacyAstrometryMarker(connection));
-
-    internal static bool IsCanonicalV17(SqliteConnection connection)
+    internal static long ReadApplicationId(SqliteConnection connection)
     {
-        if (!string.Equals(ComputeFingerprint(connection, ProcessingObjects.CurrentV17), V17Fingerprint, StringComparison.Ordinal))
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA application_id;";
+        return (long)command.ExecuteScalar()!;
+    }
+
+    internal static bool IsCanonical(SqliteConnection connection)
+    {
+        if (ReadApplicationId(connection) != ApplicationId ||
+            !string.Equals(ComputeFingerprint(connection), Fingerprint, StringComparison.Ordinal))
             return false;
-        // First-boot initialization can leave the capture journal empty before the host creates its Silo admission table.
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'silo_raw_admissions')
-                OR NOT EXISTS (SELECT 1 FROM raw_captures);
+            SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'silo_raw_admissions');
             """;
         return command.ExecuteScalar() is 1L;
     }
 
     internal static string ComputeFingerprint(SqliteConnection connection)
-        => ComputeFingerprint(connection, ProcessingObjects.Ignore);
-
-    private static bool HasLegacyAstrometryMarker(SqliteConnection connection)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT version FROM capture_processing_schema WHERE schema_key = 1;";
-        return command.ExecuteScalar() is 10L;
-    }
-
-    private static string ComputeFingerprint(SqliteConnection connection, ProcessingObjects processing)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name;";
@@ -116,25 +91,14 @@ internal static class RawIngressV13Schema
         while (reader.Read())
         {
             var name = reader.GetString(1);
-            // Include processing only when identifying the historical v16 migration source.
-            if (SharedObjects.Contains(name) && (processing != ProcessingObjects.Include ||
-                name.StartsWith("transient_", StringComparison.Ordinal) || name.StartsWith("ix_transient_", StringComparison.Ordinal)))
-            {
+            if (SharedObjects.Contains(name))
                 continue;
-            }
-            if (name == LegacyAstrometryJournalSchema.LookupIndexName &&
-                (processing == ProcessingObjects.Ignore ||
-                 (processing == ProcessingObjects.CurrentV17 && reader.GetString(0) == "index" &&
-                  reader.GetString(2) == "processing_outputs" && reader.GetString(3) == LegacyAstrometryJournalSchema.LookupIndexDefinition)))
-            {
+            if (name == AstrometryJournalSchema.LookupIndexName && reader.GetString(0) == "index" &&
+                reader.GetString(2) == "processing_outputs" && reader.GetString(3) == AstrometryJournalSchema.LookupIndexDefinition)
                 continue;
-            }
-            if (name == SiloAdmissionTable && processing == ProcessingObjects.CurrentV17 &&
-                reader.GetString(0) == "table" && reader.GetString(2) == SiloAdmissionTable &&
-                reader.GetString(3) == SiloAdmissionDefinition)
-            {
+            if (name == SiloAdmissionTable && reader.GetString(0) == "table" &&
+                reader.GetString(2) == SiloAdmissionTable && reader.GetString(3) == SiloAdmissionDefinition)
                 continue;
-            }
             foreach (var ordinal in new[] { 0, 1, 2, 3 })
             {
                 var value = reader.GetString(ordinal);
@@ -142,13 +106,5 @@ internal static class RawIngressV13Schema
             }
         }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(definition.ToString())));
-    }
-
-    private enum ProcessingObjects
-    {
-        Ignore,
-        RejectAstrometryIndex,
-        Include,
-        CurrentV17
     }
 }

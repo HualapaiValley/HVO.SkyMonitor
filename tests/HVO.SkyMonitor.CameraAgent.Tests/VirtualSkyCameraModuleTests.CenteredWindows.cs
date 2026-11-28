@@ -149,17 +149,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
-        Justification = "The fixture uses only the canonical historical processing schema.")]
-    private static async Task CreatePriorCenteredFixtureSchemaAsync(string root, CancellationToken cancellationToken)
-    {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = SqliteCaptureProcessingStore.LegacySchema9SqlForTests;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<RawCaptureReceipt> CaptureCenteredFixtureAsync(ServiceProvider provider, string root,
         DateTimeOffset start, CameraPixelFormat format, CancellationToken token)
     {
@@ -174,7 +163,6 @@ public sealed partial class VirtualSkyCameraModuleTests
             siloSettings: provider.GetRequiredService<SiloInstalledSettings>(),
             siloArtifacts: provider.GetRequiredService<SiloArtifactStorage>());
         await ingress.InitializeAsync(token).ConfigureAwait(false);
-        await CreatePriorCenteredFixtureSchemaAsync(root, token).ConfigureAwait(false);
         var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), CenteredRuntimeCatalog(start),
             new ProjectedSceneStore(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
         await using var moduleLifetime = module.ConfigureAwait(false);

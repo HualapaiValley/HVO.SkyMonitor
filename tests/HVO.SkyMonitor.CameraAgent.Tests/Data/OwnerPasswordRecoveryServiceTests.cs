@@ -356,7 +356,7 @@ public sealed class OwnerPasswordRecoveryServiceTests
                     options.AddInterceptors(queries);
                 }
             });
-            services.AddIdentityCore<ApplicationUser>()
+            services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddCameraAgentPasswordPolicy()
                 .AddDefaultTokenProviders();

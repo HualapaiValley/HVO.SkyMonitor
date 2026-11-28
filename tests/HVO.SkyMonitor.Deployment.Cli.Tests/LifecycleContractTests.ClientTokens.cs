@@ -75,19 +75,18 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("raw/.environment/environmental-observation-outbox.db", "environmental_observation_outbox", DisplayName = "environmental outbox")]
-    [DataRow("raw/.environment/environmental-observation-outbox.db", "environmental_observation_journal", DisplayName = "environmental journal")]
-    [DataRow("raw/evidence/execution-evidence-outbox.db", "execution_evidence_units", DisplayName = "execution evidence")]
-    public async Task PendingUpgradeRecovery_ARowIdInAClientActionTokenIsNeverReissued(string store, string table)
+    public async Task PendingUpgradeRecovery_AnEnvironmentalJournalRowIdIsNeverReissued()
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
-        var path = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, store);
-        ExecuteSql(path, FixtureDump(store) + $"INSERT INTO sqlite_sequence(name, seq) VALUES('{table}', 10);");
+        var path = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, EnvironmentStore);
+        ExecuteSql(path, EnvironmentalFixtureSchema + "INSERT INTO environmental_observation_journal VALUES(10);");
         await RecoverFromCandidateWriteAsync(fixture, () =>
-            ExecuteSql(path, $"UPDATE sqlite_sequence SET seq = 25 WHERE name = '{table}';"));
+            ExecuteSql(path, "INSERT INTO environmental_observation_journal VALUES(25);"));
 
-        Assert.AreEqual(25, ReadCounter(fixture.Paths, store, $"SELECT seq FROM sqlite_sequence WHERE name = '{table}';"));
+        Assert.AreEqual(25, ReadCounter(fixture.Paths, EnvironmentStore, EnvironmentalSequence));
+        ExecuteSql(path, "INSERT INTO environmental_observation_journal DEFAULT VALUES;");
+        Assert.AreEqual(26, ReadCounter(fixture.Paths, EnvironmentStore, "SELECT MAX(record_id) FROM environmental_observation_journal;"));
     }
 
     [TestMethod]

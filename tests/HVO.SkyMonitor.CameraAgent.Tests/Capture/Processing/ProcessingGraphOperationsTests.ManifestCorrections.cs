@@ -87,7 +87,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     frozenPlan = (byte[])reader[0];
                     frozenGraph = (byte[])reader[1];
                     activeSchema = reader.GetInt64(2);
-                    Assert.AreEqual(12L, activeSchema);
+                    Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, activeSchema);
                 }
                 using var legacy = connection.CreateCommand();
                 legacy.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE ledger_kind='Outputs' AND node_id<>'';";

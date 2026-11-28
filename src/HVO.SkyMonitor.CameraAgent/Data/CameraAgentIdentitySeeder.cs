@@ -25,7 +25,7 @@ internal sealed class CameraAgentIdentitySeeder(
         await using var scope = _scopeFactory.CreateAsyncScope();
         var scopedProvider = scope.ServiceProvider;
         var dbContext = scopedProvider.GetRequiredService<ApplicationDbContext>();
-        await dbContext.Database.MigrateAsync(cancellationToken).ConfigureAwait(false);
+        await CameraAgentIdentitySchema.InitializeAsync(dbContext, cancellationToken).ConfigureAwait(false);
 
         var userManager = scopedProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var user = await userManager.FindByEmailAsync(_options.AdminEmail);
