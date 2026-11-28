@@ -88,7 +88,8 @@ public sealed partial class DurableCaptureProcessingTests
             using (var gate = new CaptureAstrometryExecutionGate())
             {
                 var persistence = new CaptureProcessingPersistence(f.Fixture.Options, store, telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance, interrupted ? new AstrometryCommitInterruption() : null);
+                    NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(root),
+                    interrupted ? new AstrometryCommitInterruption() : null);
                 var graph = AstrometryGraph(f, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
                 using var currentArtifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
                 using var currentReader = new CameraAgentRetainedAstrometryService(store, currentArtifacts);
@@ -638,14 +639,9 @@ public sealed partial class DurableCaptureProcessingTests
         var manifestBytes = CaptureContractJson.Serialize(manifest);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.bin"), bytes).ConfigureAwait(false);
         await File.WriteAllBytesAsync(Path.Combine(root, "raw.json"), manifestBytes).ConfigureAwait(false);
-        if (hostCompatible)
-        {
-            // Native recovery requires canonical paths and millisecond timestamps, just as the
-            // production descriptor factory writes them. Root aliases are fixture conveniences.
-            Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
-            await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
-        }
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
         var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)

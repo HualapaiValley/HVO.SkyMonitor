@@ -155,9 +155,7 @@ internal sealed partial class CaptureProcessingPersistence
             ProcessingProduct[] products = [snapshotProduct, trailProduct, composed];
             foreach (var product in products)
             {
-                outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor, publicationNodeId, product,
-                    BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken,
-                    writeLocalCopies: silo is null).ConfigureAwait(false));
+                outputs.Add(DescribeMetadataProduct(descriptor, publicationNodeId, product));
             }
             await PersistSiloOutputsAsync(descriptor, outputs, products, publicationNodeId, null, cancellationToken).ConfigureAwait(false);
             var now = _timeProvider.GetUtcNow();

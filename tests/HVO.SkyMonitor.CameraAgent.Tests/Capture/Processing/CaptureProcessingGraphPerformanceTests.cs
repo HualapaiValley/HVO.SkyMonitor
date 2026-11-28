@@ -349,7 +349,8 @@ public sealed class CaptureProcessingGraphPerformanceTests
                     options,
                     store,
                     telemetry,
-                    new ForwardingLogger<CaptureProcessingPersistence>(runtimeObservation)),
+                    new ForwardingLogger<CaptureProcessingPersistence>(runtimeObservation),
+                    SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot)),
                 telemetry,
                 new ForwardingLogger<StandardCaptureLaneHandler>(runtimeObservation),
                 null!);

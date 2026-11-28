@@ -18,69 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class CaptureSatelliteIntegrationTests
 {
     [TestMethod]
-    public async Task ArchivedProductsKeepTheReferenceWhenCanonicalFilesDisappear()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var f = new CaptureSatelliteFixture();
-            using var provider = CreateProvider(root, f, new Clock(f.Descriptor.Timing.DurableIngressUtc));
-            var archive = Path.Combine(root, "archive");
-            var config = Configuration(root, f);
-            config = config with
-            {
-                Pipeline = config.Pipeline with
-                {
-                    Steps = config.Pipeline.Steps.Select(step => step.Id == "storage"
-                ? step with
-                {
-                    Options = System.Text.Json.JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
-                    { UpdateLatestFrame = false })
-                } : step).ToArray()
-                }
-            };
-            var raw = await CaptureAsync(provider, config, f).ConfigureAwait(false);
-            var handled = await ProcessAsync(provider, config).ConfigureAwait(false);
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, handled.Outcome, handled.Reason);
-            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-            var node = await store.ReadNodeAsync(raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
-            var input = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(Path.Combine(root,
-                node!.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema).PayloadRelativePath)).ConfigureAwait(false));
-            // Durable-local publication owns its canonical copy. Exercise an already retained archive consumer
-            // through the existing immutable metadata-copy primitive, rather than expecting Storage to duplicate it.
-            var retained = node.Outputs.Single(p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
-            var product = new ProcessingProduct(retained.Artifact.Role, retained.Artifact.Variant, retained.OutputIdentitySha256,
-                retained.Artifact.MediaType, null, await File.ReadAllBytesAsync(Path.Combine(root, retained.PayloadRelativePath)).ConfigureAwait(false),
-                retained.Artifact.ChecksumSha256, new(retained.Artifact.Recipe, retained.RecipeIdentitySha256), retained.Algorithms,
-                retained.Artifact.SourceArtifactIds, retained.TotalIntegration, retained.Compatibility)
-            { Kind = ProcessingProductKind.Metadata, SchemaVersion = retained.ProductSchemaVersion, ContentIdentitySha256 = retained.ContentIdentitySha256 };
-            await CaptureProcessingPersistence.CopyMetadataProductAsync(archive, raw.Manifest.Descriptor, "satellite", product,
-                CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotEmpty(Directory.EnumerateFiles(archive, "*.manifest.json", SearchOption.AllDirectories));
-            // A canonical-root loss must not authorize release while the recorded archive still has consumers.
-            foreach (var file in await store.ReadSatelliteConsumersAsync(raw.Manifest.Descriptor.Capture.CaptureId,
-                "satellite", CancellationToken.None).ConfigureAwait(false))
-            {
-                File.Delete(Path.Combine(root, file.PayloadRelativePath));
-                File.Delete(Path.Combine(root, file.SidecarRelativePath));
-            }
-            File.Delete(raw.StoredFrame.AbsolutePath);
-            File.Delete(Path.ChangeExtension(raw.StoredFrame.AbsolutePath, ".json"));
-            var work = provider.GetRequiredService<CaptureSatelliteWorkStore>();
-            await work.ReconcileAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ReferenceCountAsync(root, input.InputManifest()).ConfigureAwait(false));
-            Directory.Delete(archive, true);
-            await Assert.ThrowsExactlyAsync<IOException>(() => work.ReconcileAsync(root, CancellationToken.None).AsTask()).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ReferenceCountAsync(root, input.InputManifest()).ConfigureAwait(false),
-                "A missing archive root may be disconnected storage, so release remains deferred.");
-            Directory.CreateDirectory(archive); // A known empty root permits the existing bounded archive scan.
-            await work.ReconcileAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0L, await ReferenceCountAsync(root, input.InputManifest()).ConfigureAwait(false));
-        }
-        finally { Directory.Delete(root, true); }
-    }
-
-    [TestMethod]
     public async Task CorruptIntentCannotRedirectRetentionAwayFromItsActualRawCapture()
     {
         var root = CreateRoot();
@@ -236,69 +173,6 @@ public sealed partial class CaptureSatelliteIntegrationTests
         Assert.AreEqual(OrbitalAdmissionStatus.Admitted, attempt.Status);
         await store.PublishAndActivateAsync(attempt.AttemptId!, parsed.Snapshot,
             await File.ReadAllBytesAsync(Path.Combine(directory, "source.csv"), token).ConfigureAwait(false), token).ConfigureAwait(false);
-    }
-
-    private static async Task<DurableProcessingOutput> RetainCanonicalSceneAsync(string root, ServiceProvider provider,
-        HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt raw, CaptureSatelliteFixture f)
-    {
-        // Seed the existing compact-scene retained state after ordinary capture processing. The stage may already
-        // have expired; this is a real canonical scene product and a valid compact raw manifest, not a renderer stub.
-        var descriptor = raw.Manifest.Descriptor;
-        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(new VisibleSceneRequest(
-            descriptor.Timing.ExposureStartedUtc, f.Input.Plan.Observer, RigProjectionContextFactory.Create(f.Configuration.Rig),
-            new CatalogQuery(6.5, 10), new CatalogMetadata("satellite-retention", "1", new Uri("https://example.invalid"),
-                new string('A', 64), "fixture", "1"), projectionVersion: "fixture-scene-v1")).ConfigureAwait(false);
-        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
-            ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height),
-            new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
-                CaptureContractJson.ComputeDescriptorSha256(descriptor)), "configured-rig", "fixture-scene-v1");
-        var payload = ProjectedSceneJson.Serialize(scene);
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene,
-            "1.0.0", "retention-fixture-v1", JsonSerializer.SerializeToElement(new { })));
-        var sources = new[] { descriptor.Artifact.ArtifactId };
-        var product = new ProcessingProduct(FrameArtifactRole.Metadata, "projected-scene-v1",
-            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "projected-scene-v1", recipe.IdentitySha256, sources),
-            "application/json", null, payload, ProcessingIdentity.ComputePayloadSha256(payload), recipe,
-            [new("retained-scene-fixture", "v1")], sources, TimeSpan.Zero, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
-        { Kind = ProcessingProductKind.Metadata, SchemaVersion = scene.SchemaVersion, ContentIdentitySha256 = scene.SceneIdentitySha256 };
-        var output = await CaptureProcessingPersistence.CopyMetadataProductAsync(root, descriptor, "retained-scene", product,
-            CancellationToken.None).ConfigureAwait(false);
-        var node = new CaptureProcessingGraphNode("retained-scene", new RetainedSceneStep(product), ["$raw"], true,
-            BuiltInProcessingRecipes.ProjectedScene, FrameArtifactRole.Metadata, product.Variant, new string('F', 64));
-        await provider.GetRequiredService<SqliteCaptureProcessingStore>().WriteNodeAsync(descriptor.Capture.CaptureId, node,
-            DurableProcessingNodeStatus.Completed, null, 1, null, null, descriptor.Timing.DurableIngressUtc, TimeSpan.Zero,
-            ProcessingOutcomeStatus.Produced, [], 0, null, [output], CancellationToken.None).ConfigureAwait(false);
-        var manifest = raw.Manifest with
-        {
-            Scene = new(scene.SceneIdentitySha256, "fixture-rig", "satellite-retention", "1",
-                scene.Catalog.ChecksumSha256, "configured-rig", "fixture-scene-v1", "fixture-v1", "fixture-v1",
-                RigProfileHashSha256: descriptor.Profiles.Rig.Sha256, SceneUtc: descriptor.Timing.ExposureStartedUtc,
-                ProjectedSceneStageSchemaVersion: "projected-scene-stage-v1", ProjectedSceneStageKey: new string('B', 64),
-                ProjectedSceneSchemaVersion: scene.SchemaVersion, CatalogId: scene.Catalog.CatalogId)
-        };
-        Assert.IsTrue(manifest.Validate().IsValid);
-        var bytes = CaptureContractJson.Serialize(manifest);
-        await File.WriteAllBytesAsync(Path.ChangeExtension(raw.StoredFrame.AbsolutePath, ".json"), bytes).ConfigureAwait(false);
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
-        await connection.OpenAsync().ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE raw_captures SET manifest_json = $body, manifest_sha256 = $hash WHERE capture_id = $capture;";
-        command.Parameters.AddWithValue("$body", bytes);
-        command.Parameters.AddWithValue("$hash", CaptureContractJson.ComputeManifestSha256(manifest));
-        command.Parameters.AddWithValue("$capture", descriptor.Capture.CaptureId.ToString("N"));
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
-        return output;
-    }
-
-    private sealed class RetainedSceneStep(ProcessingProduct product) : ICaptureProcessingStep
-    {
-        public string Name => "retained-scene";
-        public int Order => 0;
-        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
-        {
-            context.RegisterProcessingProduct(product);
-            return ValueTask.CompletedTask;
-        }
     }
 
     private static async Task<long> ReferenceCountAsync(string root, string source)

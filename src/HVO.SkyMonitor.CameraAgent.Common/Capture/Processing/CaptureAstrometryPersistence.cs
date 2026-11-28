@@ -1,6 +1,4 @@
-using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 
@@ -19,11 +17,6 @@ internal sealed partial class CaptureProcessingPersistence
         var outputIdentity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, request.OutputVariant,
             identity.IdentitySha256, request.Inputs.Select(a => a.ArtifactId).ToArray());
         var artifactId = ProcessingIdentity.CreateArtifactId(outputIdentity);
-        var utc = descriptor.Timing.ReadoutCompletedUtc.ToUniversalTime();
-        var path = Path.Combine(_storageRoot, "derived", utc.Year.ToString("D4", CultureInfo.InvariantCulture),
-            utc.Month.ToString("D2", CultureInfo.InvariantCulture), utc.Day.ToString("D2", CultureInfo.InvariantCulture),
-            FrameArtifactRole.Metadata.ToString(), string.Concat(utc.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
-                "-", artifactId.ToString("N"), ".json"));
         var lifecycle = StorageLifecycleLock.ForRoot(_storageRoot);
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -31,26 +24,10 @@ internal sealed partial class CaptureProcessingPersistence
             if (context.ProcessingExecution is { } execution)
                 await _store.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
             await PublishPreparedAstrometryAsync(descriptor, node, contextProduct, cancellationToken).ConfigureAwait(false);
-            byte[]? bytes;
-            if (Silo is { } siloStorage)
-            {
-                await siloStorage.ResumeProcessingAsync(SiloOutputGroupId(descriptor, node, null, [artifactId]), cancellationToken)
-                    .ConfigureAwait(false);
-                bytes = await siloStorage.ReadMetadataAsync(artifactId, outputIdentity, MeasuredAstrometryJson.MaximumSolutionBytes,
-                    null, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                RawIngressFileStore.EnsureNoSymbolicLinks(_storageRoot, path);
-                bytes = null;
-                if (File.Exists(path))
-                {
-                    var length = new FileInfo(path).Length;
-                    if (length is <= 0 or > MeasuredAstrometryJson.MaximumSolutionBytes)
-                        throw new InvalidDataException("Prepared astrometry exceeds its byte bound.");
-                    bytes = await ReadCommittedFileAsync(path, length, cancellationToken).ConfigureAwait(false);
-                }
-            }
+            await Silo.ResumeProcessingAsync(SiloOutputGroupId(descriptor, node, null, [artifactId]), cancellationToken)
+                .ConfigureAwait(false);
+            var bytes = await Silo.ReadMetadataAsync(artifactId, outputIdentity, MeasuredAstrometryJson.MaximumSolutionBytes,
+                null, cancellationToken).ConfigureAwait(false);
             if (bytes is not null)
             {
                 var restored = RetainedAstrometryProducts.Restore(request, bytes, cancellationToken);
@@ -78,14 +55,7 @@ internal sealed partial class CaptureProcessingPersistence
     private async ValueTask PublishPreparedAstrometryAsync(ReconstructionDescriptor descriptor, string node, ProcessingProduct product,
         CancellationToken cancellationToken)
     {
-        if (Silo is null)
-        {
-            await CopyMetadataProductAsync(_storageRoot, descriptor, node, product, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var output = await PersistMetadataProductAsync(_storageRoot, descriptor, node, product, null,
-            provisionStorageRoot: false, cancellationToken, writeLocalCopies: false).ConfigureAwait(false);
+        var output = DescribeMetadataProduct(descriptor, node, product);
         await PersistSiloOutputsAsync(descriptor, [output], [product], node, null, cancellationToken).ConfigureAwait(false);
     }
 }

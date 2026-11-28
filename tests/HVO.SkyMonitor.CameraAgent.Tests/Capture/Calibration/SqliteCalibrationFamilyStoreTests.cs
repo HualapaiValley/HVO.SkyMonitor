@@ -382,7 +382,8 @@ public sealed class SqliteCalibrationFamilyStoreTests
             await processingStore.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var processingTelemetry = new CaptureProcessingTelemetry();
             var persistence = new CaptureProcessingPersistence(
-                options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                options, processingStore, processingTelemetry, NullLogger<CaptureProcessingPersistence>.Instance,
+                silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
             using var families = new SqliteCalibrationFamilyStore(options, TimeProvider.System, NullLogger<SqliteCalibrationFamilyStore>.Instance);
             var holds = new CompositeProcessingRetentionHolds(
                 persistence, new CameraAgentClearReferenceLoader(options), library, calibrationFamilies: families);

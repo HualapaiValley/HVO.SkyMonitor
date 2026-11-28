@@ -3,6 +3,8 @@ global using HVO.SkyMonitor.CameraAgent.Tests.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -23,9 +25,13 @@ internal static class SiloInfrastructureFixture
     private static readonly Dictionary<string, Bucket> Buckets = new(StringComparer.Ordinal);
     private static readonly List<DirectoryInfo> TemporaryRoots = [];
     private static readonly Lock Gate = new();
+    private static readonly Dictionary<string, ServiceProvider> ProductStores = new(StringComparer.Ordinal);
 
     internal static void ReleaseTemporaryRoots()
     {
+        foreach (var store in ProductStores.Values)
+            store.Dispose();
+        ProductStores.Clear();
         foreach (var directory in TemporaryRoots)
         {
             if (directory.Exists) directory.Delete(recursive: true);
@@ -142,6 +148,41 @@ internal static class SiloInfrastructureFixture
         services.AddSiloTestInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = rawIngressRoot }).Build());
         return services.BuildServiceProvider();
+    }
+
+    // Several journal fixtures construct and reopen stores directly rather than host services.
+    internal static IServiceProvider ProductStore(string root)
+    {
+        root = Path.GetFullPath(root);
+        lock (Gate)
+        {
+            foreach (var unused in ProductStores.Keys.Where(path => !Directory.Exists(path)).ToArray())
+            {
+                ProductStores[unused].Dispose();
+                ProductStores.Remove(unused);
+            }
+            if (!ProductStores.TryGetValue(root, out var provider))
+            {
+                provider = OpenStore(root);
+                ProductStores.Add(root, provider);
+            }
+            return provider;
+        }
+    }
+
+    internal static SiloArtifactStorage ProductStorage(string root)
+        => ProductStore(root).GetRequiredService<SiloArtifactStorage>();
+
+    internal static async ValueTask<DurableProcessingOutput> PublishMetadataFixtureAsync(
+        SiloArtifactStorage storage, ReconstructionDescriptor descriptor, string producer, ProcessingProduct product,
+        CancellationToken token)
+    {
+        var output = CaptureProcessingPersistence.DescribeMetadataProduct(descriptor, producer, product);
+        await storage.PublishProcessingAsync(output.ArtifactId.ToString("N"), descriptor,
+            [new(output.ArtifactId, output.Artifact.Role.ToString(), output.Artifact.MediaType, output.Artifact.ChecksumSha256,
+                product.Payload, output.EvidenceJson, output.ContentIdentitySha256, output.OutputIdentitySha256, producer,
+                output.RecipeIdentitySha256)], token).ConfigureAwait(false);
+        return output;
     }
 
     internal static async ValueTask PublishArtifactAsync(

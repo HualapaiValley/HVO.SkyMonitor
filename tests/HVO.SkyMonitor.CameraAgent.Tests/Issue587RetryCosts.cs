@@ -29,21 +29,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing
                 NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
             Assert.IsNotNull(step.Product);
-            var destination = Path.Combine(root, "retry");
             async Task CopyAsync(int _)
             {
-                var copied = await CaptureProcessingPersistence.CopyMetadataProductAsync(destination,
+                var copied = await SiloInfrastructureFixture.PublishMetadataFixtureAsync(persistence.Silo,
                     fixture.Manifest.Descriptor, "metadata", step.Product, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(step.Product.OutputIdentitySha256, copied.OutputIdentitySha256);
             }
             await CopyAsync(0).ConfigureAwait(false);
-            var before = Issue587RetryCostEvidence.Hashes(destination);
             var metrics = await Issue587RetryCostEvidence.MeasureAsync(CopyAsync).ConfigureAwait(false);
-            CollectionAssert.AreEqual(before, Issue587RetryCostEvidence.Hashes(destination));
             await Issue587RetryCostEvidence.SaveAsync(output, new
             {
                 metrics,
-                hashes = before,
                 step.Product.OutputIdentitySha256,
                 step.Product.ChecksumSha256
             }).ConfigureAwait(false);

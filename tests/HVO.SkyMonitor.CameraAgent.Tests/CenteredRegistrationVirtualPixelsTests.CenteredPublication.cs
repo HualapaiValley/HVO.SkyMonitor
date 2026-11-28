@@ -42,7 +42,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
             {
                 await store.InitializeAsync(token).ConfigureAwait(false);
                 var persistence = new CaptureProcessingPersistence(options, store, telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
+                    NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(root));
                 var plate = await RetainPlateAsync(acquired[0], store, persistence, token).ConfigureAwait(false);
                 var center = await RetainPlateAsync(reference, store, persistence, token).ConfigureAwait(false);
                 var other = mixedPresentation
@@ -102,7 +102,7 @@ public sealed partial class CenteredRegistrationVirtualPixelsTests
 
             using var reopenedStore = new SqliteCaptureProcessingStore(options);
             var reopenedPersistence = new CaptureProcessingPersistence(options, reopenedStore, telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(root));
             var reopenedViews = new SqliteCenteredViews(reopenedStore, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
             var input = new PlatePublicationInputs(acquired, reopenedPersistence);
             var layers = new CenteredViewLayerProducer(reopenedViews, reopenedPersistence, registration: input);

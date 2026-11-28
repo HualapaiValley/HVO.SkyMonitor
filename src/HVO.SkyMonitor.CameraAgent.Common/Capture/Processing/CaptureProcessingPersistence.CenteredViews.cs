@@ -36,7 +36,7 @@ internal sealed partial class CaptureProcessingPersistence
             reference.Timing.DurableIngressUtc.ToUniversalTime(), reference.Timing.ExposureStartedUtc.ToUniversalTime(),
             reference.Timing.ExposureEndedUtc.ToUniversalTime(), [], dependencies, new([]), CameraId: reference.Capture.RigId);
         _faultInjector.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt, nodeId);
-        await Silo!.PublishAsync(draft, null, cancellationToken).ConfigureAwait(false);
+        await Silo.PublishAsync(draft, null, cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask<ProcessingArtifact> ReadCenteredViewProductAsync(Guid captureId, CenteredViewArtifact pin,
@@ -103,9 +103,7 @@ internal sealed partial class CaptureProcessingPersistence
         {
             // A stable producer node preserves the journal's bounded per-producer retention ranking.
             var nodeId = product.Role == FrameArtifactRole.Preview ? CenteredViewPreviewNode : CenteredViewPublicationProducer + "-layer";
-            var output = await PersistMetadataProductAsync(_storageRoot, reference, nodeId, product,
-                BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken, writeLocalCopies: silo is null)
-                .ConfigureAwait(false);
+            var output = DescribeMetadataProduct(reference, nodeId, product);
             await PersistSiloOutputsAsync(reference, [output], [product], nodeId, null, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, CenteredViewPublicationProducer);
             var node = new CaptureProcessingGraphNode(nodeId, OnDemandMaterializationStep.Instance, [], false,

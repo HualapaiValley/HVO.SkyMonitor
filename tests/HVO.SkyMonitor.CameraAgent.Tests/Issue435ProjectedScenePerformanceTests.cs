@@ -113,7 +113,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                     using var faultStore = new SqliteCaptureProcessingStore(options);
                     var faultPersistence = new CaptureProcessingPersistence(
                         options, faultStore, faultTelemetry,
-                        NullLogger<CaptureProcessingPersistence>.Instance, new AfterPublicationFaultInjector());
+                        NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot),
+                        new AfterPublicationFaultInjector());
                     await Assert.ThrowsExactlyAsync<InjectedPublicationFaultException>(async () =>
                         await faultPersistence.WriteNodeAsync(
                             fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 1,
@@ -130,7 +131,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
                     using var telemetry = new CaptureProcessingTelemetry();
                     using var store = new SqliteCaptureProcessingStore(options);
                     var persistence = new CaptureProcessingPersistence(
-                        options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+                        options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
                     await persistence.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
                     await persistence.WriteNodeAsync(
                         fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 1,
@@ -152,7 +153,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
                     using var duplicateStore = new SqliteCaptureProcessingStore(options);
                     var duplicatePersistence = new CaptureProcessingPersistence(
                         options, duplicateStore, duplicateTelemetry,
-                        NullLogger<CaptureProcessingPersistence>.Instance);
+                        NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
                     await duplicatePersistence.WriteNodeAsync(
                         fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 2,
                         fixture.Descriptor.Timing.ExposureStartedUtc,
@@ -497,7 +498,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
         using var telemetry = new CaptureProcessingTelemetry();
         using var store = new SqliteCaptureProcessingStore(options);
         var persistence = new CaptureProcessingPersistence(
-            options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
+            options, store, telemetry, NullLogger<CaptureProcessingPersistence>.Instance, silo: SiloInfrastructureFixture.ProductStorage(options.Value.RawIngressRoot));
         var durable = await persistence.ReadNodeAsync(
             fixture.Descriptor.Capture.CaptureId, fixture.Node.Id, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(durable);

@@ -182,7 +182,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual(rightTarget, otherPending.Pending.Key);
             var read = new CenteredExposureProductReader(fresh.Ingress, fresh.Store);
             var persistence = new CaptureProcessingPersistence(fresh.Options, fresh.Store, fresh.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: fresh.Silo);
             using var handler = new StandardCaptureLaneHandler(fresh.Factory, persistence, fresh.Telemetry,
                 NullLogger<StandardCaptureLaneHandler>.Instance, fresh.Ingress, fresh.Options);
             var nextSlot = 104;
@@ -1250,7 +1250,7 @@ public sealed partial class RawCaptureIngressTests
                 var source = raw.Manifest.CenteredExposure!.Source;
                 key = new(source.Camera, source.RunId, raw.Manifest.Descriptor.Capture.CaptureId);
                 var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
+                    NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
                 using var handler = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                     NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options);
                 var lane = setup.Policy.Definitions.Single(item => item.Name == "standard");
@@ -1587,7 +1587,7 @@ public sealed partial class RawCaptureIngressTests
                 "centered-optional-input", config, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(lease);
             var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, setup.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: setup.Silo);
             using var standard = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
                 NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options);
             var result = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);

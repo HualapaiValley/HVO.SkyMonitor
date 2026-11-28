@@ -121,9 +121,7 @@ internal sealed partial class CaptureProcessingPersistence
                 }
                 else
                 {
-                    outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor, nodeId, product,
-                        BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken,
-                        writeLocalCopies: silo is null).ConfigureAwait(false));
+                    outputs.Add(DescribeMetadataProduct(descriptor, nodeId, product));
                     newProducts.Add(product);
                 }
             }

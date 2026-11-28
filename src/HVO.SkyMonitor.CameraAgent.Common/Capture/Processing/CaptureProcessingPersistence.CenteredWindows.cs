@@ -38,9 +38,7 @@ internal sealed partial class CaptureProcessingPersistence
                 ValidateProductForPublication(product);
                 if (product.Layout is not { } layout)
                 {
-                    outputs.Add(await PersistMetadataProductAsync(_storageRoot, reference, CenteredWindowCoordinator.RegistrationProducer,
-                        product, BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken,
-                        writeLocalCopies: silo is null).ConfigureAwait(false));
+                    outputs.Add(DescribeMetadataProduct(reference, CenteredWindowCoordinator.RegistrationProducer, product));
                     continue;
                 }
 

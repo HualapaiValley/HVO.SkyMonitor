@@ -102,7 +102,7 @@ public sealed partial class DurableCaptureProcessingTests
             var processed = await FrameProcessingWorker.ProcessGraphItemAsync(f.Fixture.Item, graph, persistence, telemetry,
                 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
-            using var artifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder());
+            using var artifacts = new CameraAgentArtifactService(f.Fixture.Options, store, new CameraAgentPreviewEncoder(), silo: persistence.Silo);
             using var retained = new CameraAgentRetainedAstrometryService(store, artifacts);
             if (scenario is "accepted" or "stack")
             {
@@ -153,7 +153,8 @@ public sealed partial class DurableCaptureProcessingTests
             }
             var baseOutput = await store.ReadOutputByArtifactIdAsync(previewArtifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(baseOutput);
-            CollectionAssert.AreEqual(preview.Payload.ToArray(), await File.ReadAllBytesAsync(Path.Combine(root, baseOutput.PayloadRelativePath)).ConfigureAwait(false));
+            CollectionAssert.AreEqual(preview.Payload.ToArray(), await SiloInfrastructureFixture.ReadArtifactBytesAsync(SiloInfrastructureFixture.ProductStore(root), baseOutput.ArtifactId,
+                    CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(raw.Payload), ProcessingIdentity.ComputePayloadSha256(await File.ReadAllBytesAsync(Path.Combine(root, f.Fixture.Manifest.RelativeArtifactPath)).ConfigureAwait(false)));
             if (evidenceRoot is not null)
                 await File.WriteAllTextAsync(Path.Combine(root, "viewer-fixture.json"), JsonSerializer.Serialize(new
@@ -177,7 +178,7 @@ public sealed partial class DurableCaptureProcessingTests
                 var revisedParent = PresentationProcessingProducts.CreateManifestProduct(wireManifest.BaseProduct,
                     new string('B', 64), [], "viewer-parent-revision", previewArtifact) with
                 { SchemaVersion = TransientTrailPresentation.CompositionSchemaVersion };
-                var parentOutput = await CaptureProcessingPersistence.CopyMetadataProductAsync(root, descriptor,
+                var parentOutput = await SiloInfrastructureFixture.PublishMetadataFixtureAsync(persistence.Silo, descriptor,
                     "viewer-parent-revision", revisedParent, CancellationToken.None).ConfigureAwait(false);
                 var parentNode = new CaptureProcessingGraphNode("viewer-parent-revision", new FixedMetadataProducingStep(revisedParent),
                     [], false, revisedParent.Recipe.Descriptor.Name, revisedParent.Role, revisedParent.Variant, revisedParent.OutputIdentitySha256);
