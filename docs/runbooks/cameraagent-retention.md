@@ -32,6 +32,12 @@ binding, catalog readiness and committed history.
 Install this release into fresh state with empty history. CameraAgent refuses
 the former filesystem storage settings at startup.
 
+The retired filesystem store used per-directory retention, daily file indexes,
+and central delivery acknowledgements to release artifact outbox holds. Silo
+retention evaluates configured roles and exact versions from the catalog and
+uses the Silo hold and pin records. Existing filesystem captures and their
+outbox journals are outside this release's recovery scope.
+
 ## Environmental Local History
 
 The authoritative targetless environmental journal is

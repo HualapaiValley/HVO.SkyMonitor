@@ -148,9 +148,6 @@ internal sealed class SiloArtifactStorage(SiloInstalledStorage storage, TimeProv
         ReadWithStagingAsync(token => ReadMetadataAsync(artifactId, RawEvidenceRevision, SiloJson.MaximumMetadataObjectBytes,
             sha256, token), artifactId, allowStaged ? ".json" : null, SiloJson.MaximumMetadataObjectBytes, cancellationToken);
 
-    internal bool HasStagedRawPair(Guid artifactId) =>
-        File.Exists(StagedAdmissionPath(artifactId, ".bin")) && File.Exists(StagedAdmissionPath(artifactId, ".json"));
-
     private string StagedAdmissionPath(Guid artifactId, string extension)
         => storage.PhysicalState.Resolve(RawIngress.RawIngressFileStore.AdmissionStagePath(artifactId, extension));
 

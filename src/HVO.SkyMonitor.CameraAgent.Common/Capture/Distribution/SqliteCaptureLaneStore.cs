@@ -221,25 +221,27 @@ internal sealed class SqliteCaptureLaneStore(
                 }
                 // P4 can advance while the publisher has released the raw lifecycle gate. Take the
                 // lease's visibility sample from the local WAL index, without opening any S3 objects.
+                var stage = RawIngressFileStore.GetPaths(
+                    _root, manifest.Descriptor.Timing.ExposureStartedUtc, manifest.Descriptor.Artifact.ArtifactId);
                 siloEvidenceVisible = silo is not null &&
                     await silo.HasRawEvidenceAsync(manifest.Descriptor, cancellationToken).ConfigureAwait(false);
-                if (!siloEvidenceVisible && !(silo is not null
-                    ? silo.HasStagedRawPair(manifest.Descriptor.Artifact.ArtifactId)
-                    : File.Exists(Resolve(candidate.PayloadRelativePath)) &&
-                        File.Exists(Resolve(Path.ChangeExtension(candidate.PayloadRelativePath, ".json")))))
+                if (!siloEvidenceVisible)
                 {
-                    if (silo is { BindingVerified: false })
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, stage.PayloadAbsolutePath);
+                    RawIngressFileStore.EnsureNoSymbolicLinks(_root, stage.SidecarAbsolutePath);
+                    if (!File.Exists(stage.PayloadAbsolutePath) || !File.Exists(stage.SidecarAbsolutePath))
                     {
-                        await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
-                        return null;
-                    }
-                    if (!siloEvidenceVisible)
+                        if (silo is { BindingVerified: false })
+                        {
+                            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+                            return null;
+                        }
                         throw new FileNotFoundException("Capture lane evidence is no longer retained.");
+                    }
                 }
                 var stored = new StoredFrameReference(
                     candidate.PayloadRelativePath,
-                    silo is null ? Resolve(candidate.PayloadRelativePath) : RawIngressFileStore.GetPaths(
-                        _root, manifest.Descriptor.Timing.ExposureStartedUtc, manifest.Descriptor.Artifact.ArtifactId).PayloadAbsolutePath,
+                    stage.PayloadAbsolutePath,
                     manifest.Descriptor.Timing.ExposureStartedUtc,
                     FrameArtifactRole.Raw);
                 var receipt = new RawCaptureReceipt(
@@ -1407,18 +1409,6 @@ LIMIT 1;
             return "handler-failure";
         }
         return reason;
-    }
-
-    private string Resolve(string relativePath)
-    {
-        var path = Path.GetFullPath(Path.Combine(_root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = Path.TrimEndingDirectorySeparator(_root) + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Capture lane payload path escapes the configured raw ingress root.");
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        return path;
     }
 
     private const string ValidTransientAbandonmentsCteSql = """

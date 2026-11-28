@@ -538,15 +538,11 @@ internal sealed partial class CaptureProcessingPersistence(
     {
         var entries = await _store.ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
         var artifacts = new List<ProcessingArtifact>(entries.Count);
+        var storage = silo ?? throw new InvalidOperationException("Frozen replay requires Silo storage.");
         foreach (var entry in entries)
         {
-            var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
-            if (silo is null && !File.Exists(payloadPath))
-                throw new FileNotFoundException("A frozen replay input is no longer retained.", payloadPath);
-            var payload = silo is null
-                ? await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false)
-                : await silo.ReadRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false)
-                    ?? throw new FileNotFoundException("A frozen replay input has no settled Silo publication.");
+            var payload = await storage.ReadRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false)
+                ?? throw new FileNotFoundException("A frozen replay input has no settled Silo publication.");
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
                 entry.PayloadSha256,
