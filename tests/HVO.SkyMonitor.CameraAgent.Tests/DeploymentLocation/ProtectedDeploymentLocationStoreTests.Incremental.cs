@@ -199,7 +199,8 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         using (var initial = CreateStore())
         {
             var active = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            _ = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+            var (stage, _, _) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+            RetainedFileMutations.Delete(stage);
             _ = await initial.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         }
         for (var restart = 0; restart < 2; restart++)
@@ -209,7 +210,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             store.BeforeRetainedManifestValidationForTest = () => reads++;
             _ = await store.LoadCurrentAsync(seed, false, () => true, CancellationToken.None).ConfigureAwait(false);
             _ = await store.ScrubCurrentAsync(seed, () => true, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, reads, "An unchanged admission and journal manifest should reuse their authenticated proofs.");
+            Assert.AreEqual(0, reads, "The unchanged journal manifest should reuse its authenticated proof.");
             _ = await store.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false);
         }
     }

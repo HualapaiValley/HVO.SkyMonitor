@@ -9,14 +9,14 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
-public sealed record CalibrationLibraryReconciliationSummary(
+internal sealed record CalibrationLibraryReconciliationSummary(
     int Inspected,
     int Adopted,
     int Quarantined,
     int Failed,
     int Held = 0);
 
-public sealed class CalibrationLibraryReconciler(
+internal sealed class CalibrationLibraryReconciler(
     SqliteCalibrationLibraryStore store,
     IOptions<CameraAgentHostOptions> options,
     CalibrationTelemetry? telemetry = null)

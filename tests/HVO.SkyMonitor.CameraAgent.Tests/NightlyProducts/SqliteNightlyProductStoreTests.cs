@@ -144,14 +144,8 @@ public sealed class SqliteNightlyProductStoreTests : IDisposable
     {
         var (product, lineage) = await StarTrail(1, 2);
         var detail = await _store.PublishAsync(Publication(product, lineage), CancellationToken.None);
-        var stem = detail.Summary.ProductId.ToString("N");
-        var payload = Directory.GetFiles(_root, stem + ".bin", SearchOption.AllDirectories)[0];
-        var rendition = Directory.GetFiles(_root, stem + ".jpg", SearchOption.AllDirectories)[0];
-
-        var bytes = await File.ReadAllBytesAsync(payload);
-        bytes[^1] ^= 0x01;
-        await File.WriteAllBytesAsync(payload, bytes);
-        await File.AppendAllTextAsync(rendition, "x");
+        await _silo.DamageAsync(detail.Summary.ProductId, detail.OutputIdentitySha256);
+        await _silo.DamageAsync(detail.Summary.ProductId, "rendition-1");
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
             await _store.ReadStoredProductAsync(detail.Summary.ProductId, CancellationToken.None));

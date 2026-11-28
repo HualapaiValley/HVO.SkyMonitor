@@ -9,6 +9,8 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using HVO.SkyMonitor.Imaging;
 
@@ -179,20 +181,19 @@ public sealed partial class CloudAssessmentCaptureProcessingStepTests
             var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
             var template = ReconstructableCaptureContractTests.CreateManifest(
                 CameraPixelFormat.Mono16, 2, 2, 4, payload);
-            var manifest = template with { RelativeArtifactPath = "reference.bin" };
-            await File.WriteAllBytesAsync(Path.Combine(root, "reference.bin"), payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(
-                Path.Combine(root, "reference.manifest.json"),
-                CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
-            var loader = new CameraAgentClearReferenceLoader(Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root
-            }));
-            loader.RegisterRetentionHold("reference.manifest.json");
+            using var provider = SiloInfrastructureFixture.OpenStore(root);
+            var silo = provider.GetRequiredService<SiloArtifactStorage>();
+            var artifactId = template.Descriptor.Artifact.ArtifactId;
+            var manifest = template with { RelativeArtifactPath = SiloArtifactStorage.RawReference(artifactId, ".bin") };
+            await SiloInfrastructureFixture.PublishArtifactAsync(silo, manifest.Descriptor,
+                CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor), payload,
+                SiloArtifactStorage.RawEvidenceRevision, CaptureContractJson.Serialize(manifest), CancellationToken.None)
+                .ConfigureAwait(false);
+            var loader = provider.GetRequiredService<CameraAgentClearReferenceLoader>();
+            var referenceName = SiloArtifactStorage.RawReference(artifactId, ".json");
+            loader.RegisterRetentionHold(referenceName);
 
-            var reference = await loader.LoadAsync(
-                "reference.manifest.json",
-                CancellationToken.None).ConfigureAwait(false);
+            var reference = await loader.LoadAsync(referenceName, CancellationToken.None).ConfigureAwait(false);
             var holds = await loader.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
 
             Assert.AreEqual(manifest.Descriptor.Artifact.ArtifactId, reference.ArtifactId);

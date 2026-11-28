@@ -1428,8 +1428,12 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             var location = DeploymentLocationSnapshot.Create(seed.LocationId, 1, seed.Source, null, Now, null,
                 35, -113, 0, "America/Phoenix");
             var original = ReconstructableCaptureContractTests.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+            var stage = RawIngressFileStore.GetPaths(root, Now, original.Descriptor.Artifact.ArtifactId);
+            path = stage.SidecarAbsolutePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             bytes = CaptureContractJson.Serialize(original with
             {
+                RelativeArtifactPath = stage.PayloadRelativePath,
                 Descriptor = original.Descriptor with
                 {
                     Location = location.ToProvenance(),

@@ -75,26 +75,18 @@ internal sealed class CameraAgentClearReferenceLoader(IOptions<CameraAgentHostOp
         CancellationToken cancellationToken,
         Guid? artifactId = null)
     {
-        byte[] manifestBytes;
-        if (silo is null)
-        {
-            manifestBytes = await File.ReadAllBytesAsync(ResolveSafePath(relativeManifestPath), cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            ValidateSiloReference(relativeManifestPath);
-            var rawId = ParseSiloRawReference(relativeManifestPath);
-            if (artifactId is { } expected && rawId is { } named && expected != named)
-                throw new InvalidDataException("Configured clear-reference identities differ.");
-            var id = artifactId ?? rawId ?? (calibration is null ? null :
-                await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
-            if (id is null)
-                throw new FileNotFoundException("The configured clear reference has no Silo calibration identity.");
-            manifestBytes = await silo.ReadMetadataAsync(id.Value,
-                rawId is not null ? SiloArtifactStorage.RawEvidenceRevision : CalibrationArtifactPublisher.SiloEvidenceRevision,
-                CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false)
-                ?? throw new FileNotFoundException("The configured clear reference has no settled Silo evidence.");
-        }
+        ValidateSiloReference(relativeManifestPath);
+        var rawId = ParseSiloRawReference(relativeManifestPath);
+        if (artifactId is { } expected && rawId is { } named && expected != named)
+            throw new InvalidDataException("Configured clear-reference identities differ.");
+        var id = artifactId ?? rawId ?? (calibration is null ? null :
+            await calibration.FindArtifactByManifestPathAsync(relativeManifestPath, cancellationToken).ConfigureAwait(false));
+        if (id is null || silo is null)
+            throw new FileNotFoundException("The configured clear reference has no Silo identity.");
+        var manifestBytes = await silo.ReadMetadataAsync(id.Value,
+            rawId is not null ? SiloArtifactStorage.RawEvidenceRevision : CalibrationArtifactPublisher.SiloEvidenceRevision,
+            CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The configured clear reference has no settled Silo evidence.");
         var parsed = CaptureContractJson.ParseManifest(manifestBytes);
         if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
         {

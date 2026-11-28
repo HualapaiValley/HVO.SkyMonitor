@@ -97,7 +97,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             RetainedFileMutations.Delete(stagingPath);
         }
         _timeProvider.UtcNow = Now.AddHours(49);
-        await EditJournalBytesAsync(capture, ChangeRound7Manifest(json)).ConfigureAwait(false);
+        await EditJournalBytesAsync(capture, [.. json, (byte)' ']).ConfigureAwait(false);
         using var restarted = CreateStore();
         var visited = 0;
         restarted.BeforeRetainedManifestValidationForTest = () => visited++;

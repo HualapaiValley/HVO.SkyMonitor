@@ -1479,8 +1479,11 @@ public sealed partial class ProtectedDeploymentLocationStore(
         cancellationToken.ThrowIfCancellationRequested();
         var admissions = Path.Combine(root, ".silo", "raw-admission-intents");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, admissions);
+        var staging = Path.Combine(root, ".silo", RawIngressFileStore.AdmissionStageDirectory);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, staging);
         return JournalContainsLocationEvidence(root) ||
-            Directory.Exists(admissions) && Directory.EnumerateFiles(admissions, "*.json").Any();
+            Directory.Exists(admissions) && Directory.EnumerateFiles(admissions, "*.json").Any() ||
+            Directory.Exists(staging) && Directory.EnumerateFiles(staging, "*.json").Any();
     }
 
     private static bool JournalContainsLocationEvidence(string root)

@@ -159,7 +159,6 @@ public static class CameraAgentServiceCollectionExtensions
         { Silo = provider.GetRequiredService<SiloArtifactStorage>() });
         services.AddSingleton<VirtualCalibrationAcquisitionCoordinator>();
         services.AddSingleton<CalibrationLibraryOperationsCoordinator>();
-        services.AddSingleton<CalibrationLibraryReconciler>();
         services.AddSingleton<CameraModuleOwnership>();
         services.AddSingleton<IManualFocusPreviewSource, CameraModuleManualFocusPreviewSource>();
         services.AddSingleton<IManualFocusSessionStore, ManualFocusSessionStore>();
