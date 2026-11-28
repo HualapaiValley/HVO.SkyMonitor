@@ -1996,7 +1996,6 @@ public sealed partial class RawCaptureIngressTests
                     silo: InstalledSilo,
                     siloSettings: siloProvider?.GetRequiredService<SiloInstalledSettings>(), siloArtifacts: Silo))
                 .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
-                .AddSingleton(_ => new CalibrationLibraryProcessingInputLoader(Options, new CameraAgentClearReferenceLoader(Options)))
                 .BuildServiceProvider();
             Factory = new(_services,
                 [new("Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, false),

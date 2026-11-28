@@ -32,7 +32,6 @@ internal sealed record SyntheticCalibrationEvidenceFile(
 
 internal sealed class SyntheticCalibrationReferenceStore(
     IOptions<CameraAgentHostOptions> options,
-    CameraAgentClearReferenceLoader loader,
     CalibrationArtifactPublisher? publisher = null,
     SqliteCalibrationLibraryStore? calibrationLibrary = null)
 {
@@ -206,8 +205,6 @@ internal sealed class SyntheticCalibrationReferenceStore(
             await _publisher.PublishBundleEnvelopeAsync(bundleRelativePath, CalibrationLibraryContractJson.Serialize(bundle),
                 cancellationToken).ConfigureAwait(false);
             await _publisher.PublishProfileMarkerAsync(profileRelativePath, profileJson, cancellationToken).ConfigureAwait(false);
-            foreach (var artifact in libraryArtifacts)
-                loader.RegisterRetentionHold(artifact.ManifestRelativePath);
         }
         else
         {

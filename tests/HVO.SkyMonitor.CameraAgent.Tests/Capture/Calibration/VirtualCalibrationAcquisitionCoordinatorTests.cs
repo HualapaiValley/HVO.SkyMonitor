@@ -15,6 +15,7 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
@@ -247,13 +248,9 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             var job = await fixture.Coordinator.AcquireAsync(
                 Request("processing-inputs"), CancellationToken.None).ConfigureAwait(false);
             var bundle = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
-            var options = Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                RawIngressSqliteBusyTimeoutSeconds = 1
-            });
-            var loader = new CalibrationLibraryProcessingInputLoader(
-                options, new CameraAgentClearReferenceLoader(options));
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, bundle.Bundle).ConfigureAwait(false);
+            var loader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
 
             var inputs = await loader.LoadAsync(bundle, CancellationToken.None).ConfigureAwait(false);
 
@@ -357,13 +354,10 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
                 new StoredFrameReference("light.bin", Path.Combine(root, "light.bin"), started, FrameArtifactRole.Raw),
                 CaptureContractJson.ComputeManifestSha256(manifest));
             var context = new CaptureProcessingContext(Configuration(), submission, receipt);
-            var options = Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                RawIngressSqliteBusyTimeoutSeconds = 1
-            });
-            var inputLoader = new CalibrationLibraryProcessingInputLoader(
-                options, new CameraAgentClearReferenceLoader(options));
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            var bundle = (await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
+            await CalibrationSiloFixture.PublishAsync(silo, root, bundle.Bundle).ConfigureAwait(false);
+            var inputLoader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var step = new CalibrationCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("calibration", "calibration", 0),
                 new CalibrationProcessingStepOptions { Strategy = "CalibrationLibrary", OutputVariant = "calibrated" },

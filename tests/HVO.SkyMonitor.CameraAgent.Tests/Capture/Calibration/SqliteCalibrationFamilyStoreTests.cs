@@ -596,7 +596,7 @@ public sealed class SqliteCalibrationFamilyStoreTests
                     "synthetic-calibration-model", model.SchemaVersion, SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var synthetic = await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var synthetic = await new SyntheticCalibrationReferenceStore(options)
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
         using (var library = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System))
         {

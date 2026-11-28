@@ -242,7 +242,7 @@ public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
         var started = Stopwatch.GetTimestamp();
         var options = CreateOptions(root);
         var syntheticStore = new SyntheticCalibrationReferenceStore(
-            options, new CameraAgentClearReferenceLoader(options));
+            options);
         var validModel = SyntheticModel(Seed);
         var incompleteModel = SyntheticModel(Seed + 1);
         var corruptModel = SyntheticModel(Seed + 2);

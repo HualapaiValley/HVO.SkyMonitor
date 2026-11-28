@@ -69,8 +69,7 @@ public sealed class SyntheticCalibrationPerformanceTests
                 Defects = [new SyntheticCalibrationDefect(width / 2, height / 2)]
             };
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
-            var loader = new CameraAgentClearReferenceLoader(options);
-            var store = new SyntheticCalibrationReferenceStore(options, loader);
+            var store = new SyntheticCalibrationReferenceStore(options);
             var descriptor = manifest.Descriptor with
             {
                 Profiles = manifest.Descriptor.Profiles with
@@ -101,8 +100,7 @@ public sealed class SyntheticCalibrationPerformanceTests
             var cachedMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             Assert.AreSame(first, cached);
 
-            var restartedLoader = new CameraAgentClearReferenceLoader(options);
-            var restartedStore = new SyntheticCalibrationReferenceStore(options, restartedLoader);
+            var restartedStore = new SyntheticCalibrationReferenceStore(options);
             allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
             cpuBefore = process.TotalProcessorTime;
             started = Stopwatch.GetTimestamp();

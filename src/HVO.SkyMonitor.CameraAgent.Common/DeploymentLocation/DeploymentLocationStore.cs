@@ -1201,6 +1201,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        scrub?.LoadFileMetadata(summary, cancellationToken);
         ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
         ValidateOwnedFileState(root, history, summary, strict, scrub, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -1212,7 +1213,6 @@ public sealed partial class ProtectedDeploymentLocationStore(
     private void ValidateOwnedFileState(string root, DeploymentLocationHistory history, RetainedManifestValidationIndex summary,
         bool strict, RetainedIntegrityLedger.Scrub? scrub, CancellationToken cancellationToken)
     {
-        scrub?.LoadFileMetadata(summary, cancellationToken);
         var enumeration = new EnumerationOptions
         {
             RecurseSubdirectories = true,

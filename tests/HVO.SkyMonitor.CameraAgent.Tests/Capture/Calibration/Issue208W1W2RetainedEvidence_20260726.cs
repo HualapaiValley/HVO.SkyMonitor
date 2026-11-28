@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -188,7 +189,9 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
             corruptedModule = CreateVirtualSkyModule();
             await cleanModule.InitializeAsync(configurations.Clean, CancellationToken.None).ConfigureAwait(false);
             await corruptedModule.InitializeAsync(configurations.Corrupted, CancellationToken.None).ConfigureAwait(false);
-            var inputLoader = CreateLibraryInputLoader(root);
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, published.Bundle).ConfigureAwait(false);
+            var inputLoader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var hostedStart = ResourceSnapshot.Capture();
             var lights = new List<Asi676LightEvidence>(lightCount);
             RestartEvidence? restart = null;
@@ -551,13 +554,6 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
                 new CaptureSetpoint(LightExposure, Gain, null, null)),
             CancellationToken.None);
 
-    private static CalibrationLibraryProcessingInputLoader CreateLibraryInputLoader(string root)
-    {
-        var options = CreateOptions(root);
-        return new CalibrationLibraryProcessingInputLoader(
-            options, new CameraAgentClearReferenceLoader(options));
-    }
-
     private static void AssertAsi676Layout(FrameLayoutDescriptor layout)
     {
         Assert.AreEqual(3552, layout.Width);
@@ -769,13 +765,9 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
                 Assert.AreEqual(pair.Value, hashesAfterRestart[pair.Key], pair.Key);
             }
 
-            var options = Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                RawIngressSqliteBusyTimeoutSeconds = 1
-            });
-            var loader = new CalibrationLibraryProcessingInputLoader(
-                options, new CameraAgentClearReferenceLoader(options));
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, restoredBundles.Single().Bundle).ConfigureAwait(false);
+            var loader = silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             var libraryInputs = await loader.LoadAsync(restoredBundles.Single(), CancellationToken.None)
                 .ConfigureAwait(false);
             var correctionFixture = CreateCorrectionFixture(

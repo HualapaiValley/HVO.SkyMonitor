@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
@@ -395,10 +396,10 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             using var store = fixture.Store;
             var snapshot = await store.AdoptPublishedBundleAsync(
                 fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
-            var options = CreateOptions(root);
-            var loader = new CalibrationLibraryProcessingInputLoader(
-                options, new CameraAgentClearReferenceLoader(options));
-            var baseline = await loader.LoadAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
+            using var silo = SiloInfrastructureFixture.OpenStore(root);
+            await CalibrationSiloFixture.PublishAsync(silo, root, fixture.Bundle).ConfigureAwait(false);
+            var baseline = await silo.GetRequiredService<CalibrationLibraryProcessingInputLoader>()
+                .LoadAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(4, baseline.References);
             var artifact = fixture.Bundle.Artifacts[0];
             var manifestPath = Path.Combine(
@@ -419,6 +420,9 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             };
             await File.WriteAllBytesAsync(manifestPath, CaptureContractJson.Serialize(tampered)).ConfigureAwait(false);
 
+            using var tamperedSilo = SiloInfrastructureFixture.OpenStore(Path.Combine(root, "tampered-silo"));
+            await CalibrationSiloFixture.PublishAsync(tamperedSilo, root, fixture.Bundle).ConfigureAwait(false);
+            var loader = tamperedSilo.GetRequiredService<CalibrationLibraryProcessingInputLoader>();
             await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
                 loader.LoadAsync(snapshot, CancellationToken.None)).ConfigureAwait(false);
         }
@@ -804,7 +808,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
             }
         };
         var syntheticStore = new SyntheticCalibrationReferenceStore(
-            options, new CameraAgentClearReferenceLoader(options));
+            options);
         var synthetic = await syntheticStore.GetOrCreateAsync(
             light, model, CancellationToken.None).ConfigureAwait(false);
         var bundle = synthetic.LibraryBundle;

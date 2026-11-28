@@ -662,7 +662,7 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
                     SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
-        var synthetic = await new SyntheticCalibrationReferenceStore(options, new CameraAgentClearReferenceLoader(options))
+        var synthetic = await new SyntheticCalibrationReferenceStore(options)
             .GetOrCreateAsync(light, model, CancellationToken.None).ConfigureAwait(false);
         var store = new SqliteCalibrationLibraryStore(new InitializedIngress(), options, TimeProvider.System);
         _ = await store.AdoptPublishedBundleAsync(synthetic.LibraryBundle, CancellationToken.None).ConfigureAwait(false);
