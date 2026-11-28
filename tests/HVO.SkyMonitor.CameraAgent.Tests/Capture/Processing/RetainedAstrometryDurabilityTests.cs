@@ -169,10 +169,10 @@ public sealed partial class DurableCaptureProcessingTests
                     "tamper-scene" => ProjectedSceneV1.CurrentSchemaVersion,
                     _ => MeasuredStellarAssociationsV1.CurrentSchemaVersion
                 };
-                var raw = f.Fixture.Manifest.Descriptor;
-                var artifactId = scenario == "tamper-raw" ? raw.Artifact.ArtifactId
+                var rawSource = f.Fixture.Manifest.Descriptor;
+                var artifactId = scenario == "tamper-raw" ? rawSource.Artifact.ArtifactId
                     : manifests.Keys.Single(id => ImportAstrometryProduct(manifests[id], payloads[id]).SchemaVersion == schema);
-                var revision = scenario == "tamper-raw" ? CaptureContractJson.ComputeDescriptorSha256(raw)
+                var revision = scenario == "tamper-raw" ? CaptureContractJson.ComputeDescriptorSha256(rawSource)
                     : (await restartedStore.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false))!.OutputIdentitySha256;
                 var silo = SiloInfrastructureFixture.ProductStore(root);
                 var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(silo, artifactId, revision, CancellationToken.None).ConfigureAwait(false);

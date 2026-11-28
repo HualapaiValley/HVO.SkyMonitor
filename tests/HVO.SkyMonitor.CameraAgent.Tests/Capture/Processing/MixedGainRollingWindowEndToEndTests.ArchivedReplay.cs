@@ -240,8 +240,8 @@ public sealed partial class MixedGainRollingWindowEndToEndTests
                 master.ArtifactId.ToString("D"), SiloCenteredViews.LowerHex(master.PayloadSha256), CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(retained);
             var objects = run.Provider.GetRequiredService<SiloTestStore>();
-            if (corrupt) objects.Damage(retained.Locator);
-            else objects.Delete(retained.Locator);
+            if (corrupt) objects.Damage(retained.Value.Locator);
+            else objects.Delete(retained.Value.Locator);
             var detail = await RunReplayAsync(run, replay.Execution.ExecutionId).ConfigureAwait(false);
             var node = detail.Nodes.Single(static node => node.NodeId == NodeId);
             Assert.AreEqual("TerminalFailure", node.Status, node.Reason);
