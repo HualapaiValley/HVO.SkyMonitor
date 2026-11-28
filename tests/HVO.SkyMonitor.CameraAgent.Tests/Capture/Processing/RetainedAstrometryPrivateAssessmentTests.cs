@@ -209,10 +209,14 @@ public sealed partial class DurableCaptureProcessingTests
                         }
                     };
                     var rejectionGraph = AstrometryGraph(rejectedFixture, new(new ProcessingRecipeExecutor()), gate, persistence: persistence);
-                    var rejectingNode = rejectionGraph.Nodes.Single(node => node.Id == "astrometry") with { Id = "astrometry-rejected" };
-                    var alternate = new CaptureProcessingGraph([.. rejectionGraph.Nodes.Where(node => node.Id != "astrometry"), rejectingNode]);
-                    var rejected = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item, alternate, persistence,
-                        telemetry, 1, NullLogger.Instance, token).ConfigureAwait(false);
+                    var rejectingNode = rejectionGraph.Nodes.Single(node => node.Id == "astrometry");
+                    foreach (var output in outputs[rejectingNode.Id])
+                        await RemoveLiveOutputBindingAsync(output, store).ConfigureAwait(false);
+                    await store.WriteNodeAsync(captureId, rejectingNode, DurableProcessingNodeStatus.RetryableFailure,
+                        "fixture-recompute-assessment", 1, null, null, DateTimeOffset.UtcNow, null,
+                        ProcessingOutcomeStatus.RetryableFailure, [], 0, null, [], token).ConfigureAwait(false);
+                    var rejected = await FrameProcessingWorker.ProcessGraphItemAsync(fixture.Fixture.Item, rejectionGraph, persistence,
+                        telemetry, 2, NullLogger.Instance, token).ConfigureAwait(false);
                     Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, rejected.Outcome, rejected.Reason);
                     rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!.Outputs;
                     rejectedOutput = rejectionOutputs.Single(output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
