@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -43,13 +44,8 @@ public sealed partial class DurableCaptureProcessingTests
             var context = await store.ReadOutputByArtifactIdAsync(newest.Artifact.SourceArtifactIds[3], token).ConfigureAwait(false);
             Assert.IsNotNull(associations);
             Assert.IsNotNull(context);
-            var associationsPath = Path.Combine(root, associations.PayloadRelativePath);
-            var missingPath = Path.Combine(root, "held-associations");
-            var contextPath = Path.Combine(root, context.PayloadRelativePath);
-            var contextSidecarPath = Path.Combine(root, context.SidecarRelativePath);
-            var contextBytes = await File.ReadAllBytesAsync(contextPath, token).ConfigureAwait(false);
-            var contextSidecar = await File.ReadAllBytesAsync(contextSidecarPath, token).ConfigureAwait(false);
-            var reconciler = new DerivedProductReconciler(root, store);
+            var associationsMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, associations, token).ConfigureAwait(false);
+            var contextMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, context, token).ConfigureAwait(false);
 
             var damageNextLatestRead = 0;
             var interruptFallback = 0;
@@ -67,13 +63,9 @@ public sealed partial class DurableCaptureProcessingTests
                     {
                         if (mixedInputs)
                         {
-                            File.Move(associationsPath, missingPath);
-                            var corrupted = contextBytes.ToArray();
-                            corrupted[0] ^= 1;
-                            await File.WriteAllBytesAsync(contextPath, corrupted, cancellation).ConfigureAwait(false);
-                            var reconciled = await reconciler.RunAsync(cancellation).ConfigureAwait(false);
-                            Assert.AreEqual(1, reconciled.Missing);
-                            Assert.AreEqual(1, reconciled.Quarantined);
+                            await associationsMember.RecordCopyStateAsync(SiloAvailabilityState.Missing, cancellation).ConfigureAwait(false);
+                            contextMember.FlipByte();
+                            await contextMember.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, cancellation).ConfigureAwait(false);
                         }
                         else
                         {
@@ -219,11 +211,9 @@ public sealed partial class DurableCaptureProcessingTests
 
             if (mixedInputs)
             {
-                File.Move(missingPath, associationsPath);
-                await File.WriteAllBytesAsync(contextPath, contextBytes, token).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(contextSidecarPath, contextSidecar, token).ConfigureAwait(false);
-                await store.SetOutputAvailabilityAsync(context.OutputIdentitySha256, "Available", null, token).ConfigureAwait(false);
-                await reconciler.RunAsync(token).ConfigureAwait(false);
+                await associationsMember.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
+                contextMember.FlipByte();
+                await contextMember.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
 
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() => StringAssert.Contains(page.Find(".latest-measured-solution").TextContent,

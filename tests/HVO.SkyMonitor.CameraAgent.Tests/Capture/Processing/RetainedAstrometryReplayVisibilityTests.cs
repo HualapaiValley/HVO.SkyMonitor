@@ -9,6 +9,7 @@ using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 

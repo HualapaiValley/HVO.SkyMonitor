@@ -106,13 +106,13 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreNotEqual(far.ArtifactId, rejection.ArtifactId);
                 Assert.AreEqual(rejection.ArtifactId, visible?.ArtifactId);
                 Assert.AreEqual(AstrometricAssessmentStatus.Rejected, visible?.Solution?.Assessment.Status);
-                await EvictAndRestoreFilesAsync(rejection, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(rejection, store).ConfigureAwait(false);
             }
             else Assert.IsNull(visible?.Solution);
 
             // Reinsert the exact assessment on the public persistence path from a different
             // store. Its notifications cannot invalidate the reader's candidate snapshot.
-            await EvictAndRestoreFilesAsync(far, store).ConfigureAwait(false);
+            await RemoveLiveOutputBindingAsync(far, store).ConfigureAwait(false);
             var repair = AstrometryGraph(first, new(new ProcessingRecipeExecutor()), gate);
             await PublishAsync(far, "astrometry").ConfigureAwait(false);
             if (splitRepair)
@@ -124,7 +124,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(expectedOld, partial.Value?.Summary);
                 Assert.AreEqual(CameraAgentAstrometryPublicationState.Invalidated,
                     await selectedReader.ReadPublicationStateAsync(Identity(far), token).ConfigureAwait(false));
-                await EvictAndRestoreFilesAsync(measured, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(measured, store).ConfigureAwait(false);
                 await PublishAsync(measured, "measured").ConfigureAwait(false);
                 await ExpectPublicArtifactAsync(measured.ArtifactId, CameraAgentArtifactReadStatus.Found).ConfigureAwait(false);
             }
@@ -195,7 +195,7 @@ public sealed partial class DurableCaptureProcessingTests
                 if (publishRejection)
                 {
                     var older = MeasuredAstrometryJson.Parse(
-                        await File.ReadAllBytesAsync(Path.Combine(root, oldest.PayloadRelativePath), token).ConfigureAwait(false));
+                        await ReadProductPartAsync(root, oldest).ConfigureAwait(false));
                     var settings = fixture.Options.Recipe.Solver!;
                     var rejectedFixture = fixture with
                     {
@@ -215,13 +215,13 @@ public sealed partial class DurableCaptureProcessingTests
                     rejectionOutputs = (await store.ReadNodeAsync(captureId, rejectingNode.Id, token).ConfigureAwait(false))!.Outputs;
                     rejectedOutput = rejectionOutputs.Single(output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
                     var rejectedSolution = MeasuredAstrometryJson.Parse(
-                        await File.ReadAllBytesAsync(Path.Combine(root, rejectedOutput.PayloadRelativePath), token).ConfigureAwait(false));
+                        await ReadProductPartAsync(root, rejectedOutput).ConfigureAwait(false));
                     Assert.AreEqual(AstrometricAssessmentStatus.Rejected, rejectedSolution.Assessment.Status);
                     foreach (var output in rejectionOutputs)
-                        await EvictAndRestoreFilesAsync(output, store).ConfigureAwait(false);
+                        await RemoveLiveOutputBindingAsync(output, store).ConfigureAwait(false);
                 }
-                if (privateMeasurement) await EvictAndRestoreFilesAsync(measuredOutput, store).ConfigureAwait(false);
-                await EvictAndRestoreFilesAsync(fit, store).ConfigureAwait(false);
+                if (privateMeasurement) await RemoveLiveOutputBindingAsync(measuredOutput, store).ConfigureAwait(false);
+                await RemoveLiveOutputBindingAsync(fit, store).ConfigureAwait(false);
                 var live = await lanes.ClaimAsync(standard, "stage-private-fit", config, token).ConfigureAwait(false);
                 Assert.IsNotNull(live);
                 Assert.AreEqual(captureId, live.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
@@ -264,20 +264,12 @@ public sealed partial class DurableCaptureProcessingTests
                 }
             }
 
-            async ValueTask EvictAndRestoreFilesAsync(DurableProcessingOutput fit, SqliteCaptureProcessingStore writer)
+            async ValueTask RemoveLiveOutputBindingAsync(DurableProcessingOutput fit, SqliteCaptureProcessingStore writer)
             {
-                var path = Path.Combine(root, fit.PayloadRelativePath);
-                var sidecarPath = Path.Combine(root, fit.SidecarRelativePath);
-                var payload = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                var sidecar = await File.ReadAllBytesAsync(sidecarPath, token).ConfigureAwait(false);
-                var operation = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", fit.OutputIdentitySha256,
-                    fit.PayloadRelativePath, fit.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}",
-                    "retention-expired", payload.Length + sidecar.Length);
-                await writer.PlanLifecycleOperationAsync(operation, token).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, writer).ResumeOperationAsync(operation, token).ConfigureAwait(false);
+                await writer.CompleteLifecycleOperationAsync(new(Guid.NewGuid().ToString("N"), "delete",
+                    fit.OutputIdentitySha256, fit.PayloadRelativePath, fit.SidecarRelativePath,
+                    "unused", "retired-live-binding-fixture", 0), token).ConfigureAwait(false);
                 Assert.IsNull(await writer.ReadOutputByArtifactIdAsync(fit.ArtifactId, token).ConfigureAwait(false));
-                await File.WriteAllBytesAsync(path, payload, token).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(sidecarPath, sidecar, token).ConfigureAwait(false);
             }
 
             static CameraAgentAstrometryAssessmentIdentity Identity(DurableProcessingOutput fit)

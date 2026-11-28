@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -51,25 +52,13 @@ public sealed partial class DurableCaptureProcessingTests
             foreach (var solution in solutions.Skip(1).Take(2))
                 targets.Add((await store.ReadOutputByArtifactIdAsync(solution.Artifact.SourceArtifactIds[3], token).ConfigureAwait(false))!);
             targets.Add(solutions[3]);
-            var savedPayloads = new Dictionary<Guid, byte[]>();
-            var savedSidecars = new Dictionary<Guid, byte[]>();
+            var members = new List<SiloInfrastructureFixture.RetainedMember>();
             foreach (var target in targets)
             {
-                var path = Path.Combine(root, target.PayloadRelativePath);
-                var bytes = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                savedPayloads.Add(target.ArtifactId, bytes);
-                savedSidecars.Add(target.ArtifactId, await File.ReadAllBytesAsync(Path.Combine(root, target.SidecarRelativePath), token).ConfigureAwait(false));
-                var corrupted = (byte[])bytes.Clone();
-                corrupted[0] ^= 1;
-                await File.WriteAllBytesAsync(path, corrupted, token).ConfigureAwait(false);
-            }
-            var reconciliation = await new DerivedProductReconciler(root, store).RunAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(3, reconciliation.Quarantined);
-            foreach (var target in targets)
-            {
-                var persisted = await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false);
-                Assert.AreEqual("Quarantined", persisted?.AvailabilityState);
-                Assert.AreEqual("payload-checksum-mismatch", persisted?.AvailabilityReason);
+                var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, target, token).ConfigureAwait(false);
+                member.FlipByte();
+                await member.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token).ConfigureAwait(false);
+                members.Add(member);
             }
 
             var delayed = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -151,15 +140,13 @@ public sealed partial class DurableCaptureProcessingTests
 
             // Restore a required input with its exact previously committed bytes and make it available.
             // Its assessment identity is unchanged, so invalidation must include the dependent output.
-            var repaired = targets[1];
-            await File.WriteAllBytesAsync(Path.Combine(root, repaired.PayloadRelativePath), savedPayloads[repaired.ArtifactId], token).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(Path.Combine(root, repaired.SidecarRelativePath), savedSidecars[repaired.ArtifactId], token).ConfigureAwait(false);
-            await store.SetOutputAvailabilityAsync(repaired.OutputIdentitySha256, "Available", null, token).ConfigureAwait(false);
-            await store.SetOutputAvailabilityAsync(repaired.OutputIdentitySha256, "Missing", "fixture-missing", token).ConfigureAwait(false);
+            var repaired = members[1];
+            repaired.FlipByte();
+            await repaired.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
             var awaitingInput = await reader.ReadLatestAcceptedAsync(previousSummaries[2], token).ConfigureAwait(false);
             Assert.IsFalse(awaitingInput.Completed);
             Assert.IsFalse(awaitingInput.PreviousSummaryQuarantined);
-            await store.RestoreMissingOutputAvailableAsync(repaired.OutputIdentitySha256, token).ConfigureAwait(false);
+            await repaired.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
             var recovered = await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false);
             Assert.IsTrue(recovered.Completed);
             Assert.AreEqual(previousSummaries[2], recovered.Summary);

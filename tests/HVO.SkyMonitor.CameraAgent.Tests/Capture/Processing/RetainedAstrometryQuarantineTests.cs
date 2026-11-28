@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -51,7 +52,7 @@ public sealed partial class DurableCaptureProcessingTests
                 target = (await store.ReadOutputByArtifactIdAsync(contextId, token).ConfigureAwait(false))!;
             }
 
-            var path = Path.Combine(root, target.PayloadRelativePath);
+            var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, target, token).ConfigureAwait(false);
             using var artifacts = SiloInfrastructureFixture.OpenArtifactReader(fixture.Fixture.Options, store);
             var intermittent = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             var failNextOpen = false;
@@ -63,12 +64,16 @@ public sealed partial class DurableCaptureProcessingTests
                         return await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
 
                     failNextOpen = false;
-                    using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-                    var result = await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
-                    Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
-                    Assert.IsNull(result.Content);
-                    faults++;
-                    return result;
+                    member.SetUnavailable(true);
+                    try
+                    {
+                        var result = await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                        Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, result.Status);
+                        Assert.IsNull(result.Content);
+                        faults++;
+                        return result;
+                    }
+                    finally { member.SetUnavailable(false); }
                 });
 
             using var service = CreateUnpooledAstrometryReader(store, intermittent.Object);
@@ -84,29 +89,15 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(1, faults);
             Assert.AreEqual(accepted, await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false));
 
-            var reconciler = new DerivedProductReconciler(root, store);
-            var displaced = Path.Combine(root, "displaced");
-            File.Move(path, displaced);
-            var missing = await reconciler.RunAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(1, missing.Missing);
-            Assert.AreEqual("Missing", (await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+            await member.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
             Assert.AreEqual(new CameraAgentLatestAstrometryRead(false),
                 await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false));
 
-            File.Move(displaced, path);
-            await reconciler.RunAsync(token).ConfigureAwait(false);
-            Assert.AreEqual("Available", (await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
+            await member.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
             Assert.AreEqual(accepted, await reader.ReadLatestAcceptedAsync(token).ConfigureAwait(false));
 
-            var corrupted = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-            corrupted[0] ^= 1;
-            await File.WriteAllBytesAsync(path, corrupted, token).ConfigureAwait(false);
-            var reconciliation = await reconciler.RunAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(1, reconciliation.Quarantined);
-            var quarantined = await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false);
-            Assert.AreEqual("Quarantined", quarantined?.AvailabilityState);
-            Assert.AreEqual("payload-checksum-mismatch", quarantined?.AvailabilityReason);
-            Assert.IsFalse(File.Exists(path));
+            member.FlipByte();
+            await member.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token).ConfigureAwait(false);
 
             var expectedCapture = olderOutput?.Capture.CaptureId;
             for (var attempt = 0; attempt < 2; attempt++)
@@ -130,13 +121,8 @@ public sealed partial class DurableCaptureProcessingTests
 
             if (olderOutput is not null)
             {
-                await restartedStore.PlanLifecycleOperationAsync(new(
-                    Guid.NewGuid().ToString("N"), "delete", olderOutput.OutputIdentitySha256,
-                    olderOutput.PayloadRelativePath, olderOutput.SidecarRelativePath,
-                    "processing-quarantine/expired-astrometry", "retention-expired", 0), token).ConfigureAwait(false);
-                await new DerivedProductReconciler(root, restartedStore).RunAsync(token).ConfigureAwait(false);
-                Assert.IsNull(await restartedStore.ReadOutputByArtifactIdAsync(olderOutput.ArtifactId, token).ConfigureAwait(false));
-                Assert.IsFalse(File.Exists(Path.Combine(root, olderOutput.PayloadRelativePath)));
+                var olderMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, olderOutput, token).ConfigureAwait(false);
+                await olderMember.ExpireAsync(token).ConfigureAwait(false);
                 Assert.AreEqual(new CameraAgentLatestAstrometryRead(true),
                     await restartedReader.ReadLatestAcceptedAsync(token).ConfigureAwait(false));
             }
@@ -211,7 +197,9 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
             });
 
-            using (File.Open(Path.Combine(root, newest.PayloadRelativePath), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            var newestMember = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, newest, token).ConfigureAwait(false);
+            newestMember.SetUnavailable(true);
+            try
             {
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 page.WaitForAssertion(() =>
@@ -223,7 +211,7 @@ public sealed partial class DurableCaptureProcessingTests
                 });
             }
 
-            var reconciler = new DerivedProductReconciler(root, store);
+            finally { newestMember.SetUnavailable(false); }
             if (quarantinedSource == "raw")
             {
                 var frame = evidence.Solution!.Assessment.Frame;
@@ -245,34 +233,24 @@ public sealed partial class DurableCaptureProcessingTests
                 var target = quarantinedSource == "context"
                     ? (await store.ReadOutputByArtifactIdAsync(newest.Artifact.SourceArtifactIds[3], token).ConfigureAwait(false))!
                     : newest;
-                var path = Path.Combine(root, target.PayloadRelativePath);
-                var corrupted = await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
-                corrupted[0] ^= 1;
-                await File.WriteAllBytesAsync(path, corrupted, token).ConfigureAwait(false);
-                var reconciliation = await reconciler.RunAsync(token).ConfigureAwait(false);
-                Assert.AreEqual(1, reconciliation.Quarantined);
-                Assert.AreEqual("Quarantined", (await store.ReadOutputByArtifactIdAsync(target.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
-                Assert.IsFalse(File.Exists(path));
+                var damaged = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, target, token).ConfigureAwait(false);
+                damaged.FlipByte();
+                await damaged.RecordCopyStateAsync(SiloAvailabilityState.Quarantined, token).ConfigureAwait(false);
             }
             Assert.AreEqual("retained-evidence-invalid",
                 (await reader.GetAsync(latest.CaptureId, token).ConfigureAwait(false)).Reason);
 
-            var olderPath = Path.Combine(root, older.PayloadRelativePath);
-            var displaced = Path.Combine(root, "older.displaced");
+            var fallback = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, older, token).ConfigureAwait(false);
             var missingFallback = quarantinedSource == "assessment";
             if (missingFallback)
-            {
-                File.Move(olderPath, displaced);
-                var missing = await reconciler.RunAsync(token).ConfigureAwait(false);
-                Assert.AreEqual(1, missing.Missing);
-            }
-            using (!missingFallback ? File.Open(olderPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None) : null)
+                await fallback.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
+            else
+                fallback.SetUnavailable(true);
+            try
             {
                 var fault = await artifacts.OpenContentAsync(older.ArtifactId, token).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable, fault.Status);
                 Assert.IsNull(fault.Content);
-                Assert.AreEqual(missingFallback ? "Missing" : "Available",
-                    (await store.ReadOutputByArtifactIdAsync(older.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
                 var pending = await service.GetLatestAcceptedAstrometryAsync(token, latest).ConfigureAwait(false);
                 Assert.AreEqual(OperatorUiResultKind.Unavailable, pending.Kind);
 
@@ -287,6 +265,7 @@ public sealed partial class DurableCaptureProcessingTests
                     Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                 }, TimeSpan.FromSeconds(5));
             }
+            finally { fallback.SetUnavailable(false); }
             if (quarantinedSource == "context")
             {
                 using var cancellation = new CancellationTokenSource();
@@ -307,11 +286,7 @@ public sealed partial class DurableCaptureProcessingTests
             }
 
             if (missingFallback)
-            {
-                File.Move(displaced, olderPath);
-                await reconciler.RunAsync(token).ConfigureAwait(false);
-                Assert.AreEqual("Available", (await store.ReadOutputByArtifactIdAsync(older.ArtifactId, token).ConfigureAwait(false))?.AvailabilityState);
-            }
+                await fallback.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
 
             await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
             page.WaitForAssertion(() =>

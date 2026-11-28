@@ -244,7 +244,13 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
         catch (FileNotFoundException)
         {
-            return new(CameraAgentArtifactReadStatus.Gone);
+            var disposition = await silo.ReadRetainedEvidenceFailureAsync([row.ArtifactId], cancellationToken).ConfigureAwait(false);
+            return new(disposition switch
+            {
+                SiloAvailabilityState.Quarantined => CameraAgentArtifactReadStatus.Conflict,
+                SiloAvailabilityState.Missing => CameraAgentArtifactReadStatus.Unavailable,
+                _ => CameraAgentArtifactReadStatus.Gone
+            });
         }
         catch (InvalidDataException)
         {
