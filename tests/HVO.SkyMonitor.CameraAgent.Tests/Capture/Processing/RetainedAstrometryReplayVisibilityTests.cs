@@ -3,13 +3,13 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
-using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -29,7 +29,8 @@ public sealed partial class DurableCaptureProcessingTests
             var token = CancellationToken.None;
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 commit: static (journal, entry, _) => journal.CommitAsync(entry, CancellationToken.None)).ConfigureAwait(false);
-            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root,
+                SiloInfrastructureFixture.ProductStore(root).GetRequiredService<SiloInstalledStorage>());
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var pipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(root);
@@ -59,11 +60,7 @@ public sealed partial class DurableCaptureProcessingTests
             var graph = AstrometryGraph(next, new(new ProcessingRecipeExecutor()), gate);
             var measuredNode = graph.Nodes.Single(node => node.Id == "measured");
             var sceneNode = graph.Nodes.Single(node => node.Id == "scene");
-            var payloadPath = Path.Combine(root, measured.PayloadRelativePath);
-            var sidecarPath = Path.Combine(root, measured.SidecarRelativePath);
-            var payload = await File.ReadAllBytesAsync(payloadPath, token).ConfigureAwait(false);
-            var sidecar = await File.ReadAllBytesAsync(sidecarPath, token).ConfigureAwait(false);
-            var reconciler = new DerivedProductReconciler(root, store);
+            var member = await SiloInfrastructureFixture.OpenMemberFixtureAsync(root, measured, token).ConfigureAwait(false);
 
             var lanes = provider.GetRequiredService<ICaptureLaneStore>();
             await lanes.InitializeLanesAsync(token).ConfigureAwait(false);
@@ -93,23 +90,19 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsNotNull(newerFit);
             Assert.AreEqual(newest.ArtifactId, newerFit.ArtifactId);
 
-            var displaced = Path.Combine(root, "held-measured-payload");
-            File.Move(payloadPath, displaced);
-            Assert.AreEqual(1, (await reconciler.RunAsync(token).ConfigureAwait(false)).Missing);
+            await member.RecordCopyStateAsync(SiloAvailabilityState.Missing, token).ConfigureAwait(false);
             var missing = await warmService.GetLatestAcceptedAstrometryAsync(token, newerFit).ConfigureAwait(false);
             Assert.IsFalse(missing.Value!.Completed);
             Assert.IsFalse(missing.Value.PreviousSummaryInvalidated);
-            File.Move(displaced, payloadPath);
-            await reconciler.RunAsync(token).ConfigureAwait(false);
+            await member.RecordCopyStateAsync(SiloAvailabilityState.Restored, token).ConfigureAwait(false);
 
-            await EvictMeasurementAsync().ConfigureAwait(false);
+            await LosePublicProjectionAsync().ConfigureAwait(false);
             var fallback = await warmService.GetLatestAcceptedAstrometryAsync(token, newerFit).ConfigureAwait(false);
             Assert.IsTrue(fallback.IsSuccess);
             Assert.IsTrue(fallback.Value!.PreviousSummaryEvicted);
             Assert.AreEqual(olderFit, fallback.Value.Summary);
             await ExpectPublicArtifactAsync(measured.ArtifactId, CameraAgentArtifactReadStatus.NotFound).ConfigureAwait(false);
 
-            await RestoreFilesAsync().ConfigureAwait(false);
             if (stageLive)
             {
                 await WriteExecutionOutputAsync(measuredNode, measured, liveExecution).ConfigureAwait(false);
@@ -155,8 +148,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsTrue(afterReinsert.Value!.Completed, "An exact input held only by completed private replay cannot block earlier public fits.");
                 Assert.IsTrue(afterReinsert.Value.PreviousSummaryEvicted);
                 Assert.AreEqual(olderFit, afterReinsert.Value.Summary);
-                await EvictMeasurementAsync().ConfigureAwait(false);
-                await RestoreFilesAsync().ConfigureAwait(false);
+                await LosePublicProjectionAsync().ConfigureAwait(false);
                 var repairStore = reopen ? reopenedStore : store;
                 await repairStore.WriteNodeAsync(capture, measuredNode, DurableProcessingNodeStatus.Completed,
                     null, 2, null, null, DateTimeOffset.UtcNow, null, ProcessingOutcomeStatus.Produced,
@@ -170,20 +162,16 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsFalse(restored.Value!.SelectedAssessmentInvalidated);
             Assert.AreEqual(newerFit, restored.Value.Summary);
 
-            async ValueTask EvictMeasurementAsync()
+            async ValueTask LosePublicProjectionAsync()
             {
-                var operation = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", measured.OutputIdentitySha256,
-                    measured.PayloadRelativePath, measured.SidecarRelativePath, $"processing-deletion-tombstones/{Guid.NewGuid():N}",
-                    "retention-expired", payload.Length + sidecar.Length);
-                await store.PlanLifecycleOperationAsync(operation, token).ConfigureAwait(false);
-                await reconciler.ResumeOperationAsync(operation, token).ConfigureAwait(false);
+                // Lose the mutable projection while the exact member survives for re-adoption.
+                using var journal = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False;Foreign Keys=True");
+                await journal.OpenAsync(token).ConfigureAwait(false);
+                using var command = journal.CreateCommand();
+                command.CommandText = "DELETE FROM processing_outputs WHERE output_identity_sha256 = $identity;";
+                command.Parameters.AddWithValue("$identity", measured.OutputIdentitySha256);
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token).ConfigureAwait(false));
                 Assert.IsNull(await store.ReadOutputByArtifactIdAsync(measured.ArtifactId, token).ConfigureAwait(false));
-            }
-
-            async ValueTask RestoreFilesAsync()
-            {
-                await File.WriteAllBytesAsync(payloadPath, payload, token).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(sidecarPath, sidecar, token).ConfigureAwait(false);
             }
 
             async ValueTask WriteExecutionOutputAsync(CaptureProcessingGraphNode node, DurableProcessingOutput output,

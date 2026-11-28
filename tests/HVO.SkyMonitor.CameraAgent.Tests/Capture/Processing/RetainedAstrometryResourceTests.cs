@@ -34,14 +34,9 @@ public sealed partial class DurableCaptureProcessingTests
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(0, projectionOverride: projection).ConfigureAwait(false);
             var fixture = await CreateAstrometryDurabilityFixtureAsync(root, reference: reference,
                 recipe: MeasuredAstrometryFixture.PerformanceOptions).ConfigureAwait(false);
-            using var provider = SiloInfrastructureFixture.OpenStore(root);
+            var provider = SiloInfrastructureFixture.ProductStore(root);
             var silo = provider.GetRequiredService<SiloArtifactStorage>();
             var objects = provider.GetRequiredService<SiloTestStore>();
-            var rawManifest = fixture.Fixture.Manifest;
-            await SiloInfrastructureFixture.PublishArtifactAsync(silo, rawManifest.Descriptor,
-                CaptureContractJson.ComputeDescriptorSha256(rawManifest.Descriptor), reference.Raw.Payload,
-                SiloArtifactStorage.RawEvidenceRevision, CaptureContractJson.Serialize(rawManifest), CancellationToken.None)
-                .ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Fixture.Options, silo: silo);
             using var gate = new CaptureAstrometryExecutionGate();

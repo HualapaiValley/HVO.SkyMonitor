@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -156,10 +157,11 @@ public sealed partial class ProcessingGraphOperationsTests
         return pipeline;
     }
 
-    internal static ServiceProvider CreateRemainingOptionsProvider(string root) => CreateProvider(root,
+    internal static ServiceProvider CreateRemainingOptionsProvider(string root, SiloInstalledStorage? sharedStorage = null) => CreateProvider(root,
         configureServices: services =>
         {
             services.AddSingleton(Moq.Mock.Of<ICameraAgentOrbitalTimeSource>());
             services.AddSingleton(Moq.Mock.Of<IDeploymentLocationStore>());
+            if (sharedStorage is not null) services.AddSingleton(sharedStorage);
         });
 }

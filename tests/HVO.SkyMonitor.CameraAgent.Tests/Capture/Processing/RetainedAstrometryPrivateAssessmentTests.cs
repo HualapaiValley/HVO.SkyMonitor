@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing;
@@ -32,7 +33,8 @@ public sealed partial class DurableCaptureProcessingTests
             var first = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
                 commit: static (journal, entry, _) => journal.CommitAsync(entry, CancellationToken.None)).ConfigureAwait(false);
             var probe = new AstrometryLookupBudget();
-            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root,
+                SiloInfrastructureFixture.ProductStore(root).GetRequiredService<SiloInstalledStorage>());
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var pipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(root);
