@@ -579,6 +579,7 @@ public sealed partial class TransientWorkerRuntimeTests
                 pendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
             Assert.IsTrue(pendingCaptures.All(static capture =>
                 capture.AgentId == "transient-runtime-agent"));
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(provider, CancellationToken.None).ConfigureAwait(false);
             var operations = await provider.GetRequiredService<CameraAgentOperationsSummaryProvider>()
                 .GetAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(2L, operations.RawIngress.Value.PendingCount);

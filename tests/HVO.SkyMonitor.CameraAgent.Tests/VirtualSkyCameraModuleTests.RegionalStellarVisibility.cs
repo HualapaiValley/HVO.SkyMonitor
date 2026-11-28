@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -12,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -266,7 +268,16 @@ public sealed partial class VirtualSkyCameraModuleTests
             profile = CreateRegionalVisibilityProfile(root, RegionalNightUtc, CameraPixelFormat.Mono16, cloudScenario: patchy);
             var catalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, profile, starsPerInnerTile: 4,
                 tiles: clearTiles.Concat(opaqueTiles).ToHashSet());
-            var fault = new MissingLinearBeforeStep30bFault(root);
+            var fault = new RegionalVisibilityInputFault(static async (provider, captureId, cancellationToken) =>
+            {
+                var linear = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+                    .ReadNodeAsync(captureId, "linear", cancellationToken).ConfigureAwait(false);
+                Assert.IsNotNull(linear);
+                var output = Assert.ContainsSingle(linear.Outputs);
+                var locator = await SiloInfrastructureFixture.ReadLocalLocatorAsync(provider, output.ArtifactId,
+                    output.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+                provider.GetRequiredService<SiloTestStore>().Delete(locator);
+            });
 
             var assessment = await RunSingleRegionalVisibilityAsync(root, clock, deviceClock, profile, catalog,
                 RegionalNightUtc, token, fault).ConfigureAwait(false);
@@ -291,17 +302,27 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private sealed class MissingLinearBeforeStep30bFault(string root) : ICaptureProcessingFaultInjector
+    private sealed class RegionalVisibilityInputFault(
+        Func<IServiceProvider, Guid, CancellationToken, Task> damage) : ICaptureProcessingFaultInjector
     {
+        private IServiceProvider _provider = null!;
+        private Guid _captureId;
+        private CancellationToken _token;
+
+        internal void Bind(IServiceProvider provider, RawCaptureReceipt receipt, CancellationToken token)
+        {
+            _provider = provider;
+            _captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
+            _token = token;
+        }
+
         public bool Injected { get; private set; }
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
             if (!Injected && nodeId == "regional-visibility" && point == CaptureProcessingFaultPoint.BeforeNodeExecution)
             {
-                var linear = Directory.EnumerateFiles(Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories)
-                    .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Calibrated");
-                File.Move(linear, linear + ".moved");
+                damage(_provider, _captureId, _token).GetAwaiter().GetResult();
                 Injected = true;
             }
         }
@@ -365,9 +386,9 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     [TestMethod]
     [DataRow(false, DisplayName = "RegionalStellarVisibility_WithholdsWhenDefectMaskPayloadIsCorrupt")]
-    [DataRow(true, DisplayName = "RegionalStellarVisibility_WithholdsWhenDefectMaskManifestIsASymlink")]
+    [DataRow(true, DisplayName = "RegionalStellarVisibility_WithholdsWhenDefectMaskEvidenceIsMissing")]
     public async Task RegionalStellarVisibility_ReferenceCalibratedExposureResolvesDefectMaskByIdAndWithholdsWhenUnverifiable(
-        bool linkManifest)
+        bool missingEvidence)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-regvis-refcal");
         var token = TestContext.CancellationToken;
@@ -417,7 +438,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             // Calibration and ExposureMeasurement succeed, then step 30b must fail-closed (withhold with DefectMaskUnavailable).
             var defectArtifactId = assessment.Sources.DefectMaskArtifactId.Value;
             var defectSha = assessment.Sources.DefectMaskSha256!;
-            var calibrationStore = provider.GetRequiredService<HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.SqliteCalibrationLibraryStore>();
+            var calibrationStore = provider.GetRequiredService<SqliteCalibrationLibraryStore>();
             var defectEntry = await calibrationStore.FindMasterArtifactAsync(
                 defectArtifactId, CalibrationReferenceKinds.Defect, defectSha, token).ConfigureAwait(false);
             Assert.IsNotNull(defectEntry);
@@ -430,8 +451,29 @@ public sealed partial class VirtualSkyCameraModuleTests
                     CameraPixelFormat.Mono16,
                     syntheticCalibration: syntheticCalibration);
                 var corruptCatalog = CreateRegionalVisibilityCatalog(RegionalNightUtc, corruptProfile, starsPerInnerTile: 4);
-                var corruptFault = new UnverifiableDefectBeforeStep30bFault(
-                    faultRoot, linkManifest ? Path.Combine(root, "external-defect.json") : null);
+                var corruptFault = new RegionalVisibilityInputFault(async (services, _, cancellationToken) =>
+                {
+                    var library = services.GetRequiredService<SqliteCalibrationLibraryStore>();
+                    var page = await library.GetBundlePageAsync(2, null, cancellationToken).ConfigureAwait(false);
+                    var defect = Assert.ContainsSingle(Assert.ContainsSingle(page.Items).Bundle.Artifacts.Where(
+                        static artifact => artifact.Role == "master" && artifact.Kind == CalibrationReferenceKinds.Defect));
+                    var objects = services.GetRequiredService<SiloTestStore>();
+                    var evidence = await SiloInfrastructureFixture.ReadLocalLocatorAsync(services, defect.ArtifactId,
+                        CalibrationArtifactPublisher.SiloEvidenceRevision, cancellationToken).ConfigureAwait(false);
+                    if (missingEvidence)
+                    {
+                        objects.Delete(evidence);
+                        return;
+                    }
+                    var storage = services.GetRequiredService<SiloArtifactStorage>();
+                    var manifest = await storage.ReadMetadataAsync(defect.ArtifactId, CalibrationArtifactPublisher.SiloEvidenceRevision,
+                        CalibrationLibraryContractJson.MaximumBundleBytes, null, cancellationToken).ConfigureAwait(false);
+                    Assert.IsNotNull(manifest);
+                    var descriptor = CaptureContractJson.ParseManifest(manifest).Document!.Manifest!.Descriptor;
+                    var payload = await SiloInfrastructureFixture.ReadLocalLocatorAsync(services, defect.ArtifactId,
+                        CaptureContractJson.ComputeDescriptorSha256(descriptor), cancellationToken).ConfigureAwait(false);
+                    objects.Damage(payload);
+                });
                 var corruptClock = new CenteredClock { UtcNow = RegionalNightUtc };
                 using var corruptProvider = RegionalVisibilityProvider(
                     faultRoot, corruptClock, corruptProfile.DeploymentLocation!, corruptCatalog, corruptFault);
@@ -446,6 +488,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var (corruptReceipt, _) = await CaptureAndAdmitRegionalAsync(
                     corruptProvider, corruptIngress, corruptModule, corruptDeviceClock,
                     corruptClock, corruptActive, RegionalNightUtc, token).ConfigureAwait(false);
+                corruptFault.Bind(corruptProvider, corruptReceipt, token);
                 await ProcessCenteredRuntimeExposureAsync(corruptProvider, corruptActive, token).ConfigureAwait(false);
 
                 Assert.IsTrue(corruptFault.Injected);
@@ -469,35 +512,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         finally
         {
             Directory.Delete(root, recursive: true);
-        }
-    }
-
-    private sealed class UnverifiableDefectBeforeStep30bFault(string root, string? externalManifest) : ICaptureProcessingFaultInjector
-    {
-        public bool Injected { get; private set; }
-
-        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
-        {
-            if (!Injected &&
-                string.Equals(nodeId, "regional-visibility", StringComparison.Ordinal) &&
-                point == CaptureProcessingFaultPoint.BeforeNodeExecution)
-            {
-                var defectFile = Directory.EnumerateFiles(Path.Combine(root, "calibration"), "defect.bin", SearchOption.AllDirectories)
-                    .Single();
-                if (externalManifest is not null)
-                {
-                    var manifest = Path.ChangeExtension(defectFile, ".json");
-                    File.Move(manifest, externalManifest);
-                    File.CreateSymbolicLink(manifest, externalManifest);
-                }
-                else
-                {
-                    var bytes = File.ReadAllBytes(defectFile);
-                    bytes[0] ^= 0xFF;
-                    File.WriteAllBytes(defectFile, bytes);
-                }
-                Injected = true;
-            }
         }
     }
 
@@ -886,6 +900,8 @@ public sealed partial class VirtualSkyCameraModuleTests
 
         var (receipt, _) = await CaptureAndAdmitRegionalAsync(
             provider, ingress, module, deviceClock, clock, active, captureUtc, token).ConfigureAwait(false);
+        if (fault is RegionalVisibilityInputFault inputFault)
+            inputFault.Bind(provider, receipt, token);
         await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
 
         var operations = provider.GetRequiredService<IProcessingGraphOperations>();

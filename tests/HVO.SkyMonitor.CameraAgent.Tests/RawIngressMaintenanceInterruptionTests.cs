@@ -40,8 +40,11 @@ public sealed class RawIngressMaintenanceInterruptionTests
         // The first pair was fully moved before a crash, but its durable plan is unfinished.
         await File.WriteAllBytesAsync(Path.Combine(quarantine, "planned.bin"), new byte[] { 7 }).ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(quarantine, "planned.json"), "invalid-planned").ConfigureAwait(false);
-        await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine("planned", "frames/2026/01/01/Raw/planned.bin",
-            "frames/2026/01/01/Raw/planned.json", "quarantine/planned", "invalid-v2-sidecar", 16), CancellationToken.None).ConfigureAwait(false);
+        var planned = RawIngressFileStore.GetPaths(hold.Path, DateTimeOffset.UnixEpoch, Guid.NewGuid());
+        File.Move(Path.Combine(quarantine, "planned.bin"), Path.Combine(quarantine, Path.GetFileName(planned.PayloadAbsolutePath)));
+        File.Move(Path.Combine(quarantine, "planned.json"), Path.Combine(quarantine, Path.GetFileName(planned.SidecarAbsolutePath)));
+        await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine("planned", planned.PayloadRelativePath,
+            planned.SidecarRelativePath, "quarantine/planned", "invalid-v2-sidecar", 16), CancellationToken.None).ConfigureAwait(false);
         var intents = new List<(Guid ArtifactId, RawIngressPaths Paths)>();
         for (var index = 0; index < 2; index++)
         {
@@ -91,8 +94,8 @@ public sealed class RawIngressMaintenanceInterruptionTests
         Assert.IsFalse(Directory.EnumerateFiles(raw).Any());
         var evidence = Directory.EnumerateFiles(Path.Combine(hold.Path, "quarantine"), "*", SearchOption.AllDirectories).ToArray();
         Assert.HasCount(6, evidence);
-        CollectionAssert.AreEqual(new byte[] { 7 }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == "planned.bin")).ConfigureAwait(false));
-        Assert.AreEqual("invalid-planned", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == "planned.json")).ConfigureAwait(false));
+        CollectionAssert.AreEqual(new byte[] { 7 }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(planned.PayloadAbsolutePath))).ConfigureAwait(false));
+        Assert.AreEqual("invalid-planned", await File.ReadAllTextAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(planned.SidecarAbsolutePath))).ConfigureAwait(false));
         for (var index = 0; index < 2; index++)
         {
             CollectionAssert.AreEqual(new byte[] { (byte)index }, await File.ReadAllBytesAsync(evidence.Single(p => Path.GetFileName(p) == Path.GetFileName(intents[index].Paths.PayloadAbsolutePath))).ConfigureAwait(false));

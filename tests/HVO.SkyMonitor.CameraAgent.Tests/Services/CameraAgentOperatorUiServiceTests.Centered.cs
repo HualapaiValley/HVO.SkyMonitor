@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Gallery;
@@ -374,11 +375,14 @@ public sealed partial class CameraAgentOperatorUiServiceTests
             new("scene-constellations", 10, true), input.Raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
         Assert.IsNotNull(enriched);
 
-        // Corrupt the second layer's artifact on disk; first layer and ready base MUST remain displayable!
+        // Lose the second layer's exact Silo version while the first layer and base remain intact.
         var badLayerArtifactId = enriched.Revision.Manifest.Layers.Single(layer => layer.LayerKind == "scene-constellations").SourceProduct.ArtifactId;
         var badStored = await fixture.ProcessingStore.ReadOutputByArtifactIdAsync(badLayerArtifactId, token).ConfigureAwait(false);
         Assert.IsNotNull(badStored);
-        File.Delete(Path.Combine(fixture.Root, badStored.PayloadRelativePath));
+        var role = await fixture.Storage.Index.ReadRoleAsync(new(SiloIdentityKind.Member,
+            badLayerArtifactId.ToString("D"), badStored.OutputIdentitySha256), token).ConfigureAwait(false);
+        Assert.IsNotNull(role);
+        fixture.Objects.Delete(Assert.ContainsSingle(role.Locators.Where(static copy => copy.Eligible && copy.CopyState == "active")).Locator);
 
         var partial = await presentationReader.ReadAsync(enriched.Base.BaseId, enriched.Revision.RevisionId, token).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, partial.Status);

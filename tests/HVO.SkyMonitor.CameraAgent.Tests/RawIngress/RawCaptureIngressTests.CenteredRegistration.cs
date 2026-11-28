@@ -20,14 +20,15 @@ public sealed partial class RawCaptureIngressTests
             var rawTime = Timestamp(1);
             ExposureKey key;
             ExposureProductRef product;
-            using (var original = new CenteredFixture(root))
+            using var siloProvider = SiloInfrastructureFixture.OpenStore(root);
+            using (var original = new CenteredFixture(root, siloProvider: siloProvider))
             {
                 var receipt = await original.AdmitAsync(config, rawTime).ConfigureAwait(false);
                 var descriptor = receipt.Manifest.Descriptor;
                 var attempt = receipt.Manifest.CenteredExposure!.Source;
                 key = new(attempt.Camera, attempt.RunId, descriptor.Capture.CaptureId);
                 var persistence = new CaptureProcessingPersistence(original.Options, original.Store, original.Telemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
+                    NullLogger<CaptureProcessingPersistence>.Instance, silo: original.Silo);
                 using var standard = new StandardCaptureLaneHandler(original.Factory, persistence, original.Telemetry,
                     NullLogger<StandardCaptureLaneHandler>.Instance, original.Ingress, original.Options);
                 var lane = original.Policy.Definitions.Single(definition => definition.Name == "standard");
@@ -42,9 +43,10 @@ public sealed partial class RawCaptureIngressTests
                 product = settled.Product;
             }
 
-            using var restarted = new CenteredFixture(root);
+            using var restarted = new CenteredFixture(root, siloProvider: siloProvider);
+            await SiloInfrastructureFixture.SettleRawAdmissionsAsync(restarted.Ingress, token).ConfigureAwait(false);
             var reopenedPersistence = new CaptureProcessingPersistence(restarted.Options, restarted.Store, restarted.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance);
+                NullLogger<CaptureProcessingPersistence>.Instance, silo: restarted.Silo);
             var products = new CenteredExposureProductReader(restarted.Ingress, restarted.Store);
             var custody = new CenteredExposureInputCustody(restarted.Ingress, products, restarted.Store, reopenedPersistence, TimeProvider.System);
             var lease = await custody.OpenLinearAsync(product, TimeSpan.FromMinutes(1), token).ConfigureAwait(false);

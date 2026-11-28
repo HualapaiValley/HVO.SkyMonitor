@@ -930,17 +930,10 @@ public sealed class CaptureProcessingGraphTests
             DependsOn: ["$raw"],
             Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
             { }))));
-        var syntheticRawStepPolicy = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(
+        Assert.ThrowsExactly<JsonException>(() => factory.PreviewPlan(
             CreateExplicitConfig(new CaptureProcessingStepConfig(
-                "Storage",
-                "storage",
-                DependsOn: ["$raw"],
-                Options: JsonSerializer.SerializeToElement(new SiloCaptureProcessingStepOptions
-                { })))));
-        StringAssert.Contains(
-            syntheticRawStepPolicy.Message,
-            "does not select a declared producer dependency",
-            StringComparison.Ordinal);
+                "Storage", "storage", DependsOn: ["$raw"],
+                Options: JsonSerializer.SerializeToElement(new { policies = new[] { new { stepId = "$raw" } } })))));
 
         var wrongMetadata = CreateExplicitConfig(
             new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
