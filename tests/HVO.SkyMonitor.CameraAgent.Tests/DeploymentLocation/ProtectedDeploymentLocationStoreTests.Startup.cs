@@ -29,10 +29,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         using (var previous = CreateStore())
         {
             var active = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            var (path, _) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-            var recent = Path.Combine(_options.Value.RawIngressRoot, "frames", "2026", "07", "23", "Raw", "recent.json");
-            Directory.CreateDirectory(Path.GetDirectoryName(recent)!);
-            RetainedFileMutations.Move(path, recent);
+            _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
         }
         using var restarted = CreateStore();
         _ = await restarted.LoadCurrentAsync(seed, false, () => true, CancellationToken.None).ConfigureAwait(false);
@@ -64,12 +61,11 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     public async Task RecentStartupInspectsCurrentBytesButNeverGrantsWholeCorpusTrust(bool tamper)
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
-        var path = Path.Combine(_options.Value.RawIngressRoot, "derived", "2026", "07", "23", "Metadata", "recent.json");
+        string path;
         using (var previous = CreateStore())
         {
-            _ = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await RetainedFileMutations.WriteAllTextAsync(path, "{}", CancellationToken.None).ConfigureAwait(false);
+            var active = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            (path, _, _) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
         }
         if (tamper) await File.AppendAllTextAsync(path, " ").ConfigureAwait(false);
         using var restarted = CreateStore();
@@ -91,14 +87,17 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     public async Task OlderTamperIsFoundByBackgroundVerificationBeforeAnyLifecycleQualification()
     {
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
-        var path = Path.Combine(_options.Value.RawIngressRoot, "derived", "2026", "07", "01", "Metadata", "older.json");
+        string capture;
+        byte[] json;
         using (var previous = CreateStore())
         {
-            _ = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await RetainedFileMutations.WriteAllTextAsync(path, "{}", CancellationToken.None).ConfigureAwait(false);
+            var active = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            string stagingPath;
+            (stagingPath, json, capture) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+            RetainedFileMutations.Delete(stagingPath);
         }
-        await File.AppendAllTextAsync(path, " ").ConfigureAwait(false);
+        _timeProvider.UtcNow = Now.AddHours(49);
+        await EditJournalBytesAsync(capture, ChangeRound7Manifest(json)).ConfigureAwait(false);
         using var restarted = CreateStore();
         var visited = 0;
         restarted.BeforeRetainedManifestValidationForTest = () => visited++;
@@ -137,8 +136,10 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         using (var previous = CreateStore())
         {
             var active = await previous.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            _ = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
+            var (stagingPath, _, _) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+            RetainedFileMutations.Delete(stagingPath);
         }
+        _timeProvider.UtcNow = Now.AddHours(49);
         using var restarted = CreateStore();
         var visited = 0;
         restarted.BeforeRetainedManifestValidationForTest = () => visited++;

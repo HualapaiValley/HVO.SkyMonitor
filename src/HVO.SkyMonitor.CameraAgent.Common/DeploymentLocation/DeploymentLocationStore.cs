@@ -1132,10 +1132,11 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             var path = Path.GetFullPath(Path.Combine(_options.RawIngressRoot, key[2..]));
             var relative = Path.GetRelativePath(_options.RawIngressRoot, path);
-            if (relative.Split(Path.DirectorySeparatorChar, 2)[0] is "frames" or "derived") return null;
+            if (IsRetiredCaptureRoot(relative)) return null;
             RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, path);
             if (!File.Exists(path)) return null;
             bytes = File.ReadAllBytes(path);
+            frame = IsRawAdmissionSidecar(_options.RawIngressRoot, path);
         }
         else
         {
@@ -1201,8 +1202,88 @@ public sealed partial class ProtectedDeploymentLocationStore(
             return;
         }
         ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
+        ValidateOwnedFileState(root, history, summary, strict, cancellationToken, scrub);
         cancellationToken.ThrowIfCancellationRequested();
     }
+
+    // The ledger also protects mutable state and in-flight Silo admissions. Settled capture evidence
+    // is verified through the journal and the retired frame and product directories are excluded.
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The nullable observation lease is always disposed by its using declaration.")]
+    private void ValidateOwnedFileState(string root, DeploymentLocationHistory history, RetainedManifestValidationIndex summary,
+        bool strict, CancellationToken cancellationToken, RetainedIntegrityLedger.Scrub? scrub)
+    {
+        scrub?.LoadFileMetadata(summary, cancellationToken);
+        var enumeration = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            IgnoreInaccessible = false
+        };
+        using (var fileActivity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-owned-file-state"))
+        {
+            using var attribution = DeploymentLocationReadAttribution.Create(fileActivity);
+            IEnumerator<string> paths;
+            using (attribution?.Measure(ReadStage.Enumeration))
+                paths = new System.IO.Enumeration.FileSystemEnumerable<string>(root,
+                    (ref System.IO.Enumeration.FileSystemEntry entry) => entry.ToFullPath(), enumeration)
+                {
+                    ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                        !entry.IsDirectory && entry.FileName.EndsWith(".json", StringComparison.Ordinal),
+                    ShouldRecursePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                        !IsRetiredCaptureRoot(Path.GetRelativePath(root, entry.ToFullPath()))
+                }.GetEnumerator();
+            using var retainedPaths = paths;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                bool hasNext;
+                string? path;
+                using (attribution?.Measure(ReadStage.Enumeration))
+                {
+                    hasNext = retainedPaths.MoveNext();
+                    path = hasNext ? retainedPaths.Current : null;
+                }
+                if (!hasNext) break;
+                using var observation = scrub?.Observe(cancellationToken);
+                try
+                {
+                    using (attribution?.Measure(ReadStage.Security))
+                        RawIngressFileStore.EnsureNoSymbolicLinks(root, path!);
+                    var key = RetainedIntegrityLedger.FileKey(root, path!);
+                    var file = new FileInfo(path!);
+                    var stamp = new RetainedIntegrityLedger.FileStamp(file.Length, file.LastWriteTimeUtc.Ticks);
+                    if (scrub?.Reuse(key, stamp) is not null) continue;
+                    byte[] manifestJson;
+                    using (attribution?.Measure(ReadStage.Read))
+                    {
+                        manifestJson = File.ReadAllBytes(path!);
+                        attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
+                    }
+                    BeforeRetainedManifestValidationForTest?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var result = ValidateRetainedManifest(history, manifestJson, summary, attribution,
+                        requireManifest: IsRawAdmissionSidecar(root, path!), strict,
+                        digest => scrub?.ParsedKind(RetainedIntegrityLedger.FileKey(root, path!), digest));
+                    file.Refresh();
+                    if (file.Length != stamp.Length || file.LastWriteTimeUtc.Ticks != stamp.ModifiedUtcTicks)
+                        throw new InvalidDataException("Retained evidence changed while being verified.");
+                    scrub?.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind) { Stamp = stamp }, index: summary);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidDataException(
+                        "Existing capture evidence could not be inspected for location provenance.", exception);
+                }
+            }
+        }
+    }
+
+    private static bool IsRetiredCaptureRoot(string relativePath)
+        => relativePath.Split(Path.DirectorySeparatorChar, 2)[0] is "frames" or "derived" or "nightly-products";
+
+    private static bool IsRawAdmissionSidecar(string root, string path)
+        => Path.GetRelativePath(root, path).StartsWith(
+            Path.Combine(".silo", RawIngressFileStore.AdmissionStageDirectory) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
 
     private static (byte[] Digest, int Kind) ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
         RetainedManifestValidationIndex summary, DeploymentLocationReadAttribution? attribution, bool requireManifest, bool strict,

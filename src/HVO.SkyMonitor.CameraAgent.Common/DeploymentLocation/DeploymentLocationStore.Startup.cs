@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.LocalFiles;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -42,7 +43,9 @@ public sealed partial class ProtectedDeploymentLocationStore
         long bytesRead = 0;
         try
         {
-            return ValidateRecentJournal(root, history, ledger, cutoff, ref bytesRead, cancellationToken);
+            var stagedCaptures = new HashSet<string>(StringComparer.Ordinal);
+            return ValidateSiloAdmissions(root, history, ledger, cutoff, stagedCaptures, ref bytesRead, cancellationToken) &&
+                ValidateRecentJournal(root, history, ledger, cutoff, stagedCaptures, ref bytesRead, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or
             CryptographicException or SqliteException or JsonException or FormatException or InvalidCastException or OverflowException)
@@ -53,10 +56,46 @@ public sealed partial class ProtectedDeploymentLocationStore
         finally { activity?.SetTag("startup.recent.bytes", bytesRead); }
     }
 
-    private static (int Kind, string? CaptureId, long? Exposure) ValidateRecentJson(DeploymentLocationHistory history, byte[] json, bool requireManifest)
+    private bool ValidateSiloAdmissions(string root, DeploymentLocationHistory history, RetainedIntegrityLedger ledger,
+        DateTimeOffset cutoff, HashSet<string> stagedCaptures, ref long bytesRead, CancellationToken cancellationToken)
+    {
+        var relative = Path.Combine(".silo", RawIngressFileStore.AdmissionStageDirectory);
+        var directory = Path.Combine(root, relative);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
+        var expected = ledger.ReadRecentExpected("F|" + relative + Path.DirectorySeparatorChar,
+            RecentMaximumCaptures, cancellationToken);
+        if (!Directory.Exists(directory))
+            return expected.Values.All(entry => entry.Kind == 0 || ledger.MatchesRecent(entry.Key, null, cancellationToken));
+        using var files = new ConfinedReadDirectory(directory);
+        var count = 0;
+        foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++count > RecentMaximumCaptures ||
+                !Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var artifactId))
+                return false;
+            using var stream = files.OpenRead(Path.GetFileName(path));
+            if (stream.Length is < 1 or > RecentMaximumFileBytes || bytesRead + stream.Length > RecentMaximumBytes) return false;
+            var json = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(json);
+            if (stream.ReadByte() != -1) return false;
+            bytesRead += json.Length;
+            BeforeRetainedManifestValidationForTest?.Invoke();
+            var parsed = ValidateRecentJson(history, json, requireManifest: true, expectedArtifactId: artifactId);
+            if (parsed.Kind != 1 || parsed.CaptureId is null) return false;
+            if (parsed.Exposure >= cutoff.ToUnixTimeMilliseconds()) stagedCaptures.Add(parsed.CaptureId);
+            var key = RetainedIntegrityLedger.FileKey(root, path);
+            expected.Remove(key);
+            if (ledger.HasExpectedEvidence && !ledger.MatchesRecent(key, SHA256.HashData(json), cancellationToken)) return false;
+        }
+        return expected.Values.All(entry => entry.Kind == 0 || ledger.MatchesRecent(entry.Key, null, cancellationToken));
+    }
+
+    private static (int Kind, string? CaptureId, long? Exposure) ValidateRecentJson(DeploymentLocationHistory history, byte[] json, bool requireManifest, Guid? expectedArtifactId = null)
     {
         var (manifest, other) = ParseRetainedManifest(json, requireManifest, strict: false);
         if (manifest is null) return (other ? 2 : 3, null, null);
+        if (expectedArtifactId is { } artifactId && manifest.Descriptor.Artifact.ArtifactId != artifactId) return (3, null, null);
         if (manifest.Descriptor.Location is { } provenance)
         {
             var snapshot = history.Snapshots.SingleOrDefault(item => item.LocationId == provenance.LocationId && item.Version == provenance.Version);
@@ -69,17 +108,17 @@ public sealed partial class ProtectedDeploymentLocationStore
     }
 
     private static bool ValidateRecentJournal(string root, DeploymentLocationHistory history, RetainedIntegrityLedger? ledger,
-        DateTimeOffset cutoff, ref long bytesRead, CancellationToken cancellationToken)
+        DateTimeOffset cutoff, HashSet<string> stagedCaptures, ref long bytesRead, CancellationToken cancellationToken)
     {
         var path = Path.Combine(root, "journal", "raw-ingress.db");
-        if (!File.Exists(path)) return true;
+        if (!File.Exists(path)) return stagedCaptures.Count == 0;
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 1 }.ToString());
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='raw_captures';";
-        if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return true;
+        if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return stagedCaptures.Count == 0;
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_raw_captures_gallery_time';";
         if (Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) != 1) return false;
         command.CommandText = "PRAGMA index_info(ix_raw_captures_gallery_time);";
@@ -105,11 +144,11 @@ public sealed partial class ProtectedDeploymentLocationStore
             var parsed = ValidateRecentJson(history, json, requireManifest: true);
             if (!Guid.TryParse(rows.GetString(0), out var capture) || parsed.Kind != 1 ||
                 parsed.CaptureId != capture.ToString("N") || parsed.Exposure != rows.GetInt64(2)) return false;
-            if (
-                ledger is { HasExpectedEvidence: true } && !ledger.MatchesRecent(
+            stagedCaptures.Remove(capture.ToString("N"));
+            if (ledger is { HasExpectedEvidence: true } && !ledger.MatchesRecent(
                     RetainedIntegrityLedger.JournalKey(rows.GetString(0)), SHA256.HashData(json), cancellationToken)) return false;
         }
-        return true;
+        return stagedCaptures.Count == 0;
     }
 
     private static byte[] AuthorityStamp(params string[] paths)

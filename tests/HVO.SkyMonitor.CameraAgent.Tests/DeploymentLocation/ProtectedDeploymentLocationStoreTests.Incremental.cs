@@ -199,22 +199,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         using (var initial = CreateStore())
         {
             var active = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            var (path, bytes) = await WriteSummaryCaptureAsync(active).ConfigureAwait(false);
-            var manifest = CaptureContractJson.ParseManifest(bytes).Document!.Manifest;
-            var descriptor = manifest.Descriptor;
-            var journal = new SqliteRawCaptureJournal(Path.Combine(_options.Value.RawIngressRoot, "journal", "raw-ingress.db"), 5);
-            await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
-            var identity = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId,
-                descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-            descriptor = descriptor with { Capture = descriptor.Capture with { CaptureSequence = identity.CaptureSequence } };
-            manifest = manifest with { Descriptor = descriptor };
-            bytes = CaptureContractJson.Serialize(manifest);
-            await RetainedFileMutations.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
-            _ = await journal.CommitAsync(new RawIngressJournalEntry(descriptor.Capture.AgentId, descriptor.Capture.CaptureSequence,
-                descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
-                CaptureContractJson.ComputeManifestSha256(bytes), descriptor.Artifact.ChecksumSha256, descriptor.Layout.ByteLength,
-                manifest.RelativeArtifactPath, Path.GetRelativePath(_options.Value.RawIngressRoot, path), bytes,
-                descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), null, null, [], CancellationToken.None).ConfigureAwait(false);
+            _ = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
             _ = await initial.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         }
         for (var restart = 0; restart < 2; restart++)
@@ -224,7 +209,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             store.BeforeRetainedManifestValidationForTest = () => reads++;
             _ = await store.LoadCurrentAsync(seed, false, () => true, CancellationToken.None).ConfigureAwait(false);
             _ = await store.ScrubCurrentAsync(seed, () => true, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(0, reads, "Neither older sidecar nor journal BLOB should be fetched on a clean unchanged restart.");
+            Assert.AreEqual(0, reads, "An unchanged admission and journal manifest should reuse their authenticated proofs.");
             _ = await store.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -283,13 +268,12 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var savedCheckpoint = Path.Combine(_root, "pending-checkpoint");
         using (var initial = CreateStore())
         {
-            _ = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-            var directory = Directory.CreateDirectory(Path.Combine(_options.Value.RawIngressRoot, "derived", Now.ToString("yyyy/MM/dd",
-                System.Globalization.CultureInfo.InvariantCulture), "Metadata"));
-            var path = Path.Combine(directory.FullName, "pending.json");
-            using (RetainedIntegrityLedger.BeginWrite(path, "{}"u8.ToArray()))
+            var active = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            var (path, json, _) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+            RetainedFileMutations.Delete(path);
+            using (RetainedIntegrityLedger.BeginWrite(path, json))
             {
-                await File.WriteAllBytesAsync(path, differentBytes ? "{\"unexpected\":true}"u8.ToArray() : "{}"u8.ToArray()).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(path, differentBytes ? [.. json, (byte)' '] : json).ConfigureAwait(false);
                 File.Copy(database, saved);
                 File.Copy(checkpoint, savedCheckpoint);
             }
