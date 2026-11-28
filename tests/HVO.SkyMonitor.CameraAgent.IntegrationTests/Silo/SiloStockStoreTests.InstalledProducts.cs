@@ -221,9 +221,12 @@ public sealed partial class SiloStockStoreTests
         Assert.IsTrue(worker.ExecuteTask?.IsCompletedSuccessfully, "Stopping replay must complete its background task cleanly.");
         var store = services.GetRequiredService<SqliteCaptureProcessingStore>();
         var source = await store.ReadReplaySourceAsync(captureId, null, token).ConfigureAwait(false);
-        var rawId = source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId;
-        Assert.IsFalse(File.Exists(source.RawCapture.StoredFrame.AbsolutePath));
-        Assert.AreEqual(source.RawCapture.Manifest.Descriptor.Artifact.ChecksumSha256, source.PayloadSha256);
+        var descriptor = source.RawCapture.Manifest.Descriptor;
+        var rawId = descriptor.Artifact.ArtifactId;
+        var stage = RawIngressFileStore.GetPaths(root, descriptor.Timing.ExposureStartedUtc, rawId);
+        Assert.IsFalse(File.Exists(stage.PayloadAbsolutePath));
+        Assert.IsFalse(File.Exists(stage.SidecarAbsolutePath));
+        Assert.AreEqual(descriptor.Artifact.ChecksumSha256, source.PayloadSha256);
         var current = await store.ReadActiveRevisionAsync(token).ConfigureAwait(false);
         Assert.IsNotNull(current);
         var operations = services.GetRequiredService<ProcessingGraphOperationsCoordinator>();
