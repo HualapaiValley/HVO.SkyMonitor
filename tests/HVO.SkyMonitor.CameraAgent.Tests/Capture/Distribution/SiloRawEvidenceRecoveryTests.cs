@@ -59,7 +59,11 @@ public sealed partial class SiloRawEvidenceRecoveryTests
 
         File.Delete(capture.StoredFrame.AbsolutePath);
         File.Delete(Path.ChangeExtension(capture.StoredFrame.AbsolutePath, ".json"));
-        using var handler = new StandardCaptureLaneHandler(new EmptyPipelineFactory(),
+        using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
+        using var processingTelemetry = new CaptureProcessingTelemetry();
+        var persistence = new CaptureProcessingPersistence(fixture.Options, processingStore, processingTelemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, artifacts);
+        using var handler = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), persistence, processingTelemetry,
             NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
         var standardFailure = await handler.HandleAsync(standard.Context, token).ConfigureAwait(false);
         var secondaryFailure = await new SecondaryEvidenceReader(artifacts).HandleAsync(secondary.Context, token).ConfigureAwait(false);

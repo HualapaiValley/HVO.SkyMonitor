@@ -7,6 +7,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
@@ -47,7 +48,9 @@ public sealed partial class DurableCaptureDistributionTests
             new NullCaptureLaneFaultInjector(), fixture.LaneState, fixture.LaneTelemetry);
         using var controlTelemetry = new CaptureControlTelemetry();
         using var coordinator = new CaptureAdmissionCoordinator(ingress, fixture.Options, fixture.Time, controlTelemetry);
-        using var standard = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+        using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
+        using var processingTelemetry = new CaptureProcessingTelemetry();
+        using var standard = CreateEvidenceRecoveryHandler(fixture, ingress, processingStore, processingTelemetry);
         using var distribution = new CaptureDistributionService(new ConfigurationAccessor(fixture.Configuration), ingress,
             ingress, fixture.Policy, [standard], standard, fixture.Options, TimeProvider.System,
             new NullCaptureLaneFaultInjector(), fixture.LaneTelemetry, fixture.LaneState,
@@ -140,7 +143,9 @@ public sealed partial class DurableCaptureDistributionTests
             Assert.IsNotNull(lease);
             File.Move(receipt.StoredFrame.AbsolutePath, backup);
             File.Move(sidecar, sidecarBackup);
-            using var standard = new StandardCaptureLaneHandler(new EmptyPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, fixture.Ingress);
+            using var processingStore = new SqliteCaptureProcessingStore(fixture.Options);
+            using var processingTelemetry = new CaptureProcessingTelemetry();
+            using var standard = CreateEvidenceRecoveryHandler(fixture, fixture.Ingress, processingStore, processingTelemetry);
             var failed = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, failed.Outcome);
             Assert.AreEqual(reason, failed.Reason);
@@ -170,6 +175,16 @@ public sealed partial class DurableCaptureDistributionTests
         var holds = await fixture.Ingress.GetRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.Contains(receipt.Manifest.Descriptor.Artifact.ArtifactId, holds);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+    }
+
+    private static StandardCaptureLaneHandler CreateEvidenceRecoveryHandler(
+        Fixture fixture, RawCaptureIngress ingress,
+        SqliteCaptureProcessingStore store, CaptureProcessingTelemetry telemetry)
+    {
+        var persistence = new CaptureProcessingPersistence(fixture.Options, store, telemetry,
+            NullLogger<CaptureProcessingPersistence>.Instance, SiloInfrastructureFixture.ProductStorage(fixture.Root));
+        return new StandardCaptureLaneHandler(new EmptyPipelineFactory(), persistence, telemetry,
+            NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
     }
 
     [TestMethod]
