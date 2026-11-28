@@ -153,9 +153,14 @@ internal sealed partial class SqliteCaptureProcessingStore
                 Guid.ParseExact(reader.GetString(0), "N"),
                 await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
                 reader.GetString(2));
-            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
-                   reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Available
-                ? new(AstrometryAssessmentSelectionKind.Ambiguous) : selected;
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
+                reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Available)
+                return new(AstrometryAssessmentSelectionKind.Ambiguous);
+            if (_silo is not null && selected.AvailabilityState == "Available" &&
+                await _silo.ReadRetainedEvidenceFailureAsync([selected.ArtifactId], cancellationToken).ConfigureAwait(false)
+                    == SiloAvailabilityState.Quarantined)
+                return selected with { AvailabilityState = "Quarantined" };
+            return selected;
         }
     }
 

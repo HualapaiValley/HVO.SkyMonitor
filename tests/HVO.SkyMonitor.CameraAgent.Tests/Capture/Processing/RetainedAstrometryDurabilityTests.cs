@@ -648,7 +648,8 @@ public sealed partial class DurableCaptureProcessingTests
         Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
         await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
         await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
-        var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1,
+            usesSilo: commit is not null);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
@@ -665,7 +666,10 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreEqual(RawIngressOutcome.Committed, outcome);
         await SiloInfrastructureFixture.PublishRawFixtureAsync(
             SiloInfrastructureFixture.ProductStorage(root), entry, manifest, bytes, CancellationToken.None).ConfigureAwait(false);
-        if (hostCompatible && benchmarkJournal is null)
+        if (commit is not null)
+            await journal.SettleSiloAdmissionAsync(entry.CaptureId, entry.ManifestSha256, siloVisible: true, CancellationToken.None)
+                .ConfigureAwait(false);
+        else if (hostCompatible && benchmarkJournal is null)
         {
             var recovered = await new RawIngressReconciler(root, journal)
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), CancellationToken.None).ConfigureAwait(false);
