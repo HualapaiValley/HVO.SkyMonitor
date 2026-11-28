@@ -418,7 +418,6 @@ internal sealed partial class CaptureProcessingPersistence(
 
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadRecentRawInputsAsync(
         ReconstructionDescriptor currentDescriptor,
-        ProcessingArtifact current,
         int maximumCount,
         CancellationToken cancellationToken)
     {
@@ -428,49 +427,39 @@ internal sealed partial class CaptureProcessingPersistence(
             maximumCount,
             cancellationToken).ConfigureAwait(false);
         var artifacts = new List<ProcessingArtifact>(maximumCount);
-        foreach (var entry in entries)
+        foreach (var descriptor in entries)
         {
-            if (!RawIsCompatible(currentDescriptor, entry.Descriptor))
+            if (!RawIsCompatible(currentDescriptor, descriptor))
             {
                 break;
             }
-            byte[]? payload;
-            if (silo is null)
-            {
-                var path = ResolveSafePath(entry.PayloadRelativePath);
-                payload = File.Exists(path)
-                    ? await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)
-                    : null;
-            }
-            else
-            {
-                payload = await silo.ReadLiveRawAsync(entry.Descriptor, cancellationToken).ConfigureAwait(false);
-            }
+            var storage = silo ?? throw new InvalidOperationException("A retained raw window requires Silo storage.");
+            var payload = await storage.ReadLiveRawAsync(descriptor, cancellationToken).ConfigureAwait(false);
             if (payload is null) break;
             if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
-                entry.Descriptor.Artifact.ChecksumSha256,
+                descriptor.Artifact.ChecksumSha256,
                 StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("Durable raw rolling input checksum is invalid.");
             }
             artifacts.Add(new ProcessingArtifact(
-                entry.Descriptor.Artifact.ArtifactId,
+                descriptor.Artifact.ArtifactId,
                 FrameArtifactRole.Raw,
-                entry.Descriptor.Artifact.Variant,
-                ProcessingIdentity.CreateRecipeIdentity(entry.Descriptor.Artifact.Recipe).IdentitySha256,
-                entry.Descriptor.Artifact.MediaType,
-                entry.Descriptor.Layout,
+                descriptor.Artifact.Variant,
+                ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
+                descriptor.Artifact.MediaType,
+                descriptor.Layout,
                 payload,
-                entry.Descriptor.Artifact.CreatedUtc,
-                entry.Descriptor.Controls.EffectiveExposure,
-                CameraAgentRecipeExecutionAdapter.CreateCompatibility(entry.Descriptor),
-                CaptureSequence: entry.Descriptor.Capture.CaptureSequence,
-                ObservationStartedUtc: entry.Descriptor.Timing.ExposureStartedUtc,
+                descriptor.Artifact.CreatedUtc,
+                descriptor.Controls.EffectiveExposure,
+                CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor),
+                CaptureSequence: descriptor.Capture.CaptureSequence,
+                ObservationStartedUtc: descriptor.Timing.ExposureStartedUtc,
                 ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
-                    entry.Descriptor.Timing.ExposureStartedUtc,
-                    entry.Descriptor.Timing.ExposureEndedUtc,
-                    entry.Descriptor.Controls.EffectiveExposure)));
+                    descriptor.Timing.ExposureStartedUtc,
+                    descriptor.Timing.ExposureEndedUtc,
+                    descriptor.Controls.EffectiveExposure)));
         }
         artifacts.Reverse();
         return artifacts;

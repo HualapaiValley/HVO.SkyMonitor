@@ -407,16 +407,13 @@ internal sealed class FrameProcessingWorker
                     }
                     else if (persistence is not null && rawCapture is not null &&
                         node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
-                        context.Artifacts?.Raw is { } rawArtifact)
+                        context.Artifacts?.Raw is not null)
                     {
                         context.SetHistoricalInputs(item.Execution is not null
                             ? await persistence.ReadFrozenExecutionRawInputsAsync(
                                 item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
                             : await persistence.ReadRecentRawInputsAsync(
                                 rawCapture.Manifest.Descriptor,
-                                CameraAgentRecipeExecutionAdapter.CreateArtifact(
-                                    context.Config, rawArtifact, "source", context.AcquisitionTiming,
-                                    context.ReconstructionDescriptor),
                                 rawWindow.MaximumInputCount,
                                 cancellationToken).ConfigureAwait(false));
                     }

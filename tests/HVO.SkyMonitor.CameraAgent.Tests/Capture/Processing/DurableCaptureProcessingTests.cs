@@ -2016,7 +2016,7 @@ public sealed partial class DurableCaptureProcessingTests
             var holds = await store.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
 
             CollectionAssert.AreEqual(new long[] { 100, 99, 98, 97, 96 },
-                history.Select(static entry => entry.Descriptor.Capture.CaptureSequence).ToArray());
+                history.Select(static descriptor => descriptor.Capture.CaptureSequence).ToArray());
             Assert.HasCount(100, holds);
             Assert.IsFalse(holds.Any(static hold => hold.ArtifactId == Guid.Parse("50000000-0000-0000-0000-000000000001")));
             Assert.IsTrue(holds.Any(static hold => hold.ArtifactId == Guid.Parse("50000000-0000-0000-0000-000000000101")));
