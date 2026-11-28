@@ -954,6 +954,42 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task AcceptAsync_DoesNotReadRecordedPathsOutsideSiloAdmissionStaging()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            var configuration = CreateConfiguration();
+            var submission = CreateSubmission(Timestamp(2), [1, 2, 3, 4]);
+            var receipt = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+
+            var stagePayload = receipt.StoredFrame.AbsolutePath;
+            var stageEvidence = Path.ChangeExtension(stagePayload, ".json");
+            var retired = Directory.CreateDirectory(Path.Combine(root, "frames")).FullName;
+            File.Move(stagePayload, Path.Combine(retired, "raw.bin"));
+            File.Move(stageEvidence, Path.Combine(retired, "raw.json"));
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                await ExecuteTestSqlAsync(connection, """
+                    UPDATE raw_captures
+                    SET payload_relative_path = 'frames/raw.bin', sidecar_relative_path = 'frames/raw.json';
+                    """).ConfigureAwait(false);
+            }
+
+            await Assert.ThrowsExactlyAsync<RawIngressConflictException>(() =>
+                ingress.AcceptAsync(configuration, submission, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(stagePayload));
+            Assert.IsFalse(File.Exists(stageEvidence));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AcceptAsync_LegacyRetryWithEnrichedEvidenceKeepsImmutableLegacyEvidence()
     {
         var root = CreateRoot();

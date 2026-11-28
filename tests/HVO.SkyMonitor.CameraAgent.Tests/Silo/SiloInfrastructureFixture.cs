@@ -32,9 +32,25 @@ internal static class SiloInfrastructureFixture
         foreach (var store in ProductStores.Values)
             store.Dispose();
         ProductStores.Clear();
+        Buckets.Clear();
         foreach (var directory in TemporaryRoots)
         {
             if (directory.Exists) directory.Delete(recursive: true);
+        }
+    }
+
+    internal static Bucket GetOrCreateBucket(string root)
+    {
+        lock (Gate)
+        {
+            foreach (var unused in Buckets.Keys.Where(path => !Directory.Exists(path)).ToArray())
+                Buckets.Remove(unused);
+            if (!Buckets.TryGetValue(root, out var bucket))
+            {
+                bucket = new Bucket();
+                Buckets.Add(root, bucket);
+            }
+            return bucket;
         }
     }
 
@@ -45,29 +61,15 @@ internal static class SiloInfrastructureFixture
             return services.AddCameraAgentInfrastructure(configuration);
 
         var root = configuration[rootSetting];
-        Bucket bucket;
-        lock (Gate)
+        if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) ||
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) == Path.TrimEndingDirectorySeparator(Path.GetTempPath()))
         {
-            if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) ||
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) == Path.TrimEndingDirectorySeparator(Path.GetTempPath()))
-            {
-                var temporary = Directory.CreateTempSubdirectory("hvo-silo-test-");
-                TemporaryRoots.Add(temporary);
-                root = temporary.FullName;
-            }
-            else
-            {
-                root = Path.GetFullPath(root);
-            }
-            foreach (var unused in Buckets.Keys.Where(path => !Directory.Exists(path)).ToArray())
-                Buckets.Remove(unused);
-            if (!Buckets.TryGetValue(root, out var existing))
-            {
-                existing = new Bucket();
-                Buckets.Add(root, existing);
-            }
-            bucket = existing;
+            var temporary = Directory.CreateTempSubdirectory("hvo-silo-test-");
+            lock (Gate) TemporaryRoots.Add(temporary);
+            root = temporary.FullName;
         }
+        root = Path.GetFullPath(root);
+        var bucket = GetOrCreateBucket(root);
 
         var settings = new ConfigurationBuilder()
             .AddConfiguration(configuration)
@@ -296,7 +298,7 @@ internal static class SiloInfrastructureFixture
         Assert.AreEqual(SiloDisposition.PolicyExpired, (await storage.Index.ReadRoleAsync(key, token).ConfigureAwait(false))?.Disposition);
     }
 
-    private sealed class Bucket
+    internal sealed class Bucket
     {
         public Bucket()
         {

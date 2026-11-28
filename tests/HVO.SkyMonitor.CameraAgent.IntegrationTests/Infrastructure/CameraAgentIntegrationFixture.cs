@@ -6,7 +6,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
 using HVO.SkyMonitor.CameraAgent.Common.Silo.S3;
 using HVO.SkyMonitor.CameraAgent.Tests.Silo;
-using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -34,7 +33,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private string? _configurationPath;
     private string? _storageRoot;
     private CatalogFixtureInstallation? _catalogFixture;
-    private SiloInstalledStore? _fixtureSilo;
 
     /// <summary>Keeps the storage root when the fixture is disposed, so a second host can restart on the same state.</summary>
     public bool KeepStorageOnDispose { get; set; }
@@ -51,7 +49,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         string? storageRoot = null,
         Func<string, string>? configureCamera = null)
     {
-        _storageRoot = storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
+        _storageRoot = Path.GetFullPath(storageRoot ?? Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}"));
         Directory.CreateDirectory(_storageRoot);
         var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
         Directory.CreateDirectory(provisioningRoot);
@@ -77,8 +75,14 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var overrides = BuildConfigurationOverrides(provisioningRoot);
         foreach (var setting in settings ?? new Dictionary<string, string?>())
             overrides[setting.Key] = setting.Value;
-        _fixtureSilo = overrides.ContainsKey("CameraAgent:Silo:StoreId") ? null
-            : await CreateFixtureSiloAsync(overrides).ConfigureAwait(false);
+        var fixtureBucket = overrides.ContainsKey("CameraAgent:Silo:StoreId")
+            ? null
+            : SiloInfrastructureFixture.GetOrCreateBucket(_storageRoot);
+        if (fixtureBucket is not null)
+        {
+            foreach (var setting in fixtureBucket.Configuration)
+                overrides[setting.Key] = setting.Value;
+        }
 
         _agentBaseFactory = new WebApplicationFactory<Program>();
         _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
@@ -102,12 +106,17 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                         IntegrationUserAuthenticationHandler.SchemeName,
                         _ => { });
 
-                if (_fixtureSilo is { } fixtureSilo)
+                if (fixtureBucket is not null)
                 {
-                    services.AddSingleton(provider => new SiloInstalledStorage(
-                        provider.GetRequiredService<SiloInstalledSettings>(),
-                        provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), TimeProvider.System,
-                        faults: null, decorateReadStore: null, installedStore: fixtureSilo, payloadSpool: null));
+                    services.AddSingleton(provider =>
+                    {
+                        var installed = provider.GetRequiredService<SiloInstalledSettings>();
+                        return new SiloInstalledStorage(
+                            installed, provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), TimeProvider.System,
+                            faults: null, decorateReadStore: null,
+                            installedStore: new SiloInstalledStore(installed, fixtureBucket.Store, _ => ValueTask.FromResult(true)),
+                            payloadSpool: null);
+                    });
                 }
                 configureServices?.Invoke(services);
             });
@@ -181,7 +190,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public void Dispose()
     {
         _agentFactory?.Dispose();
-        _fixtureSilo?.Dispose();
         _agentBaseFactory?.Dispose();
         _agentFactory = null;
         _agentBaseFactory = null;
@@ -189,51 +197,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         if (!KeepStorageOnDispose && _storageRoot is not null && Directory.Exists(_storageRoot))
         {
             Directory.Delete(_storageRoot, recursive: true);
-        }
-    }
-
-    private static async Task<SiloInstalledStore> CreateFixtureSiloAsync(Dictionary<string, string?> overrides)
-    {
-        var instance = Guid.NewGuid();
-        var binding = new SiloStorageBinding(instance.ToString("D"), CameraAgentSiloBinding.StoreIdFor(instance),
-            CameraAgentSiloBinding.BucketFor(instance));
-        const string accessKey = "integrationfixturewriter";
-        overrides["CameraAgent:Silo:StateContract"] = CameraAgentSiloBinding.StateContract;
-        overrides["CameraAgent:Silo:StoreId"] = binding.StoreId;
-        overrides["CameraAgent:Silo:Bucket"] = binding.Bucket;
-        overrides["CameraAgent:Silo:StorageBindingId"] = binding.BindingId;
-        overrides["CameraAgent:Silo:WriterGeneration"] = "1";
-        overrides["CameraAgent:Silo:Endpoint"] = "http://127.0.0.1";
-        overrides["CameraAgent:Silo:AccessKey"] = accessKey;
-        overrides["CameraAgent:Silo:SecretKey"] = "integrationfixturesecret";
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(overrides).Build();
-        var installed = SiloInstalledSettings.ReadHostConfiguration(configuration);
-        var store = new SiloTestStore(binding.StoreId, binding.Bucket);
-        await PutAsync(CameraAgentSiloBinding.MarkerKey, new
-        {
-            format = CameraAgentSiloBinding.MarkerFormat,
-            instanceId = binding.InstanceId,
-            storeId = binding.StoreId,
-            bucket = binding.Bucket,
-            storageBindingId = binding.BindingId,
-            stateContract = CameraAgentSiloBinding.StateContract
-        }).ConfigureAwait(false);
-        await PutAsync(CameraAgentSiloBinding.FenceKey, new
-        {
-            format = CameraAgentSiloBinding.FenceFormat,
-            instanceId = binding.InstanceId,
-            storageBindingId = binding.BindingId,
-            writerGeneration = 1,
-            writerAccessKeyId = accessKey
-        }).ConfigureAwait(false);
-        return new SiloInstalledStore(installed, store, _ => ValueTask.FromResult(true));
-
-        async Task PutAsync(string key, object value)
-        {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(value);
-            await store.PutCreateOnlyAsync(new(key, bytes.Length, SiloHash.Sha256(bytes),
-                _ => ValueTask.FromResult<Stream>(new MemoryStream(bytes, writable: false)),
-                new Dictionary<string, string>()), CancellationToken.None).ConfigureAwait(false);
         }
     }
 

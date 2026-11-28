@@ -22,9 +22,12 @@ internal sealed class RawIngressFileStore(
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
 
     internal RawIngressPaths GetPaths(DateTimeOffset timestampUtc, Guid artifactId)
-        => GetPaths(_root, timestampUtc, artifactId);
+        => GetPaths(_root, artifactId);
 
     internal static RawIngressPaths GetPaths(string root, DateTimeOffset timestampUtc, Guid artifactId)
+        => GetPaths(root, artifactId);
+
+    internal static RawIngressPaths GetPaths(string root, Guid artifactId)
     {
         root = Path.GetFullPath(root);
         var payload = Path.Combine(root, ".silo", AdmissionStagePath(artifactId, ".bin"));

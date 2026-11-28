@@ -420,23 +420,25 @@ internal sealed partial class SqliteRawCaptureJournal(
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT payload_relative_path, sidecar_relative_path, state FROM raw_captures WHERE capture_id = $capture_id;";
+        command.CommandText = "SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path, state FROM raw_captures WHERE capture_id = $capture_id;";
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             return (false, false);
         }
-        if (usesSilo)
-            return (true, reader.GetString(2) == "committed");
+        var committed = reader.GetString(3) == "committed";
+        if (usesSilo || !committed)
+            return (true, committed);
+
         var root = Path.GetDirectoryName(Path.GetDirectoryName(_databasePath)!)!;
-        var payload = Path.GetFullPath(Path.Combine(
-            root, reader.GetString(0).Replace('/', Path.DirectorySeparatorChar)));
-        var sidecar = Path.GetFullPath(Path.Combine(
-            root, reader.GetString(1).Replace('/', Path.DirectorySeparatorChar)));
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, payload);
-        RawIngressFileStore.EnsureNoSymbolicLinks(root, sidecar);
-        return (true, reader.GetString(2) == "committed" && File.Exists(payload) && File.Exists(sidecar));
+        var stage = RawIngressFileStore.GetPaths(root, Guid.ParseExact(reader.GetString(0), "N"));
+        if (stage.PayloadRelativePath != reader.GetString(1) || stage.SidecarRelativePath != reader.GetString(2))
+            return (true, false);
+
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, stage.PayloadAbsolutePath);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, stage.SidecarAbsolutePath);
+        return (true, File.Exists(stage.PayloadAbsolutePath) && File.Exists(stage.SidecarAbsolutePath));
     }
 
     internal async Task<bool> IsCaptureArtifactCommittedAsync(
