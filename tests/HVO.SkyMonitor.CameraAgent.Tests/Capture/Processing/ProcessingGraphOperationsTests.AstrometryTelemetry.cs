@@ -333,12 +333,4 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
-    private sealed class StorageSelectionFailure : ICaptureProcessingFaultInjector
-    {
-        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
-        {
-            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "archive")
-                throw new IOException("Simulated interruption while selecting retained storage inputs.");
-        }
-    }
 }
