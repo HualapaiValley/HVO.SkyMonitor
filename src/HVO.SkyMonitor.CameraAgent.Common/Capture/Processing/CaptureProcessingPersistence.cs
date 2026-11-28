@@ -729,7 +729,7 @@ internal sealed partial class CaptureProcessingPersistence(
     }
 
     private async ValueTask PublishReplayOutputsAsync(ReconstructionDescriptor raw, string nodeId, Guid executionId,
-        IReadOnlyList<DurableProcessingOutput> outputs, IReadOnlyList<ProcessingProduct> products,
+        List<DurableProcessingOutput> outputs, IReadOnlyList<ProcessingProduct> products,
         CancellationToken cancellationToken)
     {
         var storage = silo ?? throw new InvalidOperationException("Replay output publication requires Silo storage.");

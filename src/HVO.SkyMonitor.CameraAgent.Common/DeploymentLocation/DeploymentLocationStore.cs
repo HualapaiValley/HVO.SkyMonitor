@@ -1202,7 +1202,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
             return;
         }
         ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
-        ValidateOwnedFileState(root, history, summary, strict, cancellationToken, scrub);
+        ValidateOwnedFileState(root, history, summary, strict, scrub, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
@@ -1210,7 +1210,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
     // is verified through the journal and the retired frame and product directories are excluded.
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The nullable observation lease is always disposed by its using declaration.")]
     private void ValidateOwnedFileState(string root, DeploymentLocationHistory history, RetainedManifestValidationIndex summary,
-        bool strict, CancellationToken cancellationToken, RetainedIntegrityLedger.Scrub? scrub)
+        bool strict, RetainedIntegrityLedger.Scrub? scrub, CancellationToken cancellationToken)
     {
         scrub?.LoadFileMetadata(summary, cancellationToken);
         var enumeration = new EnumerationOptions
